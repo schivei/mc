@@ -1,6 +1,6 @@
 // expect-exit: 0
 // expect-stdout: 46368
-// fib(24) impresso por putnum: array local, st8, / e %, saida por extern write.
+// fib(24) printed by putnum: local array, st8, / and %, output via extern write.
 extern i64 write(i64 fd, uptr buf, i64 n);
 
 i64 fib(i64 n) {
@@ -11,7 +11,7 @@ i64 fib(i64 n) {
 void putnum(i64 v) {
     u8 buf[24];
     i64 i = 23;
-    st8(buf + i, 10);                     // \n no fim do buffer
+    st8(buf + i, 10);                     // \n at the end of the buffer
     loop {
         i = i - 1;
         st8(buf + i, '0' + v % 10);

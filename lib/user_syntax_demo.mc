@@ -1,30 +1,32 @@
-// user_syntax_demo.mc — a demonstracao do Tier 3 (M12): sintaxe ensinada por
-// codigo. Tres coisas que o nucleo nao tem e que `#rule` nao alcanca, escritas
-// de fora, sem tocar em `src/`:
+// user_syntax_demo.mc — the Tier 3 (M12) demonstration: syntax taught by
+// code. Three things the core does not have and `#rule` cannot reach,
+// written from outside, without touching `src/`:
 //
-//   unless (cond) { ... }        statement novo   (syntax_stmt)
-//   enum Nome { A, B, C }        declaracao nova  (syntax)
-//   bool                         tipo novo        (type_alias)
+//   unless (cond) { ... }        new statement    (syntax_stmt)
+//   enum Name { A, B, C }        new declaration  (syntax)
+//   bool                         new type         (type_alias)
 //
-// `unless` caberia num `#rule stmt:`; esta aqui de proposito, para mostrar o
-// mesmo resultado pelos dois caminhos. `enum` nao cabe: e posicao de topo, a
-// lista tem tamanho variavel e o efeito e registrar constantes, nao produzir um
-// no. `bool` tambem nao: `#rule` nao tem buraco `type $t`.
+// `unless` would fit in a `#rule stmt:`; it is here on purpose, to show the
+// same result via both paths. `enum` does not fit: it is a top-level
+// position, the list has variable size and the effect is registering
+// constants, not producing a node. `bool` does not fit either: `#rule` has no
+// `type $t` hole.
 //
-// Este modulo nao entra em src/: quem o liga e lib/mc_syntax_demo.mc, um
-// compilador proprio que inclui `src/core.mc` e define o `user_init` abaixo.
-// Ver docs/surface.md § Tier 3 e scripts/check-surface.sh.
+// This module does not go into src/: whoever wires it in is
+// lib/mc_syntax_demo.mc, a compiler of its own that includes `src/core.mc`
+// and defines the `user_init` below. See docs/surface.md § Tier 3 and
+// scripts/check-surface.sh.
 
 // unless (cond) block  ->  if (!cond) block
-// O handler recebe o parse parado na palavra `unless` e devolve o indice do no
-// do statement; consumir a palavra e com ele.
+// The handler receives the parse stopped at the `unless` word and returns the
+// statement node's index; consuming the word is up to it.
 i64 sd_unless() {
     i64 line = p_line();
     uptr fl = p_file();
-    p_next();                                    // a palavra `unless`
-    p_expect(K_LPAR, "esperado ( apos unless");
+    p_next();                                    // the `unless` word
+    p_expect(K_LPAR, "expected ( after unless");
     i64 c = parse_expr(0);
-    p_expect(K_RPAR, "esperado ) apos a condicao do unless");
+    p_expect(K_RPAR, "expected ) after unless condition");
     i64 b = parse_block();
     i64 neg = node_new(N_UNARY, line, fl);       // !cond
     set_nd_op(neg, K_BANG);
@@ -35,30 +37,31 @@ i64 sd_unless() {
     return n;
 }
 
-// enum Nome { A, B, C }  ->  #define A 0, #define B 1, #define C 2
-// e `Nome` vira alias de i64, para que `Nome c = B;` seja uma declaracao valida.
-// Nao produz declaracao nenhuma: o handler nao chama top_add e parse_top devolve
-// 0. O efeito todo esta na tabela de #define e na de aliases.
+// enum Name { A, B, C }  ->  #define A 0, #define B 1, #define C 2
+// and `Name` becomes an alias of i64, so that `Name c = B;` is a valid
+// declaration. Produces no declaration at all: the handler does not call
+// top_add and parse_top returns 0. The whole effect is in the #define table
+// and the alias table.
 void sd_enum() {
     i64 line = p_line();
     uptr fl = p_file();
-    p_next();                                    // a palavra `enum`
-    uptr nome = p_ident();
-    p_expect(K_LBRACE, "esperado { no enum");
+    p_next();                                    // the `enum` word
+    uptr name = p_ident();
+    p_expect(K_LBRACE, "expected { in enum");
     i64 v = 0;
     loop {
         if (p_id() == K_RBRACE) break;
-        def_add(p_ident(), v, line, fl);         // recusa nome ja definido
+        def_add(p_ident(), v, line, fl);         // rejects an already-defined name
         v = v + 1;
         if (!p_accept(K_COMMA)) break;
     }
-    p_expect(K_RBRACE, "esperado } no enum");
-    if (v == 0) err_at(fl, line, "enum sem membros");
-    type_alias(nome, TY_I64);
+    p_expect(K_RBRACE, "expected } in enum");
+    if (v == 0) err_at(fl, line, "enum with no members");
+    type_alias(name, TY_I64);
 }
 
 void user_init() {
-    syntax("enum", &sd_enum);                    // posicao de topo
-    syntax_stmt("unless", &sd_unless);           // posicao de statement
-    type_alias("bool", TY_U8);                   // tipo novo, sem sintaxe nova
+    syntax("enum", &sd_enum);                    // top-level position
+    syntax_stmt("unless", &sd_unless);           // statement position
+    type_alias("bool", TY_U8);                   // new type, no new syntax
 }

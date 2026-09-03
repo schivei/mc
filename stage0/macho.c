@@ -1,5 +1,5 @@
-/* macho.c — modelo de objeto (secoes, simbolos, relocacoes) e escrita de MH_OBJECT arm64.
- * Todo campo e escrito byte a byte em little-endian; nada de fwrite(&struct). */
+/* macho.c — object model (sections, symbols, relocations) and MH_OBJECT arm64 writing.
+ * Every field is written byte by byte in little-endian; no fwrite(&struct). */
 #include "mc.h"
 
 Section *sections; int nsections; static int seccap;
@@ -64,8 +64,8 @@ int sym_ref(const char *name) {
     return i >= 0 ? i : sym_new(name, 0, 0, true);
 }
 
-/* o endereco de uma funcao so existe depois de encodar: gen_lower cria o
- * simbolo (fixando a ordem da symtab) e gen_encode_all preenche o valor */
+/* a function's address only exists after encoding: gen_lower creates the
+ * symbol (fixing the symtab order) and gen_encode_all fills in the value */
 void sym_set_value(int sym, u64 value) { symbols[sym].value = value; }
 
 void reloc_add(int sec, u32 off, int sym, int type, int pcrel, int len) {
@@ -79,7 +79,7 @@ void reloc_add(int sec, u32 off, int sym, int type, int pcrel, int len) {
     s->rel[s->nrel++] = (Reloc){ off, sym, (u8)type, (u8)pcrel, (u8)len };
 }
 
-/* ---- escrita ---- */
+/* ---- writing ---- */
 #define MH_MAGIC_64      0xfeedfacfu
 #define CPU_TYPE_ARM64   0x0100000Cu
 #define MH_OBJECT        1
@@ -94,7 +94,7 @@ void reloc_add(int sec, u32 off, int sym, int type, int pcrel, int len) {
 
 static int sym_class(const Symbol *s) { return s->sect == 0 ? 2 : (s->global ? 1 : 0); }
 
-/* ordem final da symtab: locais, externos definidos, indefinidos (particao estavel) */
+/* final symtab order: locals, defined externs, undefined (stable partition) */
 void sym_order(int *order, int *pos, int *count) {
     int n = 0;
     count[0] = 0; count[1] = 0; count[2] = 0;
@@ -103,14 +103,14 @@ void sym_order(int *order, int *pos, int *count) {
             if (sym_class(&symbols[i]) == c) { pos[i] = n; order[n++] = i; count[c]++; }
 }
 
-/* nomes de seg/sect ocupam 16 bytes preenchidos com zero e podem nao ter NUL */
+/* seg/sect names occupy 16 zero-padded bytes and may have no NUL */
 static void out_name16(const char *p) {
     int n = 0;
     while (n < 16 && p[n]) n++;
     out_bytes(1, p, (size_t)n);
 }
 
-/* --dump-syms: as secoes na ordem de criacao e os simbolos na ordem final da symtab */
+/* --dump-syms: sections in creation order and symbols in final symtab order */
 void dump_syms(void) {
     for (int i = 0; i < nsections; i++) {
         Section *s = &sections[i];
@@ -142,7 +142,7 @@ void macho_write(const char *path) {
     int count[3];
     sym_order(order, pos, count);
 
-    /* layout de enderecos: secoes regulares primeiro, zerofill por ultimo */
+    /* address layout: regular sections first, zerofill last */
     u64 *addr = xalloc(sizeof(u64) * (size_t)(nsections + 1));
     u64 vm = 0, filesz = 0;
     for (int pass = 0; pass < 2; pass++)
@@ -207,7 +207,7 @@ void macho_write(const char *path) {
     buf_u32(&o, (u32)(count[0] + count[1])); buf_u32(&o, (u32)count[2]);
     for (int k = 0; k < 12; k++) buf_u32(&o, 0);
 
-    /* dados das secoes */
+    /* section data */
     for (int i = 0; i < nsections; i++) {
         Section *s = &sections[i];
         if ((s->flags & 0xff) == S_ZEROFILL) continue;
@@ -215,7 +215,7 @@ void macho_write(const char *path) {
         buf_put(&o, s->data.p, s->data.len);
     }
     while (o.len < reloff) buf_u8(&o, 0);
-    /* relocacoes: ordem decrescente de endereco, como o clang faz */
+    /* relocations: descending address order, as clang does */
     for (int i = 0; i < nsections; i++) {
         Section *s = &sections[i];
         for (int k = s->nrel - 1; k >= 0; k--) {

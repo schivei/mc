@@ -1,5 +1,5 @@
 // expect-exit: 55
-// Soma 1..10 com loop, break e continue.
+// Sums 1..10 with loop, break and continue.
 i64 main() {
     i64 i = 0;
     i64 s = 0;
@@ -10,7 +10,7 @@ i64 main() {
             s = s + i;
             continue;
         }
-        s = s + 1000;         // inalcancavel: o continue acima sempre desvia
+        s = s + 1000;         // unreachable: the continue above always branches away
     }
     return s;
 }

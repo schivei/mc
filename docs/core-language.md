@@ -1,13 +1,13 @@
 # core-language.md — the `.mc` core language
 
 Reference for the core language specified in `docs/plan.md` and detailed in
-`docs/specs/M1.md`...`M5.5.md`. State of the code (`stage0/`) at this milestone (**M5.5 closed**):
+`docs/specs/M1.md`...`M12.md`. State of the code at this milestone (**M11 closed**):
 lexer, Pratt parser, AST, ARM64 codegen, and Mach-O writer complete for everything below —
-`make test` runs 24/24 tests (`tests/001-return42.mc` ... `tests/043-include-norm.mc`), and every
-example in this document was actually compiled and run with `build/mc0` to confirm the text. Only
-these remain **planned**: `#rule`/prelude with `while`/`for` (**M9**), programmatic
-`pass()`/`backend()` (**M10**), and a direct `MH_EXECUTE` executable (**M11**) — see
-`docs/surface.md`.
+`make test` runs 32/32 tests (`tests/001-return42.mc` ... `tests/061-pass.mc`), and every
+example in this document was actually compiled and run with `build/mc0` to confirm the text.
+`#rule`/prelude with `while`/`for` (**M9**), programmatic `pass()`/`backend()` (**M10**), and a
+direct `MH_EXECUTE` executable (**M11**) are all implemented — see `docs/surface.md` for the
+teaching-surface mechanisms themselves.
 
 ## Types
 
@@ -141,10 +141,10 @@ via &write
   `R_UNSIGNED` relocation pointing at that string's `l_strN` symbol (see
   `docs/macho-notes.md`). Tested (`tests/040-arrinit.mc`):
   ```c
-  uptr names[] = {"zero", "um", "dois"};   // N inferred: 3 pointers in __data
+  uptr names[] = {"zero", "one", "two"};   // N inferred: 3 pointers in __data
   u32  t[4] = {1, 2, 3};                   // N > count: the 4th element comes out zeroed
-  i64  soma[2] = {20 + 22, 7 * 6};         // constant folding in the element
-  // ld64(names + 8) -> pointer to "um"; ld32(t+12) == 0; ld64(soma) == 42
+  i64  sum[2] = {20 + 22, 7 * 6};          // constant folding in the element
+  // ld64(names + 8) -> pointer to "one"; ld32(t+12) == 0; ld64(sum) == 42
   ```
 
 ## Frame and local-array limits
@@ -181,11 +181,11 @@ mutual recursion with no forward declaration.
 definition; the later definition must match return type and arity; a prototype with no
 definition and no `extern` by the end of the unit is an error. Tested (`tests/042-proto.mc`):
 ```c
-i64  soma(i64 a, i64 b);        // used before it's defined
-i64  dobro(i64 x);              // defined after whoever calls it
-i64 main() { mostra(soma(dobro(20), 2)); return 0; }  // stdout "42\n", exit 0
-i64 soma(i64 a, i64 b) { return a + b; }
-i64 dobro(i64 x) { return x + x; }
+i64  sum(i64 a, i64 b);          // used before it's defined
+i64  double(i64 x);              // defined after whoever calls it
+i64 main() { show(sum(double(20), 2)); return 0; }  // stdout "42\n", exit 0
+i64 sum(i64 a, i64 b) { return a + b; }
+i64 double(i64 x) { return x + x; }
 ```
 
 ## `extern`
@@ -198,22 +198,22 @@ reference. Who discovers the error, and when, depends on the output path — and
 deliberate (`docs/bootstrap.md` § M11). For
 
 ```
-// faltante.mc
-extern i64 nao_existe_mesmo(i64 x);
+// missing.mc
+extern i64 does_not_exist(i64 x);
 
 i64 main() {
-    return nao_existe_mesmo(1);
+    return does_not_exist(1);
 }
 ```
 
 the `.o` + `ld` path (default) refuses **at link time**:
 
 ```
-$ build/mc1 faltante.mc -o faltante.o          # exit 0
-$ scripts/link.sh faltante faltante.o
+$ build/mc1 missing.mc -o missing.o          # exit 0
+$ scripts/link.sh missing missing.o
 Undefined symbols for architecture arm64:
-  "_nao_existe_mesmo", referenced from:
-      _main in faltante.o
+  "_does_not_exist", referenced from:
+      _main in missing.o
 ld: symbol(s) not found for architecture arm64                  # exit 1
 ```
 
@@ -221,10 +221,10 @@ and the `--exe` path generates the binary (signed, `codesign --verify` passes) a
 load time**, in `dyld`:
 
 ```
-$ build/mc1 --exe faltante.mc -o faltante-exe   # exit 0
-$ ./faltante-exe
-dyld[84421]: Symbol not found: _nao_existe_mesmo
-  Referenced from: <CCEFFEF5-D25D-5C49-8593-D99D8433E7BA> .../faltante-exe
+$ build/mc1 --exe missing.mc -o missing-exe   # exit 0
+$ ./missing-exe
+dyld[80040]: Symbol not found: _does_not_exist
+  Referenced from: <F1456454-2B44-5ECA-A150-2354A925A8A5> .../missing-exe
   Expected in:     <4FED5EE2-5D3E-35B1-A170-9859C4B683BB> /usr/lib/libSystem.B.dylib
                                                                 # exit 134 (SIGABRT)
 ```
@@ -241,7 +241,7 @@ no, and will be no, built-in list of known symbols). If you want the error at bu
   the once-only check, so two paths that reach the same file via different textual routes
   (`inc/c.mc` and `inc/a/../c.mc`) count as a single inclusion. Max depth 16. Tested
   (`tests/043-include-norm.mc`): `#include "inc/c.mc"` and `#include "./inc/a/b.mc"` (which in
-  turn includes `../c.mc`) resolve to the same file — `comum()` isn't declared twice.
+  turn includes `../c.mc`) resolve to the same file — `common()` isn't declared twice.
 - `#define NAME expr`: expr parsed and folded at definition time (via `fold()`), a constant — not
   a textual macro. Redefining it is an error. Use must come after the definition (source order).
 - **`#define` vs. a name**: declaring a local, parameter, global, or function with a name already
@@ -263,7 +263,7 @@ include it; `src/macho.mc` does, and it's the leaf module migrated at M9.
 ```c
 #include "../lib/prelude.mc"
 
-i64 soma(i64 n) {
+i64 sum(i64 n) {
     i64 s = 0;
     for (i64 i = 0; i < n; i = i + 1) {   // step is `ident $x = expr $step`
         s += i;
@@ -402,7 +402,7 @@ runs into C features the `.mc` core doesn't have. Each item below is a real case
   `#include "../lib/prelude.mc"` (M9) `i++`/`i--`/`i += e`/`i -= e` exist as four `#rule`s, and
   that's what `src/macho.mc` uses today.
 - **adjacent string literals** — C concatenates `"a" "b"` at compile time; `.mc` has no such rule.
-  `out_str(2, "uso: mc0 ... " "entrada.mc [-o saida.o]\n");` (`stage0/main.c`) became a single
+  `out_str(2, "usage: mc0 ... " "source.mc [-o out.o]\n");` (`stage0/main.c`) became a single
   literal in `src/main.mc`.
 - **`&arr[i]` (address of an indexed element)** — `&` only accepts a direct name (`&name`), not an
   indexing expression — `.mc` has no `p[i]` or `p->f` (§ Operators above). `Node *p =

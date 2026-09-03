@@ -1,5 +1,5 @@
 // expect-exit: 42
-// break 2 sai dos dois loops de uma vez; break simples so do de dentro.
+// break 2 exits both loops at once; a plain break exits only the inner one.
 i64 main() {
     i64 s = 0;
     loop {

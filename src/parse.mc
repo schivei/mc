@@ -1,12 +1,12 @@
-// parse.mc — transliteracao de stage0/parse.c: descida recursiva para
-// declaracoes/statements e Pratt dirigido por tabela para expressoes. As tabelas
-// infix/prefix sao arrays em ordem de insercao, buscados linearmente: e o que
-// #infix/#prefix mutam. Mesmas funcoes, mesmos nomes, mesma ordem.
-// Linha e arquivo andam sempre juntos: quem guarda `line` guarda `fl`, senao o
-// erro de um construto que comeca dentro de um #include cita o arquivo errado.
+// parse.mc — transliteration of stage0/parse.c: recursive descent for
+// declarations/statements and table-driven Pratt for expressions. The
+// infix/prefix tables are arrays in insertion order, searched linearly: that is
+// what #infix/#prefix mutate. Same functions, same names, same order.
+// Line and file always travel together: whoever keeps `line` keeps `fl`, otherwise
+// the error for a construct that starts inside an #include cites the wrong file.
 //
-// Sem struct: cada tabela do C vira um bloco plano com offsets #define +
-// acessoras. Layouts derivados de stage0/mc.h (versao atual do C):
+// No struct: each C table becomes a flat block with #define offsets +
+// accessors. Layouts derived from stage0/mc.h (current C version):
 //
 //   C: typedef struct { int tok, prec; bool right; int tmpl; } InfixEnt;
 //      INF_TOK 0  INF_PREC 8  INF_RIGHT 16  INF_TMPL 24     -> INF_SIZE 32
@@ -19,35 +19,35 @@
 //   C: typedef struct { const char *seg, *sect; u32 flags, align; } SecEnt;
 //      SE_SEG 0  SE_SECT 8  SE_FLAGS 16  SE_ALIGN 24        -> SE_SIZE 32
 //
-// Nomes de prefixo diferentes dos da spec (IN_*/PR_*) porque IN_* ja e o enum de
-// intrinsics do gen_arm64 e SEC_* ja e o layout de Section em macho.mc.
+// Prefix names differ from the spec's (IN_*/PR_*) because IN_* is already the
+// intrinsics enum in gen_arm64 and SEC_* is already Section's layout in macho.mc.
 //
-// As declaracoes adiantadas do C (parse_expr, parse_unary, parse_block) nao sao
-// necessarias: o topo do .mc registra todas as assinaturas antes dos corpos.
+// C's forward declarations (parse_expr, parse_unary, parse_block) are not
+// needed: the top of the .mc registers every signature before the bodies.
 //
-// M12 (Tier 3): parse_top e parse_stmt consultam antes de tudo as tabelas de
-// `syntax`/`syntax_stmt` de hooks.mc e chamam o handler com callp; type_of_token
-// cai nos aliases de `type_alias`; `#dylib` registra a dylib das declaracoes
-// `extern` seguintes. A API que um handler usa esta na secao "API publica do
-// parser", logo antes de "---- topo ----".
+// M12 (Tier 3): parse_top and parse_stmt first consult hooks.mc's
+// `syntax`/`syntax_stmt` tables and call the handler with callp; type_of_token
+// falls back to `type_alias` aliases; `#dylib` registers the dylib for the
+// following `extern` declarations. The API a handler uses is in the "public
+// parser API" section, right before "---- top level ----".
 //
-// Depende de arena.mc (xalloc, xstrdup, cstrlen, str_eq, mem_eq, die),
-// de lex.mc (Token, lex_next, lex_include, tok_add, ids K_*/T_*/D_*),
-// de ast.mc (nos, fold sobre eles, err_node, type_width), de arena.mc (err_at),
-// de macho.mc (sec_new e os R_* que defs_init registra como constantes internas)
-// e de hooks.mc (syntax_find/syntax_stmt_find/alias_find — tabelas vazias quando
-// ninguem ensinou nada, e entao o parse e exatamente o do stage0).
+// Depends on arena.mc (xalloc, xstrdup, cstrlen, str_eq, mem_eq, die),
+// on lex.mc (Token, lex_next, lex_include, tok_add, ids K_*/T_*/D_*),
+// on ast.mc (nodes, fold over them, err_node, type_width), on arena.mc (err_at),
+// on macho.mc (sec_new and the R_* that defs_init registers as internal constants)
+// and on hooks.mc (syntax_find/syntax_stmt_find/alias_find — empty tables when
+// nobody has taught anything, so parsing is exactly the stage0 one).
 
 #define MAXOPS    128
-// 512 e nao 256: a transliteracao para .mc gasta ~104 #define so com os
-// offsets dos layouts planos (em C sao campos de struct, custo zero), e
-// src/mc.mc chega a 319 constantes. stage0/parse.c tem o mesmo valor.
+// 512, not 256: the transliteration to .mc spends ~104 #defines just on the
+// offsets of the flat layouts (in C they are struct fields, zero cost), and
+// src/mc.mc reaches 319 constants. stage0/parse.c has the same value.
 #define MAXDEFS   512
 #define MAXOPCS   64
-#define MAXDYLIBS 8                   // #dylib: ordinal = indice + 2 (libSystem e 1)
-#define MAXEXTLIB 256                 // externs com dylib anotada, por nome
-// MAXSECS e MAXPARAMS vivem em arena.mc, como viviam em stage0/mc.h: parse.mc e
-// gen_arm64.mc compartilham os dois e `#define` repetido e erro.
+#define MAXDYLIBS 8                   // #dylib: ordinal = index + 2 (libSystem is 1)
+#define MAXEXTLIB 256                 // externs with an annotated dylib, by name
+// MAXSECS and MAXPARAMS live in arena.mc, as they lived in stage0/mc.h: parse.mc
+// and gen_arm64.mc share both and a repeated `#define` is an error.
 
 // ---- InfixEnt ----
 #define INF_TOK   0
@@ -61,18 +61,18 @@
 #define PRF_TMPL 8
 #define PRF_SIZE 16
 
-// ---- DefEnt: #define ja dobrado ----
+// ---- DefEnt: #define already folded ----
 #define DE_NAME 0
 #define DE_VAL  8
 #define DE_SIZE 16
 
-// ---- OpcEnt: #opcode com os parametros ja trocados por N_HOLE de 1 a nparams ----
+// ---- OpcEnt: #opcode with the parameters already swapped for N_HOLE 1 to nparams ----
 #define OE_NAME 0
 #define OE_NP   8
 #define OE_TMPL 16
 #define OE_SIZE 24
 
-// ---- SecEnt: #section so registra; a secao real nasce em gen_sections ----
+// ---- SecEnt: #section only registers; the real section is born in gen_sections ----
 #define SE_SEG   0
 #define SE_SECT  8
 #define SE_FLAGS 16
@@ -90,15 +90,15 @@ i64 nopcs = 0;
 u8  secs[MAXSECS * SE_SIZE];
 i64 nsecs = 0;
 
-// parametros do #opcode sendo definido agora; fora disso nparams e 0
+// parameters of the #opcode being defined right now; outside that nparams is 0
 u8  opc_params[MAXPARAMS * 8];
 i64 opc_nparams = 0;
-i64 cur_sect = 0;                     // #section corrente + 1; 0 = secao default
+i64 cur_sect = 0;                     // current #section + 1; 0 = default section
 
-// ---- #dylib: caminhos na ordem de registro; o ordinal da dylib no executavel
-// e indice + 2, porque a libSystem sempre ocupa o 1. `cur_dylib` e o ordinal em
-// vigor: todo `extern` declarado depois cai nele, ate o proximo #dylib. Tabelas
-// lineares, sem hash: docs/determinism.md, regra 1.
+// ---- #dylib: paths in registration order; the dylib's ordinal in the executable
+// is index + 2, because libSystem always occupies 1. `cur_dylib` is the ordinal in
+// effect: every `extern` declared after it falls under it, until the next #dylib.
+// Linear tables, no hashing: docs/determinism.md, rule 1.
 u8  dylibs[MAXDYLIBS * 8];
 i64 ndylibs = 0;
 i64 cur_dylib = 1;                    // 1 = /usr/lib/libSystem.B.dylib
@@ -106,14 +106,14 @@ u8  extlib_name[MAXEXTLIB * 8];
 u8  extlib_ord[MAXEXTLIB * 8];
 i64 nextlib = 0;
 
-u8 cur[TOK_SIZE];                     // lookahead de 1 token
+u8 cur[TOK_SIZE];                     // 1-token lookahead
 
-// a unidade em construcao: parse_unit anexa por top_add, e os handlers de
-// `syntax` tambem — e o que permite um handler produzir varias declaracoes
+// the unit under construction: parse_unit appends via top_add, and `syntax`
+// handlers do too — that is what lets a handler produce several declarations
 i64 unit_head = 0;
 i64 unit_tail = 0;
 
-// ---- acessoras das tabelas ----
+// ---- table accessors ----
 uptr ie_at(i64 i)     { return infixes + i * INF_SIZE; }
 i64  ie_tok(uptr e)   { return ld64(e + INF_TOK); }
 i64  ie_prec(uptr e)  { return ld64(e + INF_PREC); }
@@ -176,22 +176,22 @@ i64 cur_is(uptr s) {
     return tok_len(cur) == cstrlen(s) && mem_eq(tok_start(cur), s, tok_len(cur));
 }
 
-// o nome do token corrente, copiado para a arena
+// the current token's name, copied into the arena
 uptr cur_name() { return xstrdup(tok_start(cur), tok_len(cur)); }
 
-// erro de "nome esperado aqui". Um registro do Tier 3 (syntax/syntax_stmt/
-// type_alias) reserva a palavra no programa inteiro, e nao so na posicao
-// gramatical do handler: se o token que chegou no lugar do nome e uma dessas
-// palavras, a colisao e a causa e vale dize-la, em vez de um "nome esperado"
-// sem relacao aparente com o modulo que ensinou a sintaxe.
+// error for "name expected here". A Tier 3 registration (syntax/syntax_stmt/
+// type_alias) reserves the word for the whole program, not just the handler's
+// grammar position: if the token that arrived in the name's place is one of
+// those words, the collision is the cause and it is worth saying so, instead of a
+// "name expected" with no apparent relation to the module that taught the syntax.
 void err_name(uptr msg) {
     if (word_is_taught(tok_id(cur)))
         err_at2(tok_file(cur), tok_line(cur),
-                "nome reservado por syntax/syntax_stmt/type_alias", cur_name());
+                "name reserved by syntax/syntax_stmt/type_alias", cur_name());
     err_at(tok_file(cur), tok_line(cur), msg);
 }
 
-// ---- tabelas Pratt ----
+// ---- Pratt tables ----
 i64 infix_find(i64 tok) {
     i64 i = 0;
     loop {
@@ -215,7 +215,7 @@ i64 prefix_find(i64 tok) {
 void infix_set(i64 tok, i64 prec, i64 right, i64 tmpl) {
     i64 i = infix_find(tok);
     if (i < 0) {
-        if (ninfix == MAXOPS) die("tabela infix cheia");
+        if (ninfix == MAXOPS) die("infix table full");
         i = ninfix;
         ninfix = ninfix + 1;
     }
@@ -229,7 +229,7 @@ void infix_set(i64 tok, i64 prec, i64 right, i64 tmpl) {
 void prefix_set(i64 tok, i64 tmpl) {
     i64 i = prefix_find(tok);
     if (i < 0) {
-        if (nprefix == MAXOPS) die("tabela prefix cheia");
+        if (nprefix == MAXOPS) die("prefix table full");
         i = nprefix;
         nprefix = nprefix + 1;
     }
@@ -238,7 +238,7 @@ void prefix_set(i64 tok, i64 tmpl) {
     set_pe_tmpl(e, tmpl);
 }
 
-// precedencias do nucleo: maior liga mais forte
+// core precedences: higher binds tighter
 void ops_init() {
     infix_set(K_OROR,   1, 0, 0);
     infix_set(K_ANDAND, 2, 0, 0);
@@ -253,10 +253,10 @@ void ops_init() {
     infix_set(K_MUL,   10, 0, 0); infix_set(K_DIV, 10, 0, 0);
     infix_set(K_MOD,   10, 0, 0);
     prefix_set(K_SUB, 0); prefix_set(K_TILDE, 0); prefix_set(K_BANG, 0);
-    prefix_set(K_AND, 0);              // &x vira N_ADDR em parse_unary
+    prefix_set(K_AND, 0);              // &x becomes N_ADDR in parse_unary
 }
 
-// ---- #define: tabela linear de constantes ja dobradas ----
+// ---- #define: linear table of already-folded constants ----
 i64 def_find(uptr s, i64 len) {
     i64 i = 0;
     loop {
@@ -269,22 +269,22 @@ i64 def_find(uptr s, i64 len) {
 }
 
 void def_add(uptr name, i64 val, i64 line, uptr fl) {
-    if (def_find(name, cstrlen(name)) >= 0) err_at(fl, line, "#define repetido");
-    if (ndefs == MAXDEFS) die("defines demais");
+    if (def_find(name, cstrlen(name)) >= 0) err_at(fl, line, "duplicate #define");
+    if (ndefs == MAXDEFS) die("too many defines");
     uptr e = de_at(ndefs);
     set_de_name(e, name);
     set_de_val(e, val);
     ndefs = ndefs + 1;
 }
 
-// um #define ja e constante em toda parte: declarar o mesmo nome esconderia a
-// constante em alguns pontos do fonte e nao em outros. Erro, entao
+// a #define is already constant everywhere: declaring the same name would hide the
+// constant at some points in the source and not others. So it is an error
 void check_def() {
     if (def_find(tok_start(cur), tok_len(cur)) >= 0)
-        err_at(tok_file(cur), tok_line(cur), "nome ja definido por #define");
+        err_at(tok_file(cur), tok_line(cur), "name already defined by #define");
 }
 
-// tipos de relocacao de reloc(): constantes internas, nao precisam de #include
+// reloc()'s relocation types: internal constants, they need no #include
 void defs_init() {
     def_add("UNSIGNED",  R_UNSIGNED,  0, "?");
     def_add("BRANCH26",  R_BRANCH26,  0, "?");
@@ -292,7 +292,7 @@ void defs_init() {
     def_add("PAGEOFF12", R_PAGEOFF12, 0, "?");
 }
 
-// ---- #section: so registra; gen_sections cria as secoes na ordem certa ----
+// ---- #section: only registers; gen_sections creates the sections in the right order ----
 i64 sec_pending() { return nsecs; }
 
 i64 sec_make(i64 i) {
@@ -308,7 +308,7 @@ i64 sec_ent(uptr seg, uptr sect, i64 flags, i64 align) {
         if (str_eq(se_seg(e), seg) && str_eq(se_sect(e), sect)) return i;
         i = i + 1;
     }
-    if (nsecs == MAXSECS) die("secoes demais");
+    if (nsecs == MAXSECS) die("too many sections");
     uptr ne = se_at(nsecs);
     set_se_seg(ne, seg);
     set_se_sect(ne, sect);
@@ -318,9 +318,9 @@ i64 sec_ent(uptr seg, uptr sect, i64 flags, i64 align) {
     return nsecs - 1;
 }
 
-// ---- #dylib: uma dylib a mais para o executavel; o `.o` + `ld` ignora ----
-// Ordinal = indice + 2: no two-level namespace do Mach-O o 1 e sempre a
-// libSystem, que o backend do executavel carrega de qualquer jeito.
+// ---- #dylib: one more dylib for the executable; the `.o` + `ld` ignore it ----
+// Ordinal = index + 2: in Mach-O's two-level namespace 1 is always
+// libSystem, which the executable backend loads regardless.
 i64 dylib_count()      { return ndylibs; }
 uptr dylib_path(i64 i) { return dl_at(i); }
 
@@ -331,28 +331,28 @@ i64 dylib_add(uptr path) {
         if (str_eq(dl_at(i), path)) return i + 2;
         i = i + 1;
     }
-    if (ndylibs == MAXDYLIBS) die("dylibs demais");
+    if (ndylibs == MAXDYLIBS) die("too many dylibs");
     set_dl_at(ndylibs, path);
     ndylibs = ndylibs + 1;
     return ndylibs + 1;
 }
 
-// anota de qual dylib vem o extern `name`; o ultimo registro do mesmo nome vence
+// notes which dylib the extern `name` comes from; the last registration of the same name wins
 void extern_lib_add(uptr name, i64 ord) {
-    if (ord == 1) return;                      // libSystem e o default: nao ocupa slot
+    if (ord == 1) return;                      // libSystem is the default: it takes no slot
     i64 i = 0;
     loop {
         if (i >= nextlib) break;
         if (str_eq(xl_name(i), name)) { set_xl_ord(i, ord); return; }
         i = i + 1;
     }
-    if (nextlib == MAXEXTLIB) die("externs com #dylib demais");
+    if (nextlib == MAXEXTLIB) die("too many externs with #dylib");
     set_xl_name(nextlib, name);
     set_xl_ord(nextlib, ord);
     nextlib = nextlib + 1;
 }
 
-// ordinal da dylib de um extern; 1 (libSystem) para todo nome nao anotado
+// dylib ordinal of an extern; 1 (libSystem) for every name with no annotation
 i64 extern_lib_find(uptr name) {
     i64 i = 0;
     loop {
@@ -363,7 +363,7 @@ i64 extern_lib_find(uptr name) {
     return 1;
 }
 
-// ---- #opcode: tabela linear de encoders, na ordem de definicao ----
+// ---- #opcode: linear table of encoders, in definition order ----
 i64 opc_find(uptr name) {
     i64 i = 0;
     loop {
@@ -374,7 +374,7 @@ i64 opc_find(uptr name) {
     return -1;
 }
 
-// dentro do template de um #opcode, o nome de um parametro vira N_HOLE numerado
+// inside a #opcode's template, a parameter's name becomes a numbered N_HOLE
 i64 opc_param(uptr s, i64 len) {
     i64 i = 0;
     loop {
@@ -386,7 +386,7 @@ i64 opc_param(uptr s, i64 len) {
     return 0;
 }
 
-// chamada de #opcode: os argumentos viram os buracos do template, que e dobrado
+// #opcode call: the arguments become the template's holes, which is then folded
 i64 opc_expand(i64 i, i64 call) {
     i64 holes[MAXPARAMS + 1];
     i64 np = oe_np(oe_at(i));
@@ -394,21 +394,21 @@ i64 opc_expand(i64 i, i64 call) {
     i64 a = nd_a(call);
     loop {
         if (a == 0) break;
-        if (k == np) err_node(call, "numero de argumentos errado no #opcode");
+        if (k == np) err_node(call, "wrong number of arguments in #opcode");
         k = k + 1;
         st64(holes + k * 8, a);
         a = nd_next(a);
     }
-    if (k != np) err_node(call, "numero de argumentos errado no #opcode");
+    if (k != np) err_node(call, "wrong number of arguments in #opcode");
     return fold(node_copy_subst(oe_tmpl(oe_at(i)), holes, k));
 }
 
-// ---- #rule: tabela linear de regras, indexada pelo token que abre o statement.
-// Nada de backtracking: o token corrente escolhe a regra e dali cada item tem de
-// casar. Buracos de NO (expr/stmt/block) viajam por node_copy_subst; buracos de
-// NOME (`ident $x` e o gensym `$$t`) sao trocados por identidade de ponteiro
-// depois da copia — e o que permite `$x` aparecer onde a AST guarda um nome
-// (esquerda de atribuicao, declaracao de local) e nao um no.
+// ---- #rule: linear table of rules, indexed by the token that opens the statement.
+// No backtracking: the current token picks the rule and from there every item must
+// match. NODE holes (expr/stmt/block) travel via node_copy_subst; NAME holes
+// (`ident $x` and the gensym `$$t`) are swapped by pointer identity
+// after the copy — that is what lets `$x` appear where the AST stores a name
+// (left side of an assignment, local declaration) rather than a node.
 //
 //   C: enum { IT_LIT, IT_EXPR, IT_STMT, IT_BLOCK, IT_IDENT, IT_GEN };
 //      typedef struct { int tok, lead, nitems, nholes, nnames, tmpl;
@@ -416,11 +416,11 @@ i64 opc_expand(i64 i, i64 call) {
 //      RU_TOK 0  RU_LEAD 8  RU_NITEMS 16  RU_NHOLES 24  RU_NNAMES 32
 //      RU_TMPL 40  RU_ITEMS 48 (16*8)  RU_PH 176 (8*8)      -> RU_SIZE 240
 #define MAXRULES 32
-#define MAXBIND  12               // buracos citados por uma regra (padrao + gensym)
-#define MAXRDEPTH 64              // aninhamento de regra dentro de um template
-                                  // (MAXDEPTH ja e a profundidade de expressao em gen_arm64.mc)
-#define MAXITEMS 16               // itens de um padrao
-#define MAXNAMES 8                // buracos de nome (ident $x e $$t) de uma regra
+#define MAXBIND  12               // holes cited by a rule (pattern + gensym)
+#define MAXRDEPTH 64              // nesting of a rule inside a template
+                                  // (MAXDEPTH is already gen_arm64.mc's expression depth)
+#define MAXITEMS 16               // items in a pattern
+#define MAXNAMES 8                // name holes (ident $x and $$t) in a rule
 
 #define IT_LIT   0
 #define IT_EXPR  1
@@ -441,16 +441,16 @@ i64 opc_expand(i64 i, i64 call) {
 
 u8  rules[MAXRULES * RU_SIZE];
 i64 nrules = 0;
-i64 gensym_n = 0;                 // contador de $g<N>: determinista, nunca reinicia
-i64 rule_depth = 0;               // regras aninhadas na definicao de um template
+i64 gensym_n = 0;                 // $g<N> counter: deterministic, never resets
+i64 rule_depth = 0;               // rules nested in a template's definition
 
-// buracos da regra sendo definida agora; bnd_txt guarda o texto com o $
+// holes of the rule being defined right now; bnd_txt keeps the text with the $
 u8  bnd_txt[MAXBIND * 8];
 u8  bnd_kind[MAXBIND * 8];
 u8  bnd_slot[MAXBIND * 8];
 i64 nbnd = 0;
-i64 rule_def = 0;                 // 1 enquanto do_rule le o padrao e o template
-// padrao em construcao: so vai para a tabela quando a definicao termina
+i64 rule_def = 0;                 // 1 while do_rule reads the pattern and the template
+// pattern under construction: only goes to the table when the definition ends
 u8  r_items[MAXITEMS * 8];
 i64 r_nitems = 0;
 i64 r_nholes = 0;
@@ -459,7 +459,7 @@ i64 r_lead = 0;
 
 uptr nt_names[] = { "lit", "expr", "stmt", "block", "ident" };
 
-// ---- acessoras de RuleEnt e das tabelas auxiliares ----
+// ---- RuleEnt and the auxiliary tables' accessors ----
 uptr ru_at(i64 i)      { return rules + i * RU_SIZE; }
 i64  ru_tok(uptr r)    { return ld64(r + RU_TOK); }
 i64  ru_lead(uptr r)   { return ld64(r + RU_LEAD); }
@@ -498,11 +498,11 @@ i64 bnd_find(uptr s, i64 len) {
     return -1;
 }
 
-// registra o buraco do token corrente ($nome ou $$nome) e devolve o indice
+// registers the current token's hole ($name or $$name) and returns the index
 i64 bnd_add(i64 kind, i64 slot) {
-    if (nbnd == MAXBIND) die("buracos demais em #rule");
+    if (nbnd == MAXBIND) die("too many holes in #rule");
     if (bnd_find(tok_start(cur), tok_len(cur)) >= 0)
-        err_at(tok_file(cur), tok_line(cur), "buraco repetido em #rule");
+        err_at(tok_file(cur), tok_line(cur), "duplicate hole in #rule");
     set_bt_at(nbnd, cur_name());
     set_bk_at(nbnd, kind);
     set_bs_at(nbnd, slot);
@@ -510,17 +510,17 @@ i64 bnd_add(i64 kind, i64 slot) {
     return nbnd - 1;
 }
 
-// reserva mais um buraco de nome (ident do padrao ou gensym do template)
+// reserves one more name hole (a pattern's ident or a template's gensym)
 i64 name_slot() {
     if (r_nnames == MAXNAMES)
-        err_at(tok_file(cur), tok_line(cur), "buracos de nome demais em #rule");
+        err_at(tok_file(cur), tok_line(cur), "too many name holes in #rule");
     r_nnames = r_nnames + 1;
     return r_nnames - 1;
 }
 
-// um nome novo por expansao: $g1, $g2, ... na ordem em que sao criados. O `$`
-// torna a captura impossivel por construcao: o lexer nunca forma um T_IDENT com
-// `$`, entao nenhum nome escrito pelo usuario pode colidir com um gensym.
+// one new name per expansion: $g1, $g2, ... in creation order. The `$`
+// makes capture impossible by construction: the lexer never forms a T_IDENT with
+// `$`, so no name written by the user can collide with a gensym.
 uptr gensym_new() {
     u8 tmp[24];
     i64 i = 24;
@@ -544,7 +544,7 @@ uptr gensym_new() {
     return s;
 }
 
-// nome de nao-terminal no padrao; 0 = o token corrente nao e um
+// name of the pattern's non-terminal; 0 = the current token is not one
 i64 nt_kind() {
     i64 i = IT_EXPR;
     loop {
@@ -552,11 +552,11 @@ i64 nt_kind() {
         if (cur_is(nt_name(i))) return i;
         i = i + 1;
     }
-    if (cur_is("type")) err_at(tok_file(cur), tok_line(cur), "nt `type` fora do escopo do M9");
+    if (cur_is("type")) err_at(tok_file(cur), tok_line(cur), "nt `type` is out of scope for M9");
     return 0;
 }
 
-// a ultima regra definida para o mesmo token de abertura vence
+// the last rule defined for the same opening token wins
 i64 rule_find(i64 tok, i64 lead) {
     i64 i = nrules - 1;
     loop {
@@ -568,8 +568,8 @@ i64 rule_find(i64 tok, i64 lead) {
     return -1;
 }
 
-// troca por to[j] todo nome que ainda aponta para o placeholder ph[j]: e assim
-// que `ident $x` e `$$t` viram nomes de verdade na copia recem-expandida
+// swaps in to[j] for every name that still points at the placeholder ph[j]: this is how
+// `ident $x` and `$$t` become real names in the freshly expanded copy
 void name_fix(i64 n, uptr ph, uptr to, i64 nn) {
     if (n == 0) return;
     i64 j = 0;
@@ -585,7 +585,7 @@ void name_fix(i64 n, uptr ph, uptr to, i64 nn) {
     name_fix(nd_next(n), ph, to, nn);
 }
 
-// ---- expressoes ----
+// ---- expressions ----
 i64 type_of_token(i64 id) {
     if (id == K_U8)   return TY_U8;
     if (id == K_U16)  return TY_U16;
@@ -594,7 +594,7 @@ i64 type_of_token(i64 id) {
     if (id == K_I64)  return TY_I64;
     if (id == K_UPTR) return TY_UPTR;
     if (id == K_VOID) return TY_VOID;
-    return alias_find(id);               // Tier 3: type_alias(); -1 se nao ha
+    return alias_find(id);               // Tier 3: type_alias(); -1 if there is none
 }
 
 i64 parse_primary() {
@@ -617,7 +617,7 @@ i64 parse_primary() {
         return n;
     }
     if (tok_id(cur) == T_IDENT) {
-        i64 hi = opc_param(tok_start(cur), tok_len(cur));   // parametro de #opcode: liga primeiro
+        i64 hi = opc_param(tok_start(cur), tok_len(cur));   // #opcode parameter: binds first
         if (hi) {
             i64 n = node_new(N_HOLE, line, fl);
             set_nd_val(n, hi);
@@ -625,7 +625,7 @@ i64 parse_primary() {
             return n;
         }
         i64 di = def_find(tok_start(cur), tok_len(cur));
-        if (di >= 0) {                       // #define vem antes de tudo: vira N_INT
+        if (di >= 0) {                       // #define comes before everything: becomes N_INT
             i64 n = node_new(N_INT, line, fl);
             set_nd_val(n, de_val(de_at(di)));
             set_nd_type(n, TY_I64);
@@ -640,14 +640,14 @@ i64 parse_primary() {
         return n;
     }
     if (tok_id(cur) == T_HOLE) {
-        i64 b = bnd_find(tok_start(cur), tok_len(cur));   // buraco ligado por #rule
-        if (b < 0 && tok_val(cur) == 0 - 2) {             // $$nome novo: gensym do template
-            if (!rule_def) err_at(fl, line, "$$nome so vale no template de #rule");
+        i64 b = bnd_find(tok_start(cur), tok_len(cur));   // hole bound by #rule
+        if (b < 0 && tok_val(cur) == 0 - 2) {             // new $$name: template's gensym
+            if (!rule_def) err_at(fl, line, "$$name only works in a #rule template");
             b = bnd_add(IT_GEN, name_slot());
         }
         if (b >= 0) {
             if (bk_at(b) == IT_IDENT || bk_at(b) == IT_GEN) {
-                i64 ni = node_new(N_IDENT, line, fl);     // buraco de nome
+                i64 ni = node_new(N_IDENT, line, fl);     // name hole
                 set_nd_name(ni, bt_at(b));
                 set_nd_type(ni, TY_I64);
                 next();
@@ -658,8 +658,8 @@ i64 parse_primary() {
             next();
             return nh;
         }
-        if (tok_val(cur) < 0) err_at(fl, line, "buraco $nome sem regra que o ligue");
-        i64 n = node_new(N_HOLE, line, fl);               // $1/$2 do #infix/#prefix
+        if (tok_val(cur) < 0) err_at(fl, line, "hole $name has no rule binding it");
+        i64 n = node_new(N_HOLE, line, fl);               // $1/$2 from #infix/#prefix
         set_nd_val(n, tok_val(cur));
         next();
         return n;
@@ -667,10 +667,10 @@ i64 parse_primary() {
     if (tok_id(cur) == K_LPAR) {
         next();
         i64 ty = type_of_token(tok_id(cur));
-        if (ty >= 0) {                       // cast: apos ( veio palavra de tipo
-            if (ty == TY_VOID) err_at(fl, line, "cast para void");
+        if (ty >= 0) {                       // cast: a type word came right after (
+            if (ty == TY_VOID) err_at(fl, line, "cast to void");
             next();
-            expect(K_RPAR, "esperado ) no cast");
+            expect(K_RPAR, "expected ) in cast");
             i64 e = parse_unary();
             i64 n = node_new(N_CAST, line, fl);
             set_nd_type(n, ty);
@@ -678,18 +678,18 @@ i64 parse_primary() {
             return n;
         }
         i64 e = parse_expr(0);
-        expect(K_RPAR, "esperado ) apos expressao");
+        expect(K_RPAR, "expected ) after expression");
         return e;
     }
-    err_at(fl, line, "expressao esperada");
+    err_at(fl, line, "expression expected");
     return 0;
 }
 
-// chamada e sempre por nome: N_CALL guarda o nome e a lista de argumentos em a
+// a call is always by name: N_CALL keeps the name and the argument list in a
 i64 parse_call(i64 callee) {
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
-    if (nd_kind(callee) != N_IDENT) err_at(fl, line, "chamada so por nome");
+    if (nd_kind(callee) != N_IDENT) err_at(fl, line, "call by name only");
     uptr name = nd_name(callee);
     next();                                  // (
     i64 head = 0;
@@ -703,7 +703,7 @@ i64 parse_call(i64 callee) {
             next();
         }
     }
-    expect(K_RPAR, "esperado ) na chamada");
+    expect(K_RPAR, "expected ) in call");
     i64 c = node_new(N_CALL, line, fl);
     set_nd_name(c, name);
     set_nd_a(c, head);
@@ -713,7 +713,7 @@ i64 parse_call(i64 callee) {
 
 i64 parse_postfix() {
     i64 n = parse_primary();
-    loop {                                   // pos-fixo: liga mais forte que tudo
+    loop {                                   // postfix: binds tighter than everything
         if (tok_id(cur) != K_LPAR) break;
         n = parse_call(n);
     }
@@ -735,8 +735,8 @@ i64 parse_unary() {
         st64(holes + 8, operand);
         return node_copy_subst(tmpl, holes, 1);
     }
-    if (tok == K_AND) {                      // &nome: endereco de um local
-        if (nd_kind(operand) != N_IDENT) err_at(fl, line, "& espera um nome");
+    if (tok == K_AND) {                      // &name: address of a local
+        if (nd_kind(operand) != N_IDENT) err_at(fl, line, "& expects a name");
         uptr name = nd_name(operand);
         i64 u = node_new(N_ADDR, line, fl);
         set_nd_name(u, name);
@@ -782,9 +782,9 @@ i64 parse_expr(i64 minprec) {
     }
 }
 
-// ---- dobra de constantes ----
-// a e b sao u64: e o que faz `/`, `%` e `>>` sem sinal usarem udiv/lsr, como o
-// codegen faz quando o operando esquerdo nao e i64
+// ---- constant folding ----
+// a and b are u64: that is what makes unsigned `/`, `%` and `>>` use udiv/lsr, the
+// same as codegen does when the left operand is not i64
 i64 const_bin(i64 op, i64 x, i64 y, i64 type, i64 n) {
     u64 a = x;
     u64 b = y;
@@ -792,12 +792,12 @@ i64 const_bin(i64 op, i64 x, i64 y, i64 type, i64 n) {
     if (op == K_SUB) return a - b;
     if (op == K_MUL) return a * b;
     if (op == K_DIV || op == K_MOD) {
-        if (y == 0) err_node(n, "divisao por zero");
-        if (type != TY_I64) {                          // espelha udiv
+        if (y == 0) err_node(n, "division by zero");
+        if (type != TY_I64) {                          // mirrors udiv
             if (op == K_DIV) return a / b;
             return a % b;
         }
-        if (y == 0 - 1) {                              // evita overflow de INT64_MIN
+        if (y == 0 - 1) {                              // avoids INT64_MIN overflow
             if (op == K_DIV) return 0 - a;
             return 0;
         }
@@ -809,8 +809,8 @@ i64 const_bin(i64 op, i64 x, i64 y, i64 type, i64 n) {
     if (op == K_XOR) return a ^ b;
     if (op == K_SHL) return a << (b & 63);
     if (op == K_SHR) {
-        if (type == TY_I64) return x >> (y & 63);      // aritmetico
-        return a >> (b & 63);                          // logico
+        if (type == TY_I64) return x >> (y & 63);      // arithmetic
+        return a >> (b & 63);                          // logical
     }
     if (op == K_EQ) return x == y;
     if (op == K_NE) return x != y;
@@ -820,11 +820,11 @@ i64 const_bin(i64 op, i64 x, i64 y, i64 type, i64 n) {
     if (op == K_GE) return x >= y;
     if (op == K_ANDAND) return x != 0 && y != 0;
     if (op == K_OROR)   return x != 0 || y != 0;
-    err_node(n, "operador sem dobra de constante");
+    err_node(n, "operator without constant folding");
     return 0;
 }
 
-// tipo: literal e i64; binario herda o do operando esquerdo; cast define o seu
+// type: a literal is i64; a binary inherits the left operand's; a cast sets its own
 void fold_unary(i64 n) {
     i64 a = fold(nd_a(n));
     set_nd_a(n, a);
@@ -836,7 +836,7 @@ void fold_unary(i64 n) {
     if (op == K_SUB)        r = 0 - v;
     else if (op == K_TILDE) r = ~v;
     else if (op == K_BANG)  { if (v) r = 0; else r = 1; }
-    else return;                                   // & nao dobra
+    else return;                                   // & does not fold
     set_nd_kind(n, N_INT);
     set_nd_val(n, r);
     set_nd_op(n, 0);
@@ -867,7 +867,7 @@ void fold_cast(i64 n) {
     else if (t == TY_U32) v = v & 0xffffffff;
     set_nd_kind(n, N_INT);
     set_nd_val(n, v);
-    set_nd_a(n, 0);                                // type = o do cast
+    set_nd_a(n, 0);                                // type = the cast's own
 }
 
 i64 fold(i64 n) {
@@ -888,22 +888,22 @@ i64 fold(i64 n) {
 }
 
 // ---- statements ----
-// tamanho entre [ ]; devolve 0 quando os colchetes vem vazios (`[]`)
+// size between [ ]; returns 0 when the brackets come empty (`[]`)
 i64 parse_dim(i64 line, uptr fl) {
     next();                                  // [
     i64 nel = 0;
     if (tok_id(cur) != K_RBRACK) {
         i64 e = fold(parse_expr(0));
         if (nd_kind(e) != N_INT || nd_val(e) <= 0)
-            err_at(fl, line, "tamanho de array deve ser constante positiva");
-        nel = nd_val(e);                     // a conta e em i64
+            err_at(fl, line, "array size must be a positive constant");
+        nel = nd_val(e);                     // the count is in i64
     }
-    expect(K_RBRACK, "esperado ] no tamanho do array");
+    expect(K_RBRACK, "expected ] in the array size");
     return nel;
 }
 
-// nome numa declaracao: um T_IDENT normal ou, dentro de um template de #rule,
-// um buraco de nome (`$x` ligado a um `ident` do padrao, ou o gensym `$$t`)
+// a name in a declaration: a plain T_IDENT or, inside a #rule template,
+// a name hole (`$x` bound to a pattern `ident`, or the gensym `$$t`)
 uptr decl_name(uptr msg) {
     if (tok_id(cur) == T_HOLE) {
         i64 b = bnd_find(tok_start(cur), tok_len(cur));
@@ -921,23 +921,23 @@ uptr decl_name(uptr msg) {
     return s;
 }
 
-// declaracao de local: tipo nome = expr; | tipo nome; | tipo nome[CONST];
+// local declaration: type name = expr; | type name; | type name[CONST];
 i64 parse_var(i64 line, uptr fl, i64 ty) {
-    if (ty == TY_VOID) err_at(fl, line, "local de tipo void");
-    next();                                  // tipo
-    uptr name = decl_name("nome de variavel esperado");
+    if (ty == TY_VOID) err_at(fl, line, "local of type void");
+    next();                                  // type
+    uptr name = decl_name("variable name expected");
     i64 nel = 0;
     i64 init = 0;
     if (tok_id(cur) == K_LBRACK) {
         nel = parse_dim(line, fl);
-        if (nel < 1) err_at(fl, line, "tamanho de array deve ser constante positiva");
+        if (nel < 1) err_at(fl, line, "array size must be a positive constant");
         if (nel > 4095 || nel * type_width(ty) > 4095)
-            err_at(fl, line, "array local grande demais");
+            err_at(fl, line, "local array too large");
     } else if (tok_id(cur) == K_ASSIGN) {
         next();
         init = parse_expr(0);
     }
-    expect(K_SEMI, "esperado ; apos declaracao");
+    expect(K_SEMI, "expected ; after declaration");
     i64 n = node_new(N_VAR, line, fl);
     set_nd_name(n, name);
     set_nd_type(n, ty);
@@ -949,26 +949,26 @@ i64 parse_var(i64 line, uptr fl, i64 ty) {
 i64 parse_stmt() {
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
-    i64 si = syntax_stmt_find(tok_id(cur));      // Tier 3: statement ensinado
+    i64 si = syntax_stmt_find(tok_id(cur));      // Tier 3: taught statement
     if (si >= 0) {
-        uptr cp0 = cp;                           // cursor do lexer antes do handler
-        uptr t0 = tok_start(cur);                // ... e o token que ele recebeu
-        i64 sn = callp(syntax_stmt_fn_at(si));   // o handler come a palavra tambem
-        // um handler que nao avancou devolve o parser ao mesmo token e seria
-        // chamado de novo, para sempre; aqui isso morre com nome e posicao em
-        // vez de travar (topo) ou esgotar a arena (statement). As duas condicoes
-        // sao precisas juntas: `cp` para no fim do arquivo (a palavra podia ser
-        // o ultimo token) e o token corrente vira T_EOF, que tem outro start.
+        uptr cp0 = cp;                           // lexer cursor before the handler
+        uptr t0 = tok_start(cur);                // ... and the token it received
+        i64 sn = callp(syntax_stmt_fn_at(si));   // the handler eats the word too
+        // a handler that did not advance would return the parser to the same token and
+        // would be called again, forever; here that dies with a name and position
+        // instead of hanging (top level) or exhausting the arena (statement). The two
+        // conditions are needed together: `cp` stops at the end of the file (the word
+        // could have been the last token) and the current token becomes T_EOF, with a different start.
         if (cp == cp0 && tok_start(cur) == t0)
-            err_at2(fl, line, "handler de syntax_stmt nao consumiu nenhum token", cur_name());
-        // 0 = o handler nao produziu statement; um bloco vazio ocupa o lugar
-        // sem quebrar a lista de irmaos de quem chamou
+            err_at2(fl, line, "syntax_stmt handler consumed no tokens", cur_name());
+        // 0 = the handler produced no statement; an empty block takes its place
+        // without breaking the sibling list of whoever called it
         if (sn == 0) sn = node_new(N_BLOCK, line, fl);
         return sn;
     }
-    i64 ri = rule_find(tok_id(cur), 0);          // o token corrente abre uma regra?
+    i64 ri = rule_find(tok_id(cur), 0);          // does the current token open a rule?
     if (ri >= 0) return rule_expand(ri, 0);
-    if (tok_id(cur) == T_HOLE) {                 // `$init`/`$b` soltos no template
+    if (tok_id(cur) == T_HOLE) {                 // loose `$init`/`$b` in the template
         i64 b = bnd_find(tok_start(cur), tok_len(cur));
         if (b >= 0 && (bk_at(b) == IT_STMT || bk_at(b) == IT_BLOCK)) {
             i64 h = node_new(N_HOLE, line, fl);
@@ -982,9 +982,9 @@ i64 parse_stmt() {
     if (ty >= 0) return parse_var(line, fl, ty);
     if (tok_id(cur) == K_IF) {
         next();
-        expect(K_LPAR, "esperado ( apos if");
+        expect(K_LPAR, "expected ( after if");
         i64 c = parse_expr(0);
-        expect(K_RPAR, "esperado ) apos a condicao");
+        expect(K_RPAR, "expected ) after condition");
         i64 t = parse_stmt();
         i64 e = 0;
         if (tok_id(cur) == K_ELSE) { next(); e = parse_stmt(); }
@@ -1005,47 +1005,47 @@ i64 parse_stmt() {
         next();
         i64 lv = 1;
         if (tok_id(cur) == T_INT) { lv = tok_val(cur); next(); }
-        if (lv < 1) err_at(fl, line, "break espera um nivel positivo");
-        expect(K_SEMI, "esperado ; apos break");
+        if (lv < 1) err_at(fl, line, "break expects a positive level");
+        expect(K_SEMI, "expected ; after break");
         i64 n = node_new(N_BREAK, line, fl);
         set_nd_val(n, lv);
         return n;
     }
     if (tok_id(cur) == K_CONTINUE) {
         next();
-        expect(K_SEMI, "esperado ; apos continue");
+        expect(K_SEMI, "expected ; after continue");
         return node_new(N_CONTINUE, line, fl);
     }
     if (tok_id(cur) == K_RETURN) {
         next();
         i64 e = 0;
         if (tok_id(cur) != K_SEMI) e = parse_expr(0);
-        expect(K_SEMI, "esperado ; apos return");
+        expect(K_SEMI, "expected ; after return");
         i64 n = node_new(N_RETURN, line, fl);
         set_nd_a(n, e);
         return n;
     }
     i64 ex = parse_expr(0);
-    if (tok_id(cur) == K_ASSIGN) {           // nome = expr; (o = nao esta na tabela infix)
+    if (tok_id(cur) == K_ASSIGN) {           // name = expr; (= is not in the infix table)
         if (nd_kind(ex) != N_IDENT)
-            err_at(fl, line, "lado esquerdo da atribuicao deve ser um nome");
+            err_at(fl, line, "left side of assignment must be a name");
         uptr name = nd_name(ex);
         next();
         i64 v = parse_expr(0);
-        expect(K_SEMI, "esperado ; apos atribuicao");
+        expect(K_SEMI, "expected ; after assignment");
         i64 n = node_new(N_ASSIGN, line, fl);
         set_nd_name(n, name);
         set_nd_a(n, v);
         return n;
     }
-    // regra que comeca por `ident $x`: o nome ja foi lido como expressao e o
-    // despacho continua sendo por token literal (`+=`, `++`), sem backtracking
+    // a rule that starts with `ident $x`: the name has already been read as an
+    // expression and dispatch is still by literal token (`+=`, `++`), with no backtracking
     ri = rule_find(tok_id(cur), 1);
     if (ri >= 0) {
-        if (nd_kind(ex) != N_IDENT) err_at(fl, line, "a regra esperava um nome a esquerda");
+        if (nd_kind(ex) != N_IDENT) err_at(fl, line, "the rule expected a name on the left");
         return rule_expand(ri, ex);
     }
-    expect(K_SEMI, "esperado ; apos expressao");
+    expect(K_SEMI, "expected ; after expression");
     i64 st = node_new(N_EXPRSTMT, line, fl);
     set_nd_a(st, ex);
     return st;
@@ -1054,12 +1054,12 @@ i64 parse_stmt() {
 i64 parse_block() {
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
-    expect(K_LBRACE, "esperado {");
+    expect(K_LBRACE, "expected {");
     i64 head = 0;
     i64 tail = 0;
     loop {
         if (tok_id(cur) == K_RBRACE) break;
-        if (tok_id(cur) == T_EOF) err_at(fl, line, "bloco nao terminado");
+        if (tok_id(cur) == T_EOF) err_at(fl, line, "unterminated block");
         i64 s = parse_stmt();
         if (tail) set_nd_next(tail, s); else head = s;
         tail = s;
@@ -1070,15 +1070,15 @@ i64 parse_block() {
     return b;
 }
 
-// casa os itens da regra ri contra o fonte e devolve o template expandido.
-// lead != 0 e o N_IDENT que ja foi lido antes do token de despacho.
+// matches rule ri's items against the source and returns the expanded template.
+// lead != 0 is the N_IDENT that has already been read before the dispatch token.
 i64 rule_expand(i64 ri, i64 lead) {
     i64 holes[MAXITEMS + 1];
     i64 to[MAXNAMES];
     uptr r = ru_at(ri);
     i64 nn = ru_nnames(r);
     rule_depth = rule_depth + 1;
-    if (rule_depth > MAXRDEPTH) die("regras aninhadas demais");
+    if (rule_depth > MAXRDEPTH) die("too many nested rules");
     i64 j = 0;
     loop {
         if (j >= nn) break;
@@ -1094,11 +1094,11 @@ i64 rule_expand(i64 ri, i64 lead) {
         i64 v = it >> 3;
         if (kd == IT_LIT) {
             if (tok_id(cur) != v)
-                err_at2(tok_file(cur), tok_line(cur), "a regra esperava", tok_text(v));
+                err_at2(tok_file(cur), tok_line(cur), "the rule expected", tok_text(v));
             next();
         } else if (kd == IT_IDENT) {
             if (tok_id(cur) != T_IDENT)
-                err_at(tok_file(cur), tok_line(cur), "a regra esperava um nome");
+                err_at(tok_file(cur), tok_line(cur), "the rule expected a name");
             st64(to + v * 8, cur_name());
             next();
         } else if (kd == IT_EXPR)  st64(holes + v * 8, parse_expr(0));
@@ -1107,8 +1107,8 @@ i64 rule_expand(i64 ri, i64 lead) {
         k = k + 1;
     }
     j = 0;
-    loop {                                       // os buracos de nome que sobraram
-        if (j >= nn) break;                      // sao os $$t desta expansao
+    loop {                                       // the name holes left over
+        if (j >= nn) break;                      // are this expansion's $$t
         if (ld64(to + j * 8) == 0) st64(to + j * 8, gensym_new());
         j = j + 1;
     }
@@ -1118,42 +1118,42 @@ i64 rule_expand(i64 ri, i64 lead) {
     return e;
 }
 
-// #rule stmt: PADRAO => TEMPLATE — o padrao e uma sequencia plana de tokens
-// literais e `nt $nome`; o template e um statement parseado aqui, agora, com os
-// $nome ja virando buracos. Um identificador usado como token literal vira
-// palavra-chave reservada na hora (tok_add).
+// #rule stmt: PATTERN => TEMPLATE — the pattern is a flat sequence of literal
+// tokens and `nt $name`; the template is a statement parsed here, now, with the
+// $names already becoming holes. An identifier used as a literal token becomes
+// a reserved keyword on the spot (tok_add).
 void do_rule(i64 line, uptr fl) {
-    if (tok_id(cur) != T_IDENT) err_at(fl, line, "#rule espera a categoria stmt");
-    if (cur_is("expr")) err_at(fl, line, "#rule expr: reservado, ainda nao suportado");
-    if (!cur_is("stmt")) err_at(fl, line, "#rule so conhece a categoria stmt");
+    if (tok_id(cur) != T_IDENT) err_at(fl, line, "#rule expects category stmt");
+    if (cur_is("expr")) err_at(fl, line, "#rule expr: reserved, not yet supported");
+    if (!cur_is("stmt")) err_at(fl, line, "#rule only knows category stmt");
     next();
-    expect(K_COLON, "esperado : apos a categoria do #rule");
-    if (nrules == MAXRULES) err_at(fl, line, "regras demais");
+    expect(K_COLON, "expected : after the #rule category");
+    if (nrules == MAXRULES) err_at(fl, line, "too many rules");
     nbnd = 0;
     r_nitems = 0;
     r_nholes = 0;
     r_nnames = 0;
     r_lead = 0;
     rule_def = 1;
-    if (tok_id(cur) == T_IDENT && nt_kind() == IT_IDENT) {   // `ident $x` antes do token
+    if (tok_id(cur) == T_IDENT && nt_kind() == IT_IDENT) {   // `ident $x` before the token
         next();
         if (tok_id(cur) != T_HOLE || tok_val(cur) != 0 - 1)
-            err_at(tok_file(cur), tok_line(cur), "esperado $nome no padrao");
+            err_at(tok_file(cur), tok_line(cur), "expected $name in the pattern");
         bnd_add(IT_IDENT, name_slot());
         next();
         r_lead = 1;
     }
     loop {
         if (tok_id(cur) == K_ARROW) break;
-        if (tok_id(cur) == T_EOF) err_at(fl, line, "#rule sem =>");
-        if (r_nitems == MAXITEMS) err_at(fl, line, "itens demais no padrao do #rule");
+        if (tok_id(cur) == T_EOF) err_at(fl, line, "#rule without =>");
+        if (r_nitems == MAXITEMS) err_at(fl, line, "too many items in the #rule pattern");
         i64 k = 0;
         if (tok_id(cur) == T_IDENT) k = nt_kind();
         i64 it = 0;
         if (k) {
             next();
             if (tok_id(cur) != T_HOLE || tok_val(cur) != 0 - 1)
-                err_at(tok_file(cur), tok_line(cur), "esperado $nome no padrao");
+                err_at(tok_file(cur), tok_line(cur), "expected $name in the pattern");
             i64 slot = 0;
             if (k == IT_IDENT) slot = name_slot();
             else {
@@ -1164,26 +1164,26 @@ void do_rule(i64 line, uptr fl) {
             next();
             it = k + slot * 8;
         } else {
-            // cur_name e nao tok_start: o lexema de um token fica guardado na
-            // tabela e tok_text o imprime como string — tem de estar na arena
+            // cur_name, not tok_start: a token's lexeme stays stored in the
+            // table and tok_text prints it as a string — it must be in the arena
             i64 id = tok_id(cur);
             if (id == T_IDENT) id = tok_add(cur_name(), tok_len(cur));
             next();
             it = IT_LIT + id * 8;
         }
         if (r_nitems == 0 && (it & 7) != IT_LIT)
-            err_at(fl, line, "o padrao do #rule tem de abrir por um token literal");
+            err_at(fl, line, "the #rule pattern must open with a literal token");
         set_ri_at(r_nitems, it);
         r_nitems = r_nitems + 1;
     }
-    if (r_nitems == 0) err_at(fl, line, "padrao de #rule vazio");
-    // o literal de despacho manda no parser de statements: deixar `if`, `loop`,
-    // `return`, `i64` ... abrirem uma regra sequestraria a propria linguagem.
-    // Pontuacao continua livre (`ident $x [ expr $i ] = expr $e ;` e legitimo).
+    if (r_nitems == 0) err_at(fl, line, "empty #rule pattern");
+    // the dispatch literal rules the statement parser: letting `if`, `loop`,
+    // `return`, `i64` ... open a rule would hijack the language itself.
+    // Punctuation stays free (`ident $x [ expr $i ] = expr $e ;` is legitimate).
     if ((ri_at(0) >> 3) >= K_U8 && (ri_at(0) >> 3) <= K_EXTERN)
-        err_at(fl, line, "nao pode redefinir palavra-chave do nucleo");
+        err_at(fl, line, "cannot redefine core keyword");
     next();                                       // =>
-    i64 tmpl = parse_stmt();                      // os $nome ja viraram buracos
+    i64 tmpl = parse_stmt();                      // the $names have already become holes
     rule_def = 0;
     uptr r = ru_at(nrules);
     set_ru_tok(r, ri_at(0) >> 3);
@@ -1208,13 +1208,13 @@ void do_rule(i64 line, uptr fl) {
     nrules = nrules + 1;
 }
 
-// --dump-rules: uma linha por regra, na ordem de definicao
+// --dump-rules: one line per rule, in definition order
 void dump_rules() {
     i64 i = 0;
     loop {
         if (i >= nrules) break;
         uptr r = ru_at(i);
-        out_str(1, "regra ");
+        out_str(1, "rule ");
         out_num(1, i);
         out_str(1, ": stmt:");
         if (ru_lead(r)) out_str(1, " ident $0");
@@ -1233,70 +1233,70 @@ void dump_rules() {
         }
         out_str(1, " => ");
         out_num(1, node_size(ru_tmpl(r)));
-        out_str(1, " nos\n");
+        out_str(1, " nodes\n");
         i = i + 1;
     }
 }
 
-// uma constante do fonte, ja dobrada; usada pelos argumentos de #section
+// a constant from the source, already folded; used by #section's arguments
 i64 const_arg(i64 line, uptr fl, uptr msg) {
     i64 e = fold(parse_expr(0));
     if (nd_kind(e) != N_INT) err_at(fl, line, msg);
     return nd_val(e);
 }
 
-// #section SEG SECT FLAGS [ALIGN] — secao corrente das funcoes e globais seguintes.
-// Sem argumentos volta ao default. ALIGN e log2 e vale 4 (16 bytes) quando
-// omitido: mesmo alinhamento que o codegen da a __data.
+// #section SEG SECT FLAGS [ALIGN] — current section for the following functions and globals.
+// With no arguments it goes back to the default. ALIGN is log2 and defaults to 4
+// (16 bytes) when omitted: the same alignment codegen gives __data.
 void do_section(i64 line, uptr fl) {
     if (tok_id(cur) != T_IDENT) { cur_sect = 0; return; }
     uptr seg = cur_name();
     next();
     if (tok_id(cur) != T_IDENT)
-        err_at(tok_file(cur), tok_line(cur), "#section espera o nome da secao");
+        err_at(tok_file(cur), tok_line(cur), "#section expects the section name");
     uptr sect = cur_name();
     next();
-    i64 flags = const_arg(line, fl, "#section espera flags constantes");
+    i64 flags = const_arg(line, fl, "#section expects constant flags");
     i64 align = 4;
-    // so um numero, um #define ou um parentese podem comecar o alinhamento:
-    // nenhum deles comeca uma declaracao de topo, entao nao ha ambiguidade
+    // only a number, a #define or a parenthesis can start the alignment:
+    // none of them start a top-level declaration, so there is no ambiguity
     if (tok_id(cur) == T_INT || tok_id(cur) == T_IDENT || tok_id(cur) == K_LPAR) {
-        align = const_arg(line, fl, "#section espera alinhamento constante");
-        if (align < 0 || align > 15) err_at(fl, line, "alinhamento fora de 0..15");
+        align = const_arg(line, fl, "#section expects constant alignment");
+        if (align < 0 || align > 15) err_at(fl, line, "alignment out of 0..15");
     }
-    if (flags < 0 || flags > 0xffffffff) err_at(fl, line, "flags de secao fora de 32 bits");
+    if (flags < 0 || flags > 0xffffffff) err_at(fl, line, "section flags out of 32 bits");
     cur_sect = sec_ent(seg, sect, (u32) flags, (u32) align) + 1;
 }
 
-// #opcode nome(p1, ...) EXPR — registra um encoder; nao e simbolo nem funcao.
-// O nome de um parametro sombreia de proposito um #define de mesmo nome: dentro
-// do template parse_primary consulta opc_param antes de def_find, entao o
-// parametro ganha. E o que se quer — o template fala dos seus proprios
-// argumentos — e vale so ate o fim da definicao, quando opc_nparams volta a zero.
+// #opcode name(p1, ...) EXPR — registers an encoder; it is neither a symbol nor a function.
+// The name of a parameter deliberately shadows a #define of the same name: inside
+// the template parse_primary consults opc_param before def_find, so the
+// parameter wins. That is what is wanted — the template speaks of its own
+// arguments — and it only holds until the end of the definition, when opc_nparams goes back to zero.
 void do_opcode(i64 line, uptr fl) {
-    if (tok_id(cur) != T_IDENT) err_at(fl, line, "#opcode espera um nome");
+    if (tok_id(cur) != T_IDENT) err_at(fl, line, "#opcode expects a name");
     uptr name = cur_name();
     next();
-    expect(K_LPAR, "esperado ( no #opcode");
+    expect(K_LPAR, "expected ( in #opcode");
     opc_nparams = 0;
     loop {
         if (tok_id(cur) == K_RPAR) break;
         if (tok_id(cur) != T_IDENT)
-            err_at(tok_file(cur), tok_line(cur), "nome de parametro esperado no #opcode");
+            err_at(tok_file(cur), tok_line(cur), "parameter name expected in #opcode");
         if (opc_nparams == MAXPARAMS)
-            err_at(tok_file(cur), tok_line(cur), "no maximo 8 parametros no #opcode");
+            err_at(tok_file(cur), tok_line(cur), "at most 8 parameters in #opcode");
         set_op_at(opc_nparams, cur_name());
         opc_nparams = opc_nparams + 1;
         next();
         if (tok_id(cur) != K_COMMA) break;
         next();
     }
-    expect(K_RPAR, "esperado ) no #opcode");
-    i64 tmpl = parse_expr(0);                    // os parametros ja viraram N_HOLE
+    expect(K_RPAR, "expected ) in #opcode");
+    i64 tmpl = parse_expr(0);                    // the parameters have already become N_HOLE
     i64 np = opc_nparams;
-    opc_nparams = 0;                             // fora da definicao nao ha parametro
-    if (opc_find(name) >= 0) err_at(fl, line, "#opcode repetido");
-    if (nopcs == MAXOPCS)    die("opcodes demais");
+    opc_nparams = 0;                             // outside the definition there is no parameter
+    if (opc_find(name) >= 0) err_at(fl, line, "duplicate #opcode");
+    if (nopcs == MAXOPCS)    die("too many opcodes");
     uptr e = oe_at(nopcs);
     set_oe_name(e, name);
     set_oe_np(e, np);
@@ -1304,7 +1304,7 @@ void do_opcode(i64 line, uptr fl) {
     nopcs = nopcs + 1;
 }
 
-// ---- diretivas suportadas: #include, #define, #token, #infix, #prefix,
+// ---- supported directives: #include, #define, #token, #infix, #prefix,
 // #rule, #section, #opcode ----
 void do_directive() {
     i64 d = tok_val(cur);
@@ -1312,58 +1312,58 @@ void do_directive() {
     uptr fl = tok_file(cur);
     next();
     if (d == D_INCLUDE) {
-        if (tok_id(cur) != T_STR) err_at(fl, line, "#include espera uma string");
+        if (tok_id(cur) != T_STR) err_at(fl, line, "#include expects a string");
         uptr path = cur_name();
-        lex_include(path, line);                 // 0 = ja incluido: segue em frente
-        next();                                  // ja no arquivo incluido, se houve push
+        lex_include(path, line);                 // 0 = already included: carries on
+        next();                                  // already in the included file, if there was a push
         return;
     }
     if (d == D_DEFINE) {
-        if (tok_id(cur) != T_IDENT) err_at(fl, line, "#define espera um nome");
+        if (tok_id(cur) != T_IDENT) err_at(fl, line, "#define expects a name");
         uptr name = cur_name();
         next();
         i64 e = fold(parse_expr(0));
-        if (nd_kind(e) != N_INT) err_at(fl, line, "#define espera uma expressao constante");
+        if (nd_kind(e) != N_INT) err_at(fl, line, "#define expects a constant expression");
         def_add(name, nd_val(e), line, fl);
         return;
     }
     if (d == D_TOKEN) {
-        if (tok_id(cur) != T_STR) err_at(fl, line, "#token espera uma string");
-        tok_add(tok_start(cur), tok_len(cur));   // bytes ficam na arena
+        if (tok_id(cur) != T_STR) err_at(fl, line, "#token expects a string");
+        tok_add(tok_start(cur), tok_len(cur));   // bytes stay in the arena
         next();
         return;
     }
     if (d == D_INFIX || d == D_PREFIX) {
-        if (tok_id(cur) != T_STR) err_at(fl, line, "diretiva espera uma string");
+        if (tok_id(cur) != T_STR) err_at(fl, line, "directive expects a string");
         i64 tok = tok_add(tok_start(cur), tok_len(cur));
         next();
         i64 prec = 0;
         i64 right = 0;
         if (d == D_INFIX) {
             if (tok_id(cur) != T_INT)
-                err_at(tok_file(cur), tok_line(cur), "#infix espera a precedencia");
+                err_at(tok_file(cur), tok_line(cur), "#infix expects the precedence");
             if (tok_val(cur) < 1 || tok_val(cur) > 100)
-                err_at(tok_file(cur), tok_line(cur), "precedencia fora de 1..100");
+                err_at(tok_file(cur), tok_line(cur), "precedence out of 1..100");
             prec = tok_val(cur);
             next();
             if (tok_id(cur) != T_IDENT)
-                err_at(tok_file(cur), tok_line(cur), "#infix espera left ou right");
+                err_at(tok_file(cur), tok_line(cur), "#infix expects left or right");
             if (cur_is("right")) right = 1;
             else if (!cur_is("left"))
-                err_at(tok_file(cur), tok_line(cur), "#infix espera left ou right");
+                err_at(tok_file(cur), tok_line(cur), "#infix expects left or right");
             next();
         }
-        i64 tmpl = parse_expr(0);                    // $1/$2 viram N_HOLE
+        i64 tmpl = parse_expr(0);                    // $1/$2 become N_HOLE
         if (d == D_INFIX) infix_set(tok, prec, right, tmpl);
         else              prefix_set(tok, tmpl);
         return;
     }
     if (d == D_DYLIB) {
-        if (tok_id(cur) != T_STR) err_at(fl, line, "#dylib espera uma string");
+        if (tok_id(cur) != T_STR) err_at(fl, line, "#dylib expects a string");
         uptr path = cur_name();
         next();
-        // string vazia volta ao default: e o jeito de um modulo que declarou
-        // externs de outra dylib nao contaminar quem for incluido depois
+        // an empty string goes back to the default: this is how a module that declared
+        // externs from another dylib avoids contaminating whatever gets included next
         if (ld8(path) == 0) cur_dylib = 1;
         else                cur_dylib = dylib_add(path);
         return;
@@ -1371,49 +1371,49 @@ void do_directive() {
     if (d == D_RULE)    { do_rule(line, fl);    return; }
     if (d == D_SECTION) { do_section(line, fl); return; }
     if (d == D_OPCODE)  { do_opcode(line, fl);  return; }
-    err_at(fl, line, "diretiva ainda nao suportada");
+    err_at(fl, line, "directive not yet supported");
 }
 
-// ---- API publica do parser (Tier 3) ----
-// O que um handler de `syntax`/`syntax_stmt` pode usar. Sao nomes fixos: um
-// modulo que ensina sintaxe (examples/api/oop.mc, lib/user_syntax_demo.mc) so
-// depende disto, de `node_new`/`nd_*`/`set_nd_*` de ast.mc, e das quatro
-// funcoes de descida que ja existiam — parse_expr(0), parse_stmt(),
-// parse_block() e parse_params(). Nada aqui e novo mecanismo: e o lookahead e
-// as rotinas que o proprio nucleo usa, com nome estavel. Ver docs/surface.md.
-i64  p_id()   { return tok_id(cur); }        // id do token corrente
-i64  p_val()  { return tok_val(cur); }       // valor (T_INT/T_CHAR/T_DIR/T_HOLE)
-uptr p_name() { return cur_name(); }         // lexema corrente, copiado na arena
+// ---- public parser API (Tier 3) ----
+// What a `syntax`/`syntax_stmt` handler can use. These are fixed names: a
+// module that teaches syntax (examples/api/oop.mc, lib/user_syntax_demo.mc) only
+// depends on this, on ast.mc's `node_new`/`nd_*`/`set_nd_*`, and on the four
+// descent functions that already existed — parse_expr(0), parse_stmt(),
+// parse_block() and parse_params(). None of this is new machinery: it is the
+// lookahead and the routines the core itself uses, under a stable name. See docs/surface.md.
+i64  p_id()   { return tok_id(cur); }        // current token's id
+i64  p_val()  { return tok_val(cur); }       // value (T_INT/T_CHAR/T_DIR/T_HOLE)
+uptr p_name() { return cur_name(); }         // current lexeme, copied into the arena
 i64  p_line() { return tok_line(cur); }
 uptr p_file() { return tok_file(cur); }
 void p_next() { next(); }
 void p_expect(i64 id, uptr msg) { expect(id, msg); }
 
-// consome o token se ele for `id`; 1 se consumiu, 0 se nao
+// consumes the token if it is `id`; 1 if it consumed, 0 if not
 i64 p_accept(i64 id) {
     if (tok_id(cur) != id) return 0;
     next();
     return 1;
 }
 
-// exige um identificador (que nao seja nome de #define), devolve-o e avanca
+// requires an identifier (that is not the name of a #define), returns it and advances
 uptr p_ident() {
-    if (tok_id(cur) != T_IDENT) err_at(tok_file(cur), tok_line(cur), "nome esperado");
+    if (tok_id(cur) != T_IDENT) err_at(tok_file(cur), tok_line(cur), "name expected");
     check_def();
     uptr s = cur_name();
     next();
     return s;
 }
 
-// exige uma palavra de tipo — do nucleo ou registrada por type_alias — e avanca
+// requires a type word — from the core or registered by type_alias — and advances
 i64 p_type() {
     i64 ty = type_of_token(tok_id(cur));
-    if (ty < 0) err_at(tok_file(cur), tok_line(cur), "tipo esperado");
+    if (ty < 0) err_at(tok_file(cur), tok_line(cur), "type expected");
     next();
     return ty;
 }
 
-// um N_PARAM solto, para o handler que precisa prepender `self` a uma lista
+// a loose N_PARAM, for a handler that needs to prepend `self` to a list
 i64 param_new(i64 ty, uptr name) {
     i64 p = node_new(N_PARAM, tok_line(cur), tok_file(cur));
     set_nd_type(p, ty);
@@ -1421,7 +1421,7 @@ i64 param_new(i64 ty, uptr name) {
     return p;
 }
 
-// anexa `n` ao fim da lista `head` (por nd_next) e devolve a cabeca
+// appends `n` to the end of list `head` (via nd_next) and returns the head
 i64 list_append(i64 head, i64 n) {
     if (head == 0) return n;
     i64 t = head;
@@ -1433,9 +1433,9 @@ i64 list_append(i64 head, i64 n) {
     return head;
 }
 
-// anexa uma declaracao de topo (ou uma lista delas) a unidade, na ordem em que
-// chega, ja com o #section em vigor. E por aqui que um handler de `syntax`
-// entrega o que produziu — parse_top devolve 0 nesse caso.
+// appends a top-level declaration (or a list of them) to the unit, in the order it
+// arrives, already tagged with the #section in effect. This is how a `syntax`
+// handler delivers what it produced — parse_top returns 0 in that case.
 void top_add(i64 n) {
     if (n == 0) return;
     if (unit_tail) set_nd_next(unit_tail, n); else unit_head = n;
@@ -1447,10 +1447,10 @@ void top_add(i64 n) {
     }
 }
 
-// ---- topo ----
-// le o bloco de uma funcao cujo tipo, nome e parametros o chamador ja montou
-// (um handler pode ter prependido `self` a lista) e devolve o N_FUNC. A linha e
-// a do `{`; parse_top a corrige para a do tipo, onde a declaracao comeca.
+// ---- top level ----
+// reads the block of a function whose type, name and parameters the caller has
+// already assembled (a handler may have prepended `self` to the list) and returns the
+// N_FUNC. The line is the `{`'s; parse_top corrects it to the type's, where the declaration starts.
 i64 parse_function(i64 ty, uptr name, i64 params) {
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
@@ -1463,9 +1463,9 @@ i64 parse_function(i64 ty, uptr name, i64 params) {
     return f;
 }
 
-// lista de parametros, ja com os parenteses; nenhum passa pela pilha
+// parameter list, parentheses included; none of them go through the stack
 i64 parse_params() {
-    expect(K_LPAR, "esperado ( na lista de parametros");
+    expect(K_LPAR, "expected ( in the parameter list");
     i64 head = 0;
     i64 tail = 0;
     i64 n = 0;
@@ -1474,10 +1474,10 @@ i64 parse_params() {
         i64 line = tok_line(cur);
         uptr fl = tok_file(cur);
         i64 pty = type_of_token(tok_id(cur));
-        if (pty < 0)        err_at(fl, line, "tipo esperado no parametro");
-        if (pty == TY_VOID) err_at(fl, line, "parametro de tipo void");
+        if (pty < 0)        err_at(fl, line, "type expected in parameter");
+        if (pty == TY_VOID) err_at(fl, line, "parameter of type void");
         next();
-        if (tok_id(cur) != T_IDENT) err_name("nome de parametro esperado");
+        if (tok_id(cur) != T_IDENT) err_name("parameter name expected");
         check_def();
         uptr pname = cur_name();
         next();
@@ -1487,29 +1487,29 @@ i64 parse_params() {
         if (tail) set_nd_next(tail, p); else head = p;
         tail = p;
         n = n + 1;
-        if (n > MAXPARAMS) err_at(fl, line, "no maximo 8 parametros");
+        if (n > MAXPARAMS) err_at(fl, line, "at most 8 parameters");
         if (tok_id(cur) != K_COMMA) break;
         next();
     }
-    expect(K_RPAR, "esperado ) na lista de parametros");
+    expect(K_RPAR, "expected ) in the parameter list");
     return head;
 }
 
-// extern tipo nome(params); — simbolo indefinido, resolvido pelo ld
+// extern type name(params); — undefined symbol, resolved by ld
 i64 parse_extern() {
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
     next();                                  // extern
     i64 ty = type_of_token(tok_id(cur));
-    if (ty < 0) err_at(tok_file(cur), tok_line(cur), "tipo esperado no extern");
+    if (ty < 0) err_at(tok_file(cur), tok_line(cur), "type expected in extern");
     next();
-    if (tok_id(cur) != T_IDENT) err_at(tok_file(cur), tok_line(cur), "nome esperado no extern");
+    if (tok_id(cur) != T_IDENT) err_at(tok_file(cur), tok_line(cur), "name expected in extern");
     check_def();
     uptr name = cur_name();
     next();
     i64 params = parse_params();
-    expect(K_SEMI, "esperado ; apos extern");
-    extern_lib_add(name, cur_dylib);         // #dylib em vigor (1 = libSystem)
+    expect(K_SEMI, "expected ; after extern");
+    extern_lib_add(name, cur_dylib);         // #dylib in effect (1 = libSystem)
     i64 f = node_new(N_EXTERN, line, fl);
     set_nd_name(f, name);
     set_nd_type(f, ty);
@@ -1517,10 +1517,10 @@ i64 parse_extern() {
     return f;
 }
 
-// inicializador de array global: { c1, c2, ... }, cada elemento uma constante ou,
-// para uptr, um literal de string. Devolve a lista e conta em pn
+// global array initializer: { c1, c2, ... }, each element a constant or,
+// for uptr, a string literal. Returns the list and the count in pn
 i64 parse_initlist(i64 line, uptr fl, i64 ty, uptr pn) {
-    expect(K_LBRACE, "esperado { no inicializador do array");
+    expect(K_LBRACE, "expected { in the array initializer");
     i64 head = 0;
     i64 tail = 0;
     i64 k = 0;
@@ -1528,23 +1528,23 @@ i64 parse_initlist(i64 line, uptr fl, i64 ty, uptr pn) {
         if (tok_id(cur) == K_RBRACE) break;
         i64 e = fold(parse_expr(0));
         if (nd_kind(e) == N_STR) {
-            if (ty != TY_UPTR) err_node(e, "string so inicializa uptr");
-        } else if (nd_kind(e) != N_INT) err_node(e, "inicializador deve ser constante");
+            if (ty != TY_UPTR) err_node(e, "a string only initializes uptr");
+        } else if (nd_kind(e) != N_INT) err_node(e, "initializer must be constant");
         if (tail) set_nd_next(tail, e); else head = e;
         tail = e;
         k = k + 1;
         if (tok_id(cur) != K_COMMA) break;
         next();
     }
-    expect(K_RBRACE, "esperado } no inicializador do array");
-    if (k == 0) err_at(fl, line, "inicializador de array vazio");
+    expect(K_RBRACE, "expected } in the array initializer");
+    if (k == 0) err_at(fl, line, "empty array initializer");
     st64(pn, k);
     return head;
 }
 
-// global: tipo nome[N] = { ... }; | tipo nome = CONST; | tipo nome; | tipo nome[CONST];
+// global: type name[N] = { ... }; | type name = CONST; | type name; | type name[CONST];
 i64 parse_global(i64 line, uptr fl, i64 ty, uptr name) {
-    if (ty == TY_VOID) err_at(fl, line, "global de tipo void");
+    if (ty == TY_VOID) err_at(fl, line, "global of type void");
     i64 nel = 0;
     i64 count = 0;
     i64 init = 0;
@@ -1554,17 +1554,17 @@ i64 parse_global(i64 line, uptr fl, i64 ty, uptr name) {
         next();
         if (arr) {
             init = parse_initlist(line, fl, ty, &count);
-            if (nel == 0) nel = count;                   // [] = { ... }: N vem da lista
-            if (count > nel) err_at(fl, line, "inicializador com elementos demais");
+            if (nel == 0) nel = count;                   // [] = { ... }: N comes from the list
+            if (count > nel) err_at(fl, line, "initializer with too many elements");
         } else {
             init = fold(parse_expr(0));
             if (nd_kind(init) != N_INT)
-                err_at(fl, line, "inicializador de global deve ser constante");
+                err_at(fl, line, "global initializer must be constant");
         }
     }
-    if (arr && nel <= 0) err_at(fl, line, "tamanho de array deve ser constante positiva");
-    if (nel > (1 << 30) / type_width(ty)) err_at(fl, line, "array global grande demais");
-    expect(K_SEMI, "esperado ; apos a global");
+    if (arr && nel <= 0) err_at(fl, line, "array size must be a positive constant");
+    if (nel > (1 << 30) / type_width(ty)) err_at(fl, line, "global array too large");
+    expect(K_SEMI, "expected ; after the global");
     i64 n = node_new(N_GLOBAL, line, fl);
     set_nd_name(n, name);
     set_nd_type(n, ty);
@@ -1573,23 +1573,23 @@ i64 parse_global(i64 line, uptr fl, i64 ty, uptr name) {
     return n;
 }
 
-// topo: so o ( depois do nome separa funcao de global; ; no lugar do corpo e prototipo
+// top level: only the ( after the name separates a function from a global; ; in the body's place is a prototype
 i64 parse_top() {
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
-    i64 si = syntax_find(tok_id(cur));       // Tier 3: declaracao de topo ensinada
+    i64 si = syntax_find(tok_id(cur));       // Tier 3: taught top-level declaration
     if (si >= 0) {
-        uptr cp0 = cp;                       // cursor do lexer antes do handler
-        uptr t0 = tok_start(cur);            // ... e o token que ele recebeu
-        callp(syntax_fn_at(si));             // o handler come a palavra e chama top_add
-        if (cp == cp0 && tok_start(cur) == t0)   // nao avancou: parse_unit chamaria de novo
-            err_at2(fl, line, "handler de syntax nao consumiu nenhum token", cur_name());
+        uptr cp0 = cp;                       // lexer cursor before the handler
+        uptr t0 = tok_start(cur);            // ... and the token it received
+        callp(syntax_fn_at(si));             // the handler eats the word and calls top_add
+        if (cp == cp0 && tok_start(cur) == t0)   // did not advance: parse_unit would call again
+            err_at2(fl, line, "syntax handler consumed no tokens", cur_name());
         return 0;
     }
     i64 ty = type_of_token(tok_id(cur));
-    if (ty < 0) err_at(fl, line, "tipo esperado no topo");
+    if (ty < 0) err_at(fl, line, "type expected at top level");
     next();
-    if (tok_id(cur) != T_IDENT) err_name("nome esperado no topo");
+    if (tok_id(cur) != T_IDENT) err_name("name expected at top level");
     check_def();
     uptr name = cur_name();
     next();
@@ -1604,7 +1604,7 @@ i64 parse_top() {
         return p;
     }
     i64 f = parse_function(ty, name, params);
-    set_nd_line(f, line);                    // a declaracao comeca no tipo, nao no {
+    set_nd_line(f, line);                    // the declaration starts at the type, not the {
     set_nd_file(f, fl);
     return f;
 }

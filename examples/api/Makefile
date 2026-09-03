@@ -1,14 +1,14 @@
-# examples/api — o compilador ensinado (`class`/`interface`) e o que ele compila.
+# examples/api — the taught compiler (`class`/`interface`) and what it compiles.
 #
-#   make -C examples/api mc-api     # build/mc-api, o compilador deste diretorio
-#   make -C examples/api api        # build/api, o servidor, compilado pelo mc-api
+#   make -C examples/api mc-api     # build/mc-api, this directory's compiler
+#   make -C examples/api api        # build/api, the server, compiled by mc-api
 #   make -C examples/api test       # test-oop + tests/lib_test.sh + test.sh
 #   make -C examples/api clean
 #
-# Nada aqui entra nos `check-*` da raiz que rodam o stage0: o `mc0` em C nao
-# conhece `syntax`/`type_alias`/`#dylib` e nunca compila este exemplo. O
-# compilador de partida e `../../build/mc1`, construido pela raiz se faltar.
-# Fora isso, so `curl` e `sqlite3`.
+# None of this enters the root's `check-*` targets that run stage0: the C
+# `mc0` does not know `syntax`/`type_alias`/`#dylib` and never compiles this
+# example. The starting compiler is `../../build/mc1`, built by the root if
+# missing. Besides that, only `curl` and `sqlite3`.
 
 MC      = ../../build/mc1
 MCAPI   = build/mc-api
@@ -22,8 +22,8 @@ $(MC):
 
 mc-api: $(MCAPI)
 
-# o `rm -f` nao e enfeite: sobrescrever um executavel assinado no mesmo inode
-# faz o kernel matar a proxima execucao dele com SIGKILL (assinatura em cache)
+# the `rm -f` is not decoration: overwriting a signed executable on the same
+# inode makes the kernel kill its next execution with SIGKILL (cached signature)
 $(MCAPI): mc-api.mc oop.mc $(MC)
 	@mkdir -p build
 	@rm -f $(MCAPI)
@@ -36,25 +36,25 @@ $(API): main.mc lib/rt.mc lib/http.mc lib/sqlite.mc $(MCAPI)
 	@rm -f $(API)
 	$(MCAPI) --exe main.mc -o $(API)
 
-# roda a suite deste exemplo pelo executavel direto (--exe): sem `ld`, com
-# assinatura ad-hoc conferida pelo codesign, e exige o exit 42 e a saida exata.
+# runs this example's suite via the direct executable (--exe): no `ld`, with
+# an ad-hoc signature verified by codesign, and requires exit 42 and the exact output.
 test-oop: $(MCAPI) tests/oop_test.mc
 	@mkdir -p build
 	@rm -f $(OOPTEST)
 	$(MCAPI) --exe tests/oop_test.mc -o $(OOPTEST)
 	codesign --verify --verbose=2 $(OOPTEST)
-	@printf '[x] comprar pao #10\nrect area=20\ncirc area=12\ntotal=42\n' > build/oop_test.exp
+	@printf '[x] buy bread #10\nrect area=20\ncirc area=12\ntotal=42\n' > build/oop_test.exp
 	@$(OOPTEST) > build/oop_test.out; st=$$?; \
 	  cat build/oop_test.out; \
 	  diff -u build/oop_test.exp build/oop_test.out || exit 1; \
-	  if [ $$st -ne 42 ]; then echo "FALHOU: exit $$st, esperado 42"; exit 1; fi; \
-	  echo "ok: tests/oop_test.mc saiu 42"
+	  if [ $$st -ne 42 ]; then echo "FAILED: exit $$st, expected 42"; exit 1; fi; \
+	  echo "ok: tests/oop_test.mc exited 42"
 
-# rt.mc / http.mc / sqlite.mc isoladas: SQLite de verdade e uma requisicao HTTP
+# rt.mc / http.mc / sqlite.mc in isolation: real SQLite and an HTTP request
 test-lib: $(MC)
 	sh tests/lib_test.sh
 
-# a API inteira: sobe o servidor numa porta livre e bate em cada rota
+# the whole API: brings the server up on a free port and hits every route
 test-api: $(API)
 	sh test.sh
 

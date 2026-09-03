@@ -1,24 +1,24 @@
-// main.mc — transliteracao de stage0/main.c: driver do compilador.
-// uso: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules]
-//         [--backend=NOME|--exe] entrada.mc [-o saida]
-// Os modos --dump-* escrevem em stdout e nao geram o objeto.
+// main.mc — transliteration of stage0/main.c: compiler driver.
+// usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules]
+//         [--backend=NAME|--exe] input.mc [-o output]
+// The --dump-* modes write to stdout and do not generate the object.
 //
-// argv chega como uptr: argv[i] e ld64(argv + i * 8) (nao ha ponteiro tipado).
-// Depende de arena.mc (str_eq, out_str, die, die2), de lex.mc (tok_init,
-// lex_init, dump_tokens), de parse.mc (parse_unit, fold), de ast.mc (dump_ast),
-// de gen_arm64.mc (gen_lower, gen_encode_all, gen_dump_asm), de macho.mc
-// (dump_syms, macho_write), de backend_exe.mc (backend_exe), de hooks.mc
-// (pass/backend/run_passes/backend_find) e de user.mc (user_init).
+// argv arrives as uptr: argv[i] is ld64(argv + i * 8) (there is no typed pointer).
+// Depends on arena.mc (str_eq, out_str, die, die2), on lex.mc (tok_init,
+// lex_init, dump_tokens), on parse.mc (parse_unit, fold), on ast.mc (dump_ast),
+// on gen_arm64.mc (gen_lower, gen_encode_all, gen_dump_asm), on macho.mc
+// (dump_syms, macho_write), on backend_exe.mc (backend_exe), on hooks.mc
+// (pass/backend/run_passes/backend_find) and on user.mc (user_init).
 //
-// M10: o driver chama user_init() antes de qualquer parse (e ali que os modulos
-// do usuario registram passes e backends), aplica os passes sobre a AST e
-// escolhe o backend por --backend=NOME. O backend `macho` embutido e
-// gen_lower + gen_encode_all + macho_write e e o default.
+// M10: the driver calls user_init() before any parse (that is where the user's
+// modules register passes and backends), applies the passes to the AST and
+// picks the backend via --backend=NAME. The built-in `macho` backend is
+// gen_lower + gen_encode_all + macho_write and is the default.
 //
-// M11: `macho-exe` (gen_lower + gen_encode_all + exe_write) tambem e embutido e
-// escreve um MH_EXECUTE assinado, sem `ld`. `--exe` e apelido de
-// `--backend=macho-exe`. Este backend so existe no compilador em .mc: o stage0
-// em C e semente e continua so com `macho` (docs/surface.md § Tier 2).
+// M11: `macho-exe` (gen_lower + gen_encode_all + exe_write) is also built in and
+// writes a signed MH_EXECUTE, without `ld`. `--exe` is an alias for
+// `--backend=macho-exe`. This backend only exists in the .mc compiler: the stage0
+// in C is the seed and stays only with `macho` (docs/surface.md § Tier 2).
 
 #define M_COMPILE 0
 #define M_TOKENS  1
@@ -27,14 +27,14 @@
 #define M_SYMS    4
 #define M_RULES   5
 
-// backend embutido: as duas metades do gen mais a escrita do MH_OBJECT
+// built-in backend: the two halves of gen plus writing the MH_OBJECT
 void backend_macho(i64 unit, uptr out) {
     gen_lower(unit);
     gen_encode_all();
     macho_write(out);
 }
 
-// texto depois do prefixo `pre` em `a`, ou 0 se `a` nao comeca por `pre`
+// text after the prefix `pre` in `a`, or 0 if `a` does not start with `pre`
 uptr opt_val(uptr a, uptr pre) {
     i64 i = 0;
     loop {
@@ -46,7 +46,7 @@ uptr opt_val(uptr a, uptr pre) {
 }
 
 void usage() {
-    out_str(2, "uso: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NOME|--exe] entrada.mc [-o saida]\n");
+    out_str(2, "usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NAME|--exe] source.mc [-o out]\n");
 }
 
 i64 main(i64 argc, uptr argv) {
@@ -55,7 +55,7 @@ i64 main(i64 argc, uptr argv) {
     uptr bname = "macho";
     i64 mode = M_COMPILE;
 
-    backend("macho", &backend_macho);           // os embutidos, sempre registrados
+    backend("macho", &backend_macho);           // the built-ins, always registered
     backend("macho-exe", &backend_exe);
 
     i64 i = 1;
@@ -69,35 +69,35 @@ i64 main(i64 argc, uptr argv) {
         else if (str_eq(a, "--dump-rules")) mode = M_RULES;
         else if (str_eq(a, "--exe"))        bname = "macho-exe";
         else if (str_eq(a, "-o")) {
-            if (i + 1 >= argc) die("-o exige um argumento");
+            if (i + 1 >= argc) die("-o requires an argument");
             i = i + 1;
             out = ld64(argv + i * 8);
         } else if (ld8(a) == '-') {
             uptr bn = opt_val(a, "--backend=");
-            if (bn == 0) die2("opcao desconhecida", a);
+            if (bn == 0) die2("unknown option", a);
             bname = bn;
         }
         else if (in == 0)          in = a;
-        else                       die2("entrada duplicada", a);
+        else                       die2("duplicate entry", a);
         i = i + 1;
     }
     if (in == 0) { usage(); return 1; }
 
     tok_init();
-    lex_init(in);                                      // o lexer abre e empilha o arquivo
-    // Tier 2 depois de tok_init(): os ids K_U8..K_EXTERN sao 256..269 fixos, entao
-    // um user_init que chame tok_add antes deslocaria a tabela e quebraria o
-    // nucleo inteiro. Antes de qualquer token ser lido, porque o lexer e
-    // incremental: `#token`/`#rule` do usuario ainda valem para o fonte todo.
+    lex_init(in);                                      // the lexer opens and pushes the file
+    // Tier 2 after tok_init(): the ids K_U8..K_EXTERN are fixed at 256..269, so
+    // a user_init that calls tok_add before that would shift the table and break
+    // the entire core. Before any token is read, because the lexer is
+    // incremental: the user's `#token`/`#rule` still apply to the whole source.
     user_init();
     if (mode == M_TOKENS) { dump_tokens(); return 0; }
 
     i64 unit = parse_unit();
-    if (mode == M_RULES) { dump_rules(); return 0; }   // regras que o fonte registrou
-    unit = run_passes(unit);                           // Tier 2: passes do usuario
-    if (mode == M_AST) { dump_ast(unit); return 0; }   // arvore ja com #rule e passes
+    if (mode == M_RULES) { dump_rules(); return 0; }   // rules the source registered
+    unit = run_passes(unit);                           // Tier 2: user passes
+    if (mode == M_AST) { dump_ast(unit); return 0; }   // tree already with #rule and passes
 
-    unit = fold(unit);                                 // dobra antes do codegen
+    unit = fold(unit);                                 // fold before codegen
     if (mode == M_ASM) { gen_lower(unit); gen_dump_asm(); return 0; }
     if (mode == M_SYMS) { gen_lower(unit); gen_encode_all(); dump_syms(); return 0; }
 

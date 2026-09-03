@@ -1,30 +1,30 @@
-// ast.mc — transliteracao de stage0/ast.c: nos em array plano na arena,
-// referenciados por indice (0 = nenhum). Nenhum campo guarda ponteiro para no:
-// a, b, c, d e next sao indices. Mesmas funcoes, mesma ordem.
+// ast.mc — transliteration of stage0/ast.c: nodes in a flat array in the arena,
+// referenced by index (0 = none). No field holds a pointer to a node:
+// a, b, c, d and next are indices. Same functions, same order.
 //
-// Sem struct: Node e um bloco plano de 104 bytes. O layout abaixo e derivado do
-// struct Node de stage0/mc.h (versao atual do C; a tabela de docs/specs/M6-M7.md
-// esta desatualizada — hoje o no tem sect e file):
+// No struct: Node is a flat 104-byte block. The layout below is derived from
+// stage0/mc.h's struct Node (the C's current version; the table in
+// docs/specs/M6-M7.md is out of date — today the node has sect and file):
 //
 //   C: typedef struct {
-//          int kind, op, type;   // op = id do token do operador
-//          i64 val;              // N_INT: valor; N_STR: tamanho; N_HOLE: numero
-//          const char *name;     // N_IDENT/N_FUNC/N_PARAM: nome; N_STR: bytes
-//          int a, b, c, d;       // filhos, sempre indices de no
-//          int next;             // proximo da lista
-//          int sect;             // N_FUNC/N_GLOBAL: secao do #section + 1
+//          int kind, op, type;   // op = operator token id
+//          i64 val;              // N_INT: value; N_STR: length; N_HOLE: number
+//          const char *name;     // N_IDENT/N_FUNC/N_PARAM: name; N_STR: bytes
+//          int a, b, c, d;       // children, always node indices
+//          int next;             // next in the list
+//          int sect;             // N_FUNC/N_GLOBAL: #section's section + 1
 //          int line;
-//          const char *file;     // o codegen roda depois do lexer
+//          const char *file;     // codegen runs after the lexer
 //      } Node;
 //
-// Todo campo ocupa 8 bytes; a ordem e a mesma do C. As acessoras tomam o INDICE
-// do no (nd_kind(n)), exatamente como `nodes[n].kind` no C — em nenhum lugar
-// fora delas aparece um ld64/st64 sobre o no.
+// Every field occupies 8 bytes; the order matches C. The accessors take the node's
+// INDEX (nd_kind(n)), exactly like `nodes[n].kind` in C — an ld64/st64 on the
+// node never appears outside of them.
 //
-// Depende de arena.mc (xalloc, out_str, out_num, mem_copy, mem_zero, err_at) e de
-// lex.mc (tok_text, so para o dump).
+// Depends on arena.mc (xalloc, out_str, out_num, mem_copy, mem_zero, err_at) and on
+// lex.mc (tok_text, only for the dump).
 
-// ---- kinds de no (enum de mc.h, mesma ordem) ----
+// ---- node kinds (mc.h enum, same order) ----
 #define N_NONE     0
 #define N_INT      1
 #define N_STR      2
@@ -52,7 +52,7 @@
 #define N_PROTO    24
 #define N_KIND_MAX 25
 
-// ---- tipos ----
+// ---- types ----
 #define TY_VOID 0
 #define TY_U8   1
 #define TY_U16  2
@@ -78,11 +78,11 @@
 #define ND_FILE 96
 #define ND_SIZE 104
 
-uptr nodes;                           // array plano; cresce dobrando
+uptr nodes;                           // flat array; grows by doubling
 i64  nnodes = 0;
 i64  nodecap = 0;
 
-// ---- acessoras de Node (indice do no, como nodes[n].campo no C) ----
+// ---- Node accessors (node index, like nodes[n].field in C) ----
 uptr node_at(i64 n)  { return nodes + n * ND_SIZE; }
 i64  nd_kind(i64 n)  { return ld64(node_at(n) + ND_KIND); }
 i64  nd_op(i64 n)    { return ld64(node_at(n) + ND_OP); }
@@ -111,7 +111,7 @@ void set_nd_sect(i64 n, i64 v)  { st64(node_at(n) + ND_SECT, v); }
 void set_nd_line(i64 n, i64 v)  { st64(node_at(n) + ND_LINE, v); }
 void set_nd_file(i64 n, uptr v) { st64(node_at(n) + ND_FILE, v); }
 
-// `nodes[d] = nodes[s]` e `*p = (Node){0}` do C
+// C's `nodes[d] = nodes[s]` and `*p = (Node){0}`
 void node_assign(i64 d, i64 s) { mem_copy(node_at(d), node_at(s), ND_SIZE); }
 void node_zero(i64 n)          { mem_zero(node_at(n), ND_SIZE); }
 
@@ -125,9 +125,9 @@ void nodes_grow() {
     nodecap = cap;
 }
 
-// file vem do token que deu a linha: o lexer ja pode ter voltado de um #include
+// file comes from the token that gave the line: the lexer may already be back from an #include
 i64 node_new(i64 kind, i64 line, uptr file) {
-    if (nnodes == 0) { nodes_grow(); nnodes = 1; }   // indice 0 reservado
+    if (nnodes == 0) { nodes_grow(); nnodes = 1; }   // index 0 reserved
     nodes_grow();
     node_zero(nnodes);
     set_nd_kind(nnodes, kind);
@@ -137,12 +137,12 @@ i64 node_new(i64 kind, i64 line, uptr file) {
     return nnodes - 1;
 }
 
-// o codegen roda com o lexer ja no fim: o arquivo tem de vir do proprio no
+// codegen runs with the lexer already at the end: the file has to come from the node itself
 void err_node(i64 n, uptr msg) { err_at(nd_file(n), nd_line(n), msg); }
 
-// copia profunda simples, sem substituir buraco nenhum (N_HOLE e copiado como e).
-// Cada chamada devolve subarvore nova: e o que impede dois usos do mesmo buraco
-// de virarem dois apontadores para o mesmo no.
+// simple deep copy, without substituting any hole (N_HOLE is copied as-is).
+// Each call returns a new subtree: that is what keeps two uses of the same hole
+// from becoming two pointers to the same node.
 i64 node_copy(i64 n) {
     if (n == 0) return 0;
     i64 c = node_new(nd_kind(n), nd_line(n), nd_file(n));
@@ -160,22 +160,22 @@ i64 node_copy(i64 n) {
     return c;
 }
 
-// copia profunda; N_HOLE(i) vira uma COPIA de holes[i], com i de 1 ate nholes —
-// nunca o proprio indice, senao um buraco usado duas vezes no template daria dois
-// apontadores para o mesmo no. A lista (next) do buraco continua sendo do template.
-// Base do #infix/#prefix agora e do #rule no M9.
+// deep copy; N_HOLE(i) becomes a COPY of holes[i], with i from 1 to nholes —
+// never the index itself, or a hole used twice in the template would give two
+// pointers to the same node. The hole's list (next) still belongs to the template.
+// Base for #infix/#prefix is now #rule as of M9.
 i64 node_copy_subst(i64 n, uptr holes, i64 nholes) {
     if (n == 0) return 0;
     if (nd_kind(n) == N_HOLE) {
         i64 h = nd_val(n);
-        if (h < 1 || h > nholes) err_node(n, "buraco fora de alcance no template");
+        if (h < 1 || h > nholes) err_node(n, "hole out of range in template");
         i64 c = node_copy(ld64(holes + h * 8));
         i64 nx = node_copy_subst(nd_next(n), holes, nholes);
         set_nd_next(c, nx);
         return c;
     }
     i64 c = node_new(nd_kind(n), nd_line(n), nd_file(n));
-    node_assign(c, n);                           // campos planos
+    node_assign(c, n);                           // flat fields
     i64 a  = node_copy_subst(nd_a(c), holes, nholes);
     i64 b  = node_copy_subst(nd_b(c), holes, nholes);
     i64 cc = node_copy_subst(nd_c(c), holes, nholes);
@@ -189,14 +189,14 @@ i64 node_copy_subst(i64 n, uptr holes, i64 nholes) {
     return c;
 }
 
-// quantos nos tem a subarvore (com a lista de irmaos): so o --dump-rules usa
+// how many nodes the subtree has (with the sibling list): only --dump-rules uses this
 i64 node_size(i64 n) {
     if (n == 0) return 0;
     return 1 + node_size(nd_a(n)) + node_size(nd_b(n)) + node_size(nd_c(n))
              + node_size(nd_d(n)) + node_size(nd_next(n));
 }
 
-// os dois arrays de ponteiros do stage0, na mesma ordem dos enums
+// stage0's two pointer arrays, in the same order as the enums
 uptr kind_names[] = {
     "NONE", "INT", "STR", "IDENT", "UNARY", "BINARY", "CAST", "CALL",
     "RETURN", "BLOCK", "EXPRSTMT", "FUNC", "PARAM", "HOLE",
@@ -209,7 +209,7 @@ uptr type_name(i64 t) {
     return "?";
 }
 
-// largura em bytes de um tipo; uptr/i64/u64 sao 8
+// width in bytes of a type; uptr/i64/u64 are 8
 i64 type_width(i64 t) {
     if (t == TY_U8)  return 1;
     if (t == TY_U16) return 2;

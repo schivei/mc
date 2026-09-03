@@ -1,17 +1,18 @@
-// sys_svc.mc — mesma interface de sys.mc, sem libSystem: cada chamada de sistema
-// e um par de palavras ensinadas por #opcode. x16 leva o numero da syscall e
-// svc #0x80 entra no kernel; x0..x7 ja chegam com os argumentos porque o prologo
-// grava os parametros no frame sem tocar nos registradores da ABI, e a funcao sem
-// return termina no epilogo preservando o x0 que a syscall deixou.
+// sys_svc.mc — the same interface as sys.mc, without libSystem: each system
+// call is a pair of words taught via #opcode. x16 carries the syscall number
+// and svc #0x80 enters the kernel; x0..x7 already arrive with the arguments
+// because the prologue writes the parameters to the frame without touching
+// the ABI registers, and a function with no return ends in the epilogue
+// preserving the x0 the syscall left.
 //
-// Atencao: a syscall sinaliza erro com a flag de carry e devolve errno em x0.
-// Aqui o x0 cru e devolvido como esta — nao ha traducao para -errno.
+// Warning: the syscall signals an error with the carry flag and returns errno
+// in x0. Here the raw x0 is returned as is — there is no translation to -errno.
 
 #opcode mov16(rd, imm) 0xD2800000 | (imm << 5) | rd
 #opcode movx(rd, rm)   0xAA0003E0 | (rm << 16) | rd    // orr rd, xzr, rm
 #opcode svc(imm)       0xD4000001 | (imm << 5)
 
-// numeros BSD (sys/syscall.h)
+// BSD numbers (sys/syscall.h)
 #define SYS_EXIT 1
 #define SYS_READ 3
 #define SYS_WRITE 4
@@ -23,9 +24,9 @@ i64 open(uptr path, i64 flags, i64 mode) {
     svc(0x80);
 }
 
-// creat(path, mode) == open(path, O_WRONLY|O_CREAT|O_TRUNC, mode): nao ha syscall
-// propria, so a de open com as flags fixas. Os argumentos chegam em x0 (path) e
-// x1 (mode); movx copia o modo para x2 ANTES de x1 receber as flags.
+// creat(path, mode) == open(path, O_WRONLY|O_CREAT|O_TRUNC, mode): there is no
+// dedicated syscall, only open's with fixed flags. The arguments arrive in x0
+// (path) and x1 (mode); movx copies the mode to x2 BEFORE x1 receives the flags.
 #define CREAT_FLAGS 0x601             // O_WRONLY | O_CREAT | O_TRUNC
 
 i64 creat(uptr path, i64 mode) {

@@ -1,16 +1,16 @@
-// astdump.mc — driver da fatia 3 do M6: parseia o arquivo dado em argv[1]
-// (seguindo #include, como o compilador de verdade) e imprime exatamente o que
-// `mc0 --dump-ast ARQUIVO` imprime. Mesma sequencia do modo M_AST de
-// stage0/main.c: tok_init, lex_init, parse_unit, dump_ast — a arvore sai como
-// foi parseada, ANTES do fold() que o driver so aplica no caminho do codegen.
-// Logo diretivas nao aparecem (nao viram no), mas funcoes, globais, externs e
-// prototipos aparecem, na ordem do fonte e ja com o #include expandido.
+// astdump.mc — driver for M6 slice 3: parses the file given in argv[1]
+// (following #include, like the real compiler) and prints exactly what
+// `mc0 --dump-ast FILE` prints. Same sequence as stage0/main.c's M_AST
+// mode: tok_init, lex_init, parse_unit, dump_ast — the tree comes out as it
+// was parsed, BEFORE the fold() that the driver only applies on the codegen path.
+// So directives do not appear (they do not become a node), but functions, globals, externs
+// and prototypes do appear, in source order and with #include already expanded.
 //
-// macho.mc entra porque parse.mc usa sec_new (em sec_make) e as constantes
-// R_UNSIGNED/BRANCH26/PAGE21/PAGEOFF12 que defs_init registra; e tambem a ordem
-// de #include que src/core.mc usa. hooks.mc entrou no M12: parse.mc consulta as
-// tabelas de syntax/syntax_stmt/type_alias que moram la. Nenhuma esta povoada
-// aqui (este driver nao chama user_init), entao o parse e o mesmo do mc0.
+// macho.mc comes in because parse.mc uses sec_new (in sec_make) and the
+// R_UNSIGNED/BRANCH26/PAGE21/PAGEOFF12 constants that defs_init registers; and also the
+// #include order src/core.mc uses. hooks.mc came in at M12: parse.mc consults the
+// syntax/syntax_stmt/type_alias tables that live there. None of them is populated
+// here (this driver does not call user_init), so parsing is the same as mc0's.
 #include "arena.mc"
 #include "macho.mc"
 #include "lex.mc"
@@ -20,12 +20,12 @@
 
 i64 main(i64 argc, uptr argv) {
     if (argc < 2) {
-        out_str(2, "uso: astdump entrada.mc\n");
+        out_str(2, "usage: astdump source.mc\n");
         return 1;
     }
     uptr in = ld64(argv + 8);          // argv[1]
     tok_init();
-    lex_init(in);                      // o lexer abre e empilha o arquivo
+    lex_init(in);                      // the lexer opens and pushes the file
     i64 unit = parse_unit();
     dump_ast(unit);
     return 0;

@@ -2,13 +2,14 @@
 
 Source: `docs/plan.md` § "Teaching surface" and
 `docs/specs/M1.md`/`M5.md`/`M5.5.md`/`M9.md`/`M10.md`.
-State at this milestone (**M11 closed**): `#token`, `#infix`/`#prefix`, `#rule`, `#section`,
+State at this milestone (**M12 closed**): `#token`, `#infix`/`#prefix`, `#rule`, `#section`,
 `#opcode`, `emit()`/`reloc()` implemented and actually tested with `build/mc0` **and** with the
 self-hosted compiler `build/mc1` (the mechanism exists on both sides: `stage0/parse.c` and
 `src/parse.mc`). Programmatic Tier 2 (`pass()`/`backend()`) is also **implemented**, but only in
-the `.mc` compiler — the C stage0 is the seed and isn't teachable via Tier 2. See the section at
-the end, which also describes the two built-in backends: `macho` (the `.o`, default) and
-`macho-exe` (M11's direct executable, alias `--exe`).
+the `.mc` compiler — the C stage0 is the seed and isn't teachable via Tier 2. Tier 3
+(`syntax`/`syntax_stmt`, `type_alias`, `#dylib`) is likewise implemented, `.mc`-only, and proven end
+to end by `examples/api`. See the section at the end, which also describes the two built-in
+backends: `macho` (the `.o`, default) and `macho-exe` (M11's direct executable, alias `--exe`).
 
 ## Tier 1 — `#...` directives
 
@@ -503,7 +504,7 @@ All three register the word in the lexer (`tok_add`), the same as `#rule` does w
 literal, and all three **refuse a core keyword** (`K_U8`..`K_EXTERN`):
 
 ```
-$ build/mc1 --exe meu_compilador.mc -o mc-meu && ./mc-meu x.mc -o x.o
+$ build/mc1 --exe my_compiler.mc -o my-mc && ./my-mc x.mc -o x.o
 mc: cannot redefine core keyword: if
 ```
 
@@ -519,7 +520,7 @@ level, until `arena exhausted` at a statement position. `parse_top` and `parse_s
 lexer's cursor (and the current token) before and after the call and refuse:
 
 ```
-$ ./mc-meu --exe prog.mc -o prog
+$ ./my-mc --exe prog.mc -o prog
 prog.mc:1: syntax handler consumed no tokens: bad2
 ```
 
@@ -528,7 +529,7 @@ prog.mc:1: syntax handler consumed no tokens: bad2
 All three registrations are global and permanent: from `word_add` on, the word stops lexing as
 `T_IDENT` **anywhere**, not just at the handler's grammatical position. Whoever registers
 `syntax_stmt("log", &f)` removes `log` from the identifier vocabulary of the compiled source —
-`i64 log(i64 x)`, `i64 soma(i64 log, i64 b)`, and `i64 log = 1;` all become errors, even without
+`i64 log(i64 x)`, `i64 sum(i64 log, i64 b)`, and `i64 log = 1;` all become errors, even without
 using the new syntax at all.
 
 This is a design decision, not an oversight: the lexer has a single word table, and `user_init()`
@@ -537,7 +538,7 @@ the program would use that name. What the compiler does is name the reason, inst
 unrelated "name expected":
 
 ```
-$ ./mc-meu --exe user_prog.mc -o user_prog
+$ ./my-mc --exe user_prog.mc -o user_prog
 user_prog.mc:1: name reserved by syntax/syntax_stmt/type_alias: log
 ```
 
@@ -762,7 +763,7 @@ void user_init() {
 }
 ```
 
-`examples/api/oop.mc` (458 lines) is the module that runs inside the compiler. It doesn't extend
+`examples/api/oop.mc` (482 lines) is the module that runs inside the compiler. It doesn't extend
 the parser: it consumes tokens via the public API and returns ordinary declarations through
 `top_add`.
 
@@ -822,14 +823,14 @@ milestones in the same program:
 ```
 $ make -C examples/api test
 ...
-  ok    POST /todos (comprar pao)
-        {"id":1,"title":"comprar pao","done":false}
-  ok    GET /todos (dois)
-        [{"id":1,"title":"comprar pao","done":false},{"id":2,"title":"pagar conta","done":false}]
+  ok    POST /todos (buy bread)
+        {"id":1,"title":"buy bread","done":false}
+  ok    GET /todos (two)
+        [{"id":1,"title":"buy bread","done":false},{"id":2,"title":"pay bill","done":false}]
   ok    DELETE /todos/1
         {"deleted":1}
   ok    SELECT * FROM todos
-        2|pagar conta|0
+        2|pay bill|0
 == ok: all routes responded as expected ==
 
 $ otool -L examples/api/build/api

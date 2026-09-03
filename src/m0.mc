@@ -1,20 +1,20 @@
-// m0.mc — driver das fatias 1-2 do M6: exercita src/macho.mc sozinho, sem
-// front-end. Cada modo monta a mao o MESMO modelo de objeto que build/mc0 monta
-// para um teste e manda macho_write gravar; o criterio e `cmp` byte a byte com
-// o .o do mc0. Prova o writer (layout de secoes, symtab em particao estavel,
-// strtab na ordem de criacao, relocacoes em ordem decrescente) antes de existir
-// lexer/parser/codegen em .mc.
+// m0.mc — driver for M6 slices 1-2: exercises src/macho.mc alone, without a
+// front end. Each mode builds by hand the SAME object model that build/mc0 builds
+// for a test and has macho_write write it out; the criterion is a byte-for-byte `cmp` with
+// mc0's .o. It proves the writer (section layout, stable-partition symtab,
+// creation-order strtab, descending-order relocations) before a
+// lexer/parser/codegen exists in .mc.
 //
-// uso: m0 MODO SAIDA.o [--dump-syms]
-//   MODO 1 -> o .o de tests/001-return42.mc  (so __TEXT,__text; _main externo)
-//   MODO 2 -> o .o de tests/021-strings.mc   (__text + __cstring, simbolo local
-//             l_str0, indefinido _write, 3 BRANCH26 + 2 PAGE21 + 2 PAGEOFF12)
-// --dump-syms imprime o mesmo texto que `mc0 --dump-syms TESTE.mc` (cruza tambem
-// a particao estavel da symtab, nao so os bytes do arquivo).
+// usage: m0 MODE OUT.o [--dump-syms]
+//   MODE 1 -> the .o of tests/001-return42.mc  (only __TEXT,__text; extern _main)
+//   MODE 2 -> the .o of tests/021-strings.mc   (__text + __cstring, local symbol
+//             l_str0, undefined _write, 3 BRANCH26 + 2 PAGE21 + 2 PAGEOFF12)
+// --dump-syms prints the same text as `mc0 --dump-syms TEST.mc` (also cross-checks
+// the symtab's stable partition, not just the file's bytes).
 //
-// As palavras de instrucao sao dado bruto copiado do .o do mc0 (o codegen em .mc
-// e a fatia 4); o comentario de cada linha traz o offset na secao e a linha
-// correspondente de `mc0 --dump-asm`.
+// The instruction words are raw data copied from mc0's .o (the codegen in .mc
+// is slice 4); each line's comment carries the offset in the section and the
+// corresponding line of `mc0 --dump-asm`.
 
 #include "arena.mc"
 #include "macho.mc"
@@ -22,7 +22,7 @@
 void emit_word(i64 sec, i64 w)          { buf_u32(sec_data(sec_at(sec)), w); }
 void emit_bytes(i64 sec, uptr p, i64 n) { buf_put(sec_data(sec_at(sec)), p, n); }
 
-// ---- modo 1: tests/001-return42.mc ----
+// ---- mode 1: tests/001-return42.mc ----
 // mc0 --dump-syms: section __TEXT,__text flags=0x80000400 align=2 size=28 nreloc=0
 //                  sym 0 extern sect=1 value=0 _main
 void obj001() {
@@ -39,8 +39,8 @@ void obj001() {
     sym_new("_main", t + 1, 0, 1);
 }
 
-// ---- modo 2: tests/021-strings.mc ----
-// 484 bytes de __text (121 palavras), na ordem em que gen_arm64 as emite:
+// ---- mode 2: tests/021-strings.mc ----
+// 484 bytes of __text (121 words), in the order gen_arm64 emits them:
 // _strlen (0x000), _puts (0x068), _putnum (0x0c0), _main (0x178).
 void text021(i64 t) {
     // _strlen:
@@ -183,22 +183,22 @@ void text021(i64 t) {
 
 // mc0 --dump-syms: section __TEXT,__text    flags=0x80000400 align=2 size=484 nreloc=8
 //                  section __TEXT,__cstring flags=0x2        align=0 size=7   nreloc=0
-// A ordem de CRIACAO dos simbolos (a que a strtab preserva) e a do codegen:
-// cada funcao cria os simbolos que referencia antes do seu proprio.
+// The symbol CREATION order (the one the strtab preserves) matches the codegen's:
+// each function creates the symbols it references before its own.
 void obj021() {
     i64 t = sec_new("__TEXT", "__text", TEXT_FLAGS, 2);
     i64 c = sec_new("__TEXT", "__cstring", S_CSTRING_LITERALS, 0);
     text021(t);
-    emit_bytes(c, "hello\n", 7);              // 6 bytes + o NUL de __cstring
+    emit_bytes(c, "hello\n", 7);              // 6 bytes + __cstring's NUL
 
-    sym_new("_strlen", t + 1, 0, 1);           // 0: definido em __text
-    sym_ref("_write");                         // 1: indefinido (libSystem)
+    sym_new("_strlen", t + 1, 0, 1);           // 0: defined in __text
+    sym_ref("_write");                         // 1: undefined (libSystem)
     sym_new("_puts",   t + 1, 104, 1);         // 2
     sym_new("_putnum", t + 1, 192, 1);         // 3
-    sym_new("l_str0",  c + 1, 0, 0);           // 4: local, em __cstring
+    sym_new("l_str0",  c + 1, 0, 0);           // 4: local, in __cstring
     sym_new("_main",   t + 1, 376, 1);         // 5
 
-    // ordem crescente de endereco; macho_write inverte na hora de gravar
+    // ascending address order; macho_write reverses it when writing
     reloc_add(t, 0x090, 0, R_BRANCH26,  1, 2);   // bl _strlen
     reloc_add(t, 0x0ac, 1, R_BRANCH26,  1, 2);   // bl _write
     reloc_add(t, 0x164, 1, R_BRANCH26,  1, 2);   // bl _write
@@ -211,7 +211,7 @@ void obj021() {
 
 i64 main(i64 argc, uptr argv) {
     if (argc < 3) {
-        out_str(2, "uso: m0 MODO SAIDA.o   (MODO = 1 ou 2)\n");
+        out_str(2, "usage: m0 MODE OUT.o   (MODE = 1 or 2)\n");
         return 1;
     }
     uptr mode = ld64(argv + 8);
@@ -220,7 +220,7 @@ i64 main(i64 argc, uptr argv) {
     if (str_eq(mode, "1")) m = 1;
     if (str_eq(mode, "2")) m = 2;
     if (m == 0) {
-        out_str(2, "m0: modo desconhecido (use 1 ou 2)\n");
+        out_str(2, "m0: unknown mode (use 1 or 2)\n");
         return 1;
     }
     if (m == 1) obj001();

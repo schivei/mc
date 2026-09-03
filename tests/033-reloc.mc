@@ -1,7 +1,7 @@
 // expect-exit: 42
-// reloc(TIPO, "simbolo") pendura a relocacao na proxima palavra emitida; aqui a
-// palavra e um bl cru. O bl mora sozinho numa funcao so-emit: assim o x30 que ele
-// destroi ja esta salvo no frame dela e o chamador nao ve diferenca nenhuma.
+// reloc(TYPE, "symbol") hangs the relocation on the next word emitted; here the
+// word is a raw bl. The bl lives alone in an emit-only function: that way the x30
+// it clobbers is already saved in its frame and the caller sees no difference at all.
 
 i64 helper() {
     return 42;

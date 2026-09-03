@@ -11,7 +11,7 @@ mc1="${2:-build/mc1}"
 
 for mc in "$mc0" "$mc1"; do
     if [ ! -x "$mc" ]; then
-        echo "FAIL: compilador '$mc' nao encontrado ou nao executavel"
+        echo "FAIL: compiler '$mc' not found or not executable"
         exit 1
     fi
 done
@@ -32,16 +32,16 @@ for f in tests/*.mc; do
     "$mc1" "$f" -o "$b" > "$tmp/bo" 2> "$tmp/be"; rb=$?
 
     if [ "$ra" != "$rb" ]; then
-        echo "FAIL $name (exit $rb com '$mc1', $ra com '$mc0')"
+        echo "FAIL $name (exit $rb with '$mc1', $ra with '$mc0')"
         sed -n '1,3p' "$tmp/ae" "$tmp/be"
         fails=$((fails + 1)); continue
     fi
     if [ "$ra" != "0" ]; then
-        echo "FAIL $name (os dois recusaram o fonte: $(sed -n 1p "$tmp/ae"))"
+        echo "FAIL $name (both rejected the source: $(sed -n 1p "$tmp/ae"))"
         fails=$((fails + 1)); continue
     fi
     if ! diff -u "$tmp/ae" "$tmp/be" > "$tmp/de" 2>&1; then
-        echo "FAIL $name (stderr difere)"
+        echo "FAIL $name (stderr differs)"
         sed -n '1,20p' "$tmp/de"
         fails=$((fails + 1)); continue
     fi
@@ -64,5 +64,5 @@ for f in tests/*.mc; do
 done
 
 rm -rf "$tmp"
-echo "$((total - fails))/$total objetos identicos"
+echo "$((total - fails))/$total objects identical"
 [ "$fails" -eq 0 ]

@@ -1,3 +1,3 @@
-// c.mc — alcancado por dois caminhos diferentes que nomeiam o mesmo arquivo:
-// "inc/c.mc" a partir da raiz do teste e "../c.mc" a partir de inc/a/b.mc.
-i64 comum() { return 40; }
+// c.mc — reached via two different paths that name the same file:
+// "inc/c.mc" from the test's root and "../c.mc" from inc/a/b.mc.
+i64 common() { return 40; }

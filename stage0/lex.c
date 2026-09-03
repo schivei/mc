@@ -1,23 +1,23 @@
-/* lex.c — tabela de tokens mutavel e lexer incremental.
- * O lexer entrega um token por chamada (lex_next); o parser guarda um
- * lookahead de 1, de modo que um #token registrado agora ja vale para o
- * proximo lexema. --dump-tokens roda o lexer puro, sem parser, e portanto
- * nao processa #token — documentado na spec do M1. */
+/* lex.c — mutable token table and incremental lexer.
+ * The lexer delivers one token per call (lex_next); the parser keeps a
+ * lookahead of 1, so a #token registered now already applies to the
+ * next lexeme. --dump-tokens runs the lexer alone, without the parser, and
+ * therefore does not process #token — documented in the M1 spec. */
 #include "mc.h"
 
 #define MAXTOK 512
-#define MAXOPEN 16            /* profundidade maxima de #include */
-#define MAXINC  256           /* arquivos ja incluidos (once-only) */
+#define MAXOPEN 16            /* maximum #include nesting depth */
+#define MAXINC  256           /* files already included (once-only) */
 static TokEnt toktab[MAXTOK];
 static int ntok;
 
-static const u8 *cp, *cend;   /* cursor e fim do arquivo atual */
+static const u8 *cp, *cend;   /* cursor and end of the current file */
 static int cline;
 
-/* pilha de arquivos: o topo e o que esta sendo lido; os de baixo guardam onde pararam */
+/* file stack: the top is the one being read; the ones below keep where they stopped */
 typedef struct { const u8 *cp, *cend; int line; const char *name; } OpenFile;
 static OpenFile fstack[MAXOPEN]; static int nopen;
-static const char *inclist[MAXINC]; static int ninc;   /* caminhos ja incluidos, em ordem */
+static const char *inclist[MAXINC]; static int ninc;   /* paths already included, in order */
 
 static bool is_alpha(int c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
 static bool is_digit(int c) { return c >= '0' && c <= '9'; }
@@ -29,12 +29,12 @@ static int  hex_val(int c) {
     return -1;
 }
 
-/* ---- tabela de tokens: ordem de insercao, ids a partir de 256 ---- */
+/* ---- token table: insertion order, ids starting at 256 ---- */
 int tok_add(const char *text, int len) {
     for (int i = 0; i < ntok; i++)
         if (toktab[i].len == len && mem_eq(toktab[i].text, text, (size_t)len)) return toktab[i].id;
-    if (len <= 0) die("lexema vazio");
-    if (ntok == MAXTOK) die("tabela de tokens cheia");
+    if (len <= 0) die("empty lexeme");
+    if (ntok == MAXTOK) die("token table full");
     toktab[ntok].text = text;
     toktab[ntok].len  = len;
     toktab[ntok].word = is_alpha((u8)text[0]);
@@ -62,11 +62,11 @@ void tok_init(void) {
         "(", ")", "{", "}", "[", "]", ",", ";",
         "+", "-", "*", "/", "%", "&", "|", "^", "~", "<<", ">>",
         "==", "!=", "<", "<=", ">", ">=", "&&", "||", "!", "=",
-        ":", "=>", 0 };                    /* so o #rule usa; no fim para nao renumerar */
+        ":", "=>", 0 };                    /* only #rule uses these; at the end so they do not renumber */
     for (int i = 0; core[i]; i++) tok_add(core[i], (int)cstrlen(core[i]));
 }
 
-/* identificador: so casa com entradas word=true */
+/* identifier: only matches entries with word=true */
 static int word_id(const u8 *s, int len) {
     for (int i = 0; i < ntok; i++)
         if (toktab[i].word && toktab[i].len == len && mem_eq(toktab[i].text, s, (size_t)len))
@@ -74,7 +74,7 @@ static int word_id(const u8 *s, int len) {
     return -1;
 }
 
-/* pontuacao/operador: maior prefixo, varredura linear e determinista */
+/* punctuation/operator: longest prefix, linear and deterministic scan */
 static int punct_id(const u8 *s, int avail, int *plen) {
     int best = -1, blen = 0;
     for (int i = 0; i < ntok; i++) {
@@ -90,12 +90,12 @@ static int punct_id(const u8 *s, int avail, int *plen) {
 static const char *dir_names[] = { "include", "define", "token", "infix",
                                    "prefix", "rule", "section", "opcode", 0 };
 
-/* ---- pilha de arquivos ---- */
-/* normaliza . e .. lexicamente (sem tocar no filesystem), para que dois caminhos
- * que nomeiam o mesmo arquivo virem a mesma string e o once-only funcione */
+/* ---- file stack ---- */
+/* normalizes . and .. lexically (without touching the filesystem), so that two paths
+ * naming the same file become the same string and once-only works */
 #define MAXSEG 64
 static const char *path_norm(const char *p) {
-    int sb[MAXSEG], sl[MAXSEG], nseg = 0;      /* inicio e tamanho de cada segmento */
+    int sb[MAXSEG], sl[MAXSEG], nseg = 0;      /* start and length of each segment */
     size_t n = cstrlen(p), i = 0;
     bool abs = p[0] == '/';
     while (i < n) {
@@ -108,7 +108,7 @@ static const char *path_norm(const char *p) {
         bool prev_up = nseg && sl[nseg - 1] == 2 && p[sb[nseg - 1]] == '.'
                        && p[sb[nseg - 1] + 1] == '.';
         if (up && (nseg ? !prev_up : abs)) { if (nseg) nseg--; continue; }
-        if (nseg == MAXSEG) die2("caminho com segmentos demais", p);
+        if (nseg == MAXSEG) die2("path with too many segments", p);
         sb[nseg] = (int)b; sl[nseg] = l; nseg++;
     }
     char *s = xalloc(n + 2);
@@ -123,7 +123,7 @@ static const char *path_norm(const char *p) {
     return s;
 }
 
-/* junta o diretorio de base com rel e normaliza; caminho absoluto ignora a base */
+/* joins the base directory with rel and normalizes; an absolute path ignores the base */
 static const char *path_join(const char *base, const char *rel) {
     size_t cut = 0, bl = cstrlen(base), rl = cstrlen(rel);
     if (rel[0] == '/') bl = 0;
@@ -136,7 +136,7 @@ static const char *path_join(const char *base, const char *rel) {
 }
 
 static void lex_push(const char *path, int line) {
-    if (nopen == MAXOPEN) err_at(lex_file(), line, "includes aninhados demais");
+    if (nopen == MAXOPEN) err_at(lex_file(), line, "too many nested includes");
     if (nopen) { fstack[nopen - 1].cp = cp; fstack[nopen - 1].cend = cend;
                  fstack[nopen - 1].line = cline; }
     size_t len = 0;
@@ -156,14 +156,14 @@ const char *lex_file(void) { return nopen ? fstack[nopen - 1].name : "?"; }
 void lex_init(const char *path) {
     nopen = 0; ninc = 0;
     path = path_norm(path);
-    inclist[ninc++] = path;                    /* o raiz tambem conta para o once-only */
+    inclist[ninc++] = path;                    /* the root also counts for once-only */
     lex_push(path, 0);
 }
 
 bool lex_include(const char *rel, int line) {
     const char *path = path_join(fstack[nopen - 1].name, rel);
     for (int i = 0; i < ninc; i++) if (str_eq(inclist[i], path)) return false;
-    if (ninc == MAXINC) err_at(lex_file(), line, "includes demais");
+    if (ninc == MAXINC) err_at(lex_file(), line, "too many includes");
     inclist[ninc++] = path;
     lex_push(path, line);
     return true;
@@ -188,7 +188,7 @@ static void skip_space(void) {
                 if (*cp == '\n') cline++;
                 cp++;
             }
-            if (cp + 1 >= cend) err_at(lex_file(), open_line, "comentario nao terminado");
+            if (cp + 1 >= cend) err_at(lex_file(), open_line, "unterminated comment");
             cp += 2;
             continue;
         }
@@ -196,31 +196,31 @@ static void skip_space(void) {
     }
 }
 
-/* le um caractere de literal, decodificando escape. Em string \0 e proibido:
- * __cstring e S_CSTRING_LITERALS e o ld funde literais pelo primeiro NUL. */
+/* reads a literal character, decoding an escape. \0 is forbidden in a string:
+ * __cstring is S_CSTRING_LITERALS and ld merges literals at the first NUL. */
 static i64 read_char(bool in_str) {
-    if (cp >= cend) err_at(lex_file(), cline, "literal nao terminado");
+    if (cp >= cend) err_at(lex_file(), cline, "unterminated literal");
     u8 c = *cp++;
     if (c == '\n') { cline++; return c; }
     if (c != '\\') return c;
-    if (cp >= cend) err_at(lex_file(), cline, "escape nao terminado");
+    if (cp >= cend) err_at(lex_file(), cline, "unterminated escape");
     u8 e = *cp++;
     if (e == 'n')  return '\n';
     if (e == 't')  return '\t';
     if (e == 'r')  return '\r';
-    if (e == '0')  { if (in_str) err_at(lex_file(), cline, "\\0 nao permitido em string");
+    if (e == '0')  { if (in_str) err_at(lex_file(), cline, "\\0 not allowed in string");
                      return 0; }
     if (e == '\\') return '\\';
     if (e == '\'') return '\'';
     if (e == '"')  return '"';
-    err_at(lex_file(), cline, "escape desconhecido");
+    err_at(lex_file(), cline, "unknown escape");
 }
 
 static void lex_number(Token *t) {
     u64 v = 0;
     if (cp[0] == '0' && cp + 1 < cend && (cp[1] == 'x' || cp[1] == 'X')) {
         cp += 2;
-        if (cp >= cend || hex_val(*cp) < 0) err_at(lex_file(), cline, "hexadecimal invalido");
+        if (cp >= cend || hex_val(*cp) < 0) err_at(lex_file(), cline, "invalid hexadecimal");
         while (cp < cend && hex_val(*cp) >= 0) { v = v * 16 + (u64)hex_val(*cp); cp++; }
     } else {
         while (cp < cend && is_digit(*cp)) { v = v * 10 + (u64)(*cp - '0'); cp++; }
@@ -230,11 +230,11 @@ static void lex_number(Token *t) {
 
 static void lex_string(Token *t) {
     Buf b = {0};
-    cp++;                                  /* aspas de abertura */
+    cp++;                                  /* opening quote */
     while (cp < cend && *cp != '"') buf_u8(&b, (u8)read_char(true));
-    if (cp >= cend) err_at(t->file, t->line, "string nao terminada");
+    if (cp >= cend) err_at(t->file, t->line, "unterminated string");
     cp++;
-    buf_u8(&b, 0);                         /* sentinela; o len nao a conta */
+    buf_u8(&b, 0);                         /* sentinel; len does not count it */
     t->id = T_STR; t->start = b.p; t->len = (int)b.len - 1;
 }
 
@@ -248,10 +248,10 @@ static void lex_directive(Token *t) {
             t->id = T_DIR; t->val = i;
             return;
         }
-    err_at(t->file, t->line, "diretiva desconhecida");
+    err_at(t->file, t->line, "unknown directive");
 }
 
-/* $1 / $2 -> val = numero; $nome -> val = -1; $$nome -> val = -2 (gensym, so reservado) */
+/* $1 / $2 -> val = number; $name -> val = -1; $$name -> val = -2 (gensym, reserved only) */
 static void lex_hole(Token *t) {
     cp++;
     bool gensym = false;
@@ -264,7 +264,7 @@ static void lex_hole(Token *t) {
         while (cp < cend && is_alnum(*cp)) cp++;
         t->val = -1;
     } else {
-        err_at(t->file, t->line, "buraco invalido");
+        err_at(t->file, t->line, "invalid hole");
     }
     if (gensym) t->val = -2;
     t->id = T_HOLE;
@@ -272,7 +272,7 @@ static void lex_hole(Token *t) {
 
 void lex_next(Token *t) {
     skip_space();
-    while (cp >= cend && nopen > 1) { lex_pop(); skip_space(); }   /* fim de um #include */
+    while (cp >= cend && nopen > 1) { lex_pop(); skip_space(); }   /* end of an #include */
     t->line = cline; t->val = 0; t->start = cp; t->len = 0; t->file = lex_file();
     if (cp >= cend) { t->id = T_EOF; t->start = (const u8 *)"EOF"; t->len = 3; return; }
 
@@ -287,18 +287,18 @@ void lex_next(Token *t) {
     if (*cp == '\'') {
         cp++;
         t->val = read_char(false);
-        if (cp >= cend || *cp != '\'') err_at(t->file, t->line, "char literal nao terminado");
+        if (cp >= cend || *cp != '\'') err_at(t->file, t->line, "unterminated char literal");
         cp++;
         t->id = T_CHAR; t->len = (int)(cp - t->start);
         return;
     }
-    if (*cp == '"')  { lex_string(t);    return; }             /* start aponta para a arena */
+    if (*cp == '"')  { lex_string(t);    return; }             /* start points into the arena */
     if (*cp == '#')  { lex_directive(t); t->len = (int)(cp - t->start); return; }
     if (*cp == '$')  { lex_hole(t);      t->len = (int)(cp - t->start); return; }
 
     int plen = 0;
     int id = punct_id(cp, (int)(cend - cp), &plen);
-    if (id < 0) err_at(t->file, t->line, "caractere inesperado");
+    if (id < 0) err_at(t->file, t->line, "unexpected character");
     cp += plen; t->len = plen; t->id = id;
 }
 
@@ -318,7 +318,7 @@ static void dump_escaped(const u8 *s, int len) {
     out_str(1, "\"");
 }
 
-/* uma linha por token: LINHA ID TEXTO (INT/CHAR imprimem o valor) */
+/* one line per token: LINE ID TEXT (INT/CHAR print the value) */
 void dump_tokens(void) {
     Token t;
     for (;;) {

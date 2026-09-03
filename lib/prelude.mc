@@ -1,18 +1,19 @@
-// prelude.mc — a superficie de ensino que o nucleo nao tem: `while`, `for` e os
-// compostos `+=`, `-=`, `++`, `--`. Nada aqui e sintaxe embutida: sao seis
-// `#rule stmt:` sobre o `loop {}` / `if` / `break` do nucleo, mais os quatro
-// `#token` que criam os lexemas compostos. Incluir este arquivo e opcional e
-// versionado — o nucleo continua compilando sem ele.
+// prelude.mc — the teaching surface that the core does not have: `while`, `for`
+// and the compound `+=`, `-=`, `++`, `--`. Nothing here is builtin syntax: it is
+// six `#rule stmt:` over the core's `loop {}` / `if` / `break`, plus the four
+// `#token` that create the compound lexemes. Including this file is optional
+// and versioned — the core keeps compiling without it.
 //
 //   #include "../lib/prelude.mc"
 //
-// Palavras-chave criadas: `while` e `for` deixam de poder ser nomes de variavel
-// ou de funcao a partir do #include (o primeiro item de uma regra vira palavra
-// reservada via tok_add).
+// Keywords created: `while` and `for` can no longer be variable or function
+// names once #include'd (the first item of a rule becomes a reserved word via
+// tok_add).
 //
-// `continue` dentro de um `for` pula o passo, exatamente como pularia dentro do
-// `loop` que a regra gera: `continue` volta para o topo do `loop`, e o passo
-// esta no fim do corpo. Quem precisa do passo escreve-o antes do `continue`.
+// `continue` inside a `for` skips the step, exactly as it would inside the
+// `loop` the rule generates: `continue` goes back to the top of the `loop`,
+// and the step is at the end of the body. Whoever needs the step writes it
+// before the `continue`.
 
 #token "+="
 #token "-="
@@ -23,10 +24,10 @@
 #rule stmt: while ( expr $c ) block $b
     => loop { if (!$c) break; $b }
 
-// for (init; cond; x = passo) { ... }
-// O passo e `ident $x = expr $step` e nao `expr $step`: no nucleo a atribuicao e
-// um statement, nao um operador, entao um `expr` sozinho no passo so poderia ser
-// uma chamada — inutil para um contador. Ver docs/core-language.md.
+// for (init; cond; x = step) { ... }
+// The step is `ident $x = expr $step` and not `expr $step`: in the core,
+// assignment is a statement, not an operator, so an `expr` alone in the step
+// could only be a call — useless for a counter. See docs/core-language.md.
 #rule stmt: for ( stmt $init expr $cond ; ident $x = expr $step ) block $b
     => { $init loop { if (!$cond) break; $b $x = $step; } }
 

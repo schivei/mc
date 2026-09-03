@@ -1,8 +1,8 @@
 #include "lib/sqlite.mc"
 
 i64 main() {
-    // Testa que a ligacao com libsqlite3 funciona
-    // sqlite3_open eh do #dylib
+    // Tests that the binding with libsqlite3 works
+    // sqlite3_open comes from #dylib
     putnum(42);
     putnum(10);
     return 0;

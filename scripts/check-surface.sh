@@ -20,7 +20,7 @@ mc1="${2:-build/mc1}"
 
 for mc in "$mc0" "$mc1"; do
     if [ ! -x "$mc" ]; then
-        echo "FAIL: compilador '$mc' nao encontrado ou nao executavel"
+        echo "FAIL: compiler '$mc' not found or not executable"
         exit 1
     fi
 done
@@ -35,17 +35,17 @@ trap 'cp "$save" "$user"; rm -f "$save"; rm -rf "$tmp"' EXIT INT TERM
 
 sed 's|user_default\.mc|user_demo.mc|' "$save" > "$user"
 if ! grep -q 'user_demo\.mc' "$user"; then
-    echo "FAIL: nao consegui ligar lib/user_demo.mc em $user"
+    echo "FAIL: could not wire lib/user_demo.mc into $user"
     exit 1
 fi
 
 mkdir -p build
 if ! msg=$("$mc0" src/mc.mc -o build/mc1s.o 2>&1); then
-    echo "FAIL: compilacao de src/mc.mc com o demo ligado: $msg"
+    echo "FAIL: compiling src/mc.mc with the demo wired in: $msg"
     exit 1
 fi
 if ! msg=$(scripts/link.sh build/mc1s build/mc1s.o 2>&1); then
-    echo "FAIL: link de build/mc1s: $msg"
+    echo "FAIL: linking build/mc1s: $msg"
     exit 1
 fi
 cp "$save" "$user"          # the demo is already baked into build/mc1s: release the source
@@ -73,23 +73,23 @@ for f in tests/*.mc; do
     echo "ok $name"
 done
 
-echo "$((total - fails))/$total objetos identicos (arm64-surface vs macho)"
+echo "$((total - fails))/$total objects identical (arm64-surface vs macho)"
 
 # the demo pass has to alter the AST of tests/061-pass.mc, and no other
 "$mc0"        --dump-ast tests/061-pass.mc > "$tmp/ast-sem" 2>&1
 build/mc1s    --dump-ast tests/061-pass.mc > "$tmp/ast-com" 2>&1
 if cmp -s "$tmp/ast-sem" "$tmp/ast-com"; then
-    echo "FAIL: o pass de demonstracao nao alterou --dump-ast de tests/061-pass.mc"
+    echo "FAIL: the demo pass did not change --dump-ast of tests/061-pass.mc"
     fails=$((fails + 1))
 else
-    echo "ok pass_demo altera --dump-ast de tests/061-pass.mc"
+    echo "ok pass_demo changes --dump-ast of tests/061-pass.mc"
 fi
 for f in tests/*.mc; do
     [ "$f" = "tests/061-pass.mc" ] && continue
     "$mc0"     --dump-ast "$f" > "$tmp/s" 2>&1
     build/mc1s --dump-ast "$f" > "$tmp/c" 2>&1
     if ! cmp -s "$tmp/s" "$tmp/c"; then
-        echo "FAIL: o pass alterou --dump-ast de $f (esperado so 061-pass)"
+        echo "FAIL: the pass changed --dump-ast of $f (expected only 061-pass)"
         fails=$((fails + 1))
     fi
 done
@@ -98,29 +98,29 @@ done
 # keywords' ids (K_U8..K_EXTERN = 256..269). See lib/user_tokadd.mc.
 sed 's|user_default\.mc|user_tokadd.mc|' "$save" > "$user"
 if ! grep -q 'user_tokadd\.mc' "$user"; then
-    echo "FAIL: nao consegui ligar lib/user_tokadd.mc em $user"
+    echo "FAIL: could not wire lib/user_tokadd.mc into $user"
     exit 1
 fi
 if ! msg=$("$mc0" src/mc.mc -o build/mc1t.o 2>&1); then
-    echo "FAIL: compilacao de src/mc.mc com user_tokadd: $msg"
+    echo "FAIL: compiling src/mc.mc with user_tokadd: $msg"
     fails=$((fails + 1))
 elif ! msg=$(scripts/link.sh build/mc1t build/mc1t.o 2>&1); then
-    echo "FAIL: link de build/mc1t: $msg"
+    echo "FAIL: linking build/mc1t: $msg"
     fails=$((fails + 1))
 elif ! msg=$(build/mc1t tests/001-return42.mc -o "$tmp/t.o" 2>&1); then
-    echo "FAIL: user_init com tok_add quebrou o nucleo: $msg"
+    echo "FAIL: a user_init with tok_add broke the core: $msg"
     fails=$((fails + 1))
 elif ! msg=$(scripts/link.sh "$tmp/t" "$tmp/t.o" 2>&1); then
-    echo "FAIL: link de tests/001 com user_tokadd: $msg"
+    echo "FAIL: linking tests/001 with user_tokadd: $msg"
     fails=$((fails + 1))
 else
     "$tmp/t"
     rc=$?
     if [ "$rc" != "42" ]; then
-        echo "FAIL: tests/001 com user_tokadd devolveu $rc, esperado 42"
+        echo "FAIL: tests/001 with user_tokadd returned $rc, expected 42"
         fails=$((fails + 1))
     else
-        echo "ok user_init com tok_add nao desloca os ids do nucleo (tests/001 = 42)"
+        echo "ok user_init with tok_add does not shift the core ids (tests/001 = 42)"
     fi
 fi
 cp "$save" "$user"
@@ -132,32 +132,32 @@ cp "$save" "$user"
 demo="build/mc-syntax-demo"
 rm -f "$demo"
 if ! msg=$("$mc1" --exe lib/mc_syntax_demo.mc -o "$demo" 2>&1); then
-    echo "FAIL: compilacao de lib/mc_syntax_demo.mc: $msg"
+    echo "FAIL: compiling lib/mc_syntax_demo.mc: $msg"
     fails=$((fails + 1))
 elif ! msg=$(codesign --verify --verbose=4 "$demo" 2>&1); then
-    echo "FAIL: assinatura de $demo: $msg"
+    echo "FAIL: signature of $demo: $msg"
     fails=$((fails + 1))
 elif ! msg=$("$demo" --exe lib/syntax_demo_test.mc -o "$tmp/sdt" 2>&1); then
-    echo "FAIL: o compilador ensinado nao compilou lib/syntax_demo_test.mc: $msg"
+    echo "FAIL: the taught compiler did not compile lib/syntax_demo_test.mc: $msg"
     fails=$((fails + 1))
 else
     "$tmp/sdt"
     rc=$?
     if [ "$rc" != "42" ]; then
-        echo "FAIL: lib/syntax_demo_test.mc devolveu $rc, esperado 42"
+        echo "FAIL: lib/syntax_demo_test.mc returned $rc, expected 42"
         fails=$((fails + 1))
     else
-        echo "ok syntax/syntax_stmt/type_alias: mc_syntax_demo compila o teste (exit 42)"
+        echo "ok syntax/syntax_stmt/type_alias: mc_syntax_demo compiles the test (exit 42)"
     fi
 fi
 
 # the default compiler has to REFUSE the same source: the syntax belongs to
 # the module, not to the core. `enum` there is just an identifier where a type is expected.
 if msg=$("$mc1" lib/syntax_demo_test.mc -o "$tmp/sdt.o" 2>&1); then
-    echo "FAIL: o compilador padrao aceitou lib/syntax_demo_test.mc"
+    echo "FAIL: the default compiler accepted lib/syntax_demo_test.mc"
     fails=$((fails + 1))
 else
-    echo "ok o compilador padrao recusa o mesmo fonte ($msg)"
+    echo "ok the default compiler rejects the same source ($msg)"
 fi
 
 [ "$fails" -eq 0 ]

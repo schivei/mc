@@ -1,12 +1,13 @@
 // expect-exit: 42
 // expect-stdout: 10,7,8,7,
-// Compostos do prelude: `+=`, `-=`, `++`, `--`. Sao quatro #rule com padrao
-// `ident $x OP ... ;` — o nome ja foi lido como expressao quando o token
-// composto aparece, entao o despacho continua sendo por token literal.
+// Compound operators from the prelude: `+=`, `-=`, `++`, `--`. They are four
+// #rule with the pattern `ident $x OP ... ;` — the name was already read as an
+// expression by the time the compound token appears, so dispatch is still by
+// literal token.
 #include "../lib/sys.mc"
 #include "../lib/prelude.mc"
 
-i64 g = 0;                            // global: += tambem vale para ela
+i64 g = 0;                            // global: += works for it too
 
 i64 main() {
     i64 x = 4;
@@ -21,7 +22,7 @@ i64 main() {
 
     g += 5;
     g++;
-    // += com expressao inteira do lado direito, nao so uma constante
+    // += with a whole expression on the right-hand side, not just a constant
     i64 y = 0;
     y += x * 5 - 1;                   // 34
     return y + g + 2;                 // 34 + 6 + 2 = 42

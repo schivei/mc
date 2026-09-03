@@ -1,5 +1,5 @@
 // expect-exit: 42
-// #define dobrado na definicao, usado no tamanho de um array e em expressao.
+// #define folded at definition, used in an array's size and in an expression.
 #define N 8
 #define SIZE (N * 4)
 #define ANSWER (N * 5 + 2)

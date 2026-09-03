@@ -1,5 +1,5 @@
 // expect-exit: 42
-// Recursao (fib) e uma funcao com os 8 parametros permitidos.
+// Recursion (fib) and a function with the 8 allowed parameters.
 i64 fib(i64 n) {
     if (n < 2) return n;
     return fib(n - 1) + fib(n - 2);

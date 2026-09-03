@@ -1,17 +1,18 @@
-// http.mc — servidor HTTP/1.1 minimo em cima dos sockets da libSystem.
+// http.mc — minimal HTTP/1.1 server on top of libSystem's sockets.
 //
-// Uma conexao por vez, sem keep-alive: aceita, le a requisicao inteira, responde
-// com `Connection: close` e fecha. E o suficiente para uma API de exemplo e evita
-// o unico assunto que o nucleo nao resolveria bem hoje (multiplexacao).
+// One connection at a time, no keep-alive: accept, read the whole request,
+// respond with `Connection: close` and close. It is enough for an example
+// API and avoids the one subject the core would not handle well today
+// (multiplexing).
 //
-// Nada de struct: a requisicao e uma estrutura plana na arena de rt.mc, com
-// #define de offset e acessoras, como manda docs/core-language.md.
+// No structs: the request is a flat structure in rt.mc's arena, with offset
+// #define and accessors, as docs/core-language.md dictates.
 //
 //   #include "lib/http.mc"
 
 #include "rt.mc"
 
-// ---- constantes de <sys/socket.h> e <netinet/in.h> no macOS ----
+// ---- constants from macOS's <sys/socket.h> and <netinet/in.h> ----
 
 #define AF_INET      2
 #define SOCK_STREAM  1
@@ -20,21 +21,21 @@
 #define INADDR_ANY   0
 #define SA_IN_LEN    16               // sizeof(struct sockaddr_in)
 
-// read/write/close vem de lib/sys.mc, incluido por rt.mc
-extern i64 socket(i64 dominio, i64 tipo, i64 proto);
-extern i64 setsockopt(i64 fd, i64 nivel, i64 opt, uptr valor, i64 len);
+// read/write/close come from lib/sys.mc, included by rt.mc
+extern i64 socket(i64 domain, i64 type, i64 proto);
+extern i64 setsockopt(i64 fd, i64 level, i64 opt, uptr value, i64 len);
 extern i64 bind(i64 fd, uptr sa, i64 len);
 extern i64 listen(i64 fd, i64 backlog);
 extern i64 accept(i64 fd, uptr sa, uptr plen);
 
-// ---- sockaddr_in montado byte a byte ----
-// struct sockaddr_in do macOS:
+// ---- sockaddr_in assembled byte by byte ----
+// macOS's struct sockaddr_in:
 //   0: u8  sin_len     = 16
 //   1: u8  sin_family  = AF_INET
-//   2: u16 sin_port    em big-endian (network order)
-//   4: u32 sin_addr    em big-endian; INADDR_ANY e 0, entao a ordem nao importa
+//   2: u16 sin_port    in big-endian (network order)
+//   4: u32 sin_addr    in big-endian; INADDR_ANY is 0, so the order does not matter
 //   8: u8  sin_zero[8]
-// A porta e escrita byte a byte justamente para nao depender da ordem da maquina.
+// The port is written byte by byte precisely to not depend on the machine's order.
 void sockaddr_in_init(uptr sa, i64 port) {
     mem_zero(sa, SA_IN_LEN);
     st8(sa + 0, SA_IN_LEN);
@@ -44,16 +45,16 @@ void sockaddr_in_init(uptr sa, i64 port) {
     st32(sa + 4, INADDR_ANY);
 }
 
-// ---- socket de escuta ----
+// ---- listening socket ----
 
-// abre, marca SO_REUSEADDR, liga na porta e escuta; devolve o fd ou -1
+// opens, sets SO_REUSEADDR, binds to the port and listens; returns the fd or -1
 i64 http_listen(i64 port) {
     u8 sa[SA_IN_LEN];
-    u8 um[4];
+    u8 one[4];
     i64 fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return 0 - 1;
-    st32(um, 1);
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, um, 4);
+    st32(one, 1);
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, one, 4);
     sockaddr_in_init(sa, port);
     if (bind(fd, sa, SA_IN_LEN) < 0) {
         close(fd);
@@ -66,22 +67,22 @@ i64 http_listen(i64 port) {
     return fd;
 }
 
-// bloqueia ate chegar uma conexao; devolve o fd do cliente ou -1
+// blocks until a connection arrives; returns the client's fd or -1
 i64 http_accept(i64 fd) {
     return accept(fd, 0, 0);
 }
 
-// ---- requisicao: estrutura plana de 48 bytes ----
+// ---- request: a flat 48-byte structure ----
 
 #define REQ_METHOD  0                 // uptr: "GET", "POST", ...
 #define REQ_PATH    8                 // uptr: "/todos/3"
-#define REQ_BODY    16                // uptr: corpo NUL-terminado (aponta para o cru)
-#define REQ_CLEN    24                // i64:  bytes de corpo efetivamente lidos
-#define REQ_RAW     32                // uptr: buffer cru da conexao
-#define REQ_RAWLEN  40                // i64:  bytes no buffer cru
+#define REQ_BODY    16                // uptr: NUL-terminated body (points into the raw buffer)
+#define REQ_CLEN    24                // i64:  body bytes actually read
+#define REQ_RAW     32                // uptr: the connection's raw buffer
+#define REQ_RAWLEN  40                // i64:  bytes in the raw buffer
 #define REQ_SIZE    48
 
-#define REQ_BUF_CAP 65536             // teto de uma requisicao inteira, cabecalho + corpo
+#define REQ_BUF_CAP 65536             // cap on a whole request, header + body
 
 uptr req_method(uptr r)             { return ld64(r + REQ_METHOD); }
 void set_req_method(uptr r, uptr v) { st64(r + REQ_METHOD, v); }
@@ -96,7 +97,7 @@ void set_req_raw(uptr r, uptr v)    { st64(r + REQ_RAW, v); }
 i64  req_rawlen(uptr r)             { return ld64(r + REQ_RAWLEN); }
 void set_req_rawlen(uptr r, i64 v)  { st64(r + REQ_RAWLEN, v); }
 
-// aloca a requisicao e seu buffer; da para reusar a mesma em varias conexoes
+// allocates the request and its buffer; the same one can be reused across connections
 uptr http_req_new() {
     uptr r = rt_alloc(REQ_SIZE);
     set_req_raw(r, rt_alloc(REQ_BUF_CAP));
@@ -106,15 +107,15 @@ uptr http_req_new() {
     return r;
 }
 
-// ---- leitura da requisicao ----
+// ---- reading the request ----
 
 i64 http_lower(i64 c) {
     if (c >= 'A' && c <= 'Z') return c + 32;
     return c;
 }
 
-// str_find sem distinguir maiusculas de minusculas: nomes de cabecalho HTTP nao
-// as distinguem, e cada cliente escreve o seu de um jeito
+// str_find without distinguishing upper from lower case: HTTP header names do
+// not distinguish them, and every client writes its own a different way
 i64 http_find_ci(uptr h, uptr n) {
     i64 ln = str_len(n);
     i64 lh = str_len(h);
@@ -132,24 +133,24 @@ i64 http_find_ci(uptr h, uptr n) {
     return 0 - 1;
 }
 
-// valor numerico do cabecalho `nome` (com os dois pontos, ex. "Content-Length:");
-// -1 se o cabecalho nao esta presente
-i64 http_header_num(uptr raw, uptr nome) {
-    i64 i = http_find_ci(raw, nome);
+// numeric value of the `name` header (with the colon, e.g. "Content-Length:");
+// -1 if the header is not present
+i64 http_header_num(uptr raw, uptr name) {
+    i64 i = http_find_ci(raw, name);
     if (i < 0) return 0 - 1;
-    i = i + str_len(nome);
+    i = i + str_len(name);
     while (ld8(raw + i) == ' ') {
         i++;
     }
     return atoi(raw + i);
 }
 
-// le uma requisicao inteira de `cfd` para `req`; 1 = ok, 0 = fechou ou malformada.
-// Preenche metodo, caminho, corpo e Content-Length.
+// reads a whole request from `cfd` into `req`; 1 = ok, 0 = closed or malformed.
+// Fills in method, path, body and Content-Length.
 i64 http_read_request(i64 cfd, uptr req) {
     uptr raw = req_raw(req);
     i64 n = 0;
-    i64 fimhdr = 0 - 1;
+    i64 header_end = 0 - 1;
 
     st8(raw, 0);
     set_req_method(req, "");
@@ -158,33 +159,33 @@ i64 http_read_request(i64 cfd, uptr req) {
     set_req_clen(req, 0);
     set_req_rawlen(req, 0);
 
-    // 1. le ate fechar o cabecalho com a linha em branco
-    while (fimhdr < 0) {
+    // 1. read until the header closes with the blank line
+    while (header_end < 0) {
         if (n >= REQ_BUF_CAP - 1) return 0;
         i64 k = read(cfd, raw + n, REQ_BUF_CAP - 1 - n);
         if (k <= 0) return 0;
         n = n + k;
         st8(raw + n, 0);
-        fimhdr = str_find(raw, "\r\n\r\n");
+        header_end = str_find(raw, "\r\n\r\n");
     }
 
-    i64 corpo = fimhdr + 4;
+    i64 body_off = header_end + 4;
     i64 clen = http_header_num(raw, "Content-Length:");
     if (clen < 0) clen = 0;
 
-    // 2. le o que faltar do corpo
-    while (n - corpo < clen) {
+    // 2. read whatever is missing from the body
+    while (n - body_off < clen) {
         if (n >= REQ_BUF_CAP - 1) break;
         i64 k = read(cfd, raw + n, REQ_BUF_CAP - 1 - n);
         if (k <= 0) break;
         n = n + k;
         st8(raw + n, 0);
     }
-    if (corpo + clen > n) clen = n - corpo;
+    if (body_off + clen > n) clen = n - body_off;
     set_req_rawlen(req, n);
     set_req_clen(req, clen);
 
-    // 3. primeira linha: "METODO CAMINHO HTTP/1.1"
+    // 3. first line: "METHOD PATH HTTP/1.1"
     i64 e1 = 0;
     while (ld8(raw + e1) != ' ' && ld8(raw + e1) != 0) {
         e1++;
@@ -200,15 +201,15 @@ i64 http_read_request(i64 cfd, uptr req) {
     if (e2 == i2) return 0;
     set_req_path(req, str_ndup(raw + i2, e2 - i2));
 
-    // 4. corpo NUL-terminado dentro do proprio buffer cru
-    st8(raw + corpo + clen, 0);
-    set_req_body(req, raw + corpo);
+    // 4. NUL-terminated body inside the raw buffer itself
+    st8(raw + body_off + clen, 0);
+    set_req_body(req, raw + body_off);
     return 1;
 }
 
-// ---- resposta ----
+// ---- response ----
 
-// razao textual dos status que este exemplo usa
+// text reason for the statuses this example uses
 uptr http_reason(i64 status) {
     if (status == 200) return "OK";
     if (status == 201) return "Created";
@@ -219,7 +220,7 @@ uptr http_reason(i64 status) {
     return "Unknown";
 }
 
-// escreve `n` bytes, insistindo enquanto o write parcial nao terminar; 1 = ok
+// writes `n` bytes, retrying while a partial write has not finished; 1 = ok
 i64 http_write_all(i64 fd, uptr p, i64 n) {
     i64 i = 0;
     while (i < n) {
@@ -230,8 +231,8 @@ i64 http_write_all(i64 fd, uptr p, i64 n) {
     return 1;
 }
 
-// monta e envia a resposta completa (status, Content-Type, Content-Length,
-// Connection: close e o corpo); 1 = ok
+// assembles and sends the whole response (status, Content-Type, Content-Length,
+// Connection: close and the body); 1 = ok
 i64 http_respond(i64 cfd, i64 status, uptr content_type, uptr body) {
     i64 n = str_len(body);
     uptr b = sb_new(256 + n);

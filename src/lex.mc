@@ -1,25 +1,25 @@
-// lex.mc — transliteracao de stage0/lex.c: tabela de tokens mutavel e lexer
-// incremental. O lexer entrega um token por chamada (lex_next); o parser guarda
-// um lookahead de 1, de modo que um #token registrado agora ja vale para o
-// proximo lexema. --dump-tokens roda o lexer puro, sem parser, e portanto nao
-// processa #token nem #include — cada diretiva vira apenas um token T_DIR.
+// lex.mc — transliteration of stage0/lex.c: mutable token table and
+// incremental lexer. The lexer delivers one token per call (lex_next); the parser keeps
+// a lookahead of 1, so a #token registered now already applies to the
+// next lexeme. --dump-tokens runs the lexer alone, without the parser, so it does not
+// process #token or #include — each directive just becomes a T_DIR token.
 //
-// Mesmas funcoes, mesma ordem, mesma tabela na mesma ordem de insercao e ids.
-// Sem struct: Token, TokEnt e OpenFile sao registros planos (TOK_*, TE_*, OF_*).
-// Layouts (campos de 8 bytes, na ordem dos structs de stage0/mc.h):
+// Same functions, same order, same table in the same insertion order and ids.
+// No struct: Token, TokEnt and OpenFile are flat records (TOK_*, TE_*, OF_*).
+// Layouts (8-byte fields, in the order of stage0/mc.h's structs):
 //   TokEnt   { text, len, word, id }                       — 32 B
 //   Token    { id, start, len, val, line, file }            — 48 B
 //   OpenFile { cp, cend, line, name }                       — 32 B
-// Depende de arena.mc (xalloc, cstrlen, str_eq, mem_eq, buf_*, out_*, die,
+// Depends on arena.mc (xalloc, cstrlen, str_eq, mem_eq, buf_*, out_*, die,
 // die2, err_at, read_file).
-// err_at(arquivo, linha, msg) e o mesmo de arena.mc/stage0: o arquivo vem de
-// lex_file() (topo da pilha de #include) ou do proprio token, como no stage0.
+// err_at(file, line, msg) is the same as arena.mc/stage0: the file comes from
+// lex_file() (top of the #include stack) or from the token itself, as in stage0.
 
 #define MAXTOK  512
-#define MAXOPEN 16                    // profundidade maxima de #include
-#define MAXINC  256                   // arquivos ja incluidos (once-only)
+#define MAXOPEN 16                    // maximum #include depth
+#define MAXINC  256                   // already-included files (once-only)
 
-// ---- ids de token nao tabelados (enum de mc.h) ----
+// ---- untabled token ids (mc.h enum) ----
 #define T_EOF   0
 #define T_IDENT 1
 #define T_INT   2
@@ -28,7 +28,7 @@
 #define T_DIR   5
 #define T_HOLE  6
 
-// ---- diretivas conhecidas, na ordem da lista: val de um token T_DIR ----
+// ---- known directives, in list order: val of a T_DIR token ----
 #define D_INCLUDE 0
 #define D_DEFINE  1
 #define D_TOKEN   2
@@ -37,9 +37,9 @@
 #define D_RULE    5
 #define D_SECTION 6
 #define D_OPCODE  7
-#define D_DYLIB   8       // M12: no fim da lista, para nao renumerar as anteriores
+#define D_DYLIB   8       // M12: at the end of the list, so as not to renumber the earlier ones
 
-// ---- ids do nucleo: 256 em diante, na ordem fixa de insercao de tok_init ----
+// ---- core ids: 256 onward, in tok_init's fixed insertion order ----
 #define K_U8       256
 #define K_U16      257
 #define K_U32      258
@@ -83,8 +83,8 @@
 #define K_OROR     296
 #define K_BANG     297
 #define K_ASSIGN   298
-#define K_COLON    299       // so o #rule usa: `stmt:`
-#define K_ARROW    300       // so o #rule usa: `=>`
+#define K_COLON    299       // only #rule uses this: `stmt:`
+#define K_ARROW    300       // only #rule uses this: `=>`
 
 // ---- TokEnt: { text, len, word, id } ----
 #define TE_TEXT 0
@@ -112,17 +112,17 @@
 u8  toktab[MAXTOK * TE_SIZE];
 i64 ntok = 0;
 
-uptr cp;                              // cursor do arquivo atual
-uptr cend;                            // fim do arquivo atual
+uptr cp;                              // current file's cursor
+uptr cend;                            // current file's end
 i64  cline = 0;
 
-// pilha de arquivos: o topo e o que esta sendo lido; os de baixo guardam onde pararam
+// file stack: the top is the one being read; the ones below keep where they stopped
 u8  fstack[MAXOPEN * OF_SIZE];
 i64 nopen = 0;
-u8  inclist[MAXINC * 8];              // caminhos ja incluidos, em ordem
+u8  inclist[MAXINC * 8];              // already-included paths, in order
 i64 ninc = 0;
 
-// ---- acessoras de TokEnt ----
+// ---- TokEnt accessors ----
 uptr te_at(i64 i)   { return toktab + i * TE_SIZE; }
 uptr te_text(uptr e) { return ld64(e + TE_TEXT); }
 i64  te_len(uptr e)  { return ld64(e + TE_LEN); }
@@ -133,7 +133,7 @@ void set_te_len(uptr e, i64 v)   { st64(e + TE_LEN, v); }
 void set_te_word(uptr e, i64 v)  { st64(e + TE_WORD, v); }
 void set_te_id(uptr e, i64 v)    { st64(e + TE_ID, v); }
 
-// ---- acessoras de Token ----
+// ---- Token accessors ----
 i64  tok_id(uptr t)    { return ld64(t + TOK_ID); }
 uptr tok_start(uptr t) { return ld64(t + TOK_START); }
 i64  tok_len(uptr t)   { return ld64(t + TOK_LEN); }
@@ -147,7 +147,7 @@ void set_tok_val(uptr t, i64 v)    { st64(t + TOK_VAL, v); }
 void set_tok_line(uptr t, i64 v)   { st64(t + TOK_LINE, v); }
 void set_tok_file(uptr t, uptr v)  { st64(t + TOK_FILE, v); }
 
-// ---- acessoras de OpenFile e da lista de includes ----
+// ---- OpenFile and include-list accessors ----
 uptr of_at(i64 i)   { return fstack + i * OF_SIZE; }
 uptr of_cp(uptr f)   { return ld64(f + OF_CP); }
 uptr of_cend(uptr f) { return ld64(f + OF_CEND); }
@@ -161,7 +161,7 @@ void set_of_name(uptr f, uptr v) { st64(f + OF_NAME, v); }
 uptr inc_at(i64 i)            { return ld64(inclist + i * 8); }
 void set_inc_at(i64 i, uptr v) { st64(inclist + i * 8, v); }
 
-// ---- classificacao de caracteres ----
+// ---- character classification ----
 i64 is_alpha(i64 c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
 i64 is_digit(i64 c) { return c >= '0' && c <= '9'; }
 i64 is_alnum(i64 c) { return is_alpha(c) || is_digit(c); }
@@ -173,7 +173,7 @@ i64 hex_val(i64 c) {
     return -1;
 }
 
-// ---- tabela de tokens: ordem de insercao, ids a partir de 256 ----
+// ---- token table: insertion order, ids starting at 256 ----
 i64 tok_add(uptr text, i64 len) {
     i64 i = 0;
     loop {
@@ -182,8 +182,8 @@ i64 tok_add(uptr text, i64 len) {
         if (te_len(e) == len && mem_eq(te_text(e), text, len)) return te_id(e);
         i = i + 1;
     }
-    if (len <= 0) die("lexema vazio");
-    if (ntok == MAXTOK) die("tabela de tokens cheia");
+    if (len <= 0) die("empty lexeme");
+    if (ntok == MAXTOK) die("token table full");
     uptr ne = te_at(ntok);
     set_te_text(ne, text);
     set_te_len(ne, len);
@@ -210,9 +210,9 @@ uptr tok_text(i64 id) {
     return "?";
 }
 
-// A lista `core[]` do stage0 e um array de ponteiros inicializado; o nucleo nao
-// tem isso, entao a ordem de insercao vira uma sequencia de chamadas. Mesma
-// ordem, mesmos ids: K_U8 = 256 ate K_ASSIGN = 298.
+// stage0's `core[]` list is an initialized array of pointers; the core has no
+// such thing, so the insertion order becomes a sequence of calls. Same
+// order, same ids: K_U8 = 256 through K_ASSIGN = 298.
 void tok_init() {
     tok_add("u8", 2);
     tok_add("u16", 3);
@@ -257,11 +257,11 @@ void tok_init() {
     tok_add("||", 2);
     tok_add("!", 1);
     tok_add("=", 1);
-    tok_add(":", 1);         // so o #rule usa; no fim para nao renumerar
+    tok_add(":", 1);         // only #rule uses this; at the end so as not to renumber
     tok_add("=>", 2);
 }
 
-// identificador: so casa com entradas word=true
+// identifier: only matches word=true entries
 i64 word_id(uptr s, i64 len) {
     i64 i = 0;
     loop {
@@ -273,7 +273,7 @@ i64 word_id(uptr s, i64 len) {
     return -1;
 }
 
-// pontuacao/operador: maior prefixo, varredura linear e determinista
+// punctuation/operator: longest prefix, linear and deterministic scan
 i64 punct_id(uptr s, i64 avail, uptr plen) {
     i64 best = -1;
     i64 blen = 0;
@@ -292,8 +292,8 @@ i64 punct_id(uptr s, i64 avail, uptr plen) {
     return best;
 }
 
-// dir_names[] do stage0: array de ponteiros inicializado nao existe no nucleo,
-// entao a busca linear vira comparacoes explicitas — mesma ordem, mesmos indices.
+// stage0's dir_names[]: an initialized array of pointers does not exist in the core,
+// so the linear search becomes explicit comparisons — same order, same indices.
 i64 dir_index(uptr s, i64 nl) {
     if (nl == 7 && mem_eq("include", s, 7)) return D_INCLUDE;
     if (nl == 6 && mem_eq("define", s, 6))  return D_DEFINE;
@@ -307,14 +307,14 @@ i64 dir_index(uptr s, i64 nl) {
     return -1;
 }
 
-// ---- pilha de arquivos ----
+// ---- file stack ----
 #define MAXSEG 64
 
-// normaliza . e .. lexicamente (sem tocar no filesystem), para que dois caminhos
-// que nomeiam o mesmo arquivo virem a mesma string e o once-only funcione
+// normalizes . and .. lexically (without touching the filesystem), so that two paths
+// naming the same file become the same string and once-only works
 uptr path_norm(uptr p) {
-    i64 sb[MAXSEG];                    // inicio de cada segmento
-    i64 sl[MAXSEG];                    // tamanho de cada segmento
+    i64 sb[MAXSEG];                    // start of each segment
+    i64 sl[MAXSEG];                    // size of each segment
     i64 nseg = 0;
     i64 n = cstrlen(p);
     i64 i = 0;
@@ -335,10 +335,10 @@ uptr path_norm(uptr p) {
         i64 l = i - b;
         if (l == 0 || (l == 1 && ld8(p + b) == '.')) continue;
         i64 up = l == 2 && ld8(p + b) == '.' && ld8(p + b + 1) == '.';
-        uptr pb = sb + (nseg - 1) * 8;     // ultimo segmento; so lido se nseg > 0
+        uptr pb = sb + (nseg - 1) * 8;     // last segment; only read if nseg > 0
         i64 prev_up = nseg && ld64(sl + (nseg - 1) * 8) == 2
                       && ld8(p + ld64(pb)) == '.' && ld8(p + ld64(pb) + 1) == '.';
-        i64 drop = 0;                  // o ternario do C vira um if explicito
+        i64 drop = 0;                  // the C ternary becomes an explicit if
         if (up) {
             if (nseg) { if (!prev_up) drop = 1; }
             else if (abs) drop = 1;
@@ -347,7 +347,7 @@ uptr path_norm(uptr p) {
             if (nseg) nseg = nseg - 1;
             continue;
         }
-        if (nseg == MAXSEG) die2("caminho com segmentos demais", p);
+        if (nseg == MAXSEG) die2("path with too many segments", p);
         st64(sb + nseg * 8, b);
         st64(sl + nseg * 8, l);
         nseg = nseg + 1;
@@ -373,7 +373,7 @@ uptr path_norm(uptr p) {
     return s;
 }
 
-// junta o diretorio de base com rel e normaliza; caminho absoluto ignora a base
+// joins the base directory with rel and normalizes; an absolute path ignores the base
 uptr path_join(uptr base, uptr rel) {
     i64 cut = 0;
     i64 bl = cstrlen(base);
@@ -403,7 +403,7 @@ uptr path_join(uptr base, uptr rel) {
 }
 
 void lex_push(uptr path, i64 line) {
-    if (nopen == MAXOPEN) err_at(lex_file(), line, "includes aninhados demais");
+    if (nopen == MAXOPEN) err_at(lex_file(), line, "too many nested includes");
     if (nopen) {
         uptr prev = of_at(nopen - 1);
         set_of_cp(prev, cp);
@@ -436,12 +436,12 @@ void lex_init(uptr path) {
     nopen = 0;
     ninc = 0;
     path = path_norm(path);
-    set_inc_at(ninc, path);            // o raiz tambem conta para o once-only
+    set_inc_at(ninc, path);            // the root also counts for once-only
     ninc = ninc + 1;
     lex_push(path, 0);
 }
 
-// #include: resolve rel contra o diretorio do arquivo atual e empilha; 0 = ja incluido
+// #include: resolves rel against the current file's directory and pushes; 0 = already included
 i64 lex_include(uptr rel, i64 line) {
     uptr path = path_join(of_name(of_at(nopen - 1)), rel);
     i64 i = 0;
@@ -450,7 +450,7 @@ i64 lex_include(uptr rel, i64 line) {
         if (str_eq(inc_at(i), path)) return 0;
         i = i + 1;
     }
-    if (ninc == MAXINC) err_at(lex_file(), line, "includes demais");
+    if (ninc == MAXINC) err_at(lex_file(), line, "too many includes");
     set_inc_at(ninc, path);
     ninc = ninc + 1;
     lex_push(path, line);
@@ -485,7 +485,7 @@ void skip_space() {
                 if (ld8(cp) == '\n') cline = cline + 1;
                 cp = cp + 1;
             }
-            if (cp + 1 >= cend) err_at(lex_file(), open_line, "comentario nao terminado");
+            if (cp + 1 >= cend) err_at(lex_file(), open_line, "unterminated comment");
             cp = cp + 2;
             continue;
         }
@@ -493,28 +493,28 @@ void skip_space() {
     }
 }
 
-// le um caractere de literal, decodificando escape. Em string \0 e proibido:
-// __cstring e S_CSTRING_LITERALS e o ld funde literais pelo primeiro NUL.
+// reads one literal character, decoding escapes. \0 is forbidden in a string:
+// __cstring and S_CSTRING_LITERALS, and ld merges literals at the first NUL.
 i64 read_char(i64 in_str) {
-    if (cp >= cend) err_at(lex_file(), cline, "literal nao terminado");
+    if (cp >= cend) err_at(lex_file(), cline, "unterminated literal");
     i64 c = ld8(cp);
     cp = cp + 1;
     if (c == '\n') { cline = cline + 1; return c; }
     if (c != '\\') return c;
-    if (cp >= cend) err_at(lex_file(), cline, "escape nao terminado");
+    if (cp >= cend) err_at(lex_file(), cline, "unterminated escape");
     i64 e = ld8(cp);
     cp = cp + 1;
     if (e == 'n')  return '\n';
     if (e == 't')  return '\t';
     if (e == 'r')  return '\r';
     if (e == '0')  {
-        if (in_str) err_at(lex_file(), cline, "\\0 nao permitido em string");
+        if (in_str) err_at(lex_file(), cline, "\\0 not allowed in string");
         return 0;
     }
     if (e == '\\') return '\\';
     if (e == '\'') return '\'';
     if (e == '"')  return '"';
-    err_at(lex_file(), cline, "escape desconhecido");
+    err_at(lex_file(), cline, "unknown escape");
     return 0;
 }
 
@@ -522,7 +522,7 @@ void lex_number(uptr t) {
     u64 v = 0;
     if (ld8(cp) == '0' && cp + 1 < cend && (ld8(cp + 1) == 'x' || ld8(cp + 1) == 'X')) {
         cp = cp + 2;
-        if (cp >= cend || hex_val(ld8(cp)) < 0) err_at(lex_file(), cline, "hexadecimal invalido");
+        if (cp >= cend || hex_val(ld8(cp)) < 0) err_at(lex_file(), cline, "invalid hexadecimal");
         loop {
             if (cp >= cend) break;
             if (hex_val(ld8(cp)) < 0) break;
@@ -544,15 +544,15 @@ void lex_number(uptr t) {
 void lex_string(uptr t) {
     u8 b[BUF_SIZE];
     buf_init(b);
-    cp = cp + 1;                       // aspas de abertura
+    cp = cp + 1;                       // opening quote
     loop {
         if (cp >= cend) break;
         if (ld8(cp) == '"') break;
         buf_u8(b, read_char(1));
     }
-    if (cp >= cend) err_at(tok_file(t), tok_line(t), "string nao terminada");
+    if (cp >= cend) err_at(tok_file(t), tok_line(t), "unterminated string");
     cp = cp + 1;
-    buf_u8(b, 0);                      // sentinela; o len nao a conta
+    buf_u8(b, 0);                      // sentinel; len does not count it
     set_tok_id(t, T_STR);
     set_tok_start(t, buf_p(b));
     set_tok_len(t, buf_len(b) - 1);
@@ -568,12 +568,12 @@ void lex_directive(uptr t) {
     }
     i64 nl = cp - ns;
     i64 d = dir_index(ns, nl);
-    if (d < 0) err_at(tok_file(t), tok_line(t), "diretiva desconhecida");
+    if (d < 0) err_at(tok_file(t), tok_line(t), "unknown directive");
     set_tok_id(t, T_DIR);
     set_tok_val(t, d);
 }
 
-// $1 / $2 -> val = numero; $nome -> val = -1; $$nome -> val = -2 (gensym, so reservado)
+// $1 / $2 -> val = number; $name -> val = -1; $$name -> val = -2 (gensym, reserved only)
 void lex_hole(uptr t) {
     cp = cp + 1;
     i64 gensym = 0;
@@ -595,7 +595,7 @@ void lex_hole(uptr t) {
         }
         set_tok_val(t, -1);
     } else {
-        err_at(tok_file(t), tok_line(t), "buraco invalido");
+        err_at(tok_file(t), tok_line(t), "invalid hole");
     }
     if (gensym) set_tok_val(t, -2);
     set_tok_id(t, T_HOLE);
@@ -603,7 +603,7 @@ void lex_hole(uptr t) {
 
 void lex_next(uptr t) {
     skip_space();
-    loop {                             // fim de um #include
+    loop {                             // end of an #include
         if (cp < cend) break;
         if (nopen <= 1) break;
         lex_pop();
@@ -641,19 +641,19 @@ void lex_next(uptr t) {
     if (ld8(cp) == '\'') {
         cp = cp + 1;
         set_tok_val(t, read_char(0));
-        if (cp >= cend || ld8(cp) != '\'') err_at(tok_file(t), tok_line(t), "char literal nao terminado");
+        if (cp >= cend || ld8(cp) != '\'') err_at(tok_file(t), tok_line(t), "unterminated char literal");
         cp = cp + 1;
         set_tok_id(t, T_CHAR);
         set_tok_len(t, cp - tok_start(t));
         return;
     }
-    if (ld8(cp) == '"') { lex_string(t); return; }        // start aponta para a arena
+    if (ld8(cp) == '"') { lex_string(t); return; }        // start points into the arena
     if (ld8(cp) == '#') { lex_directive(t); set_tok_len(t, cp - tok_start(t)); return; }
     if (ld8(cp) == '$') { lex_hole(t);      set_tok_len(t, cp - tok_start(t)); return; }
 
     i64 plen = 0;
     i64 pid = punct_id(cp, cend - cp, &plen);
-    if (pid < 0) err_at(tok_file(t), tok_line(t), "caractere inesperado");
+    if (pid < 0) err_at(tok_file(t), tok_line(t), "unexpected character");
     cp = cp + plen;
     set_tok_len(t, plen);
     set_tok_id(t, pid);
@@ -678,7 +678,7 @@ void dump_escaped(uptr s, i64 len) {
     out_str(1, "\"");
 }
 
-// uma linha por token: LINHA ID TEXTO (INT/CHAR imprimem o valor)
+// one line per token: LINE ID TEXT (INT/CHAR print the value)
 void dump_tokens() {
     u8 t[TOK_SIZE];
     loop {

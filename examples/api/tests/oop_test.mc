@@ -1,14 +1,14 @@
-// oop_test.mc — o programa que so o compilador deste exemplo compila.
-// Usa tudo o que examples/api/oop.mc ensina: uma interface com dois metodos,
-// duas classes que a implementam, despacho por ponteiro de interface, uma
-// classe sem interface com campos i64/str/bool e acessoras set/get.
+// oop_test.mc — the program that only this example's compiler compiles.
+// Uses everything examples/api/oop.mc teaches: an interface with two methods,
+// two classes that implement it, dispatch via an interface pointer, a class
+// with no interface with i64/str/bool fields and set/get accessors.
 //
 //   make -C examples/api test-oop
 //
-// Com o compilador padrao (build/mc1) ele falha na primeira declaracao:
-// `interface` la e so um identificador.
+// With the default compiler (build/mc1) it fails at the first declaration:
+// `interface` there is just an identifier.
 // expect-exit: 42
-// expect-stdout: [x] comprar pao #10
+// expect-stdout: [x] buy bread #10
 // expect-stdout: rect area=20
 // expect-stdout: circ area=12
 // expect-stdout: total=42
@@ -16,20 +16,20 @@
 #include "../../../lib/sys.mc"
 #include "../../../lib/prelude.mc"
 
-// ---- runtime minimo do programa ----
-// `nome_new()` chama rt_alloc(n) e conta com memoria ZERADA. Aqui isso sai de
-// graca: `heap` e uma global sem inicializador (vai zerada para o __bss) e o
-// ponteiro so anda para a frente, nunca reaproveita. A versao de verdade e
-// examples/api/lib/rt.mc.
+// ---- the program's minimal runtime ----
+// `name_new()` calls rt_alloc(n) and counts on ZEROED memory. Here that comes
+// for free: `heap` is a global with no initializer (goes to the __bss,
+// zeroed) and the pointer only moves forward, never reusing space. The real
+// version is examples/api/lib/rt.mc.
 #define HEAPSZ 65536
 
 u8  heap[HEAPSZ];
 i64 heap_used = 0;
 
 uptr rt_alloc(i64 n) {
-    n = (n + 7) & ~7;                            // objetos sempre alinhados a 8
+    n = (n + 7) & ~7;                            // objects always aligned to 8
     if (heap_used + n > HEAPSZ) {
-        puts("rt_alloc: heap cheio\n");
+        puts("rt_alloc: heap full\n");
         exit(1);
     }
     uptr p = heap + heap_used;
@@ -37,36 +37,36 @@ uptr rt_alloc(i64 n) {
     return p;
 }
 
-// ---- uma interface com dois metodos ----
+// ---- an interface with two methods ----
 interface Shape {
     i64 area(self);
-    str nome(self);
+    str name(self);
 }
 
-// ---- duas classes que a implementam ----
+// ---- two classes that implement it ----
 class Rect : Shape {
     i64 w;
     i64 h;
 
     i64 area(self) { return rect_w(self) * rect_h(self); }
-    str nome(self) { return "rect"; }
+    str name(self) { return "rect"; }
 }
 
 class Circle : Shape {
     i64 r;
 
-    // 3 no lugar de pi: o nucleo so tem inteiro
+    // 3 in place of pi: the core only has integers
     i64 area(self) { return 3 * circle_r(self) * circle_r(self); }
-    str nome(self) { return "circ"; }
+    str name(self) { return "circ"; }
 }
 
-// ---- uma classe sem interface, com campos i64 / str / bool ----
+// ---- a class with no interface, with i64 / str / bool fields ----
 class Todo {
     i64  id;
     str  title;
     bool done;
 
-    // metodo com `self` implicito: le o proprio campo pela acessora gerada
+    // method with implicit `self`: reads its own field via the generated accessor
     str label(self) {
         if (todo_done(self)) return "[x] ";
         return "[ ] ";
@@ -74,10 +74,10 @@ class Todo {
 }
 
 i64 main() {
-    // classe sem interface: construtor, set_* e *_
+    // class with no interface: constructor, set_* and *_
     Todo t = todo_new();
     set_todo_id(t, 10);
-    set_todo_title(t, "comprar pao");
+    set_todo_title(t, "buy bread");
     set_todo_done(t, 1);
 
     puts(todo_label(t));
@@ -93,28 +93,28 @@ i64 main() {
     Circle c = circle_new();
     set_circle_r(c, 2);
 
-    // despacho por ponteiro de interface: o mesmo par de chamadas atinge
-    // rect_area/rect_nome e circle_area/circle_nome, pela vtable de cada objeto
-    Shape lista[2];
-    st64(lista, r);
-    st64(lista + 8, c);
+    // dispatch via interface pointer: the same pair of calls reaches
+    // rect_area/rect_name and circle_area/circle_name, through each object's vtable
+    Shape list[2];
+    st64(list, r);
+    st64(list + 8, c);
 
-    i64 soma = 0;
+    i64 sum = 0;
     i64 i = 0;
     while (i < 2) {
-        Shape s = ld64(lista + i * 8);
-        puts(shape_nome(s));
+        Shape s = ld64(list + i * 8);
+        puts(shape_name(s));
         puts(" area=");
         putnum(shape_area(s));
         puts("\n");
-        soma += shape_area(s);
+        sum += shape_area(s);
         i += 1;
     }
 
-    if (todo_done(t)) soma += todo_id(t);        // 20 + 12 + 10
+    if (todo_done(t)) sum += todo_id(t);        // 20 + 12 + 10
 
     puts("total=");
-    putnum(soma);
+    putnum(sum);
     puts("\n");
-    return soma;
+    return sum;
 }

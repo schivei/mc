@@ -1,31 +1,31 @@
-// arena.mc — transliteracao de stage0/arena.c: arena estatica em bss, buffers
-// little-endian e I/O por fd. Mesmas funcoes, mesma ordem, mesma forma de I/O.
-// Sem struct: Buf e um registro plano de 24 bytes (BUF_* + acessoras).
+// arena.mc — transliteration of stage0/arena.c: static arena in bss, buffers
+// little-endian and I/O by fd. Same functions, same order, same I/O shape.
+// No struct: Buf is a flat 24-byte record (BUF_* + accessors).
 
 extern i64 open(uptr path, i64 flags, i64 mode);
 extern i64 read(i64 fd, uptr buf, i64 n);
 extern i64 write(i64 fd, uptr buf, i64 n);
 extern i64 close(i64 fd);
 extern void _exit(i64 code);
-// NOTA (M5.6): `open` da libSystem e variadica — `int open(const char *, int, ...)`
-// — e no ABI arm64 da Apple todo argumento variadico vai para a PILHA, nao para
-// x2. O nucleo so sabe passar argumentos em x0..x7, entao o modo enviado por
-// `open(path, flags, MODE_644)` seria ignorado e o arquivo nasceria com permissao
-// lixo (medido: `-r--------`). Por isso quem cria arquivo e `creat`, que nao e
-// variadica; `stage0/arena.c` usa a mesma chamada, e as duas versoes de
-// write_file tem exatamente a mesma forma de I/O.
+// NOTE (M5.6): libSystem's `open` is variadic — `int open(const char *, int, ...)`
+// — and on Apple's arm64 ABI every variadic argument goes on the STACK, not into
+// x2. The core only knows how to pass arguments in x0..x7, so the mode sent by
+// `open(path, flags, MODE_644)` would be ignored and the file would come out with
+// garbage permissions (measured: `-r--------`). That is why file creation goes
+// through `creat`, which is not variadic; `stage0/arena.c` uses the same call, and
+// both versions of write_file have exactly the same I/O shape.
 extern i64 creat(uptr path, i64 mode);
 
-// valores do macOS (sys/fcntl.h)
+// macOS values (sys/fcntl.h)
 #define O_RDONLY 0
 #define O_WRONLY 1
 #define O_CREAT 0x200
 #define O_TRUNC 0x400
-#define MODE_644 420                  // 0644 em decimal: nao ha literal octal
+#define MODE_644 420                  // 0644 in decimal: no octal literal
 
-// ---- limites compartilhados por parse.mc e gen_arm64.mc (mc.h do stage0) ----
-#define MAXSECS   32                  // #section que o fonte pode registrar
-#define MAXPARAMS 8                   // nunca passa argumento pela pilha
+// ---- limits shared by parse.mc and gen_arm64.mc (stage0's mc.h) ----
+#define MAXSECS   32                  // #section entries the source can register
+#define MAXPARAMS 8                   // never passes an argument on the stack
 
 #define HEAP_SIZE (32 << 20)
 u8  heap[HEAP_SIZE];
@@ -79,7 +79,7 @@ uptr xstrdup(uptr s, i64 n) {
     return d;
 }
 
-// ---- Buf: registro plano { p, len, cap } ----
+// ---- Buf: flat record { p, len, cap } ----
 #define BUF_P    0
 #define BUF_LEN  8
 #define BUF_CAP  16
@@ -92,7 +92,7 @@ void set_buf_p(uptr b, uptr v)  { st64(b + BUF_P, v); }
 void set_buf_len(uptr b, i64 v) { st64(b + BUF_LEN, v); }
 void set_buf_cap(uptr b, i64 v) { st64(b + BUF_CAP, v); }
 
-// equivale a `Buf b = {0}` do C: locais nao vem zerados
+// equivalent to C's `Buf b = {0}`: locals do not come zeroed
 void buf_init(uptr b) {
     set_buf_p(b, 0);
     set_buf_len(b, 0);
@@ -166,7 +166,7 @@ i64 buf_get32(uptr b, i64 off) {
     return v;
 }
 
-// ---- saida ----
+// ---- output ----
 void io_write(i64 fd, uptr p, i64 n) {
     loop {
         if (n == 0) break;
@@ -180,8 +180,8 @@ void io_write(i64 fd, uptr p, i64 n) {
 void out_str(i64 fd, uptr s)            { io_write(fd, s, cstrlen(s)); }
 void out_bytes(i64 fd, uptr p, i64 n)   { io_write(fd, p, n); }
 
-// NOTA M3: o codegen do stage0 emite sempre `sdiv`, mesmo para u64. Logo `u / 10`
-// aqui e divisao com sinal: o unico valor que divergiria do C e v == -2^63.
+// NOTE M3: stage0's codegen always emits `sdiv`, even for u64. So `u / 10`
+// here is signed division: the only value that would diverge from C is v == -2^63.
 void out_num(i64 fd, i64 v) {
     u8 tmp[24];
     i64 i = 24;
@@ -207,7 +207,7 @@ void out_hex(i64 fd, u64 v) {
     loop {
         i = i - 1;
         st8(tmp + i, ld8("0123456789abcdef" + (v & 15)));
-        v = v >> 4;                            // v e u64: `>>` e logico (lsr)
+        v = v >> 4;                            // v is u64: `>>` is logical (lsr)
         if (v == 0) break;
     }
     i = i - 1; st8(tmp + i, 'x');
@@ -225,9 +225,9 @@ void die2(uptr msg, uptr detail) {
     _exit(1);
 }
 
-// arquivo:linha: msg — o arquivo vem sempre do token/no que deu a linha. Unica
-// forma de erro posicionado do compilador: o lexer passa lex_file() ou o arquivo
-// do token, o parser o do token corrente, o codegen o do no (err_node).
+// file:line: msg — the file always comes from the token/node that gave the line. The
+// compiler's only form of positioned error: the lexer passes lex_file() or the token's
+// file, the parser the current token's, the codegen the node's (err_node).
 void err_at(uptr file, i64 line, uptr msg) {
     if (file) out_str(2, file);
     else      out_str(2, "?");
@@ -239,7 +239,7 @@ void err_at(uptr file, i64 line, uptr msg) {
     _exit(1);
 }
 
-// mesma coisa com um detalhe no fim: o lexema que a regra esperava, por exemplo
+// same thing with one extra detail at the end: the lexeme the rule expected, for example
 void err_at2(uptr file, i64 line, uptr msg, uptr detail) {
     if (file) out_str(2, file);
     else      out_str(2, "?");
@@ -253,7 +253,7 @@ void err_at2(uptr file, i64 line, uptr msg, uptr detail) {
     _exit(1);
 }
 
-#define RF_CHUNK 65536                // o C usa `u8 tmp[65536]` no frame; aqui vem da arena
+#define RF_CHUNK 65536                // the C uses `u8 tmp[65536]` on the frame; here it comes from the arena
 
 uptr read_file(uptr path, uptr plen) {
     i64 fd = open(path, O_RDONLY, 0);
@@ -274,13 +274,13 @@ uptr read_file(uptr path, uptr plen) {
 }
 
 void write_file(uptr path, uptr b) {
-    i64 fd = creat(path, MODE_644);       // ver a NOTA sobre open variadica acima
+    i64 fd = creat(path, MODE_644);       // see the NOTE about variadic open above
     if (fd < 0) die2("cannot create", path);
     io_write(fd, buf_p(b), buf_len(b));
     close(fd);
 }
 
-// ---- copia/zera bytes (o C usa atribuicao de struct; aqui e byte a byte) ----
+// ---- copy/zero bytes (the C uses struct assignment; here it's byte by byte) ----
 void mem_copy(uptr d, uptr s, i64 n) {
     i64 i = 0;
     loop {

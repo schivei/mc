@@ -9,18 +9,18 @@ mc="${1:-build/mc0}"
 astdump="${2:-build/astdump}"
 
 if [ ! -x "$mc" ]; then
-    echo "FAIL: compilador '$mc' nao encontrado ou nao executavel"
+    echo "FAIL: compiler '$mc' not found or not executable"
     exit 1
 fi
 
 mkdir -p build
 obj="build/astdump.o"
 if ! msg=$("$mc" src/astdump.mc -o "$obj" 2>&1); then
-    echo "FAIL: compilacao de src/astdump.mc: $msg"
+    echo "FAIL: compiling src/astdump.mc: $msg"
     exit 1
 fi
 if ! msg=$(scripts/link.sh "$astdump" "$obj" 2>&1); then
-    echo "FAIL: link de $astdump: $msg"
+    echo "FAIL: linking $astdump: $msg"
     exit 1
 fi
 
@@ -37,7 +37,7 @@ for f in tests/*.mc tests/lib/*.mc lib/*.mc src/*.mc; do
     "$astdump" "$f"       > "$tmp/b" 2> "$tmp/be"; rb=$?
 
     if [ "$ra" != "$rb" ]; then
-        echo "FAIL $f (exit $rb, esperado $ra)"
+        echo "FAIL $f (exit $rb, expected $ra)"
         sed -n '1,3p' "$tmp/ae" "$tmp/be"
         fails=$((fails + 1)); continue
     fi
@@ -47,7 +47,7 @@ for f in tests/*.mc tests/lib/*.mc lib/*.mc src/*.mc; do
         fails=$((fails + 1)); continue
     fi
     if ! diff -u "$tmp/ae" "$tmp/be" > "$tmp/de" 2>&1; then
-        echo "FAIL $f (stderr difere)"
+        echo "FAIL $f (stderr differs)"
         sed -n '1,20p' "$tmp/de"
         fails=$((fails + 1)); continue
     fi
@@ -55,5 +55,5 @@ for f in tests/*.mc tests/lib/*.mc lib/*.mc src/*.mc; do
 done
 
 rm -rf "$tmp"
-echo "$((total - fails))/$total arquivos identicos"
+echo "$((total - fails))/$total files identical"
 [ "$fails" -eq 0 ]

@@ -1,11 +1,12 @@
-// sqlite.mc — ligacao com a libsqlite3 do sistema, pela diretiva #dylib do M12.
+// sqlite.mc — binding to the system's libsqlite3, via M12's #dylib directive.
 //
-// Antes do M12 o unico jeito de chamar uma dylib que nao fosse a libSystem era
-// linkar com o `ld`. Com `#dylib "caminho"` o proprio `mc --exe` emite o
-// LC_LOAD_DYLIB e o bind opcode com o ordinal certo — ver docs/surface.md.
+// Before M12 the only way to call a dylib other than libSystem was to link
+// with `ld`. With `#dylib "path"`, `mc --exe` itself emits the LC_LOAD_DYLIB
+// and the bind opcode with the right ordinal — see docs/surface.md.
 //
-// O caminho nao precisa existir em disco: no macOS moderno a libsqlite3 vive no
-// dyld shared cache. O `.o` + `ld` ignora `#dylib` (mesma troca do M11).
+// The path does not need to exist on disk: on modern macOS libsqlite3 lives
+// in the dyld shared cache. `.o` + `ld` ignores `#dylib` (the same trade-off
+// as M11).
 //
 //   #include "lib/sqlite.mc"
 
@@ -15,8 +16,9 @@
 #define SQLITE_ROW   100
 #define SQLITE_DONE  101
 
-// sqlite3_bind_text: o destrutor SQLITE_TRANSIENT e (void*)-1 e manda a libsqlite3
-// copiar o texto na hora — assim o buffer do chamador pode morrer logo depois.
+// sqlite3_bind_text: the SQLITE_TRANSIENT destructor is (void*)-1 and tells
+// libsqlite3 to copy the text right away — so the caller's buffer can die
+// right after.
 #define SQLITE_TRANSIENT 0 - 1
 
 #dylib "/usr/lib/libsqlite3.dylib"
@@ -35,14 +37,14 @@ extern uptr sqlite3_errmsg(uptr db);
 extern i64  sqlite3_last_insert_rowid(uptr db);
 extern i64  sqlite3_changes(uptr db);
 
-// volta para a libSystem: sem este reset todo extern declarado depois de um
-// #include "sqlite.mc" iria parar na libsqlite3
+// back to libSystem: without this reset every extern declared after a
+// #include "sqlite.mc" would end up in libsqlite3
 #dylib ""
 
 // ---- wrappers ----
-// O handle da conexao e do statement saem por ponteiro-para-ponteiro na API do
-// SQLite; aqui o endereco vem de um `uptr` local (`&h`), e o wrapper devolve o
-// handle direto — 0 quer dizer erro.
+// The connection's and the statement's handles come out via pointer-to-pointer
+// in SQLite's API; here the address comes from a local `uptr` (`&h`), and the
+// wrapper returns the handle directly — 0 means error.
 
 uptr db_open(uptr path) {
     uptr h = 0;
@@ -58,12 +60,12 @@ i64 db_close(uptr db) {
     return sqlite3_close(db);
 }
 
-// roda um SQL sem resultado; devolve SQLITE_OK ou o codigo de erro
+// runs a SQL statement with no result; returns SQLITE_OK or the error code
 i64 db_exec(uptr db, uptr sql) {
     return sqlite3_exec(db, sql, 0, 0, 0);
 }
 
-// compila o SQL; 0 = erro (a mensagem sai em db_errmsg). nbyte = -1: ate o NUL
+// compiles the SQL; 0 = error (the message comes out via db_errmsg). nbyte = -1: up to the NUL
 uptr db_prepare(uptr db, uptr sql) {
     uptr h = 0;
     i64 rc = sqlite3_prepare_v2(db, sql, 0 - 1, &h, 0);
@@ -79,7 +81,7 @@ i64 db_finalize(uptr stmt) {
     return sqlite3_finalize(stmt);
 }
 
-// parametros sao 1-indexados na API do SQLite
+// parameters are 1-indexed in SQLite's API
 i64 db_bind_int(uptr stmt, i64 idx, i64 v) {
     return sqlite3_bind_int(stmt, idx, v);
 }
@@ -88,12 +90,12 @@ i64 db_bind_text(uptr stmt, i64 idx, uptr s) {
     return sqlite3_bind_text(stmt, idx, s, str_len(s), SQLITE_TRANSIENT);
 }
 
-// colunas sao 0-indexadas
+// columns are 0-indexed
 i64 db_col_int(uptr stmt, i64 col) {
     return sqlite3_column_int(stmt, col);
 }
 
-// texto da coluna; NULL vira string vazia para o chamador nao precisar testar
+// column text; NULL becomes an empty string so the caller need not check for it
 uptr db_col_text(uptr stmt, i64 col) {
     uptr p = sqlite3_column_text(stmt, col);
     if (p == 0) return "";

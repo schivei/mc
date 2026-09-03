@@ -114,11 +114,11 @@ The two output paths fail at different moments when an `extern` doesn't exist an
 used in the two runs below:
 
 ```
-// faltante.mc
-extern i64 nao_existe_mesmo(i64 x);
+// missing.mc
+extern i64 does_not_exist(i64 x);
 
 i64 main() {
-    return nao_existe_mesmo(1);
+    return does_not_exist(1);
 }
 ```
 
@@ -126,13 +126,13 @@ The `.o` + `ld` path refuses **at link time** — `ld` resolves against `libSyst
 to say no:
 
 ```
-$ build/mc1 faltante.mc -o faltante.o
+$ build/mc1 missing.mc -o missing.o
 $ echo $?
 0
-$ scripts/link.sh faltante faltante.o
+$ scripts/link.sh missing missing.o
 Undefined symbols for architecture arm64:
-  "_nao_existe_mesmo", referenced from:
-      _main in faltante.o
+  "_does_not_exist", referenced from:
+      _main in missing.o
 ld: symbol(s) not found for architecture arm64
 $ echo $?
 1
@@ -146,17 +146,17 @@ whole point of the milestone is depending on nothing beyond `dyld` at runtime. T
 out well-formed and signed; the one that refuses is `dyld`, at load time:
 
 ```
-$ build/mc1 --exe faltante.mc -o faltante-exe
+$ build/mc1 --exe missing.mc -o missing-exe
 $ echo $?
 0
-$ ls -l faltante-exe
--rwxr-xr-x  1 schivei  wheel  33289 faltante-exe
-$ codesign --verify --verbose=4 faltante-exe
-faltante-exe: valid on disk
-faltante-exe: satisfies its Designated Requirement
-$ ./faltante-exe
-dyld[84421]: Symbol not found: _nao_existe_mesmo
-  Referenced from: <CCEFFEF5-D25D-5C49-8593-D99D8433E7BA> .../faltante-exe
+$ ls -l missing-exe
+-rwxr-xr-x  1 schivei  wheel  33272 missing-exe
+$ codesign --verify --verbose=4 missing-exe
+missing-exe: valid on disk
+missing-exe: satisfies its Designated Requirement
+$ ./missing-exe
+dyld[80040]: Symbol not found: _does_not_exist
+  Referenced from: <F1456454-2B44-5ECA-A150-2354A925A8A5> .../missing-exe
   Expected in:     <4FED5EE2-5D3E-35B1-A170-9859C4B683BB> /usr/lib/libSystem.B.dylib
 $ echo $?
 134

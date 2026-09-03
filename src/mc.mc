@@ -1,10 +1,10 @@
-// mc.mc — o compilador padrao: o nucleo (core.mc) mais o ponto de extensao do
-// usuario (user.mc, que por padrao so tem um `user_init` vazio).
+// mc.mc — the default compiler: the core (core.mc) plus the user's extension
+// point (user.mc, which by default only has an empty `user_init`).
 //
-// A divisao existe desde o M12: um compilador ensinado nao edita src/, ele e um
-// arquivo proprio que inclui `src/core.mc` e define o seu proprio `user_init`
-// (ver docs/surface.md § Tier 3 e examples/api/mc-api.mc). src/user.mc continua
-// sendo a costura de quem prefere ensinar o compilador padrao no lugar.
+// The split exists since M12: a taught compiler does not edit src/, it is its
+// own file that includes `src/core.mc` and defines its own `user_init`
+// (see docs/surface.md § Tier 3 and examples/api/mc-api.mc). src/user.mc remains
+// the seam for those who prefer to teach the default compiler instead.
 
 #include "core.mc"
 #include "user.mc"

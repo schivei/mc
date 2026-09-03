@@ -1,12 +1,14 @@
-// rt.mc — runtime minimo dos programas de examples/api: arena estatica, utilitarios
-// de string, buffer de saida (strbuf) e conversao inteiro <-> texto.
+// rt.mc — minimal runtime for the examples/api programs: static arena, string
+// utilities, an output buffer (strbuf) and integer <-> text conversion.
 //
-// Escrito so com o nucleo da linguagem mais lib/prelude.mc (`while`, `for`, `++`,
-// `+=`). Nada aqui depende dos hooks do M12: e codigo de programa, nao de compilador.
+// Written using only the language's core plus lib/prelude.mc (`while`, `for`,
+// `++`, `+=`). Nothing here depends on M12's hooks: it is program code, not
+// compiler code.
 //
-// A arena e FIXA: RT_HEAP_SIZE bytes reservados em __bss e um ponteiro que so anda
-// para frente. Nao existe rt_free — um programa que aloca em laco infinito estoura a
-// arena e morre em rt_panic. O heap de verdade e assunto do M13.
+// The arena is FIXED: RT_HEAP_SIZE bytes reserved in __bss and a pointer that
+// only moves forward. There is no rt_free — a program that allocates in an
+// infinite loop overruns the arena and dies in rt_panic. The real heap is
+// M13's business.
 //
 //   #include "lib/rt.mc"
 
@@ -14,14 +16,14 @@
 #include "../../../lib/sys.mc"
 
 #define RT_HEAP_SIZE 4194304          // 4 MiB
-#define RT_ALIGN 16                   // todo bloco sai alinhado a 16
+#define RT_ALIGN 16                   // every block comes out aligned to 16
 
 u8  rt_heap[RT_HEAP_SIZE];
 i64 rt_hp = 0;
 
 // ---- arena ----
 
-// aborta o programa com uma mensagem em stderr; sem recuperacao
+// aborts the program with a message to stderr; no recovery
 void rt_panic(uptr msg) {
     write(2, "rt: ", 4);
     write(2, msg, str_len(msg));
@@ -29,22 +31,22 @@ void rt_panic(uptr msg) {
     exit(70);
 }
 
-// devolve `n` bytes zerados e alinhados a 16; nunca devolve 0
+// returns `n` zeroed bytes aligned to 16; never returns 0
 uptr rt_alloc(i64 n) {
-    if (n < 0) rt_panic("rt_alloc: tamanho negativo");
+    if (n < 0) rt_panic("rt_alloc: negative size");
     i64 sz = (n + (RT_ALIGN - 1)) & ~(RT_ALIGN - 1);
     if (sz == 0) sz = RT_ALIGN;
-    if (rt_hp + sz > RT_HEAP_SIZE) rt_panic("rt_alloc: arena cheia");
+    if (rt_hp + sz > RT_HEAP_SIZE) rt_panic("rt_alloc: arena full");
     uptr p = rt_heap + rt_hp;
     rt_hp = rt_hp + sz;
     mem_zero(p, sz);
     return p;
 }
 
-// bytes ja entregues pela arena (util em teste e diagnostico)
+// bytes already handed out by the arena (useful for tests and diagnostics)
 i64 rt_used() { return rt_hp; }
 
-// ---- memoria ----
+// ---- memory ----
 
 void mem_copy(uptr d, uptr s, i64 n) {
     i64 i = 0;
@@ -62,7 +64,7 @@ void mem_zero(uptr p, i64 n) {
     }
 }
 
-// ---- strings NUL-terminadas ----
+// ---- NUL-terminated strings ----
 
 i64 str_len(uptr s) {
     i64 n = 0;
@@ -72,7 +74,7 @@ i64 str_len(uptr s) {
     return n;
 }
 
-// compara ate `n` bytes; 0 se iguais, senao a diferenca do primeiro byte diferente
+// compares up to `n` bytes; 0 if equal, otherwise the difference of the first differing byte
 i64 str_ncmp(uptr a, uptr b, i64 n) {
     i64 i = 0;
     while (i < n) {
@@ -85,7 +87,7 @@ i64 str_ncmp(uptr a, uptr b, i64 n) {
     return 0;
 }
 
-// 1 se as duas strings sao identicas, 0 caso contrario
+// 1 if the two strings are identical, 0 otherwise
 i64 str_eq(uptr a, uptr b) {
     i64 i = 0;
     i64 ca = 0;
@@ -100,7 +102,7 @@ i64 str_eq(uptr a, uptr b) {
     return 0;
 }
 
-// indice da primeira ocorrencia de `n` em `h`, ou -1; agulha vazia casa em 0
+// index of the first occurrence of `n` in `h`, or -1; an empty needle matches at 0
 i64 str_find(uptr h, uptr n) {
     i64 ln = str_len(n);
     i64 lh = str_len(h);
@@ -113,19 +115,19 @@ i64 str_find(uptr h, uptr n) {
     return 0 - 1;
 }
 
-// copia `s` com o NUL para `d`; devolve o comprimento sem o NUL
+// copies `s` with the NUL to `d`; returns the length without the NUL
 i64 str_cpy(uptr d, uptr s) {
     i64 n = str_len(s);
     mem_copy(d, s, n + 1);
     return n;
 }
 
-// copia `s` para a arena
+// copies `s` into the arena
 uptr str_dup(uptr s) {
     return str_ndup(s, str_len(s));
 }
 
-// copia os primeiros `n` bytes de `s` para a arena e fecha com NUL
+// copies the first `n` bytes of `s` into the arena and closes with a NUL
 uptr str_ndup(uptr s, i64 n) {
     uptr p = rt_alloc(n + 1);
     mem_copy(p, s, n);
@@ -133,11 +135,11 @@ uptr str_ndup(uptr s, i64 n) {
     return p;
 }
 
-// ---- inteiro <-> texto ----
+// ---- integer <-> text ----
 
-// escreve `v` em decimal (com sinal) e NUL-terminado em `buf`; devolve o comprimento.
-// `buf` precisa de 21 bytes. O minimo de i64 nao e representavel pela negacao e nao e
-// tratado: nenhum valor deste exemplo chega la.
+// writes `v` in decimal (signed) and NUL-terminated into `buf`; returns the length.
+// `buf` needs 21 bytes. i64's minimum is not representable via negation and is not
+// handled: no value in this example reaches it.
 i64 itoa(i64 v, uptr buf) {
     u8 tmp[24];
     i64 neg = 0;
@@ -166,7 +168,7 @@ i64 itoa(i64 v, uptr buf) {
     return n;
 }
 
-// le um decimal com sinal do inicio de `s`; para no primeiro byte nao-digito
+// reads a signed decimal from the start of `s`; stops at the first non-digit byte
 i64 atoi(uptr s) {
     i64 i = 0;
     i64 sig = 1;
@@ -182,13 +184,13 @@ i64 atoi(uptr s) {
     return v * sig;
 }
 
-// ---- strbuf: buffer de texto que cresce na arena ----
-// Estrutura plana de 24 bytes, no estilo obrigatorio do projeto: #define do offset
-// mais acessoras. O buffer sempre reserva um byte a mais para o NUL de sb_str.
+// ---- strbuf: text buffer that grows in the arena ----
+// Flat 24-byte structure, in the project's mandatory style: offset #define
+// plus accessors. The buffer always reserves one extra byte for sb_str's NUL.
 
 #define SB_BUF  0                     // uptr: bytes
-#define SB_LEN  8                     // i64:  usados, sem o NUL
-#define SB_CAP  16                    // i64:  capacidade do buffer, com o NUL
+#define SB_LEN  8                     // i64:  used, without the NUL
+#define SB_CAP  16                    // i64:  buffer capacity, with the NUL
 #define SB_SIZE 24
 
 uptr sb_buf(uptr b)             { return ld64(b + SB_BUF); }
@@ -207,7 +209,7 @@ uptr sb_new(i64 cap) {
     return b;
 }
 
-// garante espaco para mais `n` bytes alem do NUL final; realoca dobrando
+// ensures room for `n` more bytes besides the final NUL; reallocates by doubling
 void sb_grow(uptr b, i64 n) {
     i64 need = sb_len(b) + n + 1;
     if (need <= sb_cap(b)) return;
@@ -215,9 +217,9 @@ void sb_grow(uptr b, i64 n) {
     while (cap < need) {
         cap = cap * 2;
     }
-    uptr novo = rt_alloc(cap);
-    mem_copy(novo, sb_buf(b), sb_len(b));
-    set_sb_buf(b, novo);
+    uptr grown = rt_alloc(cap);
+    mem_copy(grown, sb_buf(b), sb_len(b));
+    set_sb_buf(b, grown);
     set_sb_cap(b, cap);
 }
 
@@ -227,7 +229,7 @@ void sb_put(uptr b, i64 c) {
     set_sb_len(b, sb_len(b) + 1);
 }
 
-// anexa `n` bytes crus (pode conter qualquer byte menos o que o chamador nao quiser)
+// appends `n` raw bytes (may contain any byte except whatever the caller does not want)
 void sb_putmem(uptr b, uptr s, i64 n) {
     sb_grow(b, n);
     mem_copy(sb_buf(b) + sb_len(b), s, n);
@@ -244,7 +246,7 @@ void sb_putnum(uptr b, i64 v) {
     sb_putmem(b, tmp, n);
 }
 
-// fecha o buffer com NUL e devolve os bytes; o ponteiro vale ate o proximo sb_put*
+// closes the buffer with a NUL and returns the bytes; the pointer is valid until the next sb_put*
 uptr sb_str(uptr b) {
     st8(sb_buf(b) + sb_len(b), 0);
     return sb_buf(b);

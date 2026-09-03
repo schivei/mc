@@ -1,13 +1,13 @@
-// mc_syntax_demo.mc — um compilador ensinado, inteiro, em duas linhas de
-// #include. Nao edita `src/`: pega o nucleo por `src/core.mc` (que e o
-// compilador menos o `user_init`) e o `user_init` vem de user_syntax_demo.mc.
+// mc_syntax_demo.mc — a whole taught compiler, in two lines of
+// #include. Does not edit `src/`: it takes the core via `src/core.mc` (which
+// is the compiler minus `user_init`) and `user_init` comes from user_syntax_demo.mc.
 //
 //   build/mc1 --exe lib/mc_syntax_demo.mc -o build/mc-syntax-demo
 //   build/mc-syntax-demo --exe lib/syntax_demo_test.mc -o /tmp/t && /tmp/t; echo $?
 //   42
 //
-// E o mesmo padrao de examples/api/mc-api.mc. `make check-surface` faz os dois
-// passos e confere o 42. Ver docs/surface.md § Tier 3.
+// It is the same pattern as examples/api/mc-api.mc. `make check-surface` does both
+// steps and checks the 42. See docs/surface.md § Tier 3.
 
 #include "../src/core.mc"
 #include "user_syntax_demo.mc"

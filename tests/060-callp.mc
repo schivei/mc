@@ -1,12 +1,13 @@
-// 060-callp.mc — M10: `&nome` de funcao vira uptr e callp faz a chamada indireta.
-// A tabela `tbl` guarda dois enderecos de funcao (relocacao UNSIGNED em __data);
-// callp poe os argumentos em x0..x6, o ponteiro em x16 e faz `blr x16`.
+// 060-callp.mc — M10: `&name` of a function becomes a uptr and callp does the
+// indirect call. The `tbl` table holds two function addresses (UNSIGNED
+// relocation in __data); callp puts the arguments in x0..x6, the pointer in
+// x16, and does `blr x16`.
 // expect-exit: 42
 
 i64 add2(i64 a) { return a + 2; }
 i64 mul2(i64 a) { return a * 2; }
 
-// sete argumentos: exercita x0..x6 de uma vez
+// seven arguments: exercises x0..x6 at once
 i64 sum7(i64 a, i64 b, i64 c, i64 d, i64 e, i64 f, i64 g) {
     return a + b + c + d + e + f + g;
 }

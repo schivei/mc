@@ -93,7 +93,7 @@ Since M5.5, a string-literal element inside `type v[] = {...}` writes 8 zero byt
 and pins an `R_UNSIGNED` relocation (len=3, pcrel=0, extern=1) at that offset, pointing at the
 local symbol `l_strN` for that string in `__cstring` — it's `ld`, at link time, that resolves the
 pointer by adding `l_strN`'s final address. Confirmed with `otool -r` on
-`tests/040-arrinit.mc` (`uptr names[] = {"zero", "um", "dois"};`):
+`tests/040-arrinit.mc` (`uptr names[] = {"zero", "one", "two"};`):
 
 ```
 Relocation information (__DATA,__data) 3 entries
@@ -297,7 +297,7 @@ $ xxd -s 32768 -l 14 tmp/e-021-strings
 This is byte for byte the same shape `ld` emits (confirmed with `-no_fixup_chains`, which
 produces `1140 "dyld_stub_binder" 0051 7200 9000` for its own lazy binder).
 
-Rebase from `tests/040-arrinit.mc` (`uptr names[] = {"zero", "um", "dois"}` — three
+Rebase from `tests/040-arrinit.mc` (`uptr names[] = {"zero", "one", "two"}` — three
 `R_UNSIGNED` in `__data`):
 
 ```

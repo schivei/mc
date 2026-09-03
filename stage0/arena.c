@@ -1,5 +1,5 @@
-/* arena.c — arena estatica em bss, buffers little-endian e I/O por fd.
- * Mesma forma que a versao em .mc: so open/creat/read/write/close/exit. */
+/* arena.c — static arena in bss, little-endian buffers and I/O via fd.
+ * Same shape as the .mc version: only open/creat/read/write/close/exit. */
 #include "mc.h"
 #include <unistd.h>
 #include <fcntl.h>
@@ -91,7 +91,7 @@ void err_at(const char *file, int line, const char *msg) {
     out_str(2, file ? file : "?"); out_str(2, ":"); out_num(2, line);
     out_str(2, ": "); out_str(2, msg); out_str(2, "\n"); _exit(1);
 }
-/* mesma coisa com um detalhe no fim: o lexema que a regra esperava, por exemplo */
+/* same thing with a detail at the end: the lexeme the rule expected, for example */
 void err_at2(const char *file, int line, const char *msg, const char *detail) {
     out_str(2, file ? file : "?"); out_str(2, ":"); out_num(2, line);
     out_str(2, ": "); out_str(2, msg); out_str(2, ": "); out_str(2, detail);
@@ -114,9 +114,9 @@ u8 *read_file(const char *path, size_t *len) {
     *len = b.len - 1;
     return b.p;
 }
-/* creat e nao open: `open` da libSystem e variadica e no arm64 da Apple o modo
- * viaja pela pilha, que a linguagem nao sabe montar (so x0..x7). Usando creat, a
- * versao .mc tem a mesma forma de I/O que esta. */
+/* creat, not open: libSystem's `open` is variadic and on Apple arm64 the mode
+ * travels on the stack, which the language does not know how to build (only x0..x7). Using
+ * creat, the .mc version has the same I/O shape as this one. */
 void write_file(const char *path, Buf *b) {
     int fd = creat(path, 0644);
     if (fd < 0) die2("cannot create", path);

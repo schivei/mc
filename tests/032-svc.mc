@@ -1,7 +1,7 @@
 // expect-exit: 0
 // expect-stdout: hi
-// A mesma interface de sys.mc, mas sem nenhum extern: open/read/write/close/exit
-// sao pares mov16/svc ensinados por #opcode em lib/sys_svc.mc.
+// The same interface as sys.mc, but with no extern at all: open/read/write/close/exit
+// are mov16/svc pairs taught via #opcode in lib/sys_svc.mc.
 #include "../lib/sys_svc.mc"
 
 i64 main() {

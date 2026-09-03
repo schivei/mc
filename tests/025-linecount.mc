@@ -1,7 +1,7 @@
 // expect-exit: 0
 // expect-stdout: 26
-// Abre o proprio fonte (caminho relativo a raiz do repo, onde test.sh roda),
-// conta os \n em blocos de 4096 bytes e imprime o total.
+// Opens its own source (path relative to the repo root, where test.sh runs),
+// counts the \n in 4096-byte blocks and prints the total.
 #include "../lib/sys.mc"
 
 u8 buf[4096];

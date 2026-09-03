@@ -1,0 +1,13 @@
+dominio	domain
+fimhdr	header_end
+teste_sqlite	test_sqlite
+rota_add	route_add
+rota_casa	route_matches
+rota_pref	route_pref
+rota_hnd	route_hnd
+MAXROTAS	MAXROUTES
+nrotas	nroutes
+pelo_b	via_b
+alvo	target
+_alvo	_target
+rota_find	route_find

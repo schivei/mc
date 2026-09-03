@@ -1,15 +1,15 @@
-// gen_arm64.mc — transliteracao de stage0/gen_arm64.c: buffer linear de
-// instrucoes por funcao + encoders AArch64. A AST vira Ins[]; gen_encode
-// resolve labels locais, registra relocacoes e escreve palavras no __text.
-// --dump-asm imprime o buffer antes de encodar. Locais, parametros,
-// salvamentos e spills moram no frame. As instrucoes saem com a base ficticia
-// REG_FRAME e deslocamento negativo a partir de x29; depois de percorrer a
-// funcao inteira, fix_frame troca a base por sp e o deslocamento por
-// (frame - off) — e por isso que o frame pode ser calculado no fim.
-// Mesmas funcoes, mesma ordem, mesma forma de I/O.
+// gen_arm64.mc — transliteration of stage0/gen_arm64.c: linear instruction
+// buffer per function + AArch64 encoders. The AST becomes Ins[]; gen_encode
+// resolves local labels, registers relocations and writes words to __text.
+// --dump-asm prints the buffer before encoding. Locals, parameters,
+// saves and spills live in the frame. Instructions come out with the fictitious
+// base REG_FRAME and a negative offset from x29; after walking the whole
+// function, fix_frame swaps the base for sp and the offset for
+// (frame - off) — which is why the frame can be computed at the end.
+// Same functions, same order, same I/O shape.
 //
-// Sem struct: cada registro do C vira um bloco plano com offsets #define +
-// acessoras. Layouts derivados de stage0/mc.h (versao atual do C):
+// No struct: each C record becomes a flat block with #define offsets +
+// accessors. Layouts derived from stage0/mc.h (current C version):
 //
 //   C: typedef struct { int op, rd, rn, rm; i64 imm; int label, sym; } Ins;
 //      INS_OP 0  INS_RD 8  INS_RN 16  INS_RM 24  INS_IMM 32
@@ -23,40 +23,40 @@
 //   C: typedef struct { const char *name; int type, nparams, def, node; } FuncSig;
 //      FS_NAME 0  FS_TYPE 8  FS_NPARAMS 16  FS_DEF 24  FS_NODE 32 -> FS_SIZE 40
 //
-// Tres renomeacoes impostas pela ausencia de escopo estatico em .mc (o C usa
-// `static`, aqui todo nome e global e macho.mc chega antes):
+// Three renames forced by the lack of static scope in .mc (C uses
+// `static`, here every name is global and macho.mc comes first):
 //   sec_text/sec_cstr/sec_data/sec_bss -> isec_text/isec_cstr/isec_data/isec_bss
-//     (sec_data ja e a acessora do Buf inline de Section em macho.mc)
-//   rel_pcrel(tipo)/rel_len(tipo)      -> relt_pcrel/relt_len
-//     (rel_pcrel/rel_len ja sao as acessoras de Reloc em macho.mc)
-// As declaracoes adiantadas do C (gen_expr, gen_stmt, str_sym) nao sao
-// necessarias: o topo do .mc registra todas as assinaturas antes dos corpos.
+//     (sec_data is already the accessor for Section's inline Buf in macho.mc)
+//   rel_pcrel(type)/rel_len(type)      -> relt_pcrel/relt_len
+//     (rel_pcrel/rel_len are already the Reloc accessors in macho.mc)
+// C's forward declarations (gen_expr, gen_stmt, str_sym) are not
+// needed: the top of the .mc registers every signature before the bodies.
 //
-// MAXPARAMS e MAXSECS vem de parse.mc, como vinham de mc.h.
-// Depende de arena.mc (xalloc, cstrlen, str_eq, mem_eq, mem_copy, buf_*,
-// out_*, die), de ast.mc (nos, err_node, type_width), de parse.mc (opc_find,
-// opc_expand, sec_pending, sec_make) e de macho.mc (secoes, simbolos,
-// relocacoes).
+// MAXPARAMS and MAXSECS come from parse.mc, as they came from mc.h.
+// Depends on arena.mc (xalloc, cstrlen, str_eq, mem_eq, mem_copy, buf_*,
+// out_*, die), on ast.mc (nodes, err_node, type_width), on parse.mc (opc_find,
+// opc_expand, sec_pending, sec_make) and on macho.mc (sections, symbols,
+// relocations).
 
-// registradores: profundidade 0..6 em x9..x15; acima disso o valor mora no frame
+// registers: depth 0..6 in x9..x15; above that the value lives in the frame
 #define REG_BASE   9
 #define REG_MAX    6
-#define REG_TMP    8                  // scratch do resto (%)
-#define REG_S1    16                  // scratch de spill: esquerda/destino
-#define REG_S2    17                  // scratch de spill: direita
+#define REG_TMP    8                  // scratch for the remainder (%)
+#define REG_S1    16                  // spill scratch: left/destination
+#define REG_S2    17                  // spill scratch: right
 #define REG_FP    29
 #define REG_LR    30
 #define REG_SP    31
-#define REG_FRAME 32                  // base ficticia trocada por sp em fix_frame
+#define REG_FRAME 32                  // fictitious base swapped for sp in fix_frame
 #define MAXDEPTH  64
 #define MAXLOCALS 256
 #define MAXFUNCS  1024
 #define MAXLOOPS  32
 #define MAXGLOBALS 256
 #define MAXSTRS    512
-#define MAXPREL   512                 // relocacoes de reloc() do modulo inteiro
+#define MAXPREL   512                 // reloc() relocations for the whole module
 
-// ---- enum completo do plano; o encoder so implementa o que usa ----
+// ---- full plan enum; the encoder only implements what it uses ----
 #define I_LABEL    0
 #define I_MOVZ     1
 #define I_MOVK     2
@@ -102,10 +102,10 @@
 #define I_LDRW    42
 #define I_STRW    43
 #define I_EMIT    44
-#define I_NOP     45                  // apagada no fixup do frame, nao gera palavra
-#define I_BLR     46                  // blr xN: chamada indireta do callp
+#define I_NOP     45                  // erased in the frame fixup, generates no word
+#define I_BLR     46                  // blr xN: callp's indirect call
 
-// condicoes AArch64 usadas pelo M1
+// AArch64 conditions used by M1
 #define C_EQ  0
 #define C_NE  1
 #define C_GE 10
@@ -113,7 +113,7 @@
 #define C_GT 12
 #define C_LE 13
 
-// ---- intrinsics (nome, nao simbolo); as de memoria e as de saida crua ----
+// ---- intrinsics (name, not symbol); the memory ones and the raw-output ones ----
 #define IN_NONE  0
 #define IN_EMIT  1
 #define IN_RELOC 2
@@ -137,28 +137,28 @@
 #define INS_SYM  48
 #define INS_SIZE 56
 
-// ---- Local: endereco = x29 - off; nelem > 0 marca array ----
+// ---- Local: address = x29 - off; nelem > 0 marks an array ----
 #define LOC_NAME  0
 #define LOC_TYPE  8
 #define LOC_OFF  16
 #define LOC_NELEM 24
 #define LOC_SIZE 32
 
-// ---- Global: simbolo proprio em __data ou __bss; nelem > 0 marca array ----
+// ---- Global: own symbol in __data or __bss; nelem > 0 marks an array ----
 #define GLB_NAME  0
 #define GLB_TYPE  8
 #define GLB_NELEM 16
 #define GLB_SYM  24
 #define GLB_SIZE 32
 
-// ---- StrEnt: literal ja emitida em __cstring, para deduplicar por conteudo ----
+// ---- StrEnt: literal already emitted in __cstring, to deduplicate by content ----
 #define STR_BYTES 0
 #define STR_LEN   8
 #define STR_SYM  16
 #define STR_SIZE 24
 
-// ---- FuncSig: assinatura do arquivo (N_FUNC, N_EXTERN ou N_PROTO). def = 0
-// enquanto so ha prototipo; node e o no que a declarou (para o erro final) ----
+// ---- FuncSig: file signature (N_FUNC, N_EXTERN or N_PROTO). def = 0
+// while there is only a prototype; node is the node that declared it (for the final error) ----
 #define FS_NAME    0
 #define FS_TYPE    8
 #define FS_NPARAMS 16
@@ -171,15 +171,15 @@ i64  nins = 0;
 i64  inscap = 0;
 i64  nlabels = 0;
 
-// ---- estado da funcao atual ----
+// ---- current function state ----
 u8  locals[MAXLOCALS * LOC_SIZE];
 i64 nlocals = 0;
-i64 dslot[MAXDEPTH];                  // slot da profundidade: salvamento (<=6) ou spill (>=7)
+i64 dslot[MAXDEPTH];                  // slot for the depth: save (<=6) or spill (>=7)
 i64 frame_off = 0;
 i64 lbreak[MAXLOOPS];
 i64 lcont[MAXLOOPS];
 i64 nloops = 0;
-// reloc(): a relocacao fica pendente ate a proxima palavra crua (gen_word)
+// reloc(): the relocation stays pending until the next raw word (gen_word)
 i64 prel_ins[MAXPREL];
 i64 prel_sym[MAXPREL];
 i64 prel_type[MAXPREL];
@@ -188,7 +188,7 @@ i64 pend_type = -1;
 i64 pend_sym = 0;
 i64 pend_node = 0;
 
-// ---- funcoes ja baixadas: ibuf e append-only e cada funcao e uma fatia dele ----
+// ---- functions already lowered: ibuf is append-only and each function is a slice of it ----
 i64 fn_start[MAXFUNCS];
 i64 fn_count[MAXFUNCS];
 i64 fn_labels[MAXFUNCS];
@@ -197,25 +197,25 @@ i64 fn_sym[MAXFUNCS];
 i64 fn_pstart[MAXFUNCS];
 i64 fn_pcount[MAXFUNCS];
 i64 nfn = 0;
-i64 ins_base = 0;                     // inicio da funcao atual em ibuf
-i64 prel_base = 0;                    // inicio da funcao atual em prel_*
+i64 ins_base = 0;                     // start of the current function in ibuf
+i64 prel_base = 0;                    // start of the current function in prel_*
 
-// assinaturas de todo o arquivo (N_FUNC e N_EXTERN), registradas antes dos corpos
+// signatures for the whole file (N_FUNC and N_EXTERN), registered before the bodies
 u8  funcs[MAXFUNCS * FS_SIZE];
 i64 nfuncs = 0;
 
-// ---- estado do modulo: globais, strings e as secoes em ordem fixa ----
+// ---- module state: globals, strings and the sections in fixed order ----
 u8  globals[MAXGLOBALS * GLB_SIZE];
 i64 nglobals = 0;
 u8  strs[MAXSTRS * STR_SIZE];
 i64 nstrs = 0;
-i64 isec_text = 0;                    // -1 = secao nao criada
+i64 isec_text = 0;                    // -1 = section not created
 i64 isec_cstr = 0;
 i64 isec_data = 0;
 i64 isec_bss  = 0;
-i64 secmap[MAXSECS];                  // #section i do parser -> secao real
+i64 secmap[MAXSECS];                  // parser's #section i -> real section
 
-// ---- acessoras de Ins ----
+// ---- Ins accessors ----
 uptr ins_at(i64 i)     { return ibuf + i * INS_SIZE; }
 i64  ins_op(uptr e)    { return ld64(e + INS_OP); }
 i64  ins_rd(uptr e)    { return ld64(e + INS_RD); }
@@ -232,7 +232,7 @@ void set_ins_imm(uptr e, i64 v)   { st64(e + INS_IMM, v); }
 void set_ins_label(uptr e, i64 v) { st64(e + INS_LABEL, v); }
 void set_ins_sym(uptr e, i64 v)   { st64(e + INS_SYM, v); }
 
-// ---- acessoras de Local ----
+// ---- Local accessors ----
 uptr loc_at(i64 i)     { return locals + i * LOC_SIZE; }
 uptr loc_name(uptr e)  { return ld64(e + LOC_NAME); }
 i64  loc_type(uptr e)  { return ld64(e + LOC_TYPE); }
@@ -243,7 +243,7 @@ void set_loc_type(uptr e, i64 v)   { st64(e + LOC_TYPE, v); }
 void set_loc_off(uptr e, i64 v)    { st64(e + LOC_OFF, v); }
 void set_loc_nelem(uptr e, i64 v)  { st64(e + LOC_NELEM, v); }
 
-// ---- acessoras de Global ----
+// ---- Global accessors ----
 uptr glb_at(i64 i)     { return globals + i * GLB_SIZE; }
 uptr glb_name(uptr e)  { return ld64(e + GLB_NAME); }
 i64  glb_type(uptr e)  { return ld64(e + GLB_TYPE); }
@@ -254,7 +254,7 @@ void set_glb_type(uptr e, i64 v)   { st64(e + GLB_TYPE, v); }
 void set_glb_nelem(uptr e, i64 v)  { st64(e + GLB_NELEM, v); }
 void set_glb_sym(uptr e, i64 v)    { st64(e + GLB_SYM, v); }
 
-// ---- acessoras de StrEnt ----
+// ---- StrEnt accessors ----
 uptr ste_at(i64 i)     { return strs + i * STR_SIZE; }
 uptr ste_bytes(uptr e) { return ld64(e + STR_BYTES); }
 i64  ste_len(uptr e)   { return ld64(e + STR_LEN); }
@@ -263,7 +263,7 @@ void set_ste_bytes(uptr e, uptr v) { st64(e + STR_BYTES, v); }
 void set_ste_len(uptr e, i64 v)    { st64(e + STR_LEN, v); }
 void set_ste_sym(uptr e, i64 v)    { st64(e + STR_SYM, v); }
 
-// ---- acessoras de FuncSig ----
+// ---- FuncSig accessors ----
 uptr fs_at(i64 i)       { return funcs + i * FS_SIZE; }
 uptr fs_name(uptr e)    { return ld64(e + FS_NAME); }
 i64  fs_type(uptr e)    { return ld64(e + FS_TYPE); }
@@ -276,7 +276,7 @@ void set_fs_nparams(uptr e, i64 v)  { st64(e + FS_NPARAMS, v); }
 void set_fs_def(uptr e, i64 v)      { st64(e + FS_DEF, v); }
 void set_fs_node(uptr e, i64 v)     { st64(e + FS_NODE, v); }
 
-// ---- acessoras dos vetores planos de i64 do modulo ----
+// ---- accessors for the module's flat i64 vectors ----
 i64  dslot_at(i64 i)      { return ld64(dslot + i * 8); }
 void set_dslot_at(i64 i, i64 v) { st64(dslot + i * 8, v); }
 i64  lbreak_at(i64 i)     { return ld64(lbreak + i * 8); }
@@ -305,15 +305,15 @@ i64  fn_pstart_at(i64 i)  { return ld64(fn_pstart + i * 8); }
 void set_fn_pstart_at(i64 i, i64 v) { st64(fn_pstart + i * 8, v); }
 i64  fn_pcount_at(i64 i)  { return ld64(fn_pcount + i * 8); }
 void set_fn_pcount_at(i64 i, i64 v) { st64(fn_pcount + i * 8, v); }
-// vetores de i64 que gen_encode aloca na arena (off e lab)
+// i64 vectors that gen_encode allocates in the arena (off and lab)
 i64  ivec_at(uptr v, i64 i)          { return ld64(v + i * 8); }
 void set_ivec_at(uptr v, i64 i, i64 x) { st64(v + i * 8, x); }
 
 // ---- buffer ----
 void ins_add(i64 op, i64 rd, i64 rn, i64 rm, i64 imm, i64 label, i64 sym) {
-    // a relocacao pendente so cola na palavra crua que gen_word poe no buffer;
-    // label nao vira palavra e e transparente, o resto e erro
-    if (pend_type >= 0 && op != I_LABEL) err_node(pend_node, "reloc sem emit imediatamente a seguir");
+    // the pending relocation only sticks to the raw word that gen_word puts in the
+    // buffer; a label does not become a word and is transparent, everything else is an error
+    if (pend_type >= 0 && op != I_LABEL) err_node(pend_node, "reloc without an immediately following emit");
     if (nins == inscap) {
         i64 cap = 256;
         if (inscap) cap = inscap * 2;
@@ -341,7 +341,7 @@ void el(i64 op, i64 label)               { ins_add(op, 0, 0, 0, 0, label, 0); }
 void elr(i64 op, i64 rd, i64 label)      { ins_add(op, rd, 0, 0, 0, label, 0); }
 void em(i64 op, i64 rt, i64 rn, i64 off) { ins_add(op, rt, rn, 0, off, 0, 0); }
 
-// imediato de 64 bits em ate 4 instrucoes: movz do byte baixo + movk do resto
+// 64-bit immediate in up to 4 instructions: movz of the low word + movk of the rest
 void gen_imm(i64 rd, u64 v) {
     ins_add(I_MOVZ, rd, 0, 0, v & 0xffff, 0, 0);
     i64 hw = 1;
@@ -353,8 +353,8 @@ void gen_imm(i64 rd, u64 v) {
     }
 }
 
-// ---- frame, profundidade e spill ----
-i64 slot_new(i64 size) {              // devolve o offset positivo a partir de x29
+// ---- frame, depth and spill ----
+i64 slot_new(i64 size) {              // returns the positive offset from x29
     frame_off = frame_off + ((size + 7) & ~7);
     return frame_off;
 }
@@ -366,7 +366,7 @@ i64 slot_depth(i64 d) {
 
 i64 in_reg(i64 depth) { return depth <= REG_MAX; }
 
-// registrador com o valor da profundidade; carrega do frame no scratch se spillado
+// register holding the depth's value; loads from the frame into scratch if spilled
 i64 val_reg(i64 depth, i64 scratch) {
     if (in_reg(depth)) return REG_BASE + depth;
     em(I_LDR, scratch, REG_FRAME, 0 - slot_depth(depth));
@@ -382,8 +382,8 @@ void dst_done(i64 depth, i64 rd) {
     if (!in_reg(depth)) em(I_STR, rd, REG_FRAME, 0 - slot_depth(depth));
 }
 
-// ---- tabelas de instrucao (dump e encoder leem as mesmas) ----
-// tres operandos registrador-registrador: mesma forma, so muda a base
+// ---- instruction tables (dump and the encoder read the same ones) ----
+// three register-register operands: same shape, only the base changes
 i64 rrr_ins[] = { I_ADD, I_SUB, I_MUL, I_SDIV, I_UDIV, I_AND, I_ORR, I_EOR,
                   I_LSLV, I_LSRV, I_ASRV, 0 };
 u32 rrr_base[] = { 0x8B000000, 0xCB000000, 0x9B007C00, 0x9AC00C00, 0x9AC00800,
@@ -391,7 +391,7 @@ u32 rrr_base[] = { 0x8B000000, 0xCB000000, 0x9B007C00, 0x9AC00C00, 0x9AC00800,
                    0x9AC02000, 0x9AC02400, 0x9AC02800 };
 uptr rrr_name[] = { "add", "sub", "mul", "sdiv", "udiv", "and", "orr", "eor",
                     "lsl", "lsr", "asr" };
-// memoria: pares load/store por largura, da mais larga para a mais estreita
+// memory: load/store pairs by width, from widest to narrowest
 i64 mem_ins[] = { I_LDR, I_STR, I_LDRW, I_STRW, I_LDRH, I_STRH, I_LDRB, I_STRB, 0 };
 u32 mem_base[] = { 0xF9400000, 0xF9000000, 0xB9400000, 0xB9000000,
                    0x79400000, 0x79000000, 0x39400000, 0x39000000 };
@@ -406,7 +406,7 @@ i64  mem_base_at(i64 i)  { return ld32(mem_base + i * 4); }
 i64  mem_scale_at(i64 i) { return ld64(mem_scale + i * 8); }
 uptr mem_name_at(i64 i)  { return ld64(mem_name + i * 8); }
 
-i64 mem_slot(i64 op) {                // -1 se nao e acesso a memoria
+i64 mem_slot(i64 op) {                // -1 if it is not a memory access
     i64 i = 0;
     loop {
         if (mem_ins_at(i) == 0) break;
@@ -416,7 +416,7 @@ i64 mem_slot(i64 op) {                // -1 se nao e acesso a memoria
     return -1;
 }
 
-// acesso da largura de t; as posicoes pares sao load, as impares store
+// access of width t; the even positions are load, the odd ones store
 i64 mem_op(i64 t, i64 store) {
     i64 i = 0;
     if (t == TY_U8)       i = 6;
@@ -426,7 +426,7 @@ i64 mem_op(i64 t, i64 store) {
     return mem_ins_at(i);
 }
 
-// ---- locais (pilha plana, marca de tamanho por bloco) ----
+// ---- locals (flat stack, size mark per block) ----
 i64 local_find(uptr name) {
     i64 i = nlocals - 1;
     loop {
@@ -438,7 +438,7 @@ i64 local_find(uptr name) {
 }
 
 void local_add(uptr name, i64 type, i64 off, i64 nelem) {
-    if (nlocals == MAXLOCALS) die("locais demais");
+    if (nlocals == MAXLOCALS) die("too many locals");
     uptr e = loc_at(nlocals);
     set_loc_name(e, name);
     set_loc_type(e, type);
@@ -447,7 +447,7 @@ void local_add(uptr name, i64 type, i64 off, i64 nelem) {
     nlocals = nlocals + 1;
 }
 
-// ---- assinaturas ----
+// ---- signatures ----
 i64 func_find(uptr name) {
     i64 i = 0;
     loop {
@@ -458,19 +458,19 @@ i64 func_find(uptr name) {
     return -1;
 }
 
-// def = 1 para N_FUNC/N_EXTERN, 0 para prototipo; o prototipo so reserva a
-// assinatura e a definicao posterior tem de bater com ela
+// def = 1 for N_FUNC/N_EXTERN, 0 for a prototype; the prototype only reserves the
+// signature and the later definition must match it
 void func_add(uptr name, i64 type, i64 nparams, i64 def, i64 n) {
     i64 i = func_find(name);
     if (i >= 0) {
         uptr e = fs_at(i);
-        if (fs_def(e) && def) err_node(n, "funcao declarada duas vezes");
+        if (fs_def(e) && def) err_node(n, "function declared twice");
         if (fs_type(e) != type || fs_nparams(e) != nparams)
-            err_node(n, "declaracao nao bate com o prototipo");
+            err_node(n, "declaration does not match prototype");
         if (def) { set_fs_def(e, 1); set_fs_node(e, n); }
         return;
     }
-    if (nfuncs == MAXFUNCS) die("funcoes demais");
+    if (nfuncs == MAXFUNCS) die("too many functions");
     uptr ne = fs_at(nfuncs);
     set_fs_name(ne, name);
     set_fs_type(ne, type);
@@ -480,7 +480,7 @@ void func_add(uptr name, i64 type, i64 nparams, i64 def, i64 n) {
     nfuncs = nfuncs + 1;
 }
 
-uptr usym(uptr name) {                // o compilador prefixa _
+uptr usym(uptr name) {                // the compiler prefixes _
     i64 n = cstrlen(name);
     uptr s = xalloc(n + 2);
     st8(s, '_');
@@ -494,7 +494,7 @@ uptr usym(uptr name) {                // o compilador prefixa _
     return s;
 }
 
-// ---- globais: simbolo local proprio em __data (com valor) ou __bss (zerado) ----
+// ---- globals: own local symbol in __data (with a value) or __bss (zeroed) ----
 i64 global_find(uptr name) {
     i64 i = 0;
     loop {
@@ -505,10 +505,10 @@ i64 global_find(uptr name) {
     return -1;
 }
 
-// Coloca a global g (size bytes) na secao sec e devolve o offset.
-// Zerofill so conta bytes (tudo comeca e ocupa multiplo de 16); nas demais cada
-// elemento do inicializador sai na largura do tipo e o resto vai zerado — e por
-// isso que um array em secao custom nao-zerofill ocupa espaco no arquivo.
+// Places global g (size bytes) in section sec and returns the offset.
+// Zerofill just counts bytes (everything starts and occupies a multiple of 16); in the
+// others each initializer element comes out at the type's width and the rest is
+// zeroed — which is why an array in a non-zerofill custom section takes up space in the file.
 i64 glob_place(i64 g, i64 sec, i64 size, i64 width) {
     uptr sp = sec_at(sec);
     if ((sec_flags(sp) & 0xff) == S_ZEROFILL) {
@@ -517,14 +517,14 @@ i64 glob_place(i64 g, i64 sec, i64 size, i64 width) {
         return zoff;
     }
     uptr b = sec_data(sp);
-    i64 al = width;                              // array a 16, escalar a largura
+    i64 al = width;                              // array at 16, scalar at the width
     if (nd_val(g)) al = 16;
     buf_pad(b, al);
     i64 off = buf_len(b);
     i64 e = nd_a(g);
     loop {
         if (e == 0) break;
-        if (nd_kind(e) == N_STR) {               // ponteiro para l_strN: 8 zeros + R_UNSIGNED
+        if (nd_kind(e) == N_STR) {               // pointer to l_strN: 8 zeros + R_UNSIGNED
             reloc_add(sec, buf_len(b), str_sym(nd_name(e), nd_val(e)), R_UNSIGNED, 0, 3);
             buf_u64(b, 0);
         } else {
@@ -543,7 +543,7 @@ i64 glob_place(i64 g, i64 sec, i64 size, i64 width) {
     return off;
 }
 
-// ---- strings: bytes + NUL em __cstring, simbolo local l_str<N> ----
+// ---- strings: bytes + NUL in __cstring, local symbol l_str<N> ----
 uptr str_name(i64 n) {
     u8 tmp[24];
     i64 i = 24;
@@ -570,7 +570,7 @@ uptr str_name(i64 n) {
     return s;
 }
 
-// deduplica por conteudo (busca linear); N segue a ordem da primeira ocorrencia
+// deduplicates by content (linear search); N follows the order of first occurrence
 i64 str_sym(uptr bytes, i64 len) {
     i64 i = 0;
     loop {
@@ -579,11 +579,11 @@ i64 str_sym(uptr bytes, i64 len) {
         if (ste_len(old) == len && mem_eq(ste_bytes(old), bytes, len)) return ste_sym(old);
         i = i + 1;
     }
-    if (nstrs == MAXSTRS) die("strings demais");
+    if (nstrs == MAXSTRS) die("too many strings");
     uptr b = sec_data(sec_at(isec_cstr));
     i64 off = buf_len(b);
     buf_put(b, bytes, len);
-    buf_u8(b, 0);                                // __cstring guarda cada literal NUL-terminada
+    buf_u8(b, 0);                                // __cstring keeps each literal NUL-terminated
     i64 sym = sym_new(str_name(nstrs), isec_cstr + 1, off, 0);
     uptr e = ste_at(nstrs);
     set_ste_bytes(e, bytes);
@@ -593,7 +593,7 @@ i64 str_sym(uptr bytes, i64 len) {
     return sym;
 }
 
-// endereco de um simbolo local: adrp da pagina + add do deslocamento
+// address of a local symbol: adrp of the page + add of the offset
 void gen_gaddr(i64 rd, i64 sym) {
     ins_add(I_ADRP,  rd, 0,  0, 0, 0, sym);
     ins_add(I_ADDLO, rd, rd, 0, 0, 0, sym);
@@ -614,7 +614,7 @@ i64 intrin_id(uptr name) {
     return IN_NONE;
 }
 
-// tipo da largura acessada; tambem e o tipo do resultado das ld*
+// type of the accessed width; also the type of the ld* result
 i64 intrin_type(i64 in) {
     if (in == IN_LD8  || in == IN_ST8)  return TY_U8;
     if (in == IN_LD16 || in == IN_ST16) return TY_U16;
@@ -622,10 +622,10 @@ i64 intrin_type(i64 in) {
     return TY_U64;
 }
 
-// ---- expressoes ----
-void gen_value(i64 n, i64 depth) {    // onde um valor e obrigatorio
+// ---- expressions ----
+void gen_value(i64 n, i64 depth) {    // where a value is mandatory
     gen_expr(n, depth);
-    if (nd_type(n) == TY_VOID) err_node(n, "valor de tipo void");
+    if (nd_type(n) == TY_VOID) err_node(n, "value of type void");
 }
 
 i64 cmp_toks[]  = { K_EQ, K_NE, K_LT, K_LE, K_GT, K_GE };
@@ -647,7 +647,7 @@ i64 cmp_cond(i64 op) {
 void gen_cast(i64 rd, i64 ty) {
     if (ty == TY_U8)       ei(I_ANDI, rd, rd, 0xff);
     else if (ty == TY_U16) ei(I_ANDI, rd, rd, 0xffff);
-    else if (ty == TY_U32) e2(I_MOVW, rd, rd);        // mov wd, wn zera o topo
+    else if (ty == TY_U32) e2(I_MOVW, rd, rd);        // mov wd, wn zeroes the top half
 }
 
 void gen_unary(i64 n, i64 depth) {
@@ -655,15 +655,15 @@ void gen_unary(i64 n, i64 depth) {
     gen_value(nd_a(n), depth);
     if (op == K_BANG) set_nd_type(n, TY_I64);
     else              set_nd_type(n, nd_type(nd_a(n)));
-    i64 rd = val_reg(depth, REG_S1);             // opera no lugar
+    i64 rd = val_reg(depth, REG_S1);             // operates in place
     if (op == K_SUB)        e2(I_NEG, rd, rd);
     else if (op == K_TILDE) e2(I_MVN, rd, rd);
     else if (op == K_BANG)  { ei(I_CMPI, 0, rd, 0); ins_add(I_CSET, rd, 0, 0, C_EQ, 0, 0); }
-    else err_node(n, "operador unario sem codegen");
+    else err_node(n, "unary operator with no codegen");
     dst_done(depth, rd);
 }
 
-// && e || com curto-circuito, via labels locais
+// && and || with short-circuiting, via local labels
 void gen_logic(i64 n, i64 depth) {
     nlabels = nlabels + 1;
     i64 lalt = nlabels;
@@ -672,11 +672,11 @@ void gen_logic(i64 n, i64 depth) {
     i64 andand = nd_op(n) == K_ANDAND;
     i64 rd = dst_reg(depth);
     gen_value(nd_a(n), depth);
-    // atalho: && desvia quando a e falso, || quando a e verdadeiro
+    // shortcut: && branches away when a is false, || when a is true
     i64 br = I_CBNZ;
     if (andand) br = I_CBZ;
     elr(br, val_reg(depth, REG_S1), lalt);
-    gen_value(nd_b(n), depth);                   // sem atalho: resultado e (b != 0)
+    gen_value(nd_b(n), depth);                   // no shortcut: the result is (b != 0)
     ei(I_CMPI, 0, val_reg(depth, REG_S1), 0);
     ins_add(I_CSET, rd, 0, 0, C_NE, 0, 0);
     dst_done(depth, rd);
@@ -684,7 +684,7 @@ void gen_logic(i64 n, i64 depth) {
     el(I_LABEL, lalt);
     i64 shortcut = 1;
     if (andand) shortcut = 0;
-    gen_imm(rd, shortcut);                       // valor do atalho
+    gen_imm(rd, shortcut);                       // shortcut value
     dst_done(depth, rd);
     el(I_LABEL, lend);
     set_nd_type(n, TY_I64);
@@ -701,7 +701,7 @@ void gen_binary(i64 n, i64 depth) {
     i64 rl = val_reg(depth, REG_S1);
     i64 rr = val_reg(depth + 1, REG_S2);
     i64 rd = dst_reg(depth);
-    // so i64 divide com sinal; todo o resto (u8..u64, uptr) usa udiv
+    // only i64 divides with sign; everything else (u8..u64, uptr) uses udiv
     i64 div = I_UDIV;
     if (nd_type(nd_a(n)) == TY_I64) div = I_SDIV;
     i64 shr = I_LSRV;
@@ -718,21 +718,21 @@ void gen_binary(i64 n, i64 depth) {
     else if (op == K_XOR) e3(I_EOR,  rd, rl, rr);
     else if (op == K_SHL) e3(I_LSLV, rd, rl, rr);
     else if (op == K_SHR) e3(shr,    rd, rl, rr);
-    else err_node(n, "operador binario sem codegen");
+    else err_node(n, "binary operator with no codegen");
     dst_done(depth, rd);
 }
 
-// resolve o nome de um no: >= 0 e indice de local, < 0 e a global -(g + 1)
+// resolves the name of a node: >= 0 is a local index, < 0 is the global -(g + 1)
 i64 name_find(i64 n) {
     i64 i = local_find(nd_name(n));
     if (i >= 0) return i;
     i64 g = global_find(nd_name(n));
-    if (g < 0) err_node(n, "nome desconhecido");
+    if (g < 0) err_node(n, "unknown name");
     return 0 - (g + 1);
 }
 
-// nome: local primeiro, global depois. Array decai para o endereco (uptr);
-// escalar e lido pela largura do tipo.
+// name: local first, then global. An array decays to the address (uptr);
+// a scalar is read at the type's width.
 void gen_ident(i64 n, i64 depth) {
     i64 rd = dst_reg(depth);
     i64 i = name_find(n);
@@ -755,8 +755,8 @@ void gen_ident(i64 n, i64 depth) {
     dst_done(depth, rd);
 }
 
-// &nome: local, global ou — novo no M10 — funcao/extern, que vira o endereco do
-// simbolo `_nome` (adrp/add, com PAGE21+PAGEOFF12; indefinido quando extern)
+// &name: local, global or — new in M10 — function/extern, which becomes the
+// address of the `_name` symbol (adrp/add, with PAGE21+PAGEOFF12; undefined when extern)
 void gen_addr(i64 n, i64 depth) {
     i64 rd = dst_reg(depth);
     i64 i = local_find(nd_name(n));
@@ -766,7 +766,7 @@ void gen_addr(i64 n, i64 depth) {
         if (g >= 0) gen_gaddr(rd, glb_sym(glb_at(g)));
         else {
             i64 fi = func_find(nd_name(n));
-            if (fi < 0) err_node(n, "nome desconhecido");
+            if (fi < 0) err_node(n, "unknown name");
             gen_gaddr(rd, sym_ref(usym(fs_name(fs_at(fi)))));
         }
     }
@@ -796,7 +796,7 @@ void gen_intrin(i64 n, i64 depth, i64 in) {
     i64 store = in >= IN_ST8;
     i64 want = 1;
     if (store) want = 2;
-    if (arg_count(n) != want) err_node(n, "aridade errada na intrinsic");
+    if (arg_count(n) != want) err_node(n, "wrong arity in intrinsic");
     i64 t = intrin_type(in);
     i64 p = nd_a(n);
     gen_value(p, depth);
@@ -815,18 +815,18 @@ void gen_intrin(i64 n, i64 depth, i64 in) {
     set_nd_type(n, TY_VOID);
 }
 
-// ---- saida crua: emit(), reloc() e as chamadas de #opcode ----
-// uma palavra de 32 bits no fluxo de instrucoes; a relocacao pendente cola nela.
-// O C compara `(u64)w > 0xffffffffu`; comparacao em .mc e sempre com sinal,
-// entao o negativo entra pela primeira metade do teste.
+// ---- raw output: emit(), reloc() and #opcode calls ----
+// a 32-bit word in the instruction stream; the pending relocation sticks to it.
+// The C compares `(u64)w > 0xffffffffu`; comparison in .mc is always signed,
+// so a negative value is caught by the first half of the test.
 void gen_word(i64 n, i64 w) {
-    if (w < 0 || w > 0xffffffff) err_node(n, "palavra emitida nao cabe em 32 bits");
-    if (pend_type >= 0) {                        // a relocacao pendente cola nesta palavra
-        // UNSIGNED e de 8 bytes (length 3) e passaria por cima da palavra seguinte
+    if (w < 0 || w > 0xffffffff) err_node(n, "emitted word does not fit in 32 bits");
+    if (pend_type >= 0) {                        // the pending relocation sticks to this word
+        // UNSIGNED is 8 bytes (length 3) and would run over the next word
         if (pend_type == R_UNSIGNED)
-            err_node(pend_node, "reloc UNSIGNED exige 8 bytes: use inicializador de array global");
-        if (nprel == MAXPREL) die("relocacoes cruas demais");
-        set_prel_ins_at(nprel, nins - ins_base);  // indice relativo a funcao
+            err_node(pend_node, "reloc UNSIGNED requires 8 bytes: use a global array initializer");
+        if (nprel == MAXPREL) die("too many raw relocations");
+        set_prel_ins_at(nprel, nins - ins_base);  // index relative to the function
         set_prel_sym_at(nprel, pend_sym);
         set_prel_type_at(nprel, pend_type);
         nprel = nprel + 1;
@@ -837,35 +837,35 @@ void gen_word(i64 n, i64 w) {
 }
 
 void gen_emit(i64 n) {
-    if (arg_count(n) != 1) err_node(n, "emit espera um argumento");
-    if (nd_kind(nd_a(n)) != N_INT) err_node(n, "emit espera uma constante");
+    if (arg_count(n) != 1) err_node(n, "emit expects an argument");
+    if (nd_kind(nd_a(n)) != N_INT) err_node(n, "emit expects a constant");
     gen_word(n, nd_val(nd_a(n)));
 }
 
 void gen_opcode(i64 n, i64 oi) {
     i64 e = opc_expand(oi, n);
-    if (nd_kind(e) != N_INT) err_node(n, "argumento de #opcode nao constante");
+    if (nd_kind(e) != N_INT) err_node(n, "#opcode argument not constant");
     gen_word(n, nd_val(e));
 }
 
-// reloc(TIPO, "simbolo"): a proxima instrucao gerada tem de ser a palavra crua
+// reloc(TYPE, "symbol"): the next instruction generated must be the raw word
 void gen_reloc(i64 n) {
-    if (arg_count(n) != 2) err_node(n, "reloc espera dois argumentos");
+    if (arg_count(n) != 2) err_node(n, "reloc expects two arguments");
     i64 a = nd_a(n);
     i64 b = nd_next(a);
-    if (nd_kind(a) != N_INT) err_node(n, "tipo de relocacao deve ser constante");
-    if (nd_kind(b) != N_STR) err_node(n, "reloc espera o simbolo entre aspas");
+    if (nd_kind(a) != N_INT) err_node(n, "relocation type must be constant");
+    if (nd_kind(b) != N_STR) err_node(n, "reloc expects the symbol in quotes");
     i64 t = nd_val(a);
     if (t != R_UNSIGNED && t != R_BRANCH26 && t != R_PAGE21 && t != R_PAGEOFF12)
-        err_node(n, "tipo de relocacao desconhecido");
-    if (pend_type >= 0) err_node(n, "duas relocacoes para a mesma palavra");
+        err_node(n, "unknown relocation type");
+    if (pend_type >= 0) err_node(n, "two relocations for the same word");
     pend_type = t;
     pend_sym  = sym_ref(nd_name(b));
     pend_node = n;
     set_nd_type(n, TY_VOID);
 }
 
-// salva as profundidades vivas (as que estao em registrador) antes de uma chamada
+// saves the live depths (the ones in a register) before a call
 void save_live(i64 depth) {
     i64 d = 0;
     loop {
@@ -882,17 +882,17 @@ void restore_live(i64 depth) {
         d = d + 1;
     }
 }
-// leva a profundidade d para o registrador r (da ABI ou o x16 do callp)
+// moves depth d into register r (the ABI one, or callp's x16)
 void arg_to_reg(i64 r, i64 d) {
     if (in_reg(d)) e2(I_MOV, r, REG_BASE + d);
     else           em(I_LDR, r, REG_FRAME, 0 - slot_depth(d));
 }
 
-// callp(p, a1..a7): args em x0..x6, ponteiro em x16 (fora da ABI), blr x16.
-// Mesmo salvamento das profundidades vivas do bl; resultado i64 em x0.
+// callp(p, a1..a7): args in x0..x6, pointer in x16 (outside the ABI), blr x16.
+// Same saving of the live depths as bl; i64 result in x0.
 void gen_callp(i64 n, i64 depth) {
     i64 na = arg_count(n);
-    if (na < 1 || na > MAXPARAMS) err_node(n, "callp espera de 1 a 8 argumentos");
+    if (na < 1 || na > MAXPARAMS) err_node(n, "callp expects 1 to 8 arguments");
     i64 i = 0;
     i64 a = nd_a(n);
     loop {
@@ -902,7 +902,7 @@ void gen_callp(i64 n, i64 depth) {
         a = nd_next(a);
     }
     save_live(depth);
-    i = 0;                                       // o ponteiro (arg 0) vai para x16
+    i = 0;                                       // the pointer (arg 0) goes to x16
     a = nd_a(n);
     loop {
         if (a == 0) break;
@@ -920,7 +920,7 @@ void gen_callp(i64 n, i64 depth) {
     set_nd_type(n, TY_I64);
 }
 
-// chamada: args nas profundidades cur..cur+n-1, salvamento dos vivos, bl, resultado
+// call: args at depths cur..cur+n-1, saving the live ones, bl, result
 void gen_call(i64 n, i64 depth) {
     i64 in = intrin_id(nd_name(n));
     if (in == IN_EMIT)  { gen_emit(n);  return; }
@@ -930,8 +930,8 @@ void gen_call(i64 n, i64 depth) {
     i64 oi = opc_find(nd_name(n));
     if (oi >= 0) { gen_opcode(n, oi); return; }
     i64 fi = func_find(nd_name(n));
-    if (fi < 0) err_node(n, "chamada a funcao desconhecida");
-    if (arg_count(n) != fs_nparams(fs_at(fi))) err_node(n, "numero de argumentos errado");
+    if (fi < 0) err_node(n, "call to unknown function");
+    if (arg_count(n) != fs_nparams(fs_at(fi))) err_node(n, "wrong number of arguments");
     i64 i = 0;
     i64 a = nd_a(n);
     loop {
@@ -940,7 +940,7 @@ void gen_call(i64 n, i64 depth) {
         i = i + 1;
         a = nd_next(a);
     }
-    save_live(depth);                            // vivos: profundidades abaixo
+    save_live(depth);                            // live: depths below
     i = 0;
     a = nd_a(n);
     loop {
@@ -958,7 +958,7 @@ void gen_call(i64 n, i64 depth) {
 }
 
 void gen_expr(i64 n, i64 depth) {
-    if (depth >= MAXDEPTH) err_node(n, "expressao profunda demais");
+    if (depth >= MAXDEPTH) err_node(n, "expression too deep");
     i64 k = nd_kind(n);
     if (k == N_INT) {
         i64 rd = dst_reg(depth);
@@ -980,21 +980,21 @@ void gen_expr(i64 n, i64 depth) {
     if (k == N_IDENT) { gen_ident(n, depth); return; }
     if (k == N_ADDR)  { gen_addr(n, depth);  return; }
     if (k == N_CALL)  { gen_call(n, depth);  return; }
-    err_node(n, "expressao sem codegen");
+    err_node(n, "expression with no codegen");
 }
 
 // ---- statements ----
 void gen_var(i64 n) {
     i64 ty = nd_type(n);
-    if (nd_val(n)) {                             // array local: nelem * largura, a 16
-        i64 nel = nd_val(n);                     // conta em i64: (int) truncaria/estouraria
+    if (nd_val(n)) {                             // local array: nelem * width, at 16
+        i64 nel = nd_val(n);                     // count in i64: (int) would truncate/overflow
         if (nel < 1 || nel > 4095 || nel * type_width(ty) > 4095)
-            err_node(n, "array local grande demais");
+            err_node(n, "local array too large");
         i64 size = nel * type_width(ty);
         local_add(nd_name(n), ty, slot_new((size + 15) & ~15), nel);
         return;
     }
-    if (nd_a(n)) gen_value(nd_a(n), 0);          // inicializador antes de o nome existir
+    if (nd_a(n)) gen_value(nd_a(n), 0);          // initializer before the name exists
     i64 off = slot_new(8);
     local_add(nd_name(n), ty, off, 0);
     if (nd_a(n)) em(mem_op(ty, 1), REG_BASE, REG_FRAME, 0 - off);
@@ -1005,7 +1005,7 @@ void gen_assign(i64 n) {
     i64 arr = 0;
     if (i >= 0) arr = loc_nelem(loc_at(i)) != 0;
     else        arr = glb_nelem(glb_at(0 - i - 1)) != 0;
-    if (arr) err_node(n, "atribuicao a array");
+    if (arr) err_node(n, "assignment to array");
     gen_value(nd_a(n), 0);
     if (i >= 0) {
         uptr e = loc_at(i);
@@ -1013,7 +1013,7 @@ void gen_assign(i64 n) {
         return;
     }
     uptr g = glb_at(0 - i - 1);
-    gen_gaddr(REG_S1, glb_sym(g));               // x16 esta livre: a expressao ja terminou
+    gen_gaddr(REG_S1, glb_sym(g));               // x16 is free: the expression is already done
     em(mem_op(glb_type(g), 1), REG_BASE, REG_S1, 0);
 }
 
@@ -1036,7 +1036,7 @@ void gen_if(i64 n, i64 lepi) {
 }
 
 void gen_loop(i64 n, i64 lepi) {
-    if (nloops == MAXLOOPS) die("loops aninhados demais");
+    if (nloops == MAXLOOPS) die("too many nested loops");
     nlabels = nlabels + 1;
     i64 lbeg = nlabels;
     nlabels = nlabels + 1;
@@ -1054,7 +1054,7 @@ void gen_loop(i64 n, i64 lepi) {
 void gen_stmt(i64 n, i64 lepi) {
     i64 k = nd_kind(n);
     if (k == N_BLOCK) {
-        i64 mark = nlocals;                      // escopo: nomes somem, slots nao
+        i64 mark = nlocals;                      // scope: names disappear, slots do not
         i64 s = nd_a(n);
         loop {
             if (s == 0) break;
@@ -1069,13 +1069,13 @@ void gen_stmt(i64 n, i64 lepi) {
     if (k == N_IF)       { gen_if(n, lepi);    return; }
     if (k == N_LOOP)     { gen_loop(n, lepi);  return; }
     if (k == N_BREAK) {
-        i64 lv = nd_val(n);                      // validar em i64: (int) truncaria
-        if (lv < 1 || lv > nloops) err_node(n, "break fora de alcance");
+        i64 lv = nd_val(n);                      // validate in i64: (int) would truncate
+        if (lv < 1 || lv > nloops) err_node(n, "break out of range");
         el(I_B, lbreak_at(nloops - lv));
         return;
     }
     if (k == N_CONTINUE) {
-        if (nloops == 0) err_node(n, "continue fora de loop");
+        if (nloops == 0) err_node(n, "continue outside loop");
         el(I_B, lcont_at(nloops - 1));
         return;
     }
@@ -1085,10 +1085,10 @@ void gen_stmt(i64 n, i64 lepi) {
         return;
     }
     if (k == N_EXPRSTMT) { gen_expr(nd_a(n), 0); return; }
-    err_node(n, "statement sem codegen");
+    err_node(n, "statement with no codegen");
 }
 
-// ---- dump em texto ----
+// ---- text dump ----
 void d_reg(i64 r) {
     if (r == REG_SP) { out_str(1, "sp"); return; }
     out_str(1, "x");
@@ -1113,7 +1113,7 @@ void d_lab(uptr m, i64 label) {
     d_head(m); out_str(1, "L"); out_num(1, label); out_str(1, "\n");
 }
 
-// ldr/str: registrador de 32 bits nas larguras curtas, base e deslocamento entre []
+// ldr/str: 32-bit register for the narrow widths, base and offset between []
 void d_mem(uptr m, i64 wreg, i64 rt, i64 rn, i64 off) {
     d_head(m);
     if (wreg) { out_str(1, "w"); out_num(1, rt); } else d_reg(rt);
@@ -1122,7 +1122,7 @@ void d_mem(uptr m, i64 wreg, i64 rt, i64 rn, i64 off) {
     out_str(1, "]\n");
 }
 
-// palavra crua sempre com os 8 digitos hexadecimais, para o dump ser estavel
+// raw word always with all 8 hex digits, so the dump is stable
 void d_word(u64 w) {
     u8 c[1];
     out_str(1, "  .word 0x");
@@ -1173,7 +1173,7 @@ void dump_ins(uptr in) {
         return;
     }
     i64 i = 0;
-    loop {                                                // os 11 de 3 operandos
+    loop {                                                // the 11 with 3 operands
         if (rrr_ins_at(i) == 0) break;
         if (op == rrr_ins_at(i)) { d_3(rrr_name_at(i), ins_rd(in), ins_rn(in), ins_rm(in)); return; }
         i = i + 1;
@@ -1216,10 +1216,10 @@ void dump_ins(uptr in) {
                         out_str(1, ", L"); out_num(1, ins_label(in)); out_str(1, "\n"); return; }
     if (op == I_EMIT) { d_word((u32) ins_imm(in)); return; }
     if (op == I_BLR)  { d_head("blr"); d_reg(ins_rd(in)); out_str(1, "\n"); return; }
-    die("instrucao sem dump");
+    die("instruction with no dump");
 }
 
-// o buffer com as relocacoes de reloc() antes da palavra em que cada uma cola
+// the buffer with reloc()'s relocations before the word each one sticks to
 void dump_buf(i64 f) {
     i64 p0 = fn_pstart_at(f);
     i64 k = 0;
@@ -1241,18 +1241,18 @@ void dump_buf(i64 f) {
 }
 
 // ---- encoders ----
-// checa sempre no alcance de 19 bits (o menor dos tres): conservador e uniforme
+// always checks against the 19-bit range (the smallest of the three): conservative and uniform
 i64 br_off(i64 target, i64 pc, i64 line_ok) {
     i64 d = (target - pc) / 4;
-    if (line_ok && (d > 0x1ffff || d < 0 - 0x20000)) die("desvio longe demais");
+    if (line_ok && (d > 0x1ffff || d < 0 - 0x20000)) die("branch too far");
     return (u32) d;
 }
 
-// ldr/str com deslocamento escalado sem sinal (0..4095 * largura)
+// ldr/str with an unsigned scaled offset (0..4095 * width)
 i64 enc_mem(uptr in, i64 i) {
     i64 scale = mem_scale_at(i);
     if (ins_imm(in) < 0 || ins_imm(in) % scale != 0 || ins_imm(in) / scale > 4095)
-        die("deslocamento de memoria fora de alcance");
+        die("memory offset out of range");
     return mem_base_at(i) | ((ins_imm(in) / scale) << 10) | (ins_rn(in) << 5) | ins_rd(in);
 }
 
@@ -1263,7 +1263,7 @@ i64 encode(uptr in, i64 pc, uptr lab) {
     i64 rm = ins_rm(in);
     i64 im = (u32) ins_imm(in);
     i64 i = 0;
-    loop {                                                // os 11 de 3 operandos rd, rn, rm
+    loop {                                                // the 11 with 3 operands rd, rn, rm
         if (rrr_ins_at(i) == 0) break;
         if (op == rrr_ins_at(i)) return rrr_base_at(i) | (rm << 16) | (rn << 5) | rd;
         i = i + 1;
@@ -1280,11 +1280,11 @@ i64 encode(uptr in, i64 pc, uptr lab) {
     if (op == I_NEG)  return 0xCB0003E0 | (rn << 16) | rd;
     if (op == I_CMP)  return 0xEB00001F | (rm << 16) | (rn << 5);
     if (op == I_CMPI) {
-        if (ins_imm(in) < 0 || ins_imm(in) > 4095) die("imediato de cmp fora de 12 bits");
+        if (ins_imm(in) < 0 || ins_imm(in) > 4095) die("cmp immediate out of 12 bits");
         return 0xF100001F | ((im & 0xfff) << 10) | (rn << 5);
     }
     if (op == I_CSET) return 0x9A9F07E0 | (((ins_imm(in) ^ 1) & 0xf) << 12) | rd;
-    if (op == I_ANDI) {                        // mascara 2^k-1: N=1, immr=0, imms=k-1
+    if (op == I_ANDI) {                        // 2^k-1 mask: N=1, immr=0, imms=k-1
         u64 m = ins_imm(in);
         i64 k = 0;
         loop {
@@ -1292,11 +1292,11 @@ i64 encode(uptr in, i64 pc, uptr lab) {
             if (((m >> k) & 1) == 0) break;
             k = k + 1;
         }
-        if (k == 0 || k == 64 || (m >> k) != 0) die("mascara de and imediato nao suportada");
+        if (k == 0 || k == 64 || (m >> k) != 0) die("immediate and mask not supported");
         return 0x92400000 | ((k - 1) << 10) | (rn << 5) | rd;
     }
     if (op == I_ADDI || op == I_SUBI) {
-        if (ins_imm(in) < 0 || ins_imm(in) > 4095) die("imediato de add/sub fora de 12 bits");
+        if (ins_imm(in) < 0 || ins_imm(in) > 4095) die("add/sub immediate out of 12 bits");
         i64 base = 0xD1000000;
         if (op == I_ADDI) base = 0x91000000;
         return base | ((im & 0xfff) << 10) | (rn << 5) | rd;
@@ -1309,23 +1309,23 @@ i64 encode(uptr in, i64 pc, uptr lab) {
     if (op == I_B)     return 0x14000000 | (br_off(ivec_at(lab, ins_label(in)), pc, 1) & 0x3ffffff);
     if (op == I_BCOND) return 0x54000000 | ((br_off(ivec_at(lab, ins_label(in)), pc, 1) & 0x7ffff) << 5)
                               | (im & 0xf);
-    if (op == I_CBZ || op == I_CBNZ) {                    // bit 24 distingue cbz de cbnz
+    if (op == I_CBZ || op == I_CBNZ) {                    // bit 24 distinguishes cbz from cbnz
         i64 base = 0xB5000000;
         if (op == I_CBZ) base = 0xB4000000;
         return base | ((br_off(ivec_at(lab, ins_label(in)), pc, 1) & 0x7ffff) << 5) | rd;
     }
-    // o deslocamento destes tres vem da relocacao registrada em gen_encode
+    // the offset for these three comes from the relocation registered in gen_encode
     if (op == I_BL)    return 0x94000000;
     if (op == I_ADRP)  return 0x90000000 | rd;
     if (op == I_ADDLO) return 0x91000000 | (rn << 5) | rd;
     if (op == I_EMIT)  return im;
     if (op == I_BLR)   return 0xD63F0000 | (rd << 5);
-    die("instrucao sem encoder");
+    die("instruction with no encoder");
     return 0;
 }
 
-// encoda a funcao f: reserva o lugar dela no __text, fixa o valor do simbolo e
-// escreve as palavras. E a segunda metade do gen — a que um backend substitui.
+// encodes function f: reserves its place in __text, fixes the symbol's value and
+// writes the words. This is the second half of gen — the one a backend replaces.
 void gen_encode_one(i64 f) {
     i64 b = fn_start_at(f);
     i64 n = fn_count_at(f);
@@ -1333,12 +1333,12 @@ void gen_encode_one(i64 f) {
     i64 p0 = fn_pstart_at(f);
     uptr off = xalloc(8 * (n + 1));
     uptr lab = xalloc(8 * (fn_labels_at(f) + 2));
-    buf_pad(sec_data(sec_at(text)), 4);              // cada funcao alinhada a 4
+    buf_pad(sec_data(sec_at(text)), 4);              // every function aligned to 4
     i64 base = buf_len(sec_data(sec_at(text)));
     sym_set_value(fn_sym_at(f), base);
     i64 pc = 0;
     i64 i = 0;
-    loop {                                           // passada 1: offsets e labels
+    loop {                                           // pass 1: offsets and labels
         if (i >= n) break;
         uptr e = ins_at(b + i);
         set_ivec_at(off, i, pc);
@@ -1347,18 +1347,18 @@ void gen_encode_one(i64 f) {
         i = i + 1;
     }
     i = 0;
-    loop {                                           // passada 2: palavras e relocacoes
+    loop {                                           // pass 2: words and relocations
         if (i >= n) break;
         uptr e = ins_at(b + i);
         if (ins_op(e) != I_LABEL && ins_op(e) != I_NOP) {
             i64 at = (u32) (base + ivec_at(off, i));
-            // estas tres sempre carregam simbolo; 0 e um indice valido, entao quem
-            // decide se ha relocacao e o opcode, nunca o valor de sym
+            // these three always carry a symbol; 0 is a valid index, so what
+            // decides whether there is a relocation is the opcode, never the value of sym
             if (ins_op(e) == I_BL)         reloc_add(text, at, ins_sym(e), R_BRANCH26, 1, 2);
             else if (ins_op(e) == I_ADRP)  reloc_add(text, at, ins_sym(e), R_PAGE21, 1, 2);
             else if (ins_op(e) == I_ADDLO) reloc_add(text, at, ins_sym(e), R_PAGEOFF12, 0, 2);
             i64 k = 0;
-            loop {                                   // as que reloc() pendurou aqui
+            loop {                                   // the ones reloc() hung here
                 if (k >= fn_pcount_at(f)) break;
                 if (prel_ins_at(p0 + k) == i)
                     reloc_add(text, at, prel_sym_at(p0 + k), prel_type_at(p0 + k),
@@ -1371,8 +1371,8 @@ void gen_encode_one(i64 f) {
     }
 }
 
-// ---- funcoes ----
-// troca a base ficticia do frame por sp: endereco = x29 - off = sp + (frame - off)
+// ---- functions ----
+// swaps the frame's fictitious base for sp: address = x29 - off = sp + (frame - off)
 void fix_frame(i64 frame) {
     i64 i = ins_base;
     loop {
@@ -1395,17 +1395,17 @@ void gen_func(i64 f, i64 text) {
         set_dslot_at(d, 0);
         d = d + 1;
     }
-    if ((sec_flags(sec_at(text)) & 0xff) == S_ZEROFILL) err_node(f, "funcao em secao zerofill");
+    if ((sec_flags(sec_at(text)) & 0xff) == S_ZEROFILL) err_node(f, "function in a zerofill section");
     nlabels = nlabels + 1;
     i64 lepi = nlabels;
 
     ins_add(I_STP_PRE, REG_FP, REG_SP, REG_LR, 0 - 16, 0, 0);
     ei(I_ADDI, REG_FP, REG_SP, 0);               // mov x29, sp
     i64 isub = nins;
-    ei(I_SUBI, REG_SP, REG_SP, 0);               // frame so no fim
+    ei(I_SUBI, REG_SP, REG_SP, 0);               // frame only at the end
     i64 i = 0;
     i64 p = nd_a(f);
-    loop {                                       // params: x0..x7 vao para o frame
+    loop {                                       // params: x0..x7 go to the frame
         if (p == 0) break;
         i64 off = slot_new(8);
         local_add(nd_name(p), nd_type(p), off, 0);
@@ -1414,47 +1414,47 @@ void gen_func(i64 f, i64 text) {
         p = nd_next(p);
     }
     gen_stmt(nd_b(f), lepi);
-    if (pend_type >= 0) err_node(pend_node, "reloc sem emit imediatamente a seguir");
+    if (pend_type >= 0) err_node(pend_node, "reloc without an immediately following emit");
     el(I_LABEL, lepi);
     i64 iadd = nins;
     ei(I_ADDI, REG_SP, REG_SP, 0);
     ins_add(I_LDP_POST, REG_FP, REG_SP, REG_LR, 16, 0, 0);
     e0(I_RET);
 
-    i64 frame = (frame_off + 15) & ~15;          // sp sempre alinhado a 16
-    if (frame > 4095) err_node(f, "frame grande demais");
+    i64 frame = (frame_off + 15) & ~15;          // sp always aligned to 16
+    if (frame > 4095) err_node(f, "frame too large");
     set_ins_imm(ins_at(isub), frame);
     set_ins_imm(ins_at(iadd), frame);
     if (frame == 0) { set_ins_op(ins_at(isub), I_NOP); set_ins_op(ins_at(iadd), I_NOP); }
     fix_frame(frame);
 
-    if (nfn == MAXFUNCS) die("funcoes demais");  // a funcao vira uma fatia de ibuf
+    if (nfn == MAXFUNCS) die("too many functions");  // the function becomes a slice of ibuf
     set_fn_start_at(nfn, ins_base);
     set_fn_count_at(nfn, nins - ins_base);
     set_fn_pstart_at(nfn, prel_base);
     set_fn_pcount_at(nfn, nprel - prel_base);
     set_fn_labels_at(nfn, nlabels);
     set_fn_sec_at(nfn, text);
-    // o simbolo nasce aqui (a ordem da symtab e a da baixada); o valor so em gen_encode_one
+    // the symbol is born here (the symtab order is the lowering order); the value only in gen_encode_one
     set_fn_sym_at(nfn, sym_new(usym(nd_name(f)), text + 1, 0, 1));
     nfn = nfn + 1;
 }
 
-// secao de uma funcao ou global: a do #section em vigor, senao a default
+// section of a function or global: the #section in effect, otherwise the default
 i64 node_sec(i64 n, i64 def) {
     if (nd_sect(n)) return secmap_at(nd_sect(n) - 1);
     return def;
 }
 
-// aloca cada global e cria seu simbolo; roda antes de qualquer corpo de funcao
+// allocates each global and creates its symbol; runs before any function body
 void gen_globals(i64 unit) {
     i64 g = unit;
     loop {
         if (g == 0) break;
         if (nd_kind(g) == N_GLOBAL) {
-            if (nglobals == MAXGLOBALS) die("globais demais");
+            if (nglobals == MAXGLOBALS) die("too many globals");
             if (global_find(nd_name(g)) >= 0 || func_find(nd_name(g)) >= 0)
-                err_node(g, "nome global declarado duas vezes");
+                err_node(g, "global name declared twice");
             i64 ty = nd_type(g);
             i64 w = type_width(ty);
             i64 nel = nd_val(g);
@@ -1462,7 +1462,7 @@ void gen_globals(i64 unit) {
             if (nd_a(g) == 0) def = isec_bss;
             i64 sec = node_sec(g, def);
             if (nd_a(g) && (sec_flags(sec_at(sec)) & 0xff) == S_ZEROFILL)
-                err_node(g, "global com inicializador em secao zerofill");
+                err_node(g, "global with initializer in a zerofill section");
             i64 size = w;
             if (nel) size = nel * w;
             i64 off = glob_place(g, sec, size, w);
@@ -1477,14 +1477,14 @@ void gen_globals(i64 unit) {
     }
 }
 
-// __text, __cstring, __data e __bss (as que o modulo usa) e so depois as do
-// #section, na ordem de primeira aparicao no fonte
+// __text, __cstring, __data and __bss (the ones the module uses) and only after
+// that the #section ones, in order of first appearance in the source
 void gen_sections(i64 unit) {
     i64 want_str = 0;
     i64 want_data = 0;
     i64 want_bss = 0;
-    // a string de reloc() nomeia um simbolo e nao e literal: marca-la em op a tira
-    // da conta do __cstring (o codegen tambem nunca a passa por str_sym)
+    // reloc()'s string names a symbol and is not a literal: marking it via op removes
+    // it from the __cstring count (codegen also never passes it through str_sym)
     i64 i = 1;
     loop {
         if (i >= nnodes) break;
@@ -1503,7 +1503,7 @@ void gen_sections(i64 unit) {
     i64 g = unit;
     loop {
         if (g == 0) break;
-        if (nd_kind(g) == N_GLOBAL && nd_sect(g) == 0) {   // custom ja tem secao
+        if (nd_kind(g) == N_GLOBAL && nd_sect(g) == 0) {   // a custom one already has a section
             if (nd_a(g) == 0) want_bss = 1;
             else              want_data = 1;
         }
@@ -1516,7 +1516,7 @@ void gen_sections(i64 unit) {
     if (want_str)  isec_cstr = sec_new("__TEXT", "__cstring", S_CSTRING_LITERALS, 0);
     if (want_data) isec_data = sec_new("__DATA", "__data", S_REGULAR, 4);
     if (want_bss)  isec_bss  = sec_new("__DATA", "__bss", S_ZEROFILL, 4);
-    if (sec_pending() > MAXSECS) die("secoes demais");
+    if (sec_pending() > MAXSECS) die("too many sections");
     i = 0;
     loop {
         if (i >= sec_pending()) break;
@@ -1528,7 +1528,7 @@ void gen_sections(i64 unit) {
 void gen_lower(i64 unit) {
     gen_sections(unit);
     i64 f = unit;
-    loop {                                        // assinaturas antes dos corpos
+    loop {                                        // signatures before the bodies
         if (f == 0) break;
         i64 k = nd_kind(f);
         if (k == N_FUNC || k == N_EXTERN || k == N_PROTO) {
@@ -1539,7 +1539,7 @@ void gen_lower(i64 unit) {
                 np = np + 1;
                 p = nd_next(p);
             }
-            if (np > MAXPARAMS) err_node(f, "no maximo 8 parametros");
+            if (np > MAXPARAMS) err_node(f, "at most 8 parameters");
             i64 def = 1;
             if (k == N_PROTO) def = 0;
             func_add(nd_name(f), nd_type(f), np, def, f);
@@ -1547,9 +1547,9 @@ void gen_lower(i64 unit) {
         f = nd_next(f);
     }
     i64 i = 0;
-    loop {                                        // prototipo sem definicao nem extern
+    loop {                                        // prototype with no definition or extern
         if (i >= nfuncs) break;
-        if (!fs_def(fs_at(i))) err_node(fs_node(fs_at(i)), "prototipo sem definicao");
+        if (!fs_def(fs_at(i))) err_node(fs_node(fs_at(i)), "prototype with no definition");
         i = i + 1;
     }
     gen_globals(unit);
@@ -1580,7 +1580,7 @@ void gen_dump_asm() {
     }
 }
 
-// ---- acessoras publicas: tudo o que um backend da superficie precisa ler ----
+// ---- public accessors: everything a surface backend needs to read ----
 i64  gen_func_count()            { return nfn; }
 uptr gen_func_name(i64 f)        { return sym_name(sym_at(fn_sym_at(f))); }
 i64  gen_func_sec(i64 f)         { return fn_sec_at(f); }

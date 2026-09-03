@@ -1,5 +1,5 @@
-// user_default.mc — o `user_init` padrao: nao registra nada.
-// Incluido por src/user.mc enquanto ninguem ensinar o compilador.
+// user_default.mc — the default `user_init`: registers nothing.
+// Included by src/user.mc while nobody has taught the compiler.
 
 void user_init() {
 }

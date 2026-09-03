@@ -1,17 +1,17 @@
-// user.mc — ponto de extensao do usuario (Tier 2).
+// user.mc — the user's extension point (Tier 2).
 //
-// Este arquivo e a unica costura entre o compilador e os modulos de quem o
-// ensina: ele diz quais modulos entram no binario. Por padrao entra so o
-// `user_init` vazio de lib/user_default.mc — o compilador padrao, sem passes
-// nem backends alem do `macho` embutido.
+// This file is the only seam between the compiler and the modules of whoever
+// teaches it: it says which modules go into the binary. By default only the
+// empty `user_init` from lib/user_default.mc goes in — the default compiler,
+// with no passes or backends beyond the built-in `macho`.
 //
-// Para ensinar o compilador, troque o include abaixo pelo seu modulo e rode
-// `make mc1`. Por exemplo, para ligar a demonstracao do M10 (o backend
-// `arm64-surface` e o pass `x * 1` -> `x`):
+// To teach the compiler, swap the include below for your module and run
+// `make mc1`. For example, to wire in the M10 demo (the
+// `arm64-surface` backend and the `x * 1` -> `x` pass):
 //
 //     #include "../lib/user_default.mc"
 //
-// Nao ha dylib, nao ha ABI de plugin: o modulo e compilado junto com o resto do
-// compilador. Ver docs/surface.md, secao Tier 2.
+// There is no dylib, no plugin ABI: the module is compiled together with the
+// rest of the compiler. See docs/surface.md, Tier 2 section.
 
 #include "../lib/user_default.mc"

@@ -1,5 +1,5 @@
 // expect-exit: 42
-// O segundo #include do mesmo caminho e ignorado (once-only): sem redefinicao.
+// The second #include of the same path is ignored (once-only): no redefinition.
 #include "lib/util.mc"
 #include "lib/util.mc"
 

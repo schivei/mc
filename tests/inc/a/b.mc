@@ -1,5 +1,5 @@
-// b.mc — inclui o irmao do diretorio de cima; path_join normaliza o .. antes
-// do once-only, entao c.mc entra uma vez so.
+// b.mc — includes the sibling in the parent directory; path_join normalizes
+// the .. before the once-only check, so c.mc is included only once.
 #include "../c.mc"
 
-i64 pelo_b() { return comum() + 2; }
+i64 via_b() { return common() + 2; }

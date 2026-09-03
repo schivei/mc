@@ -87,7 +87,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   Along with it came three fixes from the M9 review: gensym changed from `__g<N>` to `$g<N>`
   (the lexer never forms an identifier containing `$`, so capture is impossible —
   `tests/056-gensym-nocapture.mc`), a `#rule` whose dispatch literal is a core keyword or type is
-  now rejected (`cannot redefine a core keyword`), and an overflowed `MAXRULES` now uses `err_at`
+  now rejected (`cannot redefine core keyword`), and an overflowed `MAXRULES` now uses `err_at`
   with a position.
   — stage0 2843/3000 lines (M10 cost +89 and the M9 fixes +7, for a total of +96 over 2747);
   `make check` green: `test` 32/32, `check-lex` 54/54, `check-ast` 54/54, `check-asm` 54/54,
@@ -163,7 +163,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `MAXSYNTAX 32`), `syntax_stmt(word, &f)` (statement position), and
   `type_alias(name, TY_*)` (`MAXALIAS 64`) — linear tables, last registration wins, and all three
   reject core keywords (`word_add`, tested with `type_alias("if",…)` and
-  `syntax_stmt("return",…)`: `cannot redefine a core keyword`).
+  `syntax_stmt("return",…)`: `cannot redefine core keyword`).
   `src/parse.mc` (+219): `parse_top` consults `syntax_find` before requiring a type and returns 0
   (the handler delivers via `top_add`); `parse_stmt` consults `syntax_stmt_find` before dispatching
   `#rule` and accepts the returned node (0 → an empty `N_BLOCK`); `type_of_token` falls back to
@@ -186,7 +186,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   (`#include "../src/core.mc"` + the demo). New case in `scripts/check-surface.sh` (now
   `check-surface.sh MC0 MC1`, and the target depends on `build/mc1`): `mc1 --exe
   lib/mc_syntax_demo.mc`, the binary compiles the test via `--exe`, runs it, and exits 42 — and
-  the default compiler **refuses** the same source (`expected type at the top level`).
+  the default compiler **refuses** the same source (`type expected at top level`).
   — `make check` green: `budget` 2846/3000, `test` 32/32, `check-lex` 61/61, `check-ast` 61/61,
   `check-asm` 61/61, `check-obj` 32/32, `check-surface` 32/32 + Tier 3, `test-exe` 32/32,
   `bootstrap` at a fixed point (`mc2.o == mc3.o`, 235960 bytes; `--dump-asm` diff between `mc1` and
@@ -196,7 +196,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
 - M12 done (section B of `docs/specs/M12.md`): **`examples/api`** — a to-do-list HTTP API with SQLite
   persistence, written using `class`, `interface`, `bool`, and `str` — four things the language
   doesn't have. `src/` and `stage0/` **untouched** by this section: the whole surface comes from
-  `examples/api/oop.mc` (458 lines, running inside the compiler through the parser's public API)
+  `examples/api/oop.mc` (482 lines, running inside the compiler through the parser's public API)
   plus `examples/api/mc-api.mc` (20 lines: `#include "../../src/core.mc"` + `oop.mc` +
   `user_init()` with two `syntax` and two `type_alias`). The program: `main.mc` (359 lines) with
   `class Request`/`Response`/`Todo`/`Db`, `interface Handler`, and `class TodoHandler : Handler` /
@@ -212,14 +212,14 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   one connection at a time.
   `examples/api/test.sh` (139 lines) starts the server on a free port with a temporary database,
   hits every route with `curl`, compares body **and** status, checks the final state with the
-  system's `sqlite3` (`2|pay the bill|0`), and kills the server. `examples/api/Makefile`: `mc-api`,
+  system's `sqlite3` (`2|pay bill|0`), and kills the server. `examples/api/Makefile`: `mc-api`,
   `api`, `test-oop`, `test-lib`, `test-api`, `test`, `clean` — no dependency beyond
   `../../build/mc1` (built by the root if missing), `curl`, and `sqlite3`. The root Makefile
   gained `check-examples` (`make -C examples/api test`) inside `make check`.
   Proofs: `build/api` at 55616 bytes, `codesign --verify` OK and `flags=0x2(adhoc)`, `otool -L`
   showing both libSystem **and** libsqlite3, `nm -m` with 13 `_sqlite3_*` symbols
   `(from libsqlite3)`; the default compiler refuses the same source
-  (`examples/api/main.mc:27: expected type in the parameter` — `str`).
+  (`examples/api/main.mc:27: type expected in parameter` — `str`).
   Operational detail that cost a build: overwriting a signed executable at the same inode makes
   the kernel kill the next run with `Killed: 9`, so the `Makefile` and `test.sh` `rm -f` the
   target before every build. Docs: `examples/api/README.md` (new) and `docs/surface.md` § Tier 3
@@ -231,3 +231,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
 - M13 is the next milestone (`docs/specs/M13.md`: sizing a program's memory at compile time — the
   fixed 4 MiB arena in `examples/api/lib/rt.mc` is one more motivating case).
   Update this section when each milestone closes.
+- i18n done (2026-09-03): the repository is fully in English — diagnostics, program/script
+  output, identifiers, comments, and docs (`docs/*.md`, `docs/specs/*.md`, `CLAUDE.md`,
+  `.claude/agents/*.md` re-synced to match `scripts/i18n-map.tsv`/`scripts/i18n-idents.tsv`).
+  Language keywords were already English and untouched.

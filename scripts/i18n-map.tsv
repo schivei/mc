@@ -1,0 +1,360 @@
+diagnostico: diff <(build/mc1 --dump-asm src/mc.mc) <(build/mc2 --dump-asm src/mc.mc)	diagnosis: diff <(build/mc1 --dump-asm src/mc.mc) <(build/mc2 --dump-asm src/mc.mc)
+metodo com parametros demais (self conta; na interface, o ponteiro da vtable tambem)	method with too many parameters (self counts; in the interface, the vtable pointer does too)
+FALHA: servidor nao respondeu em nenhuma porta de $((18000 + $$ % 1000)) a $porta	FAIL: server did not respond on any port from $((18000 + $$ % 1000)) to $porta
+ok syntax/syntax_stmt/type_alias: mc_syntax_demo compila o teste (exit 42)	ok syntax/syntax_stmt/type_alias: mc_syntax_demo compiles the test (exit 42)
+FAIL: o pass de demonstracao nao alterou --dump-ast de tests/061-pass.mc	FAIL: the demo pass did not change --dump-ast of tests/061-pass.mc
+ok user_init com tok_add nao desloca os ids do nucleo (tests/001 = 42)	ok user_init with tok_add does not shift the core ids (tests/001 = 42)
+FAIL: o compilador ensinado nao compilou lib/syntax_demo_test.mc: $msg	FAIL: the taught compiler did not compile lib/syntax_demo_test.mc: $msg
+  diff de --dump-asm e regrave o golden — ver tests/golden/README.md)	  --dump-asm diff and rewrite the golden -- see tests/golden/README.md)
+$((total - fails))/$total objetos identicos (arm64-surface vs macho)	$((total - fails))/$total objects identical (arm64-surface vs macho)
+ponteiro relocado em __TEXT: o segmento e r-x e o dyld nao o rebasa	relocated pointer in __TEXT: the segment is r-x and dyld will not rebase it
+FAIL: '$mc0' nao encontrado ou nao executavel (rode 'make stage0')	FAIL: '$mc0' not found or not executable (run 'make stage0')
+  (se a mudanca em src/*.mc ou no codegen foi proposital, revise o	  (if the change in src/*.mc or in codegen was intentional, review the
+reloc UNSIGNED exige 8 bytes: use inicializador de array global	reloc UNSIGNED requires 8 bytes: use a global array initializer
+  AVISO: $golden nao existia — gravado agora com o hash atual:	  WARNING: $golden did not exist -- recorded now with the current hash:
+FAIL: o pass alterou --dump-ast de $f (esperado so 061-pass)	FAIL: the pass changed --dump-ast of $f (expected only 061-pass)
+[x] comprar pao #10\nrect area=20\ncirc area=12\ntotal=42\n	[x] buy bread #10\nrect area=20\ncirc area=12\ntotal=42\n
+depois bissecte por arquivo/funcao (ver docs/bootstrap.md)	then bisect by file/function (see docs/bootstrap.md)
+-- criterio do ponto fixo: cmp build/mc2.o build/mc3.o --	-- fixed-point criterion: cmp build/mc2.o build/mc3.o --
+FAIL: tests/001 com user_tokadd devolveu $rc, esperado 42	FAIL: tests/001 with user_tokadd returned $rc, expected 42
+FAIL: o compilador padrao aceitou lib/syntax_demo_test.mc	FAIL: the default compiler accepted lib/syntax_demo_test.mc
+FAIL: compilador '$mc' nao encontrado ou nao executavel	FAIL: compiler '$mc' not found or not executable
+FAIL: lib/syntax_demo_test.mc devolveu $rc, esperado 42	FAIL: lib/syntax_demo_test.mc returned $rc, expected 42
+FAIL: compilacao de src/mc.mc com o demo ligado: $msg	FAIL: compiling src/mc.mc with the demo wired in: $msg
+FAIL: build/mc2.o != build/mc3.o — nao ha ponto fixo	FAIL: build/mc2.o != build/mc3.o -- no fixed point
+FAIL: nao consegui ligar lib/user_tokadd.mc em $user	FAIL: could not wire lib/user_tokadd.mc into $user
+FAIL $name (stdout '$got_out', esperado '$want_out')	FAIL $name (stdout '$got_out', expected '$want_out')
+o padrao do #rule tem de abrir por um token literal	the #rule pattern must open with a literal token
+-- estagio 1: build/mc0 src/mc.mc -> build/mc1.o --	-- stage 1: build/mc0 src/mc.mc -> build/mc1.o --
+-- estagio 2: build/mc1 src/mc.mc -> build/mc2.o --	-- stage 2: build/mc1 src/mc.mc -> build/mc2.o --
+-- estagio 3: build/mc2 src/mc.mc -> build/mc3.o --	-- stage 3: build/mc2 src/mc.mc -> build/mc3.o --
+  tamanho build/mc1.o: $(tamanho build/mc1.o) bytes	  size build/mc1.o: $(size_of build/mc1.o) bytes
+  tamanho build/mc2.o: $(tamanho build/mc2.o) bytes	  size build/mc2.o: $(size_of build/mc2.o) bytes
+  tamanho build/mc3.o: $(tamanho build/mc3.o) bytes	  size build/mc3.o: $(size_of build/mc3.o) bytes
+FAIL $name (os dois recusaram o fonte: $(sed -n 1p 	FAIL $name (both rejected the source: $(sed -n 1p 
+ok pass_demo altera --dump-ast de tests/061-pass.mc	ok pass_demo changes --dump-ast of tests/061-pass.mc
+FAIL: compilacao de src/mc.mc com user_tokadd: $msg	FAIL: compiling src/mc.mc with user_tokadd: $msg
+$((total - fails))/$total testes passaram via --exe	$((total - fails))/$total tests passed via --exe
+nome reservado por syntax/syntax_stmt/type_alias: 	name reserved by syntax/syntax_stmt/type_alias: 
+FAIL: nao consegui ligar lib/user_demo.mc em $user	FAIL: could not wire lib/user_demo.mc into $user
+FAIL: user_init com tok_add quebrou o nucleo: $msg	FAIL: a user_init with tok_add broke the core: $msg
+ok o compilador padrao recusa o mesmo fonte ($msg)	ok the default compiler rejects the same source ($msg)
+=== M7 — ponto fixo: mc0 -> mc1 -> mc2 -> mc3 ===	=== M7 -- fixed point: mc0 -> mc1 -> mc2 -> mc3 ===
+o nome ja e um tipo (classe, interface ou alias)	the name is already a type (class, interface, or alias)
+FAIL $name (exit $rb com '$mc1', $ra com '$mc0')	FAIL $name (exit $rb with '$mc1', $ra with '$mc0')
+FAIL $name (exit $got_exit, esperado $want_exit)	FAIL $name (exit $got_exit, expected $want_exit)
+FAIL: compilacao de lib/mc_syntax_demo.mc: $msg	FAIL: compiling lib/mc_syntax_demo.mc: $msg
+== ok: todas as rotas responderam o esperado ==	== ok: all routes responded as expected ==
+pageoff12 desalinhado para a largura do acesso	pageoff12 misaligned for the access width
+handler de syntax nao consumiu nenhum token: 	syntax handler consumed no tokens: 
+o registro reserva a palavra no programa todo	registration reserves the word for the whole program
+instrucao sem encoder (backend arm64-surface)	instruction with no encoder (arm64-surface backend)
+FAIL $f (exit $rb com '$mc1', $ra com '$mc0')	FAIL $f (exit $rb with '$mc1', $ra with '$mc0')
+FAIL: link de tests/001 com user_tokadd: $msg	FAIL: linking tests/001 with user_tokadd: $msg
+lado esquerdo da atribuicao deve ser um nome	left side of assignment must be a name
+tamanho de array deve ser constante positiva	array size must be a positive constant
+$((total - fails))/$total arquivos identicos	$((total - fails))/$total files identical
+FALHA: o servidor nao subiu em nenhuma porta	FAIL: the server did not come up on any port
+esperado ( na lista de parametros do metodo	expected ( in the method parameter list
+esperado ) na lista de parametros do metodo	expected ) in the method parameter list
+FAIL: build/mc2.o diverge do golden $golden	FAIL: build/mc2.o diverges from the golden $golden
+$((total - fails))/$total objetos identicos	$((total - fails))/$total objects identical
+nao pode redefinir palavra-chave do nucleo	cannot redefine core keyword
+#rule expr: reservado, ainda nao suportado	#rule expr: reserved, not yet supported
+inicializador de global deve ser constante	global initializer must be constant
+global com inicializador em secao zerofill	global with initializer in a zerofill section
+relocacao sem suporte no executavel direto	relocation not supported in the direct executable
+o primeiro parametro de um metodo e `self`	the first parameter of a method is `self`
+metodo com aridade diferente da interface	method with arity different from the interface
+$((total - fails))/$total testes passaram	$((total - fails))/$total tests passed
+segmentos demais para o opcode de rebase	too many segments for the rebase opcode
+FAIL: compilacao de src/astdump.mc: $msg	FAIL: compiling src/astdump.mc: $msg
+FAIL: compilacao de src/lexdump.mc: $msg	FAIL: compiling src/lexdump.mc: $msg
+deslocamento de memoria fora de alcance	memory offset out of range
+sem _main: nao da para gerar executavel	no _main: cannot generate an executable
+#define espera uma expressao constante	#define expects a constant expression
+segmentos demais para o opcode de bind	too many segments for the bind opcode
+numero de argumentos errado no #opcode	wrong number of arguments in #opcode
+FAIL $name (sem cabecalho expect-exit)	FAIL $name (no expect-exit header)
+== FALHOU: $falhas verificacao(oes) ==	== FAILED: $fails check(s) ==
+#section espera alinhamento constante	#section expects constant alignment
+esperado ; apos o metodo da interface	expected ; after the interface method
+mascara de and imediato nao suportada	immediate and mask not supported
+reloc sem emit imediatamente a seguir	reloc without an immediately following emit
+FALHA: libsqlite3 ausente em otool -L	FAIL: libsqlite3 missing from otool -L
+esperado ) apos a condicao do unless	expected ) after unless condition
+esperado : apos a categoria do #rule	expected : after the #rule category
+esperado { no inicializador do array	expected { in the array initializer
+esperado } no inicializador do array	expected } in the array initializer
+nome de metodo reservado pela classe	method name reserved by the class
+tipo de relocacao deve ser constante	relocation type must be constant
+metodo da interface nao implementado	interface method not implemented
+duas relocacoes para a mesma palavra	two relocations for the same word
+m0: modo desconhecido (use 1 ou 2)\n	m0: unknown mode (use 1 or 2)\n
+== build/mc1 ausente, construindo ==	== build/mc1 missing, building ==
+$$nome so vale no template de #rule	$$name only works in a #rule template
+a regra esperava um nome a esquerda	the rule expected a name on the left
+dylibs demais para o opcode de bind	too many dylibs for the bind opcode
+declaracao nao bate com o prototipo	declaration does not match prototype
+imediato de add/sub fora de 12 bits	add/sub immediate out of 12 bits
+palavra emitida nao cabe em 32 bits	emitted word does not fit in 32 bits
+-- golden SHA-256 de build/mc2.o --	-- golden SHA-256 of build/mc2.o --
+  ok: $got_hash confere com $golden	  ok: $got_hash matches $golden
+=== tempo total do bootstrap: $(dt 	=== total bootstrap time: $(dt 
+argumento de #opcode nao constante	#opcode argument not constant
+buraco $nome sem regra que o ligue	hole $name has no rule binding it
+buraco fora de alcance no template	hole out of range in template
+inicializador com elementos demais	initializer with too many elements
+reloc espera o simbolo entre aspas	reloc expects the symbol in quotes
+#rule so conhece a categoria stmt	#rule only knows category stmt
+no maximo 8 parametros no #opcode	at most 8 parameters in #opcode
+esperado ( na lista de parametros	expected ( in the parameter list
+esperado ) na lista de parametros	expected ) in the parameter list
+esperado ; apos o campo da classe	expected ; after the class field
+#section espera flags constantes	#section expects constant flags
+esperado { no corpo da interface	expected { in the interface body
+nome global declarado duas vezes	global name declared twice
+inicializador deve ser constante	initializer must be constant
+callp espera de 1 a 8 argumentos	callp expects 1 to 8 arguments
+FAIL $f (exit $rb, esperado $ra)	FAIL $f (exit $rb, expected $ra)
+== banco (sqlite3 do sistema) ==	== database (system sqlite3) ==
+== compilando (--exe, sem ld) ==	== compiling (--exe, no ld) ==
+== ok: sqlite e http passaram ==	== ok: sqlite and http passed ==
+#section espera o nome da secao	#section expects the section name
+buracos de nome demais em #rule	too many name holes in #rule
+itens demais no padrao do #rule	too many items in the #rule pattern
+operador sem dobra de constante	operator without constant folding
+imediato de cmp fora de 12 bits	cmp immediate out of 12 bits
+corpo vazio: o corpo e o titulo	empty body: the body is the title
+FAIL: assinatura de $demo: $msg	FAIL: signature of $demo: $msg
+  ok    porta $porta, banco $db	  ok    port $port, db $db
+UNSIGNED que nao ocupa 8 bytes	UNSIGNED that does not occupy 8 bytes
+nt `type` fora do escopo do M9	nt `type` is out of scope for M9
+segmentos demais no executavel	too many segments in the executable
+esperado ] no tamanho do array	expected ] in the array size
+tipo de relocacao desconhecido	unknown relocation type
+break espera um nivel positivo	break expects a positive level
+flags de secao fora de 32 bits	section flags out of 32 bits
+FAIL: src/mc.mc nao encontrado	FAIL: src/mc.mc not found
+FAIL: link de build/mc1s: $msg	FAIL: linking build/mc1s: $msg
+FAIL: link de build/mc1t: $msg	FAIL: linking build/mc1t: $msg
+stage0: $total / $limit linhas	stage0: $total / $limit lines
+DELETE /todos/99 (inexistente)	DELETE /todos/99 (nonexistent)
+FALHOU: exit $$st, esperado 42	FAILED: exit $$st, expected 42
+#rule espera a categoria stmt	#rule expects category stmt
+esperado { no corpo da classe	expected { in the class body
+chamada a funcao desconhecida	call to unknown function
+FAIL $name (compilacao: $msg)	FAIL $name (compilation: $msg)
+FAIL $name (assinatura: $msg)	FAIL $name (signature: $msg)
+FALHA: corpo '$corpo' != 'ok'	FAIL: body '$corpo' != 'ok'
+ok: tests/oop_test.mc saiu 42	ok: tests/oop_test.mc exited 42
+nome ja definido por #define	name already defined by #define
+sintaxes de statement demais	too many statement syntaxes
+caminho com segmentos demais	path with too many segments
+type_alias com tipo invalido	type_alias with invalid type
+inicializador de array vazio	empty array initializer
+operador binario sem codegen	binary operator with no codegen
+reloc espera dois argumentos	reloc expects two arguments
+FAIL: link de $astdump: $msg	FAIL: linking $astdump: $msg
+FAIL: link de $lexdump: $msg	FAIL: linking $lexdump: $msg
+FALHA: servidor saiu com $rc	FAIL: server exited with $rc
+#infix espera a precedencia	#infix expects the precedence
+#infix espera left ou right	#infix expects left or right
+metodos de interface demais	too many interface methods
+secoes demais no executavel	too many sections in the executable
+operador unario sem codegen	unary operator with no codegen
+aridade errada na intrinsic	wrong arity in intrinsic
+numero de argumentos errado	wrong number of arguments
+funcao declarada duas vezes	function declared twice
+api: nao escutou na porta\n	api: could not listen on the port\n
+FALHA: parte sqlite saiu $?	FAIL: sqlite part exited $?
+\0 nao permitido em string	\0 not allowed in string
+tipo esperado no parametro	type expected in parameter
+#include espera uma string	#include expects a string
+metodos demais numa classe	too many methods in a class
+simbolos importados demais	too many imported symbols
+esperado ) apos a condicao	expected ) after condition
+esperado ; apos atribuicao	expected ; after assignment
+esperado ; apos declaracao	expected ; after declaration
+char literal nao terminado	unterminated char literal
+precedencia fora de 1..100	precedence out of 1..100
+rt_alloc: tamanho negativo	rt_alloc: negative size
+FAIL $name (stderr difere)	FAIL $name (stderr differs)
+array local grande demais	local array too large
+nome de variavel esperado	variable name expected
+externs com #dylib demais	too many externs with #dylib
+includes aninhados demais	too many nested includes
+esperado ) apos expressao	expected ) after expression
+esperado ; apos expressao	expected ; after expression
+string so inicializa uptr	a string only initializes uptr
+expressao profunda demais	expression too deep
+destino de bl desalinhado	misaligned bl target
+alinhamento fora de 0..15	alignment out of 0..15
+emit espera uma constante	emit expects a constant
+== assinatura e dylibs ==	== signature and dylibs ==
+FALHA: libsqlite3 ausente	FAIL: libsqlite3 missing
+POST /todos (comprar pao)	POST /todos (buy bread)
+#dylib espera uma string	#dylib expects a string
+#token espera uma string	#token expects a string
+a regra esperava um nome	the rule expected a name
+buraco repetido em #rule	duplicate hole in #rule
+esperado $nome no padrao	expected $name in the pattern
+esperado ; apos a global	expected ; after the global
+esperado ; apos continue	expected ; after continue
+comentario nao terminado	unterminated comment
+funcao em secao zerofill	function in a zerofill section
+emit espera um argumento	emit expects an argument
+api: nao abriu o banco\n	api: could not open the database\n
+== subindo o servidor ==	== starting the server ==
+buracos demais em #rule	too many holes in #rule
+regras aninhadas demais	too many nested rules
+relocacoes cruas demais	too many raw relocations
+sintaxes de topo demais	too many top-level syntaxes
+nome esperado no extern	name expected in extern
+prototipo sem definicao	prototype with no definition
+interface nao terminada	unterminated interface
+tipo esperado no extern	type expected in extern
+FAIL $f (stderr difere)	FAIL $f (stderr differs)
+backend desconhecido: 	unknown backend: 
+esperado ( apos unless	expected ( after unless
+#define espera um nome	#define expects a name
+#opcode espera um nome	#opcode expects a name
+aliases de tipo demais	too many type aliases
+loops aninhados demais	too many nested loops
+no maximo 8 parametros	at most 8 parameters
+esperado ; apos extern	expected ; after extern
+esperado ; apos return	expected ; after return
+parametro de tipo void	parameter of type void
+interface desconhecida	unknown interface
+tabela de tokens cheia	token table full
+  esperado: $want_hash	  expected: $want_hash
+FALHA: linha de status	FAIL: status line
+diretiva desconhecida	unknown directive
+tipo esperado no topo	type expected at top level
+padrao de #rule vazio	empty #rule pattern
+esperado ( no #opcode	expected ( in #opcode
+esperado ) na chamada	expected ) in call
+esperado ) no #opcode	expected ) in #opcode
+esperado ; apos break	expected ; after break
+nome esperado no topo	name expected at top level
+literal nao terminado	unterminated literal
+expressao sem codegen	expression with no codegen
+statement sem codegen	statement with no codegen
+continue fora de loop	continue outside loop
+break fora de alcance	break out of range
+interface sem metodos	interface with no methods
+instrucao sem encoder	instruction with no encoder
+  obtido:   $got_hash	  got:      $got_hash
+== log do servidor ==	== server log ==
+== parte 1: sqlite ==	== part 1: sqlite ==
+caractere inesperado	unexpected character
+classe nao terminada	unterminated class
+escape nao terminado	unterminated escape
+hexadecimal invalido	invalid hexadecimal
+string nao terminada	unterminated string
+        esperado: $2	        expected: $2
+        obtido:   $3	        got:      $3
+frame grande demais	frame too large
+N/N testes passaram	N/N tests passed
+bloco nao terminado	unterminated block
+escape desconhecido	unknown escape
+global de tipo void	global of type void
+desvio longe demais	branch too far
+chamada so por nome	call by name only
+tabela prefix cheia	prefix table full
+api: rotas demais\n	api: too many routes\n
+--- comando: $* ---	--- command: $* ---
+== parte 2: http ==	== part 2: http ==
+expressao esperada	expression expected
+opcao desconhecida	unknown option
+esperado { no enum	expected { in enum
+esperado } no enum	expected } in enum
+arquivos identicos	files identical
+esperado ( apos if	expected ( after if
+esperado ) no cast	expected ) in cast
+nome esperado aqui	name expected here
+campo de tipo void	field of type void
+local de tipo void	local of type void
+valor de tipo void	value of type void
+atribuicao a array	assignment to array
+instrucao sem dump	instruction with no dump
+tabela infix cheia	infix table full
+objetos identicos	objects identical
+interfaces demais	too many interfaces
+nome desconhecido	unknown name
+entrada duplicada	duplicate entry
+todo criado sumiu	created todo went missing
+mc0 compila mc.mc	mc0 compiles mc.mc
+mc1 compila mc.mc	mc1 compiles mc.mc
+mc2 compila mc.mc	mc2 compiles mc.mc
+GET /todos (dois)	GET /todos (two)
+FALHA: compilacao	FAIL: compilation
+enum sem membros	enum with no members
+#define repetido	duplicate #define
+#opcode repetido	duplicate #opcode
+& espera um nome	& expects a name
+a regra esperava	the rule expected
+divisao por zero	division by zero
+== compilando ==	== compiling ==
+buraco invalido	invalid hole
+backends demais	too many backends
+includes demais	too many includes
+bl longe demais	bl too far
+FALHA: make mc1	FAIL: make mc1
+FALHA: codesign	FAIL: codesign
+GET /todos (um)	GET /todos (one)
+GET /nada corpo	GET /nada body
+  corpo: $corpo	  body: $corpo
+defines demais	too many defines
+funcoes demais	too many functions
+globais demais	too many globals
+opcodes demais	too many opcodes
+strings demais	too many strings
+cast para void	cast to void
+nao encontrado	not found
+FALHA: main.mc	FAIL: main.mc
+registrados: 	registered: 
+registrados:	registered:
+regras demais	too many rules
+dylibs demais	too many dylibs
+locais demais	too many locals
+passes demais	too many passes
+secoes demais	too many sections
+nome esperado	name expected
+tipo esperado	type expected
+FALHA: mc-api	FAIL: mc-api
+#rule sem =>	#rule without =>
+lexema vazio	empty lexeme
+FALHA: otool	FAIL: otool
+porta $porta	port $porta
+confere com	matches
+id invalido	invalid id
+== rotas ==	== routes ==
+comprar pao	buy bread
+pagar conta	pay bill
+esperado {	expected {
+  FALHA $1	  FAIL $1
+linhas	lines
+ nos\n	 nodes\n
+nome de parametro esperado no #opcode	parameter name expected in #opcode
+nome de parametro esperado	parameter name expected
+ corpo=[	 body=[
+METODO CAMINHO HTTP/1.1	METHOD PATH HTTP/1.1
+-o exige um argumento	-o requires an argument
+api: porta 	api: port 
+, banco 	, db 
+array global grande demais	global array too large
+diretiva ainda nao suportada	directive not yet supported
+diretiva espera uma string	directive expects a string
+uso: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NOME|--exe] entrada.mc [-o saida]\n	usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NAME|--exe] source.mc [-o out]\n
+uso: astdump entrada.mc\n	usage: astdump source.mc\n
+uso: lexdump entrada.mc\n	usage: lexdump source.mc\n
+uso: m0 MODO SAIDA.o   (MODO = 1 ou 2)\n	usage: m0 MODE OUT.o   (MODE = 1 or 2)\n
+uso: api PORTA CAMINHO_DO_BANCO\n	usage: api PORT DB_PATH\n
+handler de syntax nao consumiu nenhum token	syntax handler consumed no tokens
+handler de syntax_stmt nao consumiu nenhum token	syntax_stmt handler consumed no tokens
+nome reservado por syntax/syntax_stmt/type_alias	name reserved by syntax/syntax_stmt/type_alias
+rt_alloc: arena cheia	rt_alloc: arena full
+rt_alloc: heap cheio\n	rt_alloc: heap full\n
+FALHA: Content-Length	FAIL: Content-Length
+FALHA: Connection: close	FAIL: Connection: close

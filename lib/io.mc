@@ -1,14 +1,14 @@
-// io.mc — utilitarios de I/O escritos na propria linguagem, em cima de write().
-// Nao escolhe implementacao: quem inclui (sys.mc ou sys_svc.mc) e que declara
-// open/read/write/close/exit. Nunca incluir este arquivo sozinho.
+// io.mc — I/O utilities written in the language itself, on top of write().
+// Does not choose an implementation: whoever includes it (sys.mc or sys_svc.mc)
+// is the one that declares open/read/write/close/exit. Never include this file alone.
 
-// valores do macOS (sys/fcntl.h)
+// macOS values (sys/fcntl.h)
 #define O_RDONLY 0
 #define O_WRONLY 1
 #define O_CREAT 0x200
 #define O_TRUNC 0x400
 
-// comprimento de uma string NUL-terminada
+// length of a NUL-terminated string
 i64 strlen(uptr s) {
     i64 n = 0;
     loop {
@@ -18,12 +18,12 @@ i64 strlen(uptr s) {
     return n;
 }
 
-// escreve a string em stdout, sem o NUL
+// writes the string to stdout, without the NUL
 void puts(uptr s) {
     write(1, s, strlen(s));
 }
 
-// escreve um inteiro nao negativo em stdout, sem quebra de linha
+// writes a non-negative integer to stdout, with no line break
 void putnum(i64 v) {
     u8 buf[24];
     i64 i = 24;
