@@ -7,8 +7,9 @@
 // Depends on arena.mc (str_eq, out_str, die, die2), on lex.mc (tok_init,
 // lex_init, dump_tokens), on parse.mc (parse_unit, fold), on ast.mc (dump_ast),
 // on gen_arm64.mc (gen_lower, gen_encode_all, gen_dump_asm), on macho.mc
-// (dump_syms, macho_write), on backend_exe.mc (backend_exe), on hooks.mc
-// (pass/backend/run_passes/backend_find) and on user.mc (user_init).
+// (dump_syms, macho_write), on backend_exe.mc (backend_exe), on backend_elf.mc
+// (backend_elf), on hooks.mc (pass/backend/run_passes/backend_find) and on
+// user.mc (user_init).
 //
 // M10: the driver calls user_init() before any parse (that is where the user's
 // modules register passes and backends), applies the passes to the AST and
@@ -22,6 +23,11 @@
 // writes a signed MH_EXECUTE, without `ld`. `--exe` is an alias for
 // `--backend=macho-exe`. This backend only exists in the .mc compiler: the stage0
 // in C is the seed and stays only with `macho` (docs/surface.md § Tier 2).
+//
+// M16: `elf-obj` (gen_lower + gen_encode_all + elf_write) writes an ELF64 ET_REL
+// for aarch64 Linux. It has no `--exe`-style alias: a Linux build always goes
+// through an external linker, chosen by `[target].os = "linux"` in mc.toml
+// (src/driver.mc, docs/build.md § Linux targets).
 
 #define M_COMPILE 0
 #define M_TOKENS  1
@@ -61,6 +67,7 @@ i64 main(i64 argc, uptr argv) {
 
     backend("macho", &backend_macho);           // the built-ins, always registered
     backend("macho-exe", &backend_exe);
+    backend("elf-obj", &backend_elf);
     // M15: the lexer only reaches the bundle through this pointer, so
     // src/lexdump.mc and src/astdump.mc keep compiling without src/bundle.mc.
     // Registered here, before any lex_init -- including the one inside

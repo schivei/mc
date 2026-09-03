@@ -12,6 +12,13 @@
 #opcode movx(rd, rm)   0xAA0003E0 | (rm << 16) | rd    // orr rd, xzr, rm
 #opcode svc(imm)       0xD4000001 | (imm << 5)
 
+// macOS values (sys/fcntl.h). They live here and not in io.mc because they are
+// per-system: lib/sys_linux.mc declares the Linux ones (M16).
+#define O_RDONLY 0
+#define O_WRONLY 1
+#define O_CREAT 0x200
+#define O_TRUNC 0x400
+
 // BSD numbers (sys/syscall.h)
 #define SYS_EXIT 1
 #define SYS_READ 3

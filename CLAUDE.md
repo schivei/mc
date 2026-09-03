@@ -6,7 +6,7 @@ the architecture, the budget, and the milestones. This file only summarizes the 
 ## Roles
 The user is the owner; the main session is the **architect** and **delegates all creation** to
 agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer`, `verifier`,
-`docs-writer`. Agents report facts (commands run + output), never assumptions.
+`docs-writer`, `designer` (site identity/layout/icon), `ts-dev` (VS Code extension). Agents report facts (commands run + output), never assumptions.
 
 ## Inviolable rules
 - `stage0/*.c` ≤ 3000 lines total (`make budget`). Exceeding it is a build failure.
@@ -350,7 +350,158 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   headroom for the whole repository. M16 will have to either raise `MAXSTRS` in
   `stage0/gen_arm64.c` (a seed change the owner has to authorize) or put the next milestone's
   messages on a diet.
-- Next: M16 (`docs/specs/M16.md` — Linux arm64, ELF64); M13 stays in
+- M16 done (`docs/specs/M16.md`, `docs/build.md` § Linux targets): **Linux arm64 — ELF64
+  objects, a musl link and a system layer with no libc**. `stage0/` untouched (2846/3000): the
+  ELF writer is a backend in `.mc`.
+  New: `src/backend_elf.mc` (472 lines, backend `elf-obj`) — ELF64 `ET_REL`/`EM_AARCH64` on top of
+  `gen_lower` + `gen_encode_all`, the same sections/symbols/relocations the Mach-O writer reads.
+  Sections come out null, then the module's in creation order (`__TEXT,__text` -> `.text` AX 4,
+  `__TEXT,__cstring` -> `.rodata` A 1, `__DATA,__data` -> `.data` WA 16, `__DATA,__bss` -> `.bss`
+  NOBITS WA 16, `#section SEG SECT` -> `.seg.sect` with the leading underscores dropped and
+  lowercased, AX when the Mach-O flags say pure-instructions and NOBITS when they say zerofill),
+  then one `.rela.X` (SHF_INFO_LINK, `sh_link` = symtab, `sh_info` = X) per section with
+  relocations, then `.symtab`/`.strtab`/`.shstrtab` — so a module section index is its ELF index
+  minus one and `st_shndx` is `sym_sect` unchanged. Symbols: the compiler's leading `_` dropped
+  (`_main` -> `main`), string labels as assembler temporaries (`l_str0` -> `.Lstr0`), STT_FUNC in a
+  pure-instructions section / STT_OBJECT otherwise / STT_NOTYPE undefined, and `macho.mc`'s stable
+  partition reused verbatim (locals, defined globals, undefined) because that is exactly what ELF
+  requires — `sh_info` = 1 + locals. Relocations: `R_BRANCH26` -> `CALL26` (283), `R_PAGE21` ->
+  `ADR_PREL_PG_HI21` (275), `R_PAGEOFF12` -> `ADD_ABS_LO12_NC` (277) on an `add` and
+  `LDST{8,16,32,64}_ABS_LO12_NC` (278/284/285/286) on an ldr/str by the access width in bits 31:30
+  (the same classifier `exe_fix_pageoff12` uses), `R_UNSIGNED` -> `ABS64` (257); sorted by ascending
+  offset (stable insertion sort, which is one pass because the encoder already emits them in order)
+  and `r_addend` always 0, since the encoder leaves the relocated immediate zeroed.
+  `lib/sys_linux.mc` (123): `open`/`creat`/`read`/`write`/`close`/`fchmod`/`exit` as raw `svc #0`
+  with the number in `x8` (openat 56 with `AT_FDCWD` = -100 written as `movn x0, #99`, close 57,
+  read 63, write 64, fchmod 52, exit_group 94) plus `_start`, written with `#opcode`, which reads
+  `argc`/`argv` off the entry stack (`x29 + 16` / `x29 + 24`: the function has no parameters and no
+  locals, so the frame is empty and the prologue only moved the 16 bytes of the `stp`), calls `main`
+  through `reloc(BRANCH26, "_main")` + `emit(0x94000000)` and ends in exit_group. Bundled as
+  `sys_linux` (the spec wrote `<sys/linux>`; the flat name was the instruction that came with the
+  task). `O_RDONLY/O_WRONLY/O_CREAT/O_TRUNC` moved out of `lib/io.mc` into each system layer,
+  because they are per-system values (`O_CREAT` is 0x200 on macOS and 0x40 on Linux) and a second
+  `#define` of the same name is an error.
+  Driver (`src/driver.mc` +36/-7): `[target].os` takes `linux`, which swaps the object backend for
+  `elf-obj` and makes `[linker]` REQUIRED (`linux requires [linker]: there is no direct executable`);
+  new `{sysroot}` placeholder from `[sysroot].path`, resolved against the config's directory like
+  every other path. The taught compiler is still built with `macho-exe` — it is a tool that has to
+  run on the host.
+  Scripts: `scripts/sysroot-linux.sh` (45) fills `build/sysroot/linux-aarch64` with
+  `crt1.o crti.o crtn.o libc.a libc.so` from `apk add musl-dev` inside `alpine:3` (3.24.1), cached;
+  `scripts/test-linux.sh` (123) generates a Linux `mc.toml` per test in a temp dir, builds it with
+  `mc build`, links with `ld.lld` and runs it in `docker run --rm --platform linux/arm64
+  -v <repo>:/w -w /w alpine:3` (the repo is the mount because `025-linecount` opens its own source
+  by a relative path). `make test-linux` is inside `make check`, guarded: without `ld.lld` or with
+  Docker down it prints `test-linux: SKIPPED (...)` and the build stays green.
+  `tests/032-svc.mc` carries the only `// skip-linux` header (Darwin syscall numbers in x16 and
+  `svc #0x80`); everything else is portable as written, `030-section` and `033-reloc` included.
+  `tests/linux/070-nolibc.mc` is the no-libc case: `#include <sys_linux>` linked with
+  `-nostdlib -e _start`.
+  Verified field by field against `clang --target=aarch64-linux-musl -c` of equivalent C with
+  `llvm-readobj`/`llvm-objdump -dr`: header, section flags, `.rela` `sh_flags`/`sh_link`/`sh_info`,
+  symtab `sh_link`/`sh_info` and every relocation type agree. The one intentional difference is that
+  `mc` always materializes a global address with `adrp` + `add`, so it asks for `ADD_ABS_LO12_NC`
+  where clang folds the offset into the load and asks for `LDST64_ABS_LO12_NC`.
+  Known limit: the compiler itself does not cross-compile yet — `src/driver.mc` needs
+  `posix_spawnp`/`waitpid`/`_NSGetEnviron`, and the last one is libSystem-only.
+  — `stage0/` untouched, 2846/3000; `src/*.mc` 12062 lines (3139 of them generated);
+  739/2048 functions and 518/2048 strings in `src/mc.mc`. `make check` green end to end:
+  `test` 32/32, `check-lex` 69/69, `check-ast` 69/69, `check-bundle` (31 files, blob 148754 B),
+  `check-asm` 69/69, `check-obj` 32/32, `bootstrap` at a fixed point (`mc2.o == mc3.o`,
+  448416 bytes; the `--dump-asm` diff between `mc1` and `mc2` is empty), `check-surface` 32/32,
+  `test-exe` 32/32, `check-mc` 6/6, `check-standalone` green, `check-toml` 9/9, `check-build`
+  11/11, **`test-linux` 32/32 on linux/arm64** (1 skipped), `check-examples` green; golden rewritten
+  once (`2673c65e...4a3ed5` -> `f20c1332...e14aa0`).
+- M21 done (`docs/specs/M21.md`, `docs/surface.md` § M21): **Tier 3 completed — expression and
+  operator hooks, source record and replay, hygienic substitution**. All in `src/*.mc`;
+  `stage0/` untouched. Delivered in the two gated steps the spec asks for (decision 7.5), each
+  with `make check` green and the golden rewritten once.
+  * **Step 1 — parser hooks.** `syntax_expr(word, &f)` (`i64 f()` -> node index) dispatched as the
+    first thing in `parse_primary`, with the same "consumed no tokens" guard as
+    `syntax`/`syntax_stmt` plus a second one, `syntax_expr handler produced no expression`, because
+    an expression position has no empty node to fall back on. `syntax_infix(word, prec, &f)`
+    (`i64 f(i64 left)`) keeps **no table of its own**: the `#infix` entry gained one column
+    (`INF_FN 32`, `INF_SIZE` 32 -> 40), which is what puts a taught operator and a `#infix` one in
+    one comparable precedence order; `infix_set` clears the column, so a `#infix` on the token
+    drops the handler (`tests/err/066-infix-drops-handler.mc`). A second `syntax_infix` on the same
+    token is refused at `user_init` time (`operator already taught: <tok>`, decision 7.3,
+    `lib/user_dupop.mc`). `infix_is_taught` was added so `err_name` blames only operators that
+    carry a handler, never `+`, and `word_is_taught` now covers all five registrations — its
+    message became `name reserved by a syntax/type_alias registration`. `p_start()`/`p_depth()`.
+    `--dump-rules` now also lists every infix/prefix operator with precedence, associativity,
+    `template` and `handler` (decision 7.2) — a half that exists only in the `.mc` compiler, since
+    the frozen `stage0/parse.c` has no handler column to report.
+  * **Step 2 — record/replay.** `p_skip_balanced(open, close, &len)` counts depth over **real
+    tokens** (so a `}` inside a string or a comment is harmless) and returns the source span,
+    delimiters included, reporting an unterminated region at the **opening** token.
+    A span is a slice of ONE buffer, so a region whose file ran out in the middle is refused
+    (`region crosses a file boundary`) instead of returning a bogus byte range.
+    `p_push_source(name, text, len)` is four lines over `lex_push_mem`, with `#include`'s exact
+    semantics — which is why error attribution costs **zero** core lines: `err_at` prints
+    `lex_file()`, so the module composes `slot__i64__0 instantiated from prog.mc:15` and gets it in
+    front of every error inside. `p_subst_reset`/`p_subst_name`/`p_subst_int` live in `src/lex.mc`
+    and are applied in `lex_next`'s **identifier branch only**, by exact lexeme: the pending
+    entries sit in the slot the next frame will occupy, so the push binds them by construction and
+    `lex_pop` clears the slot it vacates (`MAXSUBST 16`, nested frames independent, one slot more
+    than `MAXOPEN` because the pending slot of a full stack is index `MAXOPEN`).
+    `p_resplit_punct(n)` rewinds `cp` to just after the first `n` bytes of the current punctuation
+    token, guarded by `cp == tok_start(cur) + tok_len(cur)` — which is exactly "a token just lexed
+    from the source", never a string and never a substituted identifier. `MAXOPEN` 16 -> 32
+    (`stage0` stays at 16: it has no `p_push_source` at all, the same kind of documented divergence
+    as `MAXSTRS`/`MAXGLOBALS` in `gen_arm64.mc`).
+  * **The demo is a toy unrelated to classes and generics**, so generality is proven and not
+    asserted: `lib/user_syntax_demo.mc` (67 -> 391) keeps M12's `unless`/`enum`/`bool` and adds
+    `bits u32` (a **type** in expression position), `pipe(x, f, g)` (a variable-length list there),
+    `.+` (saturating add, lowering to a runtime the module itself pushes as a second source at
+    `user_init`), `~>` (a **name** on the right resolved in the module's own field table, plus
+    `p ~> len = 3` — which works because `=` is deliberately not in the infix table — and
+    `p ~> at(i)`), and `tmpl`/`make`: the body recorded with `p_skip_balanced`, replayed once per
+    argument tuple with `p_subst_name`/`p_subst_int`, memoized by the module's own mangled name,
+    with `make slot<i64, sum<1, 2>>;` closing on a `>>` that `p_resplit_punct` splits. Two
+    handlers (`nop`, `nil`) are broken on purpose and exist only to prove the two guards.
+    `lib/syntax_demo_test.mc` (26 -> 65) uses all nine registrations plus a `#infix "<+>"` in the
+    same file, and exits 42.
+  * **Inert by construction** is the acceptance gate and it holds: with nothing registered every
+    `tests/*.mc` object and every `--dump-ast` is byte-identical to `build/mc0`'s — the frozen C
+    seed, which has none of this. `scripts/check-surface.sh` (163 -> 302) gained one case per hook,
+    the four `tests/err/` cases with their exact message, the duplicate registration, the demo test
+    compiled twice byte for byte, and that inertness check.
+  — core cost: `src/hooks.mc` +64/-5, `src/parse.mc` +157/-8, `src/lex.mc` +77/-1 = **+298 lines,
+  175 of them non-comment** against the spec's ~146/~110 estimate; the excess is `dump_ops`
+  (27 lines, decision 7.2, outside the 2.x cost table), the three handler guards and the duplicate
+  refusal (~20), the per-frame substitution bookkeeping (~15 over the 40 estimated) and this
+  repository’s comment density (109 comments + 14 blank of the 298). New: `lib/user_dupop.mc` (18),
+  `tests/err/063-tmpl-attrib.mc`, `064-expr-noadvance.mc`, `065-expr-nonode.mc`,
+  `066-infix-drops-handler.mc`; `tools/bundle.list` gained `user_dupop` (30 entries).
+  `stage0/` untouched, 2846/3000. `make check` green end to end: `test` 32/32, `check-lex` 68/68,
+  `check-ast` 68/68, `check-asm` 68/68, `check-obj` 32/32, `check-bundle` fresh, `check-surface`
+  32/32 + every M21 case, `test-exe` 32/32, `check-mc` 6/6, `check-standalone` green,
+  `check-toml` 9/9, `check-build` 10/10, `check-examples` green, `bootstrap` at a fixed point
+  (`mc2.o == mc3.o`, 442048 bytes; the `--dump-asm` diff between `mc1` and `mc2` is empty) and the
+  golden rewritten **twice**, once per step (`e1bfc16e…6548e` then `b2579419…51be6`).
+  Sizes: bundle 336730 B of source -> 149952 B of LZ (30 files); `build/mc-exe` 402211 B.
+- M16 + M21 merged (2026-09-03): the two milestones were developed in parallel (M16 on a branch,
+  M21 in the working tree) and brought together in one tree. They do not overlap in code: M16 is
+  `src/backend_elf.mc` + `lib/sys_linux.mc` + the driver's `os = "linux"` route, M21 is
+  `src/hooks.mc`/`src/parse.mc`/`src/lex.mc`. Only four files had to be reconciled by hand:
+  `CLAUDE.md` § State and `docs/surface.md`'s header (both entries kept, the backend list is now
+  three: `macho`, `macho-exe`, `elf-obj`), and the two generated artefacts — `src/bundle_data.mc`
+  and `tests/golden/mc2.sha256` — which were discarded on both sides and regenerated
+  (`tools/bundle.list` merged on its own: 32 entries, M16's `sys_linux`/`mc/backend_elf` plus
+  M21's `user_dupop`). **The numbers in the two entries above are each milestone's own; the
+  merged tree's are these.**
+  — `stage0/` untouched, 2846/3000; `src/*.mc` 12624 lines (3417 of them generated).
+  `make check` green end to end (RC 0): `test` 32/32, `check-lex` 70/70, `check-ast` 70/70,
+  `check-bundle` (32 files, raw 360287 B -> LZ 161755 B, blob 162083 B), `check-asm` 70/70,
+  `check-obj` 32/32, `bootstrap` at a fixed point (`mc2.o == mc3.o`, 470664 bytes; the
+  `--dump-asm` diff between `mc1` and `mc2` is empty), `check-surface` 32/32 + every M21 case,
+  `test-exe` 32/32, `check-mc` 6/6, `check-standalone` green, `check-toml` 9/9, `check-build`
+  11/11, `test-linux` 32/32 on linux/arm64 (1 skipped: `032-svc`), `check-examples` green.
+  Golden rewritten **once** for the merge, after the two gates:
+  `b2579419…51be6` (M21) / `f20c1332…e14aa0` (M16) ->
+  `0bfa736630cd50ce99671f95990b8b80e79cb1bb6248bdb197be11e948720788`.
+  `build/mc-exe` 437011 B.
+- Next: M17 (`docs/specs/M17.md` — machine-interface split and x86-64); M13 stays in
   the backlog (`docs/specs/M13.md`: sizing a program's memory at compile time — the fixed 4 MiB
   arena in `examples/api/lib/rt.mc` is one more motivating case).
   Update this section when each milestone closes.

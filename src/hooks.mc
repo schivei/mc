@@ -16,6 +16,12 @@
 // type. All three register the word in the lexer (`tok_add`), like `#rule` does
 // with the dispatch literal, and all three refuse a core keyword.
 //
+// M21: two more grammar positions, same shape. `syntax_expr(word, &f)` says the
+// word opens an EXPRESSION (`parse_primary` consults it first) and
+// `syntax_infix(word, prec, &f)` teaches a binary operator — that one keeps no
+// table of its own, it adds a column to the `#infix` table so a taught operator
+// and a `#infix` one sit in a single comparable precedence order.
+//
 // Depends on arena.mc (str_eq, cstrlen, out_str, die, die2, _exit), on lex.mc
 // (tok_add and the ids K_U8..K_EXTERN) and on ast.mc (TY_MAX).
 
@@ -99,11 +105,16 @@ i64  nsyn = 0;
 i64  syns_tok[MAXSYNTAX];
 uptr syns_fn[MAXSYNTAX];
 i64  nsyns = 0;
+i64  syne_tok[MAXSYNTAX];             // M21: the same, at the expression position
+uptr syne_fn[MAXSYNTAX];
+i64  nsyne = 0;
 
 i64  syn_tok_at(i64 i)        { return ld64(syn_tok + i * 8); }
 uptr syntax_fn_at(i64 i)      { return ld64(syn_fn + i * 8); }
 i64  syns_tok_at(i64 i)       { return ld64(syns_tok + i * 8); }
 uptr syntax_stmt_fn_at(i64 i) { return ld64(syns_fn + i * 8); }
+i64  syne_tok_at(i64 i)       { return ld64(syne_tok + i * 8); }
+uptr syntax_expr_fn_at(i64 i) { return ld64(syne_fn + i * 8); }
 
 // new word for the lexer; refuses to hijack a core keyword
 // (`if`, `loop`, `i64`, `extern` ...), for the same reason #rule refuses
@@ -152,6 +163,50 @@ i64 syntax_stmt_find(i64 tok) {
     return -1;
 }
 
+// M21. syntax_expr("bits", &f): f consumes the tokens starting at `bits`
+// (inclusive) in the EXPRESSION position and returns the node's index. This is
+// the position `#prefix` cannot reach: its template parses exactly one operand
+// with parse_unary into a fixed tree, so it reads neither a type (`bits i64`)
+// nor an argument list (`pipe(x, f, g)`).
+void syntax_expr(uptr word, uptr fn) {
+    if (nsyne == MAXSYNTAX) die("too many expression syntaxes");
+    st64(syne_tok + nsyne * 8, word_add(word));
+    st64(syne_fn + nsyne * 8, fn);
+    nsyne = nsyne + 1;
+}
+
+i64 syntax_expr_find(i64 tok) {
+    i64 i = nsyne - 1;
+    loop {
+        if (i < 0) break;
+        if (syne_tok_at(i) == tok) return i;
+        i = i - 1;
+    }
+    return -1;
+}
+
+// M21. syntax_infix(".+", 9, &f): a binary operator taught by code. There is no
+// new table: the `#infix` entry gains one column (INF_FN), which is what puts a
+// taught operator and a `#infix` one in a SINGLE comparable precedence order.
+// `f(lhs)` receives the left side already parsed and returns the resulting node;
+// the core consumes the operator before calling, so the handler owns everything
+// to the right — a name, a type, an argument list, or an `=` it decides to read
+// itself.
+//
+// Teaching the same token twice is an error, like a repeated `#define` or two
+// `#rule`s with the same dispatch literal: the second registration is a mistake,
+// not an override. `#infix` on the same token afterwards is not an error — it
+// goes through infix_set, which clears the handler (the template wins, and
+// docs/surface.md says so).
+void syntax_infix(uptr word, i64 prec, uptr fn) {
+    if (prec < 1 || prec > 100) die2("precedence out of 1..100", word);
+    i64 tok = word_add(word);
+    i64 i = infix_find(tok);
+    if (i >= 0 && ie_fn(ie_at(i))) die2("operator already taught", word);
+    infix_set(tok, prec, 0, 0);              // creates or reuses the entry, clearing INF_FN
+    set_ie_fn(ie_at(infix_find(tok)), fn);
+}
+
 // ---- Tier 3: type aliases ----
 // type_alias("bool", TY_U8) makes `bool` valid as a type in declaration, parameter,
 // cast and p_type(): all of them go through type_of_token, which consults this table
@@ -182,14 +237,18 @@ i64 alias_find(i64 id) {
     return -1;
 }
 
-// 1 if `id` is a word taught by syntax/syntax_stmt/type_alias. The word
-// applies in the WHOLE program, not just the handler's grammar position: whoever
-// registers `log` removes `log` from the source's identifier vocabulary. The
-// parser uses this only to say so plainly when a name does not come
-// (docs/surface.md § Tier 3, "registration reserves the word for the whole program").
+// 1 if `id` is a word taught by a Tier 3 registration. The word applies in the
+// WHOLE program, not just the handler's grammar position: whoever registers
+// `log` removes `log` from the source's identifier vocabulary. The parser uses
+// this only to say so plainly when a name does not come (docs/surface.md
+// § Tier 3, "registration reserves the word for the whole program").
+// infix_is_taught only answers for an operator that carries a HANDLER: `+` is in
+// the same table and is never blamed.
 i64 word_is_taught(i64 id) {
     if (syntax_find(id) >= 0) return 1;
     if (syntax_stmt_find(id) >= 0) return 1;
+    if (syntax_expr_find(id) >= 0) return 1;
+    if (infix_is_taught(id)) return 1;
     if (alias_find(id) >= 0) return 1;
     return 0;
 }

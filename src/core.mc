@@ -10,6 +10,7 @@
 //   gen_arm64.mc instruction buffer, AArch64 encoders and --dump-asm
 //   sha256.mc    pure SHA-256, for the ad-hoc signature and the executable UUID
 //   backend_exe.mc backend `macho-exe`: signed MH_EXECUTE, without `ld` (M11)
+//   backend_elf.mc backend `elf-obj`: ELF64 ET_REL for Linux arm64 (M16)
 //   hooks.mc     Tier 2/3: passes (pass), backends (backend), syntax (syntax)
 //   lz.mc        LZ77 both ways, for the bundle and for `#embed ... lz` (M15)
 //   toml.mc      the TOML subset mc.toml is written in (M14)
@@ -43,6 +44,7 @@
 #include "gen_arm64.mc"
 #include "sha256.mc"
 #include "backend_exe.mc"
+#include "backend_elf.mc"
 #include "hooks.mc"
 #include "toml.mc"
 #include "driver.mc"

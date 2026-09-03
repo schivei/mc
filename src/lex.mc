@@ -16,7 +16,13 @@
 // lex_file() (top of the #include stack) or from the token itself, as in stage0.
 
 #define MAXTOK  2048
-#define MAXOPEN 16                    // maximum #include depth
+// M21 (docs/specs/M21.md, 2.8): 32, not stage0's 16. A pushed source
+// (p_push_source) is a frame like an #include, and an instantiation that
+// instantiates another nests one more level per step; the frozen C seed has no
+// p_push_source at all, so its 16 is the #include depth and nothing else. Same
+// kind of divergence as MAXSTRS/MAXGLOBALS in gen_arm64.mc.
+#define MAXOPEN 32                    // maximum #include / pushed-source depth
+#define MAXSUBST 16                   // M21: substitutions bound to one frame
 #define MAXINC  256                   // already-included files (once-only)
 #define MAXINCPATH 8                  // M14: extra roots from [include].paths
 
@@ -122,6 +128,17 @@ i64  cline = 0;
 u8  fstack[MAXOPEN * OF_SIZE];
 u8  fvirt[MAXOPEN * 8];               // M15: 1 = this level came from the bundle
 i64 nopen = 0;
+
+// ---- M21: hygienic substitution, per lexer frame ----
+// The entries of the frame that is ABOUT to be pushed live in slot `nopen` --
+// the index the new frame will get -- so p_push_source needs no code at all to
+// bind them, and lex_pop clears the slot it vacates. One slot more than MAXOPEN,
+// because the pending slot of a full stack is index MAXOPEN.
+// sub_to == 0 marks an integer substitution, whose value is in sub_val.
+u8  sub_from[(MAXOPEN + 1) * MAXSUBST * 8];
+u8  sub_to[(MAXOPEN + 1) * MAXSUBST * 8];
+u8  sub_val[(MAXOPEN + 1) * MAXSUBST * 8];
+u8  sub_n[(MAXOPEN + 1) * 8];
 u8  inclist[MAXINC * 8];              // already-included paths, in order
 uptr incpath[MAXINCPATH];             // M14: extra roots, in registration order
 i64  nincpath = 0;
@@ -438,6 +455,7 @@ void lex_push(uptr path, i64 line) {
 
 void lex_pop() {
     nopen = nopen - 1;
+    st64(sub_n + nopen * 8, 0);        // M21: the frame's substitutions die with it
     uptr top = of_at(nopen - 1);
     cp = of_cp(top);
     cend = of_cend(top);
@@ -752,6 +770,63 @@ void lex_hole(uptr t) {
     set_tok_id(t, T_HOLE);
 }
 
+// ---- M21: hygienic substitution (docs/specs/M21.md, 2.5) ----
+// A module registers substitutions and then pushes the source they apply to:
+// the entries accumulate in the slot the next frame will occupy, the push binds
+// them by construction and the pop discards them, so nested instantiations are
+// independent. They are applied ONLY in lex_next's identifier branch, by exact
+// lexeme -- which is what makes them unable to reach inside a string, a comment
+// or part of a name (`T_tag` is one identifier and is not `T` followed by
+// `_tag`). p_subst_int hands over a T_INT token, so a substituted bound folds in
+// parse_dim like any other constant.
+void p_subst_reset() { st64(sub_n + nopen * 8, 0); }
+
+void subst_add(uptr from, uptr to, i64 v) {
+    i64 n = ld64(sub_n + nopen * 8);
+    if (n == MAXSUBST) err_at(lex_file(), cline, "too many substitutions");
+    i64 k = nopen * MAXSUBST + n;
+    st64(sub_from + k * 8, from);
+    st64(sub_to + k * 8, to);
+    st64(sub_val + k * 8, v);
+    st64(sub_n + nopen * 8, n + 1);
+}
+
+// `from` becomes the name `to`, resolved through word_id: a type alias or a word
+// taught by syntax/syntax_stmt arrives with the right token id, not as T_IDENT.
+void p_subst_name(uptr from, uptr to) { subst_add(from, to, 0); }
+// `from` becomes a T_INT token with the value `v`
+void p_subst_int(uptr from, i64 v)    { subst_add(from, 0, v); }
+
+// applies the current frame's substitutions to the identifier just lexed;
+// 1 if one matched. Linear, in registration order: docs/determinism.md, rule 1.
+i64 subst_apply(uptr t) {
+    if (nopen == 0) return 0;
+    i64 base = (nopen - 1) * MAXSUBST;
+    i64 n = ld64(sub_n + (nopen - 1) * 8);
+    i64 i = 0;
+    loop {
+        if (i >= n) break;
+        uptr f = ld64(sub_from + (base + i) * 8);
+        if (cstrlen(f) == tok_len(t) && mem_eq(f, tok_start(t), tok_len(t))) {
+            uptr to = ld64(sub_to + (base + i) * 8);
+            if (to == 0) {
+                set_tok_id(t, T_INT);
+                set_tok_val(t, ld64(sub_val + (base + i) * 8));
+                return 1;
+            }
+            i64 ln = cstrlen(to);
+            set_tok_start(t, to);            // the lexeme becomes the replacement
+            set_tok_len(t, ln);
+            i64 wid = word_id(to, ln);
+            if (wid >= 0) set_tok_id(t, wid);
+            else          set_tok_id(t, T_IDENT);
+            return 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
 void lex_next(uptr t) {
     skip_space();
     loop {                             // end of an #include
@@ -784,6 +859,7 @@ void lex_next(uptr t) {
             cp = cp + 1;
         }
         set_tok_len(t, cp - tok_start(t));
+        if (subst_apply(t)) return;          // M21: only here, and by whole lexeme
         i64 wid = word_id(tok_start(t), tok_len(t));
         if (wid >= 0) set_tok_id(t, wid);
         else          set_tok_id(t, T_IDENT);

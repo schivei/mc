@@ -3,6 +3,13 @@
 // #include "sys.mc". The alternative without libSystem is lib/sys_svc.mc
 // (same interface, via #opcode svc).
 
+// macOS values (sys/fcntl.h). They live here and not in io.mc because they are
+// per-system: lib/sys_linux.mc declares the Linux ones (M16).
+#define O_RDONLY 0
+#define O_WRONLY 1
+#define O_CREAT 0x200
+#define O_TRUNC 0x400
+
 // open is variadic in libSystem and on Apple's arm64 the mode goes on the
 // stack, which the core does not set up: to create a file with permissions
 // use creat, which is not variadic.

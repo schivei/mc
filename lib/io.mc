@@ -1,12 +1,9 @@
 // io.mc — I/O utilities written in the language itself, on top of write().
-// Does not choose an implementation: whoever includes it (sys.mc or sys_svc.mc)
-// is the one that declares open/read/write/close/exit. Never include this file alone.
-
-// macOS values (sys/fcntl.h)
-#define O_RDONLY 0
-#define O_WRONLY 1
-#define O_CREAT 0x200
-#define O_TRUNC 0x400
+// Does not choose an implementation: whoever includes it (sys.mc, sys_svc.mc or
+// sys_linux.mc) is the one that declares open/read/write/close/exit AND the
+// O_RDONLY/O_WRONLY/O_CREAT/O_TRUNC constants — those are per-system values
+// (M16: on Linux O_CREAT is 0x40, on macOS 0x200), so they cannot live here.
+// Never include this file alone.
 
 // length of a NUL-terminated string
 i64 strlen(uptr s) {

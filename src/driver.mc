@@ -18,6 +18,12 @@
 //                      `<compiler> build DIR --config FILE --entry-only` so the
 //                      entry is compiled by the compiler that just came out.
 //
+// M16: `[target].os` also takes "linux". That swaps the object backend for
+// `elf-obj` (src/backend_elf.mc) and REQUIRES `[linker]` — there is no direct
+// executable for Linux — and adds the `{sysroot}` placeholder, which is where
+// the musl crt objects and libc.a come from. Everything else is unchanged,
+// including the taught compiler, which is always built for the host.
+//
 // The spawn is not a detail: the compiler's tables (lexer, arena, AST, symbols)
 // are global and are built once per process, so two compilations never fit in
 // one run. `--entry-only` is the flag that says "you are the second half": it
@@ -51,6 +57,15 @@ extern uptr _NSGetEnviron();
 
 uptr cfg_file = 0;                    // path of mc.toml, as it will appear in errors
 uptr drv_sdk_cache = 0;               // {sdk}, resolved at most once
+i64  drv_linux = 0;                   // [target].os == "linux" (M16)
+
+// the backend that writes the object for the target in effect. There is no
+// direct-executable backend for Linux: `os = "linux"` always goes through
+// [linker] (docs/build.md § Linux targets).
+uptr drv_obj_backend() {
+    if (drv_linux) return "elf-obj";
+    return "macho";
+}
 
 // ---- small helpers ----
 void drv_put(uptr b, uptr s) { buf_put(b, s, cstrlen(s)); }
@@ -293,11 +308,22 @@ uptr drv_runnable(uptr p) {
 }
 
 // ---- linking ----
-// {out} {obj} {sdk} substituted anywhere inside an argument. {sdk} is lazy: it is
-// what makes `xcrun --show-sdk-path` run, and only if some argument asks for it.
+// {sysroot}: [sysroot].path, resolved against the config's directory like every
+// other path in the file. M16 uses it for the musl crt objects and libc.a that
+// scripts/sysroot-linux.sh copies out of Alpine.
+uptr drv_sysroot() {
+    uptr p = toml_get("sysroot.path");
+    if (p == 0) toml_err_key("sysroot.path", "missing key");
+    return drv_path(p);
+}
+
+// {out} {obj} {sysroot} {sdk} substituted anywhere inside an argument. {sdk} is
+// lazy: it is what makes `xcrun --show-sdk-path` run, and only if some argument
+// asks for it.
 uptr drv_ph(uptr a, uptr obj, uptr out) {
     a = drv_subst(a, "{out}", out);
     a = drv_subst(a, "{obj}", obj);
+    if (drv_has(a, "{sysroot}")) a = drv_subst(a, "{sysroot}", drv_sysroot());
     if (drv_has(a, "{sdk}")) a = drv_subst(a, "{sdk}", drv_sdk(tm_cat(out, ".sdk")));
     return a;
 }
@@ -344,17 +370,18 @@ void drv_entry(uptr entry, uptr out, uptr kind) {
     uptr has_linker = toml_get("linker.cmd");
     if (str_eq(kind, "obj")) {
         drv_step("compile", entry, out);
-        drv_compile(src, drv_path(out), "macho", 1);
+        drv_compile(src, drv_path(out), drv_obj_backend(), 1);
         return;
     }
     if (has_linker == 0) {
+        if (drv_linux) toml_err_key("target.os", "linux requires [linker]: there is no direct executable");
         drv_step("compile", entry, out);
         drv_compile(src, drv_path(out), "macho-exe", 1);
         return;
     }
     uptr obj = tm_cat(out, ".o");
     drv_step("compile", entry, obj);
-    drv_compile(src, drv_path(obj), "macho", 1);
+    drv_compile(src, drv_path(obj), drv_obj_backend(), 1);
     drv_step("link", obj, out);
     drv_link(drv_path(obj), drv_path(out));
 }
@@ -406,11 +433,13 @@ i64 drv_build(i64 argc, uptr argv) {
     toml_parse(cfg);
 
     uptr os = toml_get("target.os");
-    if (os != 0 && !str_eq(os, "macos"))
-        toml_err_key("target.os", "only macos in M14 (see docs/build.md)");
+    drv_linux = 0;
+    if (os != 0 && str_eq(os, "linux")) drv_linux = 1;
+    else if (os != 0 && !str_eq(os, "macos"))
+        toml_err_key("target.os", "only macos and linux (see docs/build.md)");
     uptr arch = toml_get("target.arch");
     if (arch != 0 && !str_eq(arch, "aarch64"))
-        toml_err_key("target.arch", "only aarch64 in M14 (see docs/build.md)");
+        toml_err_key("target.arch", "only aarch64 (see docs/build.md)");
 
     uptr entry = toml_get("project.entry");
     if (entry == 0) toml_err_key("project.entry", "missing key");

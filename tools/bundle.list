@@ -5,6 +5,7 @@ io	lib/io.mc
 lz	src/lz.mc
 mc/arena	src/arena.mc
 mc/ast	src/ast.mc
+mc/backend_elf	src/backend_elf.mc
 mc/backend_exe	src/backend_exe.mc
 mc/bundle	src/bundle.mc
 mc/core	src/core.mc
@@ -22,8 +23,10 @@ pass_demo	lib/pass_demo.mc
 prelude	lib/prelude.mc
 syntax_demo_test	lib/syntax_demo_test.mc
 sys	lib/sys.mc
+sys_linux	lib/sys_linux.mc
 sys_svc	lib/sys_svc.mc
 user_default	lib/user_default.mc
 user_demo	lib/user_demo.mc
+user_dupop	lib/user_dupop.mc
 user_syntax_demo	lib/user_syntax_demo.mc
 user_tokadd	lib/user_tokadd.mc

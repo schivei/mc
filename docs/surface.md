@@ -1,15 +1,18 @@
 # surface.md — the teaching surface
 
 Source: `docs/plan.md` § "Teaching surface" and
-`docs/specs/M1.md`/`M5.md`/`M5.5.md`/`M9.md`/`M10.md`.
-State at this milestone (**M12 closed**): `#token`, `#infix`/`#prefix`, `#rule`, `#section`,
+`docs/specs/M1.md`/`M5.md`/`M5.5.md`/`M9.md`/`M10.md`/`M16.md`/`M21.md`.
+State at this milestone (**M16 and M21 closed**): `#token`, `#infix`/`#prefix`, `#rule`, `#section`,
 `#opcode`, `emit()`/`reloc()` implemented and actually tested with `build/mc0` **and** with the
 self-hosted compiler `build/mc1` (the mechanism exists on both sides: `stage0/parse.c` and
 `src/parse.mc`). Programmatic Tier 2 (`pass()`/`backend()`) is also **implemented**, but only in
 the `.mc` compiler — the C stage0 is the seed and isn't teachable via Tier 2. Tier 3
-(`syntax`/`syntax_stmt`, `type_alias`, `#dylib`) is likewise implemented, `.mc`-only, and proven end
-to end by `examples/api`. See the section at the end, which also describes the two built-in
-backends: `macho` (the `.o`, default) and `macho-exe` (M11's direct executable, alias `--exe`).
+(`syntax`/`syntax_stmt`/`syntax_expr`/`syntax_infix`, `type_alias`, `#dylib`, and M21's record and
+replay: `p_skip_balanced`/`p_push_source`/`p_subst_*`/`p_resplit_punct`) is likewise implemented,
+`.mc`-only, and proven end to end by `examples/api` and by `lib/user_syntax_demo.mc`. See the
+section at the end, which also describes the three built-in backends: `macho` (the `.o`, default),
+`macho-exe` (M11's direct executable, alias `--exe`) and `elf-obj` (M16's ELF64 relocatable for
+Linux arm64).
 
 ## Tier 1 — `#...` directives
 
@@ -159,7 +162,26 @@ rule 6: stmt: swap ( ident $0 , ident $1 ) ; => 7 nodes
 
 `ident $N` in the dump is the Nth **name** hole; `expr/stmt/block $N` is the Nth **node** hole.
 Rules 2-5 are the `ident $x`-at-the-opening ones: the `ident $0` shown before the literal is the
-name already read. `build/mc1 --dump-rules` gives byte-for-byte the same output.
+name already read.
+
+**Since M21 the dump continues with the whole Pratt table** (decision 7.2 of `docs/specs/M21.md`),
+in table order — core operators, the ones `#infix`/`#prefix` created and the ones `syntax_infix`
+taught, in one place, which is the point of their sharing a table. `template` marks an entry that
+came from `#infix`/`#prefix`; `handler` marks one that carries a `syntax_infix` handler:
+
+```
+infix || prec 1 left
+...
+infix % prec 10 left
+infix <+> prec 9 left template
+prefix -
+prefix ~
+prefix !
+prefix &
+```
+
+This half exists only in the self-hosted compiler: the frozen `stage0/parse.c` has no Tier 3 and
+therefore no handler column to report. The rules half is still byte-for-byte the same on both.
 
 ### `--dump-ast` shows the expanded AST
 Expansion happens in the parser, so `--dump-ast` is already post-`#rule`. `while (i < 3) { s += i; i++; }`
@@ -474,14 +496,15 @@ and replaces `x * 1` with `x`, rewriting the node in place (preserving `next`, w
 the sibling list). The core doesn't do this — `fold` only folds constant against constant — and
 `tests/061-pass.mc` shows the difference in `--dump-ast`.
 
-### The two built-in backends: `macho` and `macho-exe`
+### The three built-in backends: `macho`, `macho-exe` and `elf-obj`
 
-`src/main.mc` registers two backends before calling `user_init()`:
+`src/main.mc` registers three backends before calling `user_init()`:
 
 | name | writes | alias |
 |---|---|---|
 | `macho` (default) | `MH_OBJECT` — the `.o` that `scripts/link.sh` links with `ld` | — |
 | `macho-exe` (M11) | ad-hoc signed arm64 `MH_EXECUTE`, no `ld` | `--exe` |
+| `elf-obj` (M16) | ELF64 `ET_REL` for `EM_AARCH64` — the `.o` a Linux linker takes | — |
 
 ```
 $ build/mc1 --exe tests/001-return42.mc -o tmp/t1 && tmp/t1; echo $?
@@ -489,8 +512,14 @@ $ build/mc1 --exe tests/001-return42.mc -o tmp/t1 && tmp/t1; echo $?
 $ build/mc1 --backend=macho-exe tests/001-return42.mc -o tmp/t1    # the same thing
 $ build/mc1 --backend=xyz tests/001-return42.mc -o x.o
 unknown backend: xyz
-registered: macho macho-exe
+registered: macho macho-exe elf-obj
 ```
+
+`elf-obj` lives in `src/backend_elf.mc` and is built the same way `macho-exe` is: `gen_lower` +
+`gen_encode_all` and then only the public API of `src/macho.mc` (sections, symbols, relocations,
+`sym_order`). It is the proof that the object model in the middle of the compiler really is
+format-neutral — see `docs/build.md` § Linux targets for the whole mapping, and
+`scripts/test-linux.sh` for the suite it passes.
 
 `macho-exe` lives in `src/backend_exe.mc` and is **part of the compiler**, not a user module: it's
 M11's answer, not a Tier 2 demo. But it's written exactly the way a surface backend would be — it
@@ -530,7 +559,7 @@ compiler being taught is the one written in the language itself. What C needed t
 only what the language needs to express a hook: `&function`, `callp`, and splitting the gen into
 two halves.
 
-## Tier 3 — syntax taught by code (`syntax` / `syntax_stmt` / `type_alias` / `#dylib`) — implemented (M12)
+## Tier 3 — syntax taught by code (`syntax` / `syntax_stmt` / `syntax_expr` / `syntax_infix` / `type_alias` / `#dylib`) — implemented (M12, completed in M21)
 
 Tier 1's `#rule stmt:` is a hygienic macro: it matches a **fixed** token sequence in **statement**
 position and returns an already-parsed template. That's enough for `while`, `for`, `+=`. It's not
@@ -540,16 +569,18 @@ things a template can't express. Tier 3 is the answer, and it's the same idea as
 user writes a `.mc` module that runs inside the compiler**, this time during *parsing*, using the
 parser's public API.
 
-### The three new registrations
+### The five registrations
 
 | registration | what you write | when it runs |
 |---|---|---|
 | `syntax("class", &f)` | `void f()` (or `i64 f()`, the return value is ignored) | `parse_top`, before a type is required |
 | `syntax_stmt("unless", &f)` | `i64 f()` — returns the statement node's index (0 = none) | `parse_stmt`, before `#rule` dispatch |
+| `syntax_expr("bits", &f)` | `i64 f()` — returns the expression node's index | `parse_primary`, before `T_INT`/`T_STR`/`T_IDENT` (M21) |
+| `syntax_infix(".+", 9, &f)` | `i64 f(i64 left)` — returns the expression node's index | `parse_expr`'s Pratt loop, at the entry's precedence (M21) |
 | `type_alias("bool", TY_U8)` | — | `type_of_token`, after the core's own words |
 
-All three register the word in the lexer (`tok_add`), the same as `#rule` does with its dispatch
-literal, and all three **refuse a core keyword** (`K_U8`..`K_EXTERN`):
+All five register the word in the lexer (`tok_add`), the same as `#rule` does with its dispatch
+literal, and all five **refuse a core keyword** (`K_U8`..`K_EXTERN`):
 
 ```
 $ build/mc1 --exe my_compiler.mc -o my-mc && ./my-mc x.mc -o x.o
@@ -574,7 +605,7 @@ prog.mc:1: syntax handler consumed no tokens: bad2
 
 ### Registration reserves the word for the whole program
 
-All three registrations are global and permanent: from `word_add` on, the word stops lexing as
+All five registrations are global and permanent: from `word_add` on, the word stops lexing as
 `T_IDENT` **anywhere**, not just at the handler's grammatical position. Whoever registers
 `syntax_stmt("log", &f)` removes `log` from the identifier vocabulary of the compiled source —
 `i64 log(i64 x)`, `i64 sum(i64 log, i64 b)`, and `i64 log = 1;` all become errors, even without
@@ -587,8 +618,13 @@ unrelated "name expected":
 
 ```
 $ ./my-mc --exe user_prog.mc -o user_prog
-user_prog.mc:1: name reserved by syntax/syntax_stmt/type_alias: log
+user_prog.mc:1: name reserved by a syntax/type_alias registration: log
 ```
+
+A `syntax_infix` on a **word-shaped** operator (`is`, `as`) reserves it the same way and is blamed
+the same way; one on punctuation (`.+`, `~>`) reserves nothing an identifier could have used. The
+core operators are in the same table and are never blamed: `infix_is_taught` only answers for an
+entry that carries a handler.
 
 In practice: choose words a source wouldn't use as an identifier (`class`, `interface`, `unless`,
 `enum`), and prefer capitalized names for `type_alias` (`Todo`, `Request`).
@@ -620,6 +656,16 @@ void top_add(n)                   appends an N_FUNC/N_GLOBAL/N_EXTERN/N_PROTO to
 void def_add(name, val, line, fl) registers a #define (refuses a repeated name)
 i64  param_new(ty, name)          a standalone N_PARAM, to prepend `self`
 i64  list_append(head, n)         appends n to the end of the list and returns the head
+
+                                  ---- M21: read, record, replay ----
+uptr p_start()                    where the current token starts in the source
+i64  p_depth()                    lexer stack depth (frames pushed)
+uptr p_skip_balanced(open, close, plen)  record a delimited region without parsing it
+void p_push_source(name, text, len)      parse a second source, `#include`'s semantics
+void p_subst_reset()              drop the substitutions pending for the next push
+void p_subst_name(from, to)       identifier `from` becomes the name `to` (resolved by word_id)
+void p_subst_int(from, v)         identifier `from` becomes a T_INT token with the value v
+void p_resplit_punct(n)           the current punctuation becomes its first n bytes (`>>` -> `>`)
 ```
 
 `parse_function` takes the parameter list **already built** — that's how a `class` handler
@@ -659,7 +705,12 @@ That last line is the point: the syntax belongs to the module, not to the core.
 
 ### The proof: `lib/user_syntax_demo.mc`
 
-64 lines that teach three things `#rule` can't reach:
+The module teaches a small toy that is deliberately **not** a class or a generic system: the same
+mechanisms have to carry a language that looks nothing like the one they were designed against.
+M12's three registrations (`unless`, `enum`, `bool`) and M21's six (`bits`, `pipe`, `.+`, `~>`,
+`tmpl`, `make`) live in one file, and `lib/syntax_demo_test.mc` uses all nine and exits 42.
+
+The three from M12, which `#rule` can't reach:
 
 ```c
 // unless (cond) block  ->  if (!cond) block
@@ -704,15 +755,13 @@ void user_init() {
     syntax("enum", &sd_enum);                    // top-level position
     syntax_stmt("unless", &sd_unless);           // statement position
     type_alias("bool", TY_U8);                   // new type, no new syntax
+    // ... and M21's six, below
 }
 ```
 
 `unless` would fit in a `#rule stmt:` — it's there on purpose, to show the same result both ways.
 `enum` doesn't fit: it's top-level position, the list has variable length, and its effect is
 registering constants, not producing a node. `bool` doesn't either: `#rule` has no `type $t` hole.
-
-`lib/syntax_demo_test.mc` uses all three (`enum Cor { VERDE, AMARELO, VERMELHO }`, `bool` as a
-parameter and local type, two `unless`s) and exits with 42.
 
 ### `type_alias` and the rest of the language
 
@@ -892,6 +941,213 @@ examples/api/main.mc:27: type expected in parameter
 That last line is the usual one: the default compiler doesn't know `str`. The surface belongs to
 the directory that teaches it. `make check` runs all of this in the `check-examples` target; the
 step-by-step guide is in `examples/api/README.md`.
+
+---
+
+## M21 — the rest of the parser surface
+
+M12 gave a module the top-level and the statement positions. M21 gives it the two that were
+missing — the **expression** and the **infix operator** — plus the one thing no position hands
+you: the ability to **record** a region of source and **replay** it later, with substitutions.
+These are mechanisms, never features: nothing here knows what a class, a generic, a namespace or a
+memory policy is.
+
+Every table below starts **empty** and every new field is zero, so an untaught compiler produces
+byte-identical objects and `--dump-ast` output — `scripts/check-surface.sh` checks exactly that
+against `build/mc0`, the frozen C seed, which has none of this. All of it is `.mc`-only, for the
+usual reason: `stage0` is the seed and stays frozen.
+
+### `syntax_expr(word, &f)` — a new expression
+
+`i64 f()`, dispatched as the **first** thing in `parse_primary`, with the parser stopped on the
+word; the handler consumes it. This is the position `#prefix` cannot serve: its template parses
+exactly one operand with `parse_unary` into a fixed tree, so it reads neither a type nor an
+argument list. The demo's two:
+
+```c
+// bits u32  ->  32.  A TYPE in expression position.
+i64 sd_bits() {
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_next();                                    // the `bits` word
+    i64 ty = p_type();                           // core type or type_alias
+    return sd_int(type_width(ty) * 8, line, fl);
+}
+
+// pipe(x, f, g)  ->  g(f(x)).  A variable-length list in expression position.
+i64 sd_pipe() {
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_next();
+    p_expect(K_LPAR, "expected ( after pipe");
+    i64 v = parse_expr(0);
+    loop {
+        if (!p_accept(K_COMMA)) break;
+        v = sd_call(p_ident(), v, line, fl);
+    }
+    p_expect(K_RPAR, "expected ) after pipe");
+    return v;
+}
+```
+
+Two guards, both with the word's name and position, both `err_at2`:
+
+```
+$ ./my-mc tests/err/064-expr-noadvance.mc -o x.o
+tests/err/064-expr-noadvance.mc:7: syntax_expr handler consumed no tokens: nop
+$ ./my-mc tests/err/065-expr-nonode.mc -o x.o
+tests/err/065-expr-nonode.mc:6: syntax_expr handler produced no expression: nil
+```
+
+The second has no `syntax_stmt` equivalent on purpose: a statement that returns 0 gets an empty
+`N_BLOCK`, but an expression position has nothing to put there.
+
+### `syntax_infix(word, prec, &f)` — a new operator
+
+`i64 f(i64 left)`, called from `parse_expr`'s Pratt loop with the left side **already parsed** and
+the operator **already consumed**. There is no new table: the `#infix` entry gained one column
+(`INF_FN`), which is the whole point — a taught operator and a `#infix` one sit in a single
+comparable precedence order, and `--dump-rules` prints them side by side.
+
+What that buys is the right-hand side. The handler owns it: a name, a type, an argument list, or
+an `=` it decides to read itself. Member assignment works precisely because `=` is deliberately
+**not** in the infix table — the Pratt loop has already stopped, so the handler peeks `K_ASSIGN`
+and emits a store, and core `parse_stmt` then sees a plain expression statement:
+
+```c
+// p ~> len        ->  ld64(p + 0)
+// p ~> len = 3    ->  st64(p + 0, 3)
+// p ~> at(i)      ->  ld64(p + 16 + i * 8)
+i64 sd_arrow(i64 left) {
+    uptr f = p_ident();                          // the field name, on the RIGHT
+    ...
+    if (p_accept(K_ASSIGN)) { ... }              // the handler reads the `=` itself
+}
+```
+
+None of that is reachable from a template: `#infix "~>" 12 left ld64($1 + $2)` needs one
+program-wide `#define` per field at a fixed width, dies on `p ~> x = 5;` with
+`left side of assignment must be a name` and on `p ~> m()` with `wrong number of arguments`.
+
+**Teaching the same operator twice is an error** (decision 7.3), at `user_init` time, before the
+first token of any source is read — the same stance as a duplicate `#define` or two `#rule`s on
+one dispatch literal:
+
+```
+$ ./my-mc x.mc -o x.o
+mc: operator already taught: .+
+```
+
+**A `#infix` on a taught token drops the handler.** `infix_set` rewrites the whole entry,
+`INF_FN` included, so the template wins and the operator goes back to being ordinary. That is not
+an error, it is the documented order of precedence between the two surfaces, and
+`tests/err/066-infix-drops-handler.mc` is the case.
+
+### `p_skip_balanced(open, close, &len)` — record without parsing
+
+Enter with the parser on the opening token; it counts depth over **real tokens** and returns the
+source bytes of the whole span, delimiters included, leaving the parser just past the closing one.
+Counting with the lexer instead of scanning bytes is what makes a `}` inside a string or a comment
+harmless. An unterminated region is reported at the **opening** token — the position that says
+which region never closed. The span is a slice of **one** buffer, so a region whose file ran out
+in the middle (the closing token was found back in the includer) has no byte range at all and is
+refused with `region crosses a file boundary`. What remains lives in the arena for the whole
+compilation, so a module may keep it and replay it as often as it likes.
+
+### `p_push_source(name, text, len)` — a second source
+
+Exactly `#include`'s semantics: the lexer pops on its own at the end of the buffer, and `name` is
+what `err_at` prints for everything inside. The buffer is whatever the module built — the recorded
+span, or a header concatenated with it.
+
+**The lookahead contract.** A push does **not** touch the pending lookahead token, so the
+`p_next()` after the push discards it and reads the first token of the pushed source. A handler
+must therefore sit on the **last** token of its own construct when it pushes — exactly what
+`do_directive` does for `#include` (`lex_include(path, line); next();` with the current token still
+on the string). Two independent prototypes of this got it wrong first, which is why it is written
+down as a rule.
+
+To get the generated **declarations** into the unit, a handler drives the parser itself; this works
+from inside a function body too, because `top_add` appends to the unit list independently of where
+the parser is:
+
+```c
+i64 d0 = p_depth();
+p_push_source(name, buf_p(b), buf_len(b));
+p_next();                                        // the contract: discards the lookahead
+loop {
+    if (p_depth() == d0) break;                  // the pushed source is exhausted
+    top_add(parse_top());
+}
+```
+
+### `p_subst_reset()` / `p_subst_name(from, to)` / `p_subst_int(from, v)` — hygiene
+
+Entries accumulate into a pending list; the next `p_push_source` binds them to the frame it pushes
+and the frame's pop discards them (`MAXSUBST` 16 per frame, nested frames independent). They are
+applied in `lex_next`'s identifier branch **only**, by exact lexeme, linearly, in registration
+order. Two properties follow from doing it in the lexer, both correctness and neither achievable by
+rewriting a tree:
+
+- substitution can never reach inside a string, a comment, or part of an identifier — `"T is T"`
+  keeps its `T`s and `T_tag` stays `T_tag`, because both are one token;
+- `p_subst_int` yields a **`T_INT` token**, so a substituted array bound folds in `parse_dim` like
+  any other constant. Tree substitution cannot: `u8 buf[$1]` is `array size must be a positive
+  constant`.
+
+`p_subst_name` resolves `to` through `word_id`, so a type alias or a taught word arrives with the
+right token id rather than as a bare `T_IDENT`.
+
+### `p_resplit_punct(n)` — undo a longest match
+
+The current punctuation token, of length `L > n`, becomes the punctuation formed by its first `n`
+bytes, and the cursor rewinds to just after them. `>>` read as `>` with another `>` still to come
+is the case; longest match is the one lexing decision a parser cannot undo afterwards, and this is
+the narrow, sound piece of it — no pushback, no backtracking, no new state. The core learns "a
+punctuation token may be re-split", not "generics exist".
+
+### Error attribution costs zero core lines
+
+`err_at` prints `lex_file()`, which for a pushed frame is the string the module passed. So the
+module composes the provenance and gets it in front of every error inside the frame, and nested
+instantiations compose because the module builds the name from the name it is already inside:
+
+```
+$ ./my-mc tests/err/063-tmpl-attrib.mc -o x.o
+slot__i64__0 instantiated from tests/err/063-tmpl-attrib.mc:15:2: array size must be a positive constant
+```
+
+Nodes built inside the frame keep that string in `nd_file`, so a **codegen** error still names the
+instantiation long after the frame popped. The gap: the line is relative to the generated text, so
+a module that wants the template's own line copies the span verbatim (line-for-line aligned) or
+emits a line map of its own.
+
+### The demo, end to end
+
+`lib/user_syntax_demo.mc` records a body and replays it once per argument tuple, and nothing about
+that is in the core:
+
+```c
+tmpl slot<T, N> {
+    T cells[N];                      // p_subst_int reaches parse_dim
+    i64 T_tag = N;                   // one identifier: substitution is by whole lexeme
+    uptr kind = "T is T";            // a string: the lexer never offers it
+    st8(cells, 0);
+    return T_tag + bits T / 8 + ld8(cells) + ld8(kind) - 'T';
+}
+
+make slot<i64, 3>;                   // -> i64 slot__i64__3()
+make slot<u8, 2>;                    // -> i64 slot__u8__2()
+make slot<i64, sum<1, 2>>;           // `>>` split by p_resplit_punct; memoized, emits nothing
+```
+
+Mangling, memoization, what an "argument" is and what `sum<a, b>` means are all the module's:
+the core hands out a span, a second source, a substitution and a re-split, and nothing else.
+`scripts/check-surface.sh` runs one case per hook plus the four `tests/err/` cases, the duplicate
+registration, the demo test compiled twice byte for byte, and the inertness check.
+
+**A module side table keyed by node index must never live in `nd_c`/`nd_d`.** `dump_node` walks
+those as node indices, and `node_copy_subst` does not carry them; keep such a table in the module.
 
 ---
 

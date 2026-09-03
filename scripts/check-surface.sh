@@ -15,6 +15,12 @@
 # compiles lib/syntax_demo_test.mc (which uses `unless`, `enum`, and `bool`),
 # also with --exe; the program has to exit 42, and the default compiler has to
 # refuse the same source.
+#
+# M21: the same taught compiler now also carries `bits`/`pipe` (syntax_expr),
+# `.+`/`~>` (syntax_infix) and `tmpl`/`make` (p_skip_balanced + p_push_source +
+# p_subst_* + p_resplit_punct). One case per hook, the four tests/err/ cases with
+# their exact message, the duplicate registration refused at user_init time, the
+# demo test compiled twice byte for byte, and the inertness check of 6(5).
 mc0="${1:-build/mc0}"
 mc1="${2:-build/mc1}"
 
@@ -158,6 +164,139 @@ if msg=$("$mc1" lib/syntax_demo_test.mc -o "$tmp/sdt.o" 2>&1); then
     fails=$((fails + 1))
 else
     echo "ok the default compiler rejects the same source ($msg)"
+fi
+
+# ---- M21: one case per hook ----
+# Each case is a whole program compiled by the taught compiler with --exe and
+# run: the exit code is the assertion. They are separate from
+# lib/syntax_demo_test.mc on purpose — that file proves the hooks compose, these
+# prove each one on its own, so a failure names the hook that broke.
+hook_case() {                       # hook_case NAME EXPECTED-EXIT SOURCE
+    name="$1"; want="$2"; src="$3"
+    printf '%s\n' "$src" > "$tmp/$name.mc"
+    if ! msg=$("$demo" --exe "$tmp/$name.mc" -o "$tmp/$name" 2>&1); then
+        echo "FAIL $name (compilation: $msg)"; fails=$((fails + 1)); return
+    fi
+    "$tmp/$name"
+    rc=$?
+    if [ "$rc" != "$want" ]; then
+        echo "FAIL $name (exit $rc, expected $want)"; fails=$((fails + 1)); return
+    fi
+    echo "ok $name"
+}
+
+hook_case syntax_expr-bits 42 'i64 main() { return bits u32 + 10; }'
+hook_case syntax_expr-pipe 42 'i64 d(i64 x) { return x * 2; }
+i64 main() { return pipe(21, d); }'
+hook_case syntax_infix-sat 42 'i64 main() { return 50 .+ 60 - 58; }'
+hook_case syntax_infix-field 42 'u64 b[4];
+i64 main() { uptr p = b; p ~> len = 42; return p ~> len; }'
+hook_case p_skip_balanced 42 'tmpl t<T, N> { T a[N]; return N + bits T / 8; }
+make t<i64, 3>;
+i64 main() { return t__i64__3() * 4 - 2; }'
+hook_case p_resplit_punct 42 'tmpl t<T, N> { T a[N]; return N + bits T / 8; }
+make t<i64, 3>;
+make t<i64, sum<1, 2>>;
+i64 main() { return t__i64__3() * 4 - 2; }'
+hook_case p_subst_hygiene 42 'tmpl t<T, N> { i64 T_tag = N; uptr k = "T is T"; return T_tag + ld8(k); }
+make t<i64, 2>;
+i64 main() { return t__i64__2() - 44; }'
+
+# p_start/p_depth: the module drives top_add(parse_top()) until the pushed
+# source is exhausted, so a `make` inside a unit produces a real declaration
+if "$demo" --dump-ast "$tmp/p_skip_balanced.mc" 2>&1 | grep -q 'name=t__i64__3'; then
+    echo "ok p_depth: the instantiation reached the unit as a declaration"
+else
+    echo "FAIL p_depth: t__i64__3 is not in the unit"
+    fails=$((fails + 1))
+fi
+
+# decision 7.2: --dump-rules lists the operators, with the handler marked
+if "$demo" --dump-rules "$tmp/syntax_infix-sat.mc" 2>&1 \
+   | grep -q '^infix \.+ prec 9 left handler$'; then
+    echo "ok --dump-rules lists the taught operator with its precedence"
+else
+    echo "FAIL --dump-rules does not list the taught operator"
+    fails=$((fails + 1))
+fi
+
+# ---- M21: the tests/err/ cases, with their exact message ----
+err_case() {                        # err_case FILE EXPECTED-MESSAGE
+    f="$1"; want="$2"
+    if msg=$("$demo" "$f" -o "$tmp/err.o" 2>&1); then
+        echo "FAIL $f (the taught compiler accepted it)"; fails=$((fails + 1)); return
+    fi
+    if [ "$msg" != "$want" ]; then
+        echo "FAIL $f"
+        echo "  expected: $want"
+        echo "  got:      $msg"
+        fails=$((fails + 1)); return
+    fi
+    echo "ok $f ($msg)"
+}
+
+err_case tests/err/063-tmpl-attrib.mc \
+    "slot__i64__0 instantiated from tests/err/063-tmpl-attrib.mc:15:2: array size must be a positive constant"
+err_case tests/err/064-expr-noadvance.mc \
+    "tests/err/064-expr-noadvance.mc:7: syntax_expr handler consumed no tokens: nop"
+err_case tests/err/065-expr-nonode.mc \
+    "tests/err/065-expr-nonode.mc:6: syntax_expr handler produced no expression: nil"
+err_case tests/err/066-infix-drops-handler.mc \
+    "tests/err/066-infix-drops-handler.mc:12: unknown name"
+
+# determinism: the same source compiled twice by the same compiler is the same object
+"$demo" lib/syntax_demo_test.mc -o "$tmp/sdt1.o" 2>/dev/null
+"$demo" lib/syntax_demo_test.mc -o "$tmp/sdt2.o" 2>/dev/null
+if cmp -s "$tmp/sdt1.o" "$tmp/sdt2.o"; then
+    echo "ok the demo test compiled twice gives the same object"
+else
+    echo "FAIL the demo test is not deterministic"
+    fails=$((fails + 1))
+fi
+
+# decision 7.3: teaching the same operator twice is refused at user_init time,
+# before the first token of any source is read
+sed 's|user_default\.mc|user_dupop.mc|' "$save" > "$user"
+if ! grep -q 'user_dupop\.mc' "$user"; then
+    echo "FAIL: could not wire lib/user_dupop.mc into $user"
+    exit 1
+fi
+if ! msg=$("$mc0" src/mc.mc -o build/mc1d.o 2>&1); then
+    echo "FAIL: compiling src/mc.mc with user_dupop: $msg"
+    fails=$((fails + 1))
+elif ! msg=$(scripts/link.sh build/mc1d build/mc1d.o 2>&1); then
+    echo "FAIL: linking build/mc1d: $msg"
+    fails=$((fails + 1))
+elif msg=$(build/mc1d tests/001-return42.mc -o "$tmp/d.o" 2>&1); then
+    echo "FAIL: a duplicate syntax_infix was accepted"
+    fails=$((fails + 1))
+elif [ "$msg" != "mc: operator already taught: .+" ]; then
+    echo "FAIL: duplicate syntax_infix said '$msg'"
+    fails=$((fails + 1))
+else
+    echo "ok duplicate syntax_infix refused at user_init ($msg)"
+fi
+cp "$save" "$user"
+
+# ---- M21 acceptance 6(5): inert by construction ----
+# With nothing registered, the compiler has to produce exactly what a compiler
+# with no Tier 3 at all produces. `$mc0` IS that compiler: the frozen C seed
+# knows nothing about syntax_expr, syntax_infix or a pushed source.
+inert=0
+for f in tests/*.mc; do
+    [ -f "$f" ] || continue
+    name=$(basename "$f" .mc)
+    "$mc0" "$f" -o "$tmp/i0.o" 2>/dev/null
+    "$mc1" "$f" -o "$tmp/i1.o" 2>/dev/null
+    cmp -s "$tmp/i0.o" "$tmp/i1.o" || { echo "FAIL inert: object of $name"; inert=$((inert + 1)); }
+    "$mc0" --dump-ast "$f" > "$tmp/i0.ast" 2>&1
+    "$mc1" --dump-ast "$f" > "$tmp/i1.ast" 2>&1
+    cmp -s "$tmp/i0.ast" "$tmp/i1.ast" || { echo "FAIL inert: --dump-ast of $name"; inert=$((inert + 1)); }
+done
+if [ "$inert" -eq 0 ]; then
+    echo "ok inert: untaught objects and --dump-ast identical to the pre-Tier-3 seed"
+else
+    fails=$((fails + inert))
 fi
 
 [ "$fails" -eq 0 ]

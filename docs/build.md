@@ -1,4 +1,4 @@
-# build.md — `mc build` and `mc.toml` (M14), the bundle and `#embed` (M15)
+# build.md — `mc build` and `mc.toml` (M14), the bundle and `#embed` (M15), Linux targets (M16)
 
 Through M13 the only way to compile was one file at a time:
 
@@ -45,18 +45,21 @@ out   = "build/api"        # the artifact; parent directories are created
 kind  = "exe"              # exe (default) | obj
 
 [target]
-os   = "macos"             # M14 implements macos only; anything else is an error
-arch = "aarch64"           # M14 implements aarch64 only
+os   = "macos"             # macos (default) | linux; anything else is an error
+arch = "aarch64"           # aarch64 only
 
 [compiler]                 # optional: build a taught compiler first, then use it
 core    = "../../src/core.mc"
 modules = ["mc-api.mc"]
 out     = "build/mc-api"   # default: build/mc-<project.name>
 
-[linker]                   # optional; without it, kind = "exe" uses the built-in
-cmd  = "ld"                # macho-exe backend and no linker runs at all
+[linker]                   # optional on macOS; REQUIRED when os = "linux"
+cmd  = "ld"                # without it, kind = "exe" uses the built-in macho-exe
 args = ["-arch", "arm64", "-syslibroot", "{sdk}", "-lSystem",
         "-o", "{out}", "{obj}", "{libs}"]
+
+[sysroot]                  # M16: what {sysroot} expands to in [linker].args
+path = "build/sysroot/linux-aarch64"
 
 [libs]                     # named libraries, in the order the ordinals are handed out
 sqlite3 = "/usr/lib/libsqlite3.dylib"
@@ -79,15 +82,17 @@ paths = ["lib"]            # extra roots for #include "x"
 
 ### `[target]`
 
-`os` defaults to `macos` and `arch` to `aarch64`; M14 implements nothing else, and says so with
-the position of the offending value:
+`os` defaults to `macos` and takes `linux` since M16; `arch` defaults to `aarch64` and takes
+nothing else. Any other value is an error at the position of the offending value:
 
 ```
-$ build/mc1 build tests/proj --config /tmp/linux.toml
-/tmp/linux.toml:6:6: only macos in M14 (see docs/build.md): target.os
+$ build/mc1 build tests/proj --config /tmp/windows.toml
+/tmp/windows.toml:6:6: only macos and linux (see docs/build.md): target.os
 ```
 
-Foreign targets are M16 and beyond (`docs/plan.md` § Phase 2).
+`os = "linux"` changes two things and nothing else: the object comes out as an ELF64 `ET_REL`
+(the `elf-obj` backend, `src/backend_elf.mc`) instead of a Mach-O, and `[linker]` becomes
+**required** — there is no direct-executable backend for Linux. See § Linux targets below.
 
 ### `[compiler]` — building the compiler that will compile `entry`
 
@@ -160,9 +165,11 @@ args = ["-arch", "arm64", "-platform_version", "macos", "13.0", "13.0",
 | `{out}` | `[project].out`, resolved against the config's directory |
 | `{obj}` | the object `mc` just wrote, `<out>.o` |
 | `{sdk}` | the output of `xcrun --show-sdk-path`, run **lazily**: only if some argument mentions it, and at most once per build |
+| `{sysroot}` | `[sysroot].path`, resolved against the config's directory (M16). A missing `[sysroot].path` is an error only when some argument actually uses the placeholder |
 | `{libs}` | one argument per `[libs]` entry, in the order the keys are written |
 
-`{out}`, `{obj}` and `{sdk}` are substituted **inside** an argument, so `-L{sdk}/usr/lib` works.
+`{out}`, `{obj}`, `{sdk}` and `{sysroot}` are substituted **inside** an argument, so
+`-L{sdk}/usr/lib` and `{sysroot}/crt1.o` both work.
 `{libs}` is the one that has to be a whole argument, because it expands to several; each expanded
 value goes through the same substitution, so a library can be written as
 `"{sdk}/usr/lib/libsqlite3.tbd"` — which is what `tests/proj/link.toml` does, since on macOS
@@ -383,8 +390,8 @@ prog.mc:1: unknown bundled include: no/such/module
 
 | names | files |
 |---|---|
-| `sys`, `sys_svc`, `io`, `prelude`, `lz`, `backend_arm64`, `pass_demo`, `user_default`, … | every `lib/*.mc`, plus `src/lz.mc` (a library, not only a compiler module) |
-| `mc/core`, `mc/arena`, `mc/lex`, `mc/parse`, `mc/gen_arm64`, `mc/backend_exe`, … | every module `src/core.mc` includes |
+| `sys`, `sys_svc`, `sys_linux`, `io`, `prelude`, `lz`, `backend_arm64`, `pass_demo`, `user_default`, … | every `lib/*.mc`, plus `src/lz.mc` (a library, not only a compiler module) |
+| `mc/core`, `mc/arena`, `mc/lex`, `mc/parse`, `mc/gen_arm64`, `mc/backend_exe`, `mc/backend_elf`, … | every module `src/core.mc` includes |
 
 Everything a taught compiler needs is there, which is what makes `<mc/core>` complete.
 
@@ -440,7 +447,7 @@ i64 bundle_idx[] = {
 0,2,0,0,
 ...
 };
-#define BUNDLE_COUNT 27
+#define BUNDLE_COUNT 31
 ```
 
 - `bundle_blob` holds the NUL-terminated names first, in manifest order, then each LZ stream.
@@ -457,7 +464,7 @@ Two shapes here are deliberate and both are about the **frozen seed**:
   emits signed division (see the note in `src/arena.mc`).
 - **One index array, names inside the blob.** `stage0/gen_arm64.c` has `MAXSTRS 512` and
   `src/mc.mc` was at 489 literals before M15. A `uptr bundle_name[] = {"sys", ...}` would have
-  spent 27 of them, and four array headers in the emitter would have spent four instead of two.
+  spent one literal per entry, and four array headers in the emitter would have spent four instead of two.
 
 ### Compression: `src/lz.mc`
 
@@ -482,7 +489,7 @@ bytes *plus* the control byte of the run it interrupts. That single rule is what
 `lz_bound(n) = n + n/128 + 8` a true upper bound: every (literal run + match) pair then has
 non-positive overhead.
 
-On this repository: **304346 bytes of source → 134604 bytes of LZ (44%)**.
+On this repository: **360287 bytes of source → 161755 bytes of LZ (45%)**.
 
 ### Regenerating: `make bundle`
 
@@ -493,7 +500,7 @@ build/bundle tools/bundle.list src/bundle_data.mc
   backend_arm64       8868 -> 4323
   io                  889 -> 711
   ...
-bundle: 27 files, raw 304346 -> lz 134604, blob 134870 bytes, src/bundle_data.mc 323997 bytes
+bundle: 32 files, raw 360287 -> lz 161755, blob 162083 bytes, src/bundle_data.mc 389307 bytes
 ```
 
 `tools/bundle.mc` is itself an `mc` program, and it writes the file with `bundle_emit` from
@@ -560,6 +567,142 @@ seed is frozen. That is why their tests live in `tests/mc/` rather than in `test
 
 ---
 
+## M16 — Linux targets (`os = "linux"`)
+
+`os = "linux"` in `[target]` makes `mc build` write an **ELF64 relocatable** instead of a Mach-O
+and hand it to the linker named in `[linker]`. Nothing else in the file changes, and nothing in
+`stage0/` changes: the ELF writer is `src/backend_elf.mc`, a backend registered like any other
+(`--backend=elf-obj` also works from the single-file CLI).
+
+The real config — this is exactly what `scripts/test-linux.sh` generates, with absolute paths:
+
+```toml
+[project]
+entry = "hello.mc"
+out   = "build/hello"
+
+[target]
+os   = "linux"
+arch = "aarch64"
+
+[sysroot]
+path = "build/sysroot/linux-aarch64"   # what {sysroot} expands to
+
+[linker]
+cmd  = "ld.lld"
+args = ["-o", "{out}",
+        "{sysroot}/crt1.o", "{sysroot}/crti.o",
+        "{obj}", "{libs}",
+        "{sysroot}/libc.a", "{sysroot}/crtn.o"]
+```
+
+```
+$ build/mc1 build . --config linux.toml
+compile hello.mc -> build/hello.o
+link build/hello.o -> build/hello
+$ docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w alpine:3 /w/build/hello
+hello
+```
+
+`[linker]` is **required** for `os = "linux"`; there is no `macho-exe` equivalent that writes a
+Linux executable directly, and asking for one says so:
+
+```
+$ build/mc1 build tests/proj --config /tmp/d.toml
+/tmp/d.toml:6:6: linux requires [linker]: there is no direct executable: target.os
+```
+
+### The sysroot
+
+`scripts/sysroot-linux.sh` fills `build/sysroot/linux-aarch64` by running `apk add musl-dev`
+inside a throwaway `linux/arm64` Alpine container and copying out `crt1.o`, `crti.o`, `crtn.o`,
+`libc.a` (and `libc.so`, for reference). It is a cache: with the four files already there it does
+nothing, so `make test-linux` does not pull an image on every run. `make sysroot-linux` runs it;
+`scripts/test-linux.sh` runs it by itself when any of the four files is missing (the same check
+the script itself makes, so a half-populated sysroot is repaired instead of failing every test).
+
+### What the ELF writer says
+
+`gen_lower` and `gen_encode_all` are format-neutral — the same sections, symbols and relocations
+that feed `macho_write` feed `elf_write`. The translation is:
+
+| mc | ELF |
+|---|---|
+| `__TEXT,__text` | `.text`, `SHT_PROGBITS`, `AX`, align 4 |
+| `__TEXT,__cstring` | `.rodata`, `SHT_PROGBITS`, `A`, align 1 |
+| `__DATA,__data` | `.data`, `SHT_PROGBITS`, `WA`, align 16 |
+| `__DATA,__bss` | `.bss`, `SHT_NOBITS`, `WA`, align 16 |
+| `#section SEG SECT` | `.seg.sect` — leading underscores dropped, lowercased (`__TEXT,__hot` → `.text.hot`); `AX` when the Mach-O flags say pure-instructions, `SHT_NOBITS` when they say zerofill |
+| symbol `_main` | `main` — the leading `_` the compiler adds is dropped |
+| symbol `l_str0` | `.Lstr0` — the string labels become assembler temporaries |
+| `R_BRANCH26` | `R_AARCH64_CALL26` (283) |
+| `R_PAGE21` | `R_AARCH64_ADR_PREL_PG_HI21` (275) |
+| `R_PAGEOFF12` on an `add` | `R_AARCH64_ADD_ABS_LO12_NC` (277) |
+| `R_PAGEOFF12` on an ldr/str | `R_AARCH64_LDST{8,16,32,64}_ABS_LO12_NC` (278/284/285/286), by the access width in bits 31:30 |
+| `R_UNSIGNED` (8 bytes) | `R_AARCH64_ABS64` (257) |
+
+Section order in the file is null, the module's sections in creation order, one `.rela.X` per
+section that has relocations, `.symtab`, `.strtab`, `.shstrtab` — so a module section's index is
+its ELF section index minus one, which is what lets `st_shndx` be `sym_sect` unchanged. Symbols
+come out in `macho.mc`'s stable partition (locals, defined globals, undefined), which is also
+what ELF requires (`sh_info` = index of the first non-local). Relocation entries are sorted by
+ascending offset, the ELF convention, and every `r_addend` is 0 — the encoder leaves the relocated
+immediate zeroed, so there is no implicit addend to carry over. The determinism rules are the same
+ones `docs/determinism.md` states for Mach-O.
+
+Verified field by field against `clang --target=aarch64-linux-musl -c` of equivalent C, with
+`llvm-readobj --all` and `llvm-objdump -dr`; the one difference that is not the writer's is the
+`R_PAGEOFF12` row: `mc` always materializes a global's address with `adrp` + `add`, so it asks for
+`ADD_ABS_LO12_NC` where clang folds the offset into the load and asks for `LDST64_ABS_LO12_NC`.
+
+### No libc at all: `<sys_linux>`
+
+`lib/sys_linux.mc` is `lib/sys_svc.mc`'s Linux sibling: `open`/`creat`/`read`/`write`/`close`/
+`fchmod`/`exit` as raw `svc #0` with the call number in `x8` (openat 56, close 57, read 63,
+write 64, fchmod 52, exit_group 94; `AT_FDCWD` is `-100`, written as `movn x0, #99`). It also
+provides `_start`, which reads `argc`/`argv` off the entry stack, calls `main` and exits — so the
+link needs no crt objects at all:
+
+```toml
+[linker]
+cmd  = "ld.lld"
+args = ["-nostdlib", "-e", "_start", "-o", "{out}", "{obj}"]
+```
+
+`tests/linux/070-nolibc.mc` is that case, inside `scripts/test-linux.sh`.
+
+The `O_RDONLY`/`O_WRONLY`/`O_CREAT`/`O_TRUNC` constants moved out of `lib/io.mc` and into each
+system layer at M16, because they are per-system: `O_CREAT` is `0x200` on macOS and `0x40` on
+Linux. `lib/io.mc` still holds only what is written in the language itself (`strlen`, `puts`,
+`putnum`) and is still never included alone.
+
+### Running the suite
+
+`scripts/test-linux.sh` cross-compiles every `tests/*.mc` with the config above, links each one
+with `ld.lld`, and runs it inside `docker run --rm --platform linux/arm64 -v <repo>:/w -w /w
+alpine:3`, comparing exit code and stdout with the same `// expect-exit:` / `// expect-stdout:`
+headers the macOS suites use. The repository root is the mount and the working directory because
+a test may open its own source by a relative path (`tests/025-linecount.mc` does).
+
+A test that cannot work on Linux carries a third header, `// skip-linux: REASON`, and the script
+prints the list at the end. Exactly one test has it:
+
+```
+32/32 tests passed on linux/arm64
+skipped (macOS only):
+  032-svc — lib/sys_svc.mc has the Darwin syscall numbers in x16 and svc #0x80; the Linux equivalent is lib/sys_linux.mc
+```
+
+Everything else is portable as written, including `030-section` (custom `#section`s, which
+`ld.lld` folds into `.text`/`.data` by name), `031-opcode` (plain AArch64 encodings) and
+`033-reloc` (a hand-written `bl` with `reloc(BRANCH26, "_helper")`, whose symbol name loses its
+`_` on the way into ELF exactly like the definition's).
+
+`make test-linux` is inside `make check` but guarded: without `ld.lld` in `PATH`, or with Docker
+not running, it prints `test-linux: SKIPPED (...)` and the build stays green.
+
+---
+
 ## The Makefile still works
 
 `examples/api/Makefile` does by hand exactly what `mc build` does from `mc.toml`, and both are
@@ -581,11 +724,12 @@ make -C examples/api test        # test-oop + tests/lib_test.sh + test.sh
 | target | what it runs |
 |---|---|
 | `check-toml` | `scripts/check-toml.sh`: `tomldump` over `tests/toml/*.toml`, compared with `*.expect`; the `bad-*` ones must exit 1 with the exact `file:line:col` |
-| `check-build` | `scripts/check-build.sh`: `tests/proj` built three ways (`exe.toml`, `link.toml`, `obj.toml`), each artifact run or inspected, plus four diagnostics |
+| `check-build` | `scripts/check-build.sh`: `tests/proj` built three ways (`exe.toml`, `link.toml`, `obj.toml`), each artifact run or inspected, plus five diagnostics |
 | `check-examples` | `examples/api/test.sh`, which now starts with `mc build examples/api` |
 | `check-bundle` | `scripts/check-bundle.sh`: regenerates the bundle twice into temporary files, `cmp`s the two runs against each other and against the checked-in `src/bundle_data.mc`, then runs `tools/lz_test.mc` (LZ round trip over random/degenerate buffers and over every bundled file) |
 | `check-mc` | `scripts/check-mc.sh`: `tests/mc/*.mc` (`#embed`, `#include <name>`) through `.o` + `ld` and through `--exe`, plus the assertion that `build/mc0` rejects them |
 | `check-standalone` | `scripts/check-standalone.sh`: `build/mc-exe` copied alone into a temporary directory, compiling `<sys>`/`<prelude>`, a taught compiler from `<mc/core>`, and the byte-for-byte comparison against `build/mc2.o` |
+| `test-linux` | `scripts/test-linux.sh`: every `tests/*.mc` without `// skip-linux` cross-compiled with `elf-obj`, linked by `ld.lld` against musl and run in `docker --platform linux/arm64`, plus the no-libc case. Guarded: skipped with a message when Docker or `ld.lld` is missing |
 
 ```
 $ scripts/check-toml.sh build/mc1
@@ -593,15 +737,35 @@ $ scripts/check-toml.sh build/mc1
 9/9 TOML files match
 $ scripts/check-build.sh build/mc1
 ...
-10/10 mc build checks passed
+11/11 mc build checks passed
+$ scripts/test-linux.sh build/mc1
+...
+32/32 tests passed on linux/arm64
 ```
 
 ---
 
-## Limits of M14 and M15
+## Limits of M14, M15 and M16
 
-- **macOS/aarch64 only.** `[target].os` other than `macos` is a clear error, by design; ELF and
-  COFF are M16 and beyond.
+- **aarch64 only, and for Linux only through an external linker.** `[target].arch` other than
+  `aarch64` is a clear error, and so is `[target].os` other than `macos`/`linux`; COFF and x86-64
+  are later milestones. A Linux `exe` without `[linker]` is refused — there is no ELF equivalent
+  of `macho-exe`, so `ld.lld` (or any linker named in the config) does the layout.
+- **The taught compiler is always built for the host.** `[compiler]` compiles with `macho-exe`
+  even when `[target].os = "linux"`: it is a tool that has to run here, not part of the artifact.
+- **`mc` itself does not cross-compile yet.** `build/mc1 --backend=elf-obj src/mc.mc -o mc.o`
+  produces a valid object, but the link stops at exactly one symbol: `src/driver.mc` uses
+  `_NSGetEnviron`, which is libSystem's way of reaching `environ` and has no musl equivalent
+  (`posix_spawnp`, `waitpid` and `chmod` are all in `libc.a`).
+
+  ```
+  ld.lld: error: undefined symbol: _NSGetEnviron
+  >>> referenced by build/elf/mc.o:(.text+0x2ac58)
+  ```
+- **Static linking and the names in `lib/io.mc`.** A program that includes `<sys>` defines
+  `strlen` and `puts` as ordinary global symbols. Against `libc.a` that is fine — an archive
+  member is only pulled in for a symbol that is still undefined — but it does mean the program's
+  own `strlen` is the one musl's pulled-in members will use.
 - ~~**`#include <name>` from a bundle does not exist yet**~~ — done in M15, above:
   `[compiler].core` is now optional and the default core is `<mc/core>`.
 - **`[compiler].out` must be a relative path with no `..`**, because the generated source lives

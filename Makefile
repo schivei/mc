@@ -99,6 +99,24 @@ check-toml: build/mc1
 check-build: build/mc1
 	scripts/check-build.sh build/mc1
 
+# M16: the musl sysroot for linux/aarch64, copied out of alpine:3. Cached: the
+# script does nothing when the four files are already there.
+sysroot-linux:
+	scripts/sysroot-linux.sh
+
+# M16: the whole suite cross-compiled to linux/aarch64 with the `elf-obj`
+# backend, linked by ld.lld against musl and run in Docker. Guarded: without
+# Docker or without ld.lld there is nothing to run, and `make check` says so
+# instead of failing.
+test-linux: build/mc1
+	@if ! command -v ld.lld > /dev/null 2>&1; then \
+	    echo "test-linux: SKIPPED (ld.lld not in PATH; brew install lld)"; \
+	elif ! docker info > /dev/null 2>&1; then \
+	    echo "test-linux: SKIPPED (docker is not running; see docs/build.md § Linux targets)"; \
+	else \
+	    scripts/test-linux.sh build/mc1; \
+	fi
+
 # M12: the full example (examples/api) — a taught compiler with class/interface,
 # #dylib for libsqlite3, and the HTTP server. None of this goes through stage0:
 # the starting compiler is build/mc1. Depends on curl and the system's sqlite3.
@@ -106,7 +124,7 @@ check-build: build/mc1
 check-examples: build/mc1
 	$(MAKE) -C examples/api test
 
-check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-examples
+check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build test-linux check-examples
 
 budget:
 	scripts/loc-budget.sh $(BUDGET)
@@ -114,4 +132,4 @@ budget:
 clean:
 	rm -rf build
 
-.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-examples check budget clean
+.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build sysroot-linux test-linux check-examples check budget clean

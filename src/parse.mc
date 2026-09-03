@@ -10,6 +10,9 @@
 //
 //   C: typedef struct { int tok, prec; bool right; int tmpl; } InfixEnt;
 //      INF_TOK 0  INF_PREC 8  INF_RIGHT 16  INF_TMPL 24     -> INF_SIZE 32
+//      M21 adds INF_FN 32 (-> INF_SIZE 40): the handler of a syntax_infix. The
+//      frozen stage0 stays at 32 -- it has no Tier 3 at all, so the column has
+//      nowhere to come from there.
 //   C: typedef struct { int tok, tmpl; } PrefixEnt;
 //      PRF_TOK 0  PRF_TMPL 8                                -> PRF_SIZE 16
 //   C: typedef struct { const char *name; i64 val; } DefEnt;
@@ -55,7 +58,8 @@
 #define INF_PREC  8
 #define INF_RIGHT 16
 #define INF_TMPL  24
-#define INF_SIZE  32
+#define INF_FN    32                  // M21: syntax_infix handler, 0 = none
+#define INF_SIZE  40
 
 // ---- PrefixEnt ----
 #define PRF_TOK  0
@@ -125,10 +129,12 @@ i64  ie_tok(uptr e)   { return ld64(e + INF_TOK); }
 i64  ie_prec(uptr e)  { return ld64(e + INF_PREC); }
 i64  ie_right(uptr e) { return ld64(e + INF_RIGHT); }
 i64  ie_tmpl(uptr e)  { return ld64(e + INF_TMPL); }
+uptr ie_fn(uptr e)    { return ld64(e + INF_FN); }
 void set_ie_tok(uptr e, i64 v)   { st64(e + INF_TOK, v); }
 void set_ie_prec(uptr e, i64 v)  { st64(e + INF_PREC, v); }
 void set_ie_right(uptr e, i64 v) { st64(e + INF_RIGHT, v); }
 void set_ie_tmpl(uptr e, i64 v)  { st64(e + INF_TMPL, v); }
+void set_ie_fn(uptr e, uptr v)   { st64(e + INF_FN, v); }
 
 uptr pe_at(i64 i)    { return prefixes + i * PRF_SIZE; }
 i64  pe_tok(uptr e)  { return ld64(e + PRF_TOK); }
@@ -189,15 +195,16 @@ i64 cur_is(uptr s) {
 // the current token's name, copied into the arena
 uptr cur_name() { return xstrdup(tok_start(cur), tok_len(cur)); }
 
-// error for "name expected here". A Tier 3 registration (syntax/syntax_stmt/
-// type_alias) reserves the word for the whole program, not just the handler's
-// grammar position: if the token that arrived in the name's place is one of
-// those words, the collision is the cause and it is worth saying so, instead of a
-// "name expected" with no apparent relation to the module that taught the syntax.
+// error for "name expected here". A Tier 3 registration (syntax, syntax_stmt,
+// syntax_expr, syntax_infix on a word-shaped operator, type_alias) reserves the
+// word for the whole program, not just the handler's grammar position: if the
+// token that arrived in the name's place is one of those words, the collision is
+// the cause and it is worth saying so, instead of a "name expected" with no
+// apparent relation to the module that taught the syntax.
 void err_name(uptr msg) {
     if (word_is_taught(tok_id(cur)))
         err_at2(tok_file(cur), tok_line(cur),
-                "name reserved by syntax/syntax_stmt/type_alias", cur_name());
+                "name reserved by a syntax/type_alias registration", cur_name());
     err_at(tok_file(cur), tok_line(cur), msg);
 }
 
@@ -210,6 +217,15 @@ i64 infix_find(i64 tok) {
         i = i + 1;
     }
     return -1;
+}
+
+// M21. 1 if the operator carries a syntax_infix handler. The core operators live
+// in the same table and are NOT taught: `+` is never blamed by err_name.
+i64 infix_is_taught(i64 tok) {
+    i64 i = infix_find(tok);
+    if (i < 0) return 0;
+    if (ie_fn(ie_at(i))) return 1;
+    return 0;
 }
 
 i64 prefix_find(i64 tok) {
@@ -234,6 +250,7 @@ void infix_set(i64 tok, i64 prec, i64 right, i64 tmpl) {
     set_ie_prec(e, prec);
     set_ie_right(e, right);
     set_ie_tmpl(e, tmpl);
+    set_ie_fn(e, 0);                  // M21: a #infix on the token drops the handler
 }
 
 void prefix_set(i64 tok, i64 tmpl) {
@@ -640,6 +657,20 @@ i64 type_of_token(i64 id) {
 i64 parse_primary() {
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
+    i64 xi = syntax_expr_find(tok_id(cur));  // M21 (Tier 3): taught expression
+    if (xi >= 0) {
+        uptr cp0 = cp;                       // lexer cursor before the handler
+        uptr t0 = tok_start(cur);            // ... and the token it received
+        uptr w = cur_name();                 // the word, for the two errors below
+        i64 n = callp(syntax_expr_fn_at(xi));  // the handler eats the word too
+        // the same guard as parse_top/parse_stmt: a handler that did not advance
+        // would be called again on the same token, forever
+        if (cp == cp0 && tok_start(cur) == t0)
+            err_at2(fl, line, "syntax_expr handler consumed no tokens", w);
+        // an expression position has no empty node to fall back on: 0 is an error
+        if (n == 0) err_at2(fl, line, "syntax_expr handler produced no expression", w);
+        return n;
+    }
     if (tok_id(cur) == T_INT || tok_id(cur) == T_CHAR) {
         i64 n = node_new(N_INT, line, fl);
         set_nd_val(n, tok_val(cur));
@@ -796,6 +827,17 @@ i64 parse_expr(i64 minprec) {
         if (i < 0) return lhs;
         uptr e = ie_at(i);
         if (ie_prec(e) < minprec) return lhs;
+        uptr hfn = ie_fn(e);
+        if (hfn) {                           // M21 (Tier 3): taught operator
+            i64 hline = tok_line(cur);
+            uptr hfl = tok_file(cur);
+            uptr hw = cur_name();
+            next();                          // the core consumes the operator
+            lhs = callp(hfn, lhs);           // the handler owns everything to the right
+            if (lhs == 0)
+                err_at2(hfl, hline, "syntax_infix handler produced no expression", hw);
+            continue;
+        }
         i64 tok = tok_id(cur);
         i64 prec = ie_prec(e);
         i64 tmpl = ie_tmpl(e);
@@ -1248,7 +1290,39 @@ void do_rule(i64 line, uptr fl) {
     nrules = nrules + 1;
 }
 
-// --dump-rules: one line per rule, in definition order
+// --dump-rules, second half (M21, decision 7.2 of docs/specs/M21.md): the whole
+// Pratt table, in table order — the core operators, the ones `#infix`/`#prefix`
+// created and the ones syntax_infix taught, all in one place, which is the point
+// of sharing the table. `handler` = a syntax_infix handler is attached;
+// `template` = the entry came from `#infix`/`#prefix` and expands a tree.
+void dump_ops() {
+    i64 i = 0;
+    loop {
+        if (i >= ninfix) break;
+        uptr e = ie_at(i);
+        out_str(1, "infix ");
+        out_str(1, tok_text(ie_tok(e)));
+        out_str(1, " prec ");
+        out_num(1, ie_prec(e));
+        if (ie_right(e)) out_str(1, " right"); else out_str(1, " left");
+        if (ie_tmpl(e)) out_str(1, " template");
+        if (ie_fn(e))   out_str(1, " handler");
+        out_str(1, "\n");
+        i = i + 1;
+    }
+    i = 0;
+    loop {
+        if (i >= nprefix) break;
+        uptr e = pe_at(i);
+        out_str(1, "prefix ");
+        out_str(1, tok_text(pe_tok(e)));
+        if (pe_tmpl(e)) out_str(1, " template");
+        out_str(1, "\n");
+        i = i + 1;
+    }
+}
+
+// --dump-rules: one line per rule, in definition order, then the operators
 void dump_rules() {
     i64 i = 0;
     loop {
@@ -1276,6 +1350,7 @@ void dump_rules() {
         out_str(1, " nodes\n");
         i = i + 1;
     }
+    dump_ops();
 }
 
 // a constant from the source, already folded; used by #section's arguments
@@ -1577,6 +1652,80 @@ void top_add(i64 n) {
         n = nd_next(n);
         if (n == 0) break;
     }
+}
+
+// ---- M21: the read side, and record/replay ----
+// M21, the read side: where the current token starts in the source being lexed,
+// and how deep the lexer stack is. p_start() is what lets a module record a span
+// by itself; p_depth() is what tells it a source it pushed has been exhausted.
+uptr p_start() { return tok_start(cur); }
+i64  p_depth() { return nopen; }
+
+// M21 (2.3): records a delimited region WITHOUT parsing it. Enter with `cur` on
+// the opening token; returns the source bytes of the whole span, delimiters
+// included, with its size in *plen, and leaves the parser just past the closing
+// token. Depth is counted over REAL TOKENS, which is what makes a `}` inside a
+// string or a comment harmless -- a byte scan could not do that. The span is a
+// slice of the source buffer, which lives in the arena for the whole
+// compilation, so a module may keep it and push it back later, as many times as
+// it likes.
+uptr p_skip_balanced(i64 open, i64 close, uptr plen) {
+    i64 line = tok_line(cur);
+    uptr fl = tok_file(cur);
+    uptr s = tok_start(cur);
+    if (tok_id(cur) != open) err_at(fl, line, "p_skip_balanced expects the opening token");
+    i64 d0 = nopen;
+    i64 depth = 0;
+    uptr e = s;
+    loop {
+        // unterminated is reported at the OPENING token: that is the position
+        // that tells the reader which region never closed
+        if (tok_id(cur) == T_EOF) err_at(fl, line, "unterminated region");
+        if (tok_id(cur) == open) depth = depth + 1;
+        else if (tok_id(cur) == close) depth = depth - 1;
+        e = tok_start(cur) + tok_len(cur);
+        next();
+        if (depth == 0) break;
+    }
+    // the span is a slice of ONE buffer: a region that ended in the includer
+    // (the file ran out in the middle) has no byte range at all
+    if (nopen != d0) err_at(fl, line, "region crosses a file boundary");
+    st64(plen, e - s);
+    return s;
+}
+
+// M21 (2.4): a second source, with the exact semantics of `#include` -- the
+// lexer pops on its own at the end of the buffer and `name` is what err_at
+// prints for everything inside, which is how a module gets
+// "Pair__i64__3 instantiated from prog.mc:15" onto every error of an
+// instantiation without the core knowing what an instantiation is.
+//
+// The lookahead contract: the push does NOT touch the pending token, so the
+// p_next() after it discards the lookahead and reads the first token of the
+// pushed source. A handler must therefore sit on the LAST token of its own
+// construct when it pushes -- exactly what do_directive does for `#include`.
+void p_push_source(uptr name, uptr text, i64 len) {
+    lex_push_mem(name, text, len, 0, p_line());
+}
+
+// M21 (2.7): the current punctuation token, of length L > n, becomes the
+// punctuation formed by its first `n` bytes and the cursor rewinds to just after
+// them -- `>>` read as `>` with another `>` still to come. A longest-match
+// lexing decision is the one thing a parser cannot undo afterwards, and this is
+// the narrow, sound piece of it: no pushback, no backtracking, no new state.
+// The `cp` test is the safety: it holds only for a token just lexed from the
+// source being read (never a string, never a substituted identifier).
+void p_resplit_punct(i64 n) {
+    i64 line = tok_line(cur);
+    uptr fl = tok_file(cur);
+    if (n < 1 || n >= tok_len(cur) || cp != tok_start(cur) + tok_len(cur))
+        err_at(fl, line, "p_resplit_punct expects a longer punctuation token");
+    i64 plen = 0;
+    i64 id = punct_id(tok_start(cur), n, &plen);
+    if (id < 0 || plen != n) err_at(fl, line, "p_resplit_punct: unknown punctuation");
+    cp = tok_start(cur) + n;                 // the rest is lexed again, as itself
+    set_tok_id(cur, id);
+    set_tok_len(cur, n);
 }
 
 // ---- top level ----

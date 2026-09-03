@@ -14,8 +14,9 @@
 # the build stops, which is the check for that key. `sqlite3_libversion` has no
 # `#dylib` anywhere -- the library comes from [libs] + [externs].
 #
-# The last section checks the diagnostics: a foreign [target].os, a missing key
-# and a bad [project].kind have to come out with file:line:col and exit 1.
+# The last section checks the diagnostics: a foreign [target].os, os = "linux"
+# with no [linker] (M16), a missing key and a bad [project].kind have to come
+# out with file:line:col and exit 1.
 mc="${1:-build/mc1}"
 
 if [ ! -x "$mc" ]; then
@@ -128,9 +129,21 @@ entry = "app.mc"
 out   = "build/x"
 
 [target]
+os = "windows"
+' \
+    'CFG:6:6: only macos and linux (see docs/build.md): target.os'
+
+# M16: os = "linux" is valid, but there is no direct executable for it -- a
+# Linux build always hands the object to [linker].
+diag "diag [target].os linux without [linker]" "$tmp/d.toml" \
+    '[project]
+entry = "app.mc"
+out   = "build/x"
+
+[target]
 os = "linux"
 ' \
-    'CFG:6:6: only macos in M14 (see docs/build.md): target.os'
+    'CFG:6:6: linux requires [linker]: there is no direct executable: target.os'
 
 diag "diag missing project.entry" "$tmp/d.toml" \
     '[project]
