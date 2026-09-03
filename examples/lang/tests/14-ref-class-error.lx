@@ -1,0 +1,17 @@
+// `ref` of a class-typed local hands out the address of the slot holding the
+// object pointer, which is indistinguishable from a `ref i64`: writing through
+// it corrupts the pointer and with it the vtable. Refused, like the same `ref`
+// on a parameter declaration (README.md, § Limits).
+// expect-error: tests/14-ref-class-error.lx:15: ref of a class type is not allowed: c
+
+#include "../lib/prelude.lx"
+
+class Circle { i64 r; }
+
+fn bump(ref i64 x) { x += 1; }
+
+fn main() -> i64 {
+    Circle c = new Circle();
+    bump(ref c);
+    return 0;
+}

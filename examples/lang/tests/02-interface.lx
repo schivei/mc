@@ -1,0 +1,59 @@
+// An interface reached two ways: as the constraint of a generic (checked at
+// instantiation) and as the declared type of a local (dispatch through the
+// per-class interface table in the object's vtable).
+// expect-exit: 0
+// expect-stdout: circle
+// expect-stdout: square
+// expect-stdout: 12
+// expect-stdout: 16
+// expect-stdout: circle
+// expect-stdout: 12
+// expect-stdout: 0
+
+#include "../lib/prelude.lx"
+
+interface Printable {
+    str show(self);
+    i64 size(self);
+}
+
+class Circle : Printable {
+    i64 r;
+    str show(self) { return "circle"; }
+    i64 size(self) { return 3 * self.r * self.r; }
+}
+
+class Square : Printable {
+    i64 s;
+    str show(self) { return "square"; }
+    i64 size(self) { return self.s * self.s; }
+}
+
+// the constraint is an interface: only a class that implements it may be the
+// argument, and the check happens when Slot<Circle> is instantiated
+class Slot<T> where T : Printable {
+    T item;
+    fn put(self, T v) { self.item = v; }
+    fn tell(self) -> i64 { prints(self.item.show()); return self.item.size(); }
+}
+
+fn main() -> i64 {
+    {
+        Circle c = new Circle();
+        c.r = 2;
+        Square q = new Square();
+        q.s = 4;
+        Printable a = c;
+        Printable b = q;
+        prints(a.show());
+        prints(b.show());
+        print(a.size());
+        print(b.size());
+
+        Slot<Circle> sl = new Slot<Circle>();
+        sl.put(c);
+        print(sl.tell());
+    }
+    print(live());
+    return 0;
+}

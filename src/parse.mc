@@ -41,17 +41,12 @@
 // and on hooks.mc (syntax_find/syntax_stmt_find/alias_find — empty tables when
 // nobody has taught anything, so parsing is exactly the stage0 one).
 
-#define MAXOPS    128
-// 512, not 256: the transliteration to .mc spends ~104 #defines just on the
-// offsets of the flat layouts (in C they are struct fields, zero cost), and
-// src/mc.mc reaches 319 constants. stage0/parse.c has the same value.
-#define MAXDEFS   2048
-#define MAXOPCS   64
-#define MAXDYLIBS 8                   // #dylib: ordinal = index + 2 (libSystem is 1)
-#define MAXEXTLIB 256                 // externs with an annotated dylib, by name
-#define MAXEXTPAT 32                  // M14: [externs] patterns coming from mc.toml
-// MAXSECS and MAXPARAMS live in arena.mc, as they lived in stage0/mc.h: parse.mc
-// and gen_arm64.mc share both and a repeated `#define` is an error.
+// M23: every table below is an arena block that doubles on demand (arena.mc
+// grow()), so the ceilings this file used to carry -- MAXOPS, MAXDEFS, MAXOPCS,
+// MAXDYLIBS, MAXEXTLIB, MAXEXTPAT, MAXRULES -- are gone. stage0/parse.c keeps
+// its own; `make check-limits` is what watches how close src/mc.mc gets to them.
+// MAXPARAMS still lives in arena.mc, as it lived in stage0/mc.h: parse.mc and
+// gen_arm64.mc share it and a repeated `#define` is an error.
 
 // ---- InfixEnt ----
 #define INF_TOK   0
@@ -84,15 +79,20 @@
 #define SE_ALIGN 24
 #define SE_SIZE  32
 
-u8  infixes[MAXOPS * INF_SIZE];
+uptr infixes;
+i64 infixcap = 0;
 i64 ninfix = 0;
-u8  prefixes[MAXOPS * PRF_SIZE];
+uptr prefixes;
+i64 prefixcap = 0;
 i64 nprefix = 0;
-u8  defs[MAXDEFS * DE_SIZE];
+uptr defs;
+i64 defcap = 0;
 i64 ndefs = 0;
-u8  opcs[MAXOPCS * OE_SIZE];
+uptr opcs;
+i64 opccap = 0;
 i64 nopcs = 0;
-u8  secs[MAXSECS * SE_SIZE];
+uptr secs;
+i64 secentcap = 0;
 i64 nsecs = 0;
 
 // parameters of the #opcode being defined right now; outside that nparams is 0
@@ -104,16 +104,19 @@ i64 cur_sect = 0;                     // current #section + 1; 0 = default secti
 // is index + 2, because libSystem always occupies 1. `cur_dylib` is the ordinal in
 // effect: every `extern` declared after it falls under it, until the next #dylib.
 // Linear tables, no hashing: docs/determinism.md, rule 1.
-u8  dylibs[MAXDYLIBS * 8];
+uptr dylibs;
+i64 dylibcap = 0;
 i64 ndylibs = 0;
 i64 cur_dylib = 1;                    // 1 = /usr/lib/libSystem.B.dylib
-u8  extlib_name[MAXEXTLIB * 8];
-u8  extlib_ord[MAXEXTLIB * 8];
+uptr extlib_name;
+uptr extlib_ord;
+i64 extlibcap = 0;
 i64 nextlib = 0;
 // M14: the same idea by pattern, fed by [externs] in mc.toml. Consulted only
 // after the exact table, so `#dylib` in the source always wins.
-u8  extpat_name[MAXEXTPAT * 8];
-u8  extpat_ord[MAXEXTPAT * 8];
+uptr extpat_name;
+uptr extpat_ord;
+i64 extpatcap = 0;
 i64 nextpat = 0;
 
 u8 cur[TOK_SIZE];                     // 1-token lookahead
@@ -241,7 +244,7 @@ i64 prefix_find(i64 tok) {
 void infix_set(i64 tok, i64 prec, i64 right, i64 tmpl) {
     i64 i = infix_find(tok);
     if (i < 0) {
-        if (ninfix == MAXOPS) die("infix table full");
+        infixes = grow(T_INFIX, infixes, ninfix, &infixcap, INF_SIZE);
         i = ninfix;
         ninfix = ninfix + 1;
     }
@@ -256,7 +259,7 @@ void infix_set(i64 tok, i64 prec, i64 right, i64 tmpl) {
 void prefix_set(i64 tok, i64 tmpl) {
     i64 i = prefix_find(tok);
     if (i < 0) {
-        if (nprefix == MAXOPS) die("prefix table full");
+        prefixes = grow(T_PREFIX, prefixes, nprefix, &prefixcap, PRF_SIZE);
         i = nprefix;
         nprefix = nprefix + 1;
     }
@@ -297,7 +300,7 @@ i64 def_find(uptr s, i64 len) {
 
 void def_add(uptr name, i64 val, i64 line, uptr fl) {
     if (def_find(name, cstrlen(name)) >= 0) err_at(fl, line, "duplicate #define");
-    if (ndefs == MAXDEFS) die("too many defines");
+    defs = grow(T_DEFINES, defs, ndefs, &defcap, DE_SIZE);
     uptr e = de_at(ndefs);
     set_de_name(e, name);
     set_de_val(e, val);
@@ -335,7 +338,7 @@ i64 sec_ent(uptr seg, uptr sect, i64 flags, i64 align) {
         if (str_eq(se_seg(e), seg) && str_eq(se_sect(e), sect)) return i;
         i = i + 1;
     }
-    if (nsecs == MAXSECS) die("too many sections");
+    secs = grow(T_SECTIONS, secs, nsecs, &secentcap, SE_SIZE);
     uptr ne = se_at(nsecs);
     set_se_seg(ne, seg);
     set_se_sect(ne, sect);
@@ -358,7 +361,7 @@ i64 dylib_add(uptr path) {
         if (str_eq(dl_at(i), path)) return i + 2;
         i = i + 1;
     }
-    if (ndylibs == MAXDYLIBS) die("too many dylibs");
+    dylibs = grow(T_DYLIBS, dylibs, ndylibs, &dylibcap, 8);
     set_dl_at(ndylibs, path);
     ndylibs = ndylibs + 1;
     return ndylibs + 1;
@@ -373,7 +376,9 @@ void extern_lib_add(uptr name, i64 ord) {
         if (str_eq(xl_name(i), name)) { set_xl_ord(i, ord); return; }
         i = i + 1;
     }
-    if (nextlib == MAXEXTLIB) die("too many externs with #dylib");
+    i64 oc = extlibcap;
+    extlib_name = grow(T_EXTLIB, extlib_name, nextlib, &extlibcap, 8);
+    if (extlibcap != oc) extlib_ord = grow_to(extlib_ord, nextlib, extlibcap, 8);
     set_xl_name(nextlib, name);
     set_xl_ord(nextlib, ord);
     nextlib = nextlib + 1;
@@ -383,7 +388,9 @@ void extern_lib_add(uptr name, i64 ord) {
 // name, or a prefix ending in '*'. Registration order decides ties: the first
 // pattern that matches wins, which is the order the keys are written in.
 void extern_lib_pattern_add(uptr pat, i64 ord) {
-    if (nextpat == MAXEXTPAT) die("too many [externs] patterns");
+    i64 oc = extpatcap;
+    extpat_name = grow(T_EXTPAT, extpat_name, nextpat, &extpatcap, 8);
+    if (extpatcap != oc) extpat_ord = grow_to(extpat_ord, nextpat, extpatcap, 8);
     set_xp_name(nextpat, pat);
     set_xp_ord(nextpat, ord);
     nextpat = nextpat + 1;
@@ -472,7 +479,9 @@ i64 opc_expand(i64 i, i64 call) {
 //                       int items[MAXITEMS]; const char *ph[MAXNAMES]; } RuleEnt;
 //      RU_TOK 0  RU_LEAD 8  RU_NITEMS 16  RU_NHOLES 24  RU_NNAMES 32
 //      RU_TMPL 40  RU_ITEMS 48 (16*8)  RU_PH 176 (8*8)      -> RU_SIZE 240
-#define MAXRULES 32
+// MAXBIND/MAXRDEPTH/MAXITEMS/MAXNAMES are not tables that scale with the
+// program: they bound ONE #rule, and RU_ITEMS/RU_PH below are inline fields of a
+// rule record sized by them. They stay fixed at M23, exactly as in stage0.
 #define MAXBIND  12               // holes cited by a rule (pattern + gensym)
 #define MAXRDEPTH 64              // nesting of a rule inside a template
                                   // (MAXDEPTH is already gen_arm64.mc's expression depth)
@@ -496,7 +505,8 @@ i64 opc_expand(i64 i, i64 call) {
 #define RU_PH     176
 #define RU_SIZE   240
 
-u8  rules[MAXRULES * RU_SIZE];
+uptr rules;
+i64 rulecap = 0;
 i64 nrules = 0;
 i64 gensym_n = 0;                 // $g<N> counter: deterministic, never resets
 i64 rule_depth = 0;               // rules nested in a template's definition
@@ -1210,7 +1220,6 @@ void do_rule(i64 line, uptr fl) {
     if (!cur_is("stmt")) err_at(fl, line, "#rule only knows category stmt");
     next();
     expect(K_COLON, "expected : after the #rule category");
-    if (nrules == MAXRULES) err_at(fl, line, "too many rules");
     nbnd = 0;
     r_nitems = 0;
     r_nholes = 0;
@@ -1267,6 +1276,7 @@ void do_rule(i64 line, uptr fl) {
     next();                                       // =>
     i64 tmpl = parse_stmt();                      // the $names have already become holes
     rule_def = 0;
+    rules = grow(T_RULES, rules, nrules, &rulecap, RU_SIZE);
     uptr r = ru_at(nrules);
     set_ru_tok(r, ri_at(0) >> 3);
     set_ru_lead(r, r_lead);
@@ -1411,7 +1421,7 @@ void do_opcode(i64 line, uptr fl) {
     i64 np = opc_nparams;
     opc_nparams = 0;                             // outside the definition there is no parameter
     if (opc_find(name) >= 0) err_at(fl, line, "duplicate #opcode");
-    if (nopcs == MAXOPCS)    die("too many opcodes");
+    opcs = grow(T_OPCODES, opcs, nopcs, &opccap, OE_SIZE);
     uptr e = oe_at(nopcs);
     set_oe_name(e, name);
     set_oe_np(e, np);

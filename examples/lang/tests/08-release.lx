@@ -1,0 +1,37 @@
+// Automatic release. The arena is 4 MiB and every object of Node is 32 bytes,
+// so 100 000 of them would need 3.2 MB IF nothing were ever freed -- and the
+// loop below churns 100 000 of them plus 100 000 more with a field pointing at
+// another object. It only finishes because the reference count reaches zero at
+// every scope exit and the block goes back to its size class's free list.
+// expect-exit: 0
+// expect-stdout: 0
+// expect-stdout: 0
+// expect-stdout: 64
+// expect-stdout: 4999950000
+// expect-stdout: 0
+
+#include "../lib/prelude.lx"
+
+class Node {
+    i64  id;
+    Node next;
+}
+
+fn main() -> i64 {
+    print(live());
+    i64 sum = 0;
+    i64 i = 0;
+    while (i < 100000) {
+        Node a = new Node();
+        a.id = i;
+        Node b = new Node();
+        b.next = a;                    // b owns a: releasing b releases a
+        sum += b.next.id;
+        i += 1;
+    }
+    print(live());                     // every one of them is gone
+    print(peak());                     // and the arena never grew past two blocks
+    print(sum);                        // 0 + 1 + ... + 99999
+    print(used() - peak());
+    return 0;
+}

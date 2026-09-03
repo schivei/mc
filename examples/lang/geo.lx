@@ -1,0 +1,26 @@
+// geo.lx — a namespace in a file of its own, brought into main.lx by
+// `import geo;`, which is exactly `#include "geo.lx"` plus `using geo;`.
+//
+// Every declaration inside the braces is mangled with the prefix, so this file
+// really produces `geo__Point`, `geo__Point_init`, `geo__Point_dist2` and
+// `geo__box_area`. Reopening `namespace geo` in another file merges by
+// construction: the prefix is all there is.
+
+namespace geo {
+
+    class Point {
+        i64 x;
+        i64 y;
+
+        // a constructor: `new geo.Point(3, 4)` allocates, installs the vtable,
+        // sets the count to 1 and then calls this
+        fn init(self, i64 px, i64 py) {
+            self.x = px;
+            self.y = py;
+        }
+
+        fn dist2(self) -> i64 { return self.x * self.x + self.y * self.y; }
+    }
+
+    fn box_area(i64 w, i64 h) -> i64 { return w * h; }
+}

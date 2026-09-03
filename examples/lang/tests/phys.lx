@@ -1,0 +1,5 @@
+// phys.lx — a second namespace that declares a class with the SAME short name
+// as `shapes.Rect`, which is what makes the ambiguity of 07 reachable.
+namespace phys {
+    class Rect { i64 mass; }
+}

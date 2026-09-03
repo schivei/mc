@@ -1,0 +1,1 @@
+tests/toml/bad-float.toml:3:21: float with more than 4 fraction digits

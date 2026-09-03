@@ -1,7 +1,8 @@
 // driver.mc — `mc build`: the project driver (M14, docs/specs/M14.md,
 // docs/build.md).
 //
-//   mc build [DIR] [--config FILE] [--entry-only]
+//   mc build [DIR] [--config FILE] [--entry-only] [--limits] [--fix-limits]
+//   mc limits [DIR|FILE.mc]
 //
 // DIR defaults to `.` and the config to `DIR/mc.toml`. Every path in the file is
 // relative to the DIRECTORY OF THE CONFIG, never to the working directory, so
@@ -66,6 +67,11 @@ uptr drv_obj_backend() {
     if (drv_linux) return "elf-obj";
     return "macho";
 }
+
+// M23: 0 = plain build, 1 = --limits (report + verdict), 2 = --fix-limits
+// (report + rewrite the [limits] section). `mc limits` is mode 1.
+i64 drv_lim_mode = 0;
+i64 drv_tol = 2500;                   // [limits].tolerance, in basis points
 
 // ---- small helpers ----
 void drv_put(uptr b, uptr s) { buf_put(b, s, cstrlen(s)); }
@@ -212,7 +218,14 @@ void drv_apply_config() {
 // between lex_init and the parse. `cfg` says whether this is the entry (1) or
 // the taught compiler (0) -- the compiler is built with the core's own rules,
 // never with the project's [libs]/[externs].
-void drv_compile(uptr src, uptr out, uptr bname, i64 cfg) {
+// where the remembered usage lives, relative to the config's directory
+uptr drv_usage_file() { return drv_path("build/.mc-usage.toml"); }
+
+// `label` is the source as the TOML names it (`main.mc`, `build/mc-api.mc`):
+// the key of this compilation's section in build/.mc-usage.toml, stable no
+// matter which directory `mc build` was run from.
+void drv_compile(uptr src, uptr out, uptr bname, i64 cfg, uptr label) {
+    lim_plan(src, drv_tol, drv_usage_file(), label);   // M23: before any table exists
     tok_init();
     lex_init(src);
     user_init();
@@ -370,67 +383,74 @@ void drv_entry(uptr entry, uptr out, uptr kind) {
     uptr has_linker = toml_get("linker.cmd");
     if (str_eq(kind, "obj")) {
         drv_step("compile", entry, out);
-        drv_compile(src, drv_path(out), drv_obj_backend(), 1);
+        drv_compile(src, drv_path(out), drv_obj_backend(), 1, entry);
         return;
     }
     if (has_linker == 0) {
         if (drv_linux) toml_err_key("target.os", "linux requires [linker]: there is no direct executable");
         drv_step("compile", entry, out);
-        drv_compile(src, drv_path(out), "macho-exe", 1);
+        drv_compile(src, drv_path(out), "macho-exe", 1, entry);
         return;
     }
     uptr obj = tm_cat(out, ".o");
     drv_step("compile", entry, obj);
-    drv_compile(src, drv_path(obj), drv_obj_backend(), 1);
+    drv_compile(src, drv_path(obj), drv_obj_backend(), 1, entry);
     drv_step("link", obj, out);
     drv_link(drv_path(obj), drv_path(out));
 }
 
-// builds the taught compiler and hands the entry over to it
+// builds the taught compiler and hands the entry over to it. Under --limits the
+// TWO compilations each report their own tables, the compiler's first: the
+// parent's is in this process, the entry's in the child, which gets the same
+// flag. The worst of the two verdicts is what comes back.
 i64 drv_teach(uptr cout, uptr dir) {
     uptr gen = drv_gen_compiler(cout);
     drv_step("compiler", tm_cat(cout, ".mc"), cout);
-    drv_compile(gen, drv_path(cout), "macho-exe", 0);
+    drv_compile(gen, drv_path(cout), "macho-exe", 0, tm_cat(cout, ".mc"));
+    i64 rc = drv_finish(tm_cat(cout, ".mc"));
     uptr comp = drv_runnable(drv_path(cout));
-    u8 av[7 * 8];
+    u8 av[8 * 8];
     st64(av + 0,  comp);
     st64(av + 8,  "build");
     st64(av + 16, dir);
     st64(av + 24, "--config");
     st64(av + 32, cfg_file);
     st64(av + 40, "--entry-only");
-    st64(av + 48, 0);
-    if (drv_spawn(comp, av, 0) != 0) return 1;
-    return 0;
+    i64 n = 6;
+    if (drv_lim_mode == 1) { st64(av + 48, "--limits"); n = 7; }
+    if (drv_lim_mode == 2) { st64(av + 48, "--fix-limits"); n = 7; }
+    st64(av + n * 8, 0);
+    i64 crc = drv_spawn(comp, av, 0);
+    if (crc != 0 && crc != 3) return 1;
+    if (crc > rc) rc = crc;
+    return rc;
+}
+
+// ---- M23: what every build ends with ----
+// The usage file is written on every `mc build`, so the next one pre-sizes from
+// it; the report and the verdict only come out under --limits/--fix-limits.
+i64 drv_finish(uptr what) {
+    lim_write_usage(drv_usage_file(), what);
+    if (drv_lim_mode == 0) return 0;
+    lim_report(what);
+    if (drv_lim_mode == 2 && lim_fix(cfg_file)) return 0;
+    return lim_exit_code();
 }
 
 // ---- CLI ----
 void drv_usage() {
-    out_str(2, "usage: mc build [DIR] [--config FILE]\n");
+    out_str(2, "usage: mc build [DIR] [--config FILE] [--limits|--fix-limits]\n");
+    out_str(2, "       mc limits [DIR|FILE.mc]\n");
 }
 
-i64 drv_build(i64 argc, uptr argv) {
-    uptr dir = 0;
-    uptr cfg = 0;
-    i64 entry_only = 0;
-    i64 i = 2;                                 // argv[1] is "build"
-    while (i < argc) {
-        uptr a = ld64(argv + i * 8);
-        if (str_eq(a, "--config")) {
-            if (i + 1 >= argc) die("--config requires an argument");
-            i = i + 1;
-            cfg = ld64(argv + i * 8);
-        }
-        else if (str_eq(a, "--entry-only")) entry_only = 1;
-        else if (ld8(a) == '-')             { drv_usage(); return 1; }
-        else if (dir == 0)                  dir = a;
-        else                                die2("duplicate directory", a);
-        i = i + 1;
-    }
+// everything after the flags: one shape for `mc build` and for `mc limits`
+i64 drv_run(uptr dir, uptr cfg, i64 entry_only) {
     if (dir == 0) dir = ".";
     if (cfg == 0) cfg = path_norm(tm_cat(dir, "/mc.toml"));
     cfg_file = cfg;
     toml_parse(cfg);
+    drv_tol = toml_bp("limits.tolerance", 2500, 0, 10000,
+                      "tolerance must be between 0 and 1");
 
     uptr os = toml_get("target.os");
     drv_linux = 0;
@@ -460,5 +480,63 @@ i64 drv_build(i64 argc, uptr argv) {
         return drv_teach(cout, dir);
     }
     drv_entry(entry, out, kind);
-    return 0;
+    return drv_finish(entry);
+}
+
+i64 drv_build(i64 argc, uptr argv) {
+    uptr dir = 0;
+    uptr cfg = 0;
+    i64 entry_only = 0;
+    i64 i = 2;                                 // argv[1] is "build"
+    while (i < argc) {
+        uptr a = ld64(argv + i * 8);
+        if (str_eq(a, "--config")) {
+            if (i + 1 >= argc) die("--config requires an argument");
+            i = i + 1;
+            cfg = ld64(argv + i * 8);
+        }
+        else if (str_eq(a, "--entry-only"))  entry_only = 1;
+        else if (str_eq(a, "--limits"))      drv_lim_mode = 1;
+        else if (str_eq(a, "--fix-limits"))  drv_lim_mode = 2;
+        else if (ld8(a) == '-')             { drv_usage(); return 1; }
+        else if (dir == 0)                  dir = a;
+        else                                die2("duplicate directory", a);
+        i = i + 1;
+    }
+    return drv_run(dir, cfg, entry_only);
+}
+
+// 1 if the path ends in `.mc`: `mc limits` takes either a project directory or
+// one source file, and that is how it tells them apart
+i64 drv_is_source(uptr p) {
+    i64 n = cstrlen(p);
+    if (n < 3) return 0;
+    return ld8(p + n - 3) == '.' && ld8(p + n - 2) == 'm' && ld8(p + n - 1) == 'c';
+}
+
+// mc limits [DIR|FILE.mc] — the build plus the report, nothing written when the
+// argument is a single file (the object is not the point, the tables are).
+i64 drv_limits(i64 argc, uptr argv) {
+    uptr path = 0;
+    uptr cfg = 0;
+    i64 i = 2;                                 // argv[1] is "limits"
+    while (i < argc) {
+        uptr a = ld64(argv + i * 8);
+        if (str_eq(a, "--config")) {
+            if (i + 1 >= argc) die("--config requires an argument");
+            i = i + 1;
+            cfg = ld64(argv + i * 8);
+        }
+        else if (ld8(a) == '-')  { drv_usage(); return 1; }
+        else if (path == 0)      path = a;
+        else                     die2("duplicate directory", a);
+        i = i + 1;
+    }
+    drv_lim_mode = 1;
+    if (path != 0 && drv_is_source(path)) {
+        lim_compile_file(path);
+        lim_report(path);
+        return lim_exit_code();
+    }
+    return drv_run(path, cfg, 0);
 }

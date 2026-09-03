@@ -17,6 +17,7 @@
 //   driver.mc    `mc build`: reads mc.toml and drives the whole build (M14)
 //   bundle_data.mc GENERATED (tools/bundle.mc): lib/ and the core, LZ-compressed
 //   bundle.mc    `#include <name>` served from that blob (M15)
+//   limits.mc    the estimate, the reserve and `mc limits` (M23)
 //   main.mc      CLI
 //
 // macho.mc comes before lex.mc because parse.mc uses sec_new (via sec_make) and the
@@ -50,4 +51,5 @@
 #include "driver.mc"
 #include "bundle_data.mc"
 #include "bundle.mc"
+#include "limits.mc"
 #include "main.mc"

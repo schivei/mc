@@ -1,0 +1,16 @@
+// A class-typed parameter is borrowed: the caller's reference was never counted
+// on entry, so lowering `p = e` to rt_store would release an object the caller
+// still holds -- a use-after-free the callee cannot see. Refused at parse time.
+// expect-error: tests/13-param-reassign-error.lx:10: cannot reassign a borrowed parameter of class type: p
+
+#include "../lib/prelude.lx"
+
+class Circle { i64 r; }
+
+fn reassign(Circle p) { p = new Circle(); }
+
+fn main() -> i64 {
+    Circle c = new Circle();
+    reassign(c);
+    return 0;
+}

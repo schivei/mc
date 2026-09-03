@@ -10,6 +10,11 @@
 //                                     containing `.` is an error -- see tm_key1)
 //   value: "string"                   escapes \" \\ \n \t \r only
 //           123 / -7 / +7 / 1_000     decimal integer
+//           0.25 / -1.5               decimal float, kept as BASIS POINTS: the
+//                                     language has no floating point, so the
+//                                     text is read as an i64 hundredth of a
+//                                     percent (0.25 -> 2500). At most four
+//                                     fraction digits (M23).
 //           true / false              boolean
 //           [v, v, v]                 array of strings or of integers, multi-line,
 //                                     trailing comma allowed; no nesting
@@ -40,12 +45,10 @@
 
 #include "../lib/prelude.mc"
 
-#define TOML_MAXENT 256               // (path, value) pairs a single file can hold
-#define TOML_MAXAOT 16                // distinct [[array of tables]] names
-
 #define TV_STR  0
 #define TV_INT  1
 #define TV_BOOL 2
+#define TV_FLOAT 3                    // M23: decimal text stored as basis points
 
 // flat entry: { path, value, type, idx, line, col }
 #define TM_PATH 0
@@ -56,11 +59,14 @@
 #define TM_COL  40
 #define TM_SIZE 48
 
-u8  tm_ents[TOML_MAXENT * TM_SIZE];
-i64 tm_n = 0;
+// M23: both tables are arena blocks that double on demand (arena.mc grow()).
+uptr tm_ents;
+i64  tm_entcap = 0;
+i64  tm_n = 0;
 
-uptr tm_aot_name[TOML_MAXAOT];        // [[x]] seen so far, in order
-i64  tm_aot_n[TOML_MAXAOT];           // how many times each one appeared
+uptr tm_aot_name;                     // [[x]] seen so far, in order
+uptr tm_aot_n;                        // how many times each one appeared
+i64  tm_aotcap = 0;
 i64  tm_naot = 0;
 
 uptr tm_file = 0;                     // path of the file being read, for errors
@@ -276,7 +282,7 @@ uptr tm_key() {
 
 // ---- table ----
 void toml_add(uptr path, uptr val, i64 type, i64 idx, i64 line, i64 col) {
-    if (tm_n == TOML_MAXENT) toml_err(tm_p, "too many entries in the file");
+    tm_ents = grow(T_TOMLENT, tm_ents, tm_n, &tm_entcap, TM_SIZE);
     uptr e = tme_at(tm_n);
     set_tme_path(e, path);
     set_tme_val(e, val);
@@ -298,7 +304,9 @@ i64 tm_aot_bump(uptr name) {
         }
         i = i + 1;
     }
-    if (tm_naot == TOML_MAXAOT) toml_err(tm_p, "too many arrays of tables");
+    i64 oc = tm_aotcap;
+    tm_aot_name = grow(T_TOMLAOT, tm_aot_name, tm_naot, &tm_aotcap, 8);
+    if (tm_aotcap != oc) tm_aot_n = grow_to(tm_aot_n, tm_naot, tm_aotcap, 8);
     st64(tm_aot_name + tm_naot * 8, name);
     st64(tm_aot_n + tm_naot * 8, 1);
     tm_naot = tm_naot + 1;
@@ -336,6 +344,30 @@ void tm_value(uptr path, i64 idx) {
             tm_adv();
         }
         if (d == 0) toml_err(tm_p, "value expected");
+        if (tm_cur() == '.') {                 // M23: a float, stored as basis points
+            tm_adv();
+            i64 f = 0;
+            i64 fd = 0;
+            loop {
+                i64 k = tm_cur();
+                if (k == '_') { tm_adv(); continue; }
+                if (k < '0' || k > '9') break;
+                f = f * 10 + (k - '0');
+                fd = fd + 1;
+                tm_adv();
+            }
+            if (fd == 0) toml_err(tm_p, "digit expected after .");
+            if (fd > 4)  toml_err(tm_p, "float with more than 4 fraction digits");
+            loop {                             // 0.5 -> 5000, 0.25 -> 2500
+                if (fd >= 4) break;
+                f = f * 10;
+                fd = fd + 1;
+            }
+            i64 bp = n * 10000 + f;
+            if (neg) bp = 0 - bp;
+            toml_add(path, tm_num_str(bp), TV_FLOAT, idx, line, col);
+            return;
+        }
         if (neg) n = 0 - n;
         toml_add(path, tm_num_str(n), TV_INT, idx, line, col);
         return;
@@ -488,4 +520,32 @@ i64 toml_int(uptr path, i64 dflt) {
     uptr v = toml_get(path);
     if (v == 0) return dflt;
     return tm_atoi(v);
+}
+
+// error over an entry that IS in the file, with no key appended: the message
+// already names what is wrong (`tolerance must be between 0 and 1`)
+void toml_err_val(i64 i, uptr msg) {
+    out_str(2, tm_file);
+    out_str(2, ":");
+    out_num(2, toml_line_at(i));
+    out_str(2, ":");
+    out_num(2, tme_col(tme_at(i)));
+    out_str(2, ": ");
+    out_str(2, msg);
+    out_str(2, "\n");
+    _exit(1);
+}
+
+// M23: a float in basis points. An integer is accepted as well (`0` and `1` are
+// the two ends of the range the caller wants), and the range is the caller's:
+// out of [lo, hi] is an error at the value's own file:line:col.
+i64 toml_bp(uptr path, i64 dflt, i64 lo, i64 hi, uptr msg) {
+    i64 i = toml_find(path);
+    if (i < 0) return dflt;
+    i64 t = toml_type_at(i);
+    if (t != TV_FLOAT && t != TV_INT) toml_err_val(i, msg);
+    i64 bp = tm_atoi(toml_val_at(i));
+    if (t == TV_INT) bp = bp * 10000;
+    if (bp < lo || bp > hi) toml_err_val(i, msg);
+    return bp;
 }

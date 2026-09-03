@@ -1,6 +1,7 @@
 // main.mc — transliteration of stage0/main.c: compiler driver.
 // usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules]
 //         [--backend=NAME|--exe] input.mc [-o output]
+//        mc build [DIR] [--limits|--fix-limits]   ·   mc limits [DIR|FILE.mc]
 // The --dump-* modes write to stdout and do not generate the object.
 //
 // argv arrives as uptr: argv[i] is ld64(argv + i * 8) (there is no typed pointer).
@@ -78,6 +79,8 @@ i64 main(i64 argc, uptr argv) {
     // reads mc.toml and drives the whole build (src/driver.mc, docs/build.md).
     // It comes after the backends because that is what the driver picks from.
     if (argc >= 2 && str_eq(ld64(argv + 8), "build")) return drv_build(argc, argv);
+    // M23: the same driver, stopping at the report instead of the object.
+    if (argc >= 2 && str_eq(ld64(argv + 8), "limits")) return drv_limits(argc, argv);
 
     i64 i = 1;
     loop {
@@ -104,6 +107,10 @@ i64 main(i64 argc, uptr argv) {
     }
     if (in == 0) { usage(); return 1; }
 
+    // M23: the pre-scan sizes every table before the first one exists. With no
+    // mc.toml there is no tolerance to read, so the default 0.25 applies and the
+    // arena stays the static heap[].
+    lim_plan(in, lim_tol, 0, in);
     tok_init();
     lex_init(in);                                      // the lexer opens and pushes the file
     // Tier 2 after tok_init(): the ids K_U8..K_EXTERN are fixed at 256..269, so

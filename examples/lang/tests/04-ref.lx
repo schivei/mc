@@ -1,0 +1,39 @@
+// `ref` parameters. The callee's `ref i64 x` becomes a uptr parameter and every
+// use of `x` in the body is rewritten to ld64/st64; the call site's `ref y` is
+// the core's own `&y`.
+// expect-exit: 0
+// expect-stdout: 1
+// expect-stdout: 3
+// expect-stdout: 13
+// expect-stdout: 300
+// expect-stdout: 42
+
+#include "../lib/prelude.lx"
+
+fn bump(ref i64 x) { x += 1; }
+
+fn add(ref i64 x, i64 by) { x = x + by; }
+
+// a ref parameter passed on to another function keeps being an address
+fn bump_twice(ref i64 x) { bump(ref x); bump(ref x); }
+
+fn scale(ref u32 x, i64 by) { x = x * by; }
+
+fn main() -> i64 {
+    i64 n = 0;
+    bump(ref n);
+    print(n);                      // 1
+    bump_twice(ref n);
+    print(n);                      // 3
+    add(ref n, 10);
+    print(n);                      // 13
+
+    u32 w = 3;
+    scale(ref w, 100);
+    print(w);                      // 300, stored at the declared width
+
+    i64 acc = 0;
+    for (i64 i = 0; i < 42; i += 1) { bump(ref acc); }
+    print(acc);                    // 42
+    return 0;
+}

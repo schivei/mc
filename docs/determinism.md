@@ -78,6 +78,32 @@ Violation: `diff <(./mc1_linked) <(./mc2_linked)`, or comparing post-`ld` binari
 linker can introduce layout/UUID not controlled by `mc`. Correct: compare the `.o` the compiler
 emits before `ld` (`cmp mc2.o mc3.o`); versioned golden SHA-256 of `mc2.o` in `tests/golden/`.
 
+## Capacity never reaches the output (M23)
+
+Since M23 every table in `src/` is an arena block that **doubles on demand**, sized before the
+first append from a pre-scan estimate times `1 + tolerance` (`docs/build.md` § limits). None of
+that may reach a single byte of what the compiler emits, and it does not:
+
+* `grow()` copies the elements already there into the new block **in the same order** and returns
+  a bigger block. Nothing else changes: no index moves, no id is recomputed, no table is re-sorted.
+  A table that grew four times holds exactly what the same table would hold had it been reserved
+  correctly the first time.
+* Nothing in the compiler reads a capacity. `nnodes`, `nsymbols`, `nstrs` and friends are the only
+  counters codegen and the writers ever consult; `nodecap`, `symcap`, `strcap` exist solely for
+  `grow()`.
+* The arena grows by **mapping one more chunk**, never by moving one. Chunks are never freed, so
+  a pointer handed out before a growth is still the same pointer after it, and no address of an
+  arena block is ever hashed, compared for ordering, or written to a file (rule 1).
+* `build/.mc-usage.toml` and `[limits].tolerance` change capacities and nothing else. That is what
+  makes the acceptance possible: `mc build` twice on the same source, once with a cold estimate
+  and once with the remembered one, produces byte-identical output — `make check`'s `check-obj`
+  (32/32) and `bootstrap` (`mc2.o == mc3.o`) are exactly that comparison.
+
+Violation to watch for: a table whose *iteration bound* is its capacity instead of its count, e.g.
+`for (i = 0; i < strcap; i++) emit(...)`. That would put reserved-but-unused slots into the output
+and make it depend on the tolerance. The correct form is what every loop here already does —
+iterate to the counter, never to the capacity.
+
 ## Fixed-point diagnosis (M7)
 
 When `mc1 src/mc.mc` and `mc2 src/mc.mc` diverge:

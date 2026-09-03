@@ -9,6 +9,15 @@ under = 1_000_000
 yes   = true
 no    = false
 
+# M23: floats are read as BASIS POINTS -- an i64 hundredth of a percent -- so
+# `mc build` can carry [limits].tolerance without the language having floats.
+[floats]
+quarter = 0.25
+half    = 0.5
+one     = 1.0
+tiny    = 0.0001
+negative = -1.5
+
 [arrays]
 empty  = []
 one    = ["only"]

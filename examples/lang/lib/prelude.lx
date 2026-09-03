@@ -1,0 +1,30 @@
+// prelude.lx — what every `lx` program includes: the runtime and the handful of
+// statement sugars the module does not need to own.
+//
+// `while` and `for` are NOT here: `lang.mc` teaches them as `syntax_stmt`
+// handlers, because a `#rule`'s `block` hole is parsed by the core's
+// parse_block and would skip the module's own block handler — and with it every
+// scope-exit release. What is left over is the compound assignment on a plain
+// name, which involves no block at all, so a `#rule` is exactly right for it.
+// (`o.f += 1` does not go through these: the `.` handler reads the `+=` itself.)
+
+#include "rt.mc"
+
+#token "+="
+#token "-="
+#token "++"
+#token "--"
+
+#rule stmt: ident $x += expr $e ;   => $x = $x + $e;
+#rule stmt: ident $x -= expr $e ;   => $x = $x - $e;
+#rule stmt: ident $x ++ ;           => $x = $x + 1;
+#rule stmt: ident $x -- ;           => $x = $x - 1;
+
+fn print(i64 v)   { rt_print_i64(v); }
+fn prints(str s)  { rt_print_str(s); }
+fn out(str s)     { rt_write_str(s); }
+
+// what the tests use to prove the memory really goes back
+fn live() -> i64  { return rt_live(); }
+fn used() -> i64  { return rt_used(); }
+fn peak() -> i64  { return rt_peak(); }

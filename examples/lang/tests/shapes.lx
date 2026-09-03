@@ -1,0 +1,22 @@
+// shapes.lx — a namespace in a file of its own, reached by `import shapes;`
+namespace shapes {
+    class Rect {
+        i64 w;
+        i64 h;
+        fn init(self, i64 a, i64 b) { self.w = a; self.h = b; }
+        fn area(self) -> i64 { return self.w * self.h; }
+    }
+    fn square(i64 s) -> i64 { return s * s; }
+}
+
+// a NESTED namespace: `shapes.solid` -- its prefix is `shapes__solid`, and both
+// `shapes` and `shapes__solid` are namespaces, so `shapes.solid.Cube` resolves
+// one segment at a time
+namespace shapes.solid {
+    class Cube {
+        i64 side;
+        fn init(self, i64 s) { self.side = s; }
+        fn volume(self) -> i64 { return self.side * self.side * self.side; }
+    }
+    fn faces() -> i64 { return 6; }
+}

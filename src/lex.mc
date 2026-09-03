@@ -14,17 +14,17 @@
 // die2, err_at, read_file).
 // err_at(file, line, msg) is the same as arena.mc/stage0: the file comes from
 // lex_file() (top of the #include stack) or from the token itself, as in stage0.
+//
+// M23: MAXTOK / MAXOPEN / MAXINC / MAXINCPATH are gone -- the token table, the
+// #include stack, the once-only list and the extra roots are arena blocks that
+// double on demand (arena.mc grow()). `#include` nesting is no longer capped
+// either: the once-only list is what makes a cycle impossible, not the depth.
+// M21's substitution slots are parallel to that stack, so they follow it
+// (lex_push_mem grows them with it); MAXSUBST stays, because it bounds ONE
+// frame's substitutions and is an error threshold, not a table that scales
+// with the program -- like MAXDEPTH in parse.mc.
 
-#define MAXTOK  2048
-// M21 (docs/specs/M21.md, 2.8): 32, not stage0's 16. A pushed source
-// (p_push_source) is a frame like an #include, and an instantiation that
-// instantiates another nests one more level per step; the frozen C seed has no
-// p_push_source at all, so its 16 is the #include depth and nothing else. Same
-// kind of divergence as MAXSTRS/MAXGLOBALS in gen_arm64.mc.
-#define MAXOPEN 32                    // maximum #include / pushed-source depth
 #define MAXSUBST 16                   // M21: substitutions bound to one frame
-#define MAXINC  256                   // already-included files (once-only)
-#define MAXINCPATH 8                  // M14: extra roots from [include].paths
 
 // ---- untabled token ids (mc.h enum) ----
 #define T_EOF   0
@@ -117,7 +117,8 @@
 #define OF_NAME 24
 #define OF_SIZE 32
 
-u8  toktab[MAXTOK * TE_SIZE];
+uptr toktab;                          // M23: grows by doubling (arena.mc grow())
+i64 tokcap = 0;
 i64 ntok = 0;
 
 uptr cp;                              // current file's cursor
@@ -125,22 +126,27 @@ uptr cend;                            // current file's end
 i64  cline = 0;
 
 // file stack: the top is the one being read; the ones below keep where they stopped
-u8  fstack[MAXOPEN * OF_SIZE];
-u8  fvirt[MAXOPEN * 8];               // M15: 1 = this level came from the bundle
+uptr fstack;
+uptr fvirt;                           // M15: 1 = this level came from the bundle
+i64 opencap = 0;
 i64 nopen = 0;
 
 // ---- M21: hygienic substitution, per lexer frame ----
 // The entries of the frame that is ABOUT to be pushed live in slot `nopen` --
 // the index the new frame will get -- so p_push_source needs no code at all to
-// bind them, and lex_pop clears the slot it vacates. One slot more than MAXOPEN,
-// because the pending slot of a full stack is index MAXOPEN.
+// bind them, and lex_pop clears the slot it vacates. One slot more than the
+// frame stack's capacity, because the pending slot of a full stack is index
+// `opencap`; lex_push_mem re-sizes these four with fstack (M23), so they are
+// always (opencap + 1) slots of MAXSUBST entries.
 // sub_to == 0 marks an integer substitution, whose value is in sub_val.
-u8  sub_from[(MAXOPEN + 1) * MAXSUBST * 8];
-u8  sub_to[(MAXOPEN + 1) * MAXSUBST * 8];
-u8  sub_val[(MAXOPEN + 1) * MAXSUBST * 8];
-u8  sub_n[(MAXOPEN + 1) * 8];
-u8  inclist[MAXINC * 8];              // already-included paths, in order
-uptr incpath[MAXINCPATH];             // M14: extra roots, in registration order
+uptr sub_from;
+uptr sub_to;
+uptr sub_val;
+uptr sub_n;
+uptr inclist;                         // already-included paths, in order
+i64  inccap = 0;
+uptr incpath;                         // M14: extra roots, in registration order
+i64  incpathcap = 0;
 i64  nincpath = 0;
 i64 ninc = 0;
 
@@ -207,7 +213,7 @@ i64 tok_add(uptr text, i64 len) {
         i = i + 1;
     }
     if (len <= 0) die("empty lexeme");
-    if (ntok == MAXTOK) die("token table full");
+    toktab = grow(T_TOKENS, toktab, ntok, &tokcap, TE_SIZE);
     uptr ne = te_at(ntok);
     set_te_text(ne, text);
     set_te_len(ne, len);
@@ -431,7 +437,20 @@ uptr path_join(uptr base, uptr rel) {
 // from the bundle, which is what tells lex_include to resolve the file's own
 // relative includes by name instead of by path (M15).
 void lex_push_mem(uptr name, uptr src, i64 len, i64 virt, i64 line) {
-    if (nopen == MAXOPEN) err_at(lex_file(), line, "too many nested includes");
+    i64 oc = opencap;
+    fstack = grow(T_OPENS, fstack, nopen, &opencap, OF_SIZE);
+    if (opencap != oc) {
+        fvirt = grow_to(fvirt, nopen, opencap, 8);
+        // M21 + M23: one slot per frame plus the pending one, copied INCLUDING
+        // slot `nopen` -- the substitutions p_subst_name already left there for
+        // the frame this push is about to create.
+        i64 keep = nopen + 1;
+        if (sub_n == 0) keep = 0;      // first allocation: nothing to preserve
+        sub_n = grow_to(sub_n, keep, opencap + 1, 8);
+        sub_from = grow_to(sub_from, keep * MAXSUBST, (opencap + 1) * MAXSUBST, 8);
+        sub_to = grow_to(sub_to, keep * MAXSUBST, (opencap + 1) * MAXSUBST, 8);
+        sub_val = grow_to(sub_val, keep * MAXSUBST, (opencap + 1) * MAXSUBST, 8);
+    }
     if (nopen) {
         uptr prev = of_at(nopen - 1);
         set_of_cp(prev, cp);
@@ -447,7 +466,6 @@ void lex_push_mem(uptr name, uptr src, i64 len, i64 virt, i64 line) {
 }
 
 void lex_push(uptr path, i64 line) {
-    if (nopen == MAXOPEN) err_at(lex_file(), line, "too many nested includes");
     i64 len = 0;
     uptr src = read_file(path, &len);
     lex_push_mem(path, src, len, 0, line);
@@ -489,7 +507,7 @@ void lex_set_bundle(uptr openfn) { bopen_fn = openfn; }
 // With no root registered (every path except `mc build`) nincpath is 0 and
 // lex_include does exactly what it did before, with no extra syscall.
 void lex_add_include_path(uptr dir) {
-    if (nincpath == MAXINCPATH) die("too many include paths");
+    incpath = grow(T_INCPATH, incpath, nincpath, &incpathcap, 8);
     set_ip_at(nincpath, dir);
     nincpath = nincpath + 1;
 }
@@ -506,6 +524,7 @@ void lex_init(uptr path) {
     nopen = 0;
     ninc = 0;
     path = path_norm(path);
+    inclist = grow(T_INCLUDES, inclist, ninc, &inccap, 8);
     set_inc_at(ninc, path);            // the root also counts for once-only
     ninc = ninc + 1;
     lex_push(path, 0);
@@ -546,7 +565,7 @@ i64 lex_seen(uptr key) {
 }
 
 void lex_remember(uptr key, i64 line) {
-    if (ninc == MAXINC) err_at(lex_file(), line, "too many includes");
+    inclist = grow(T_INCLUDES, inclist, ninc, &inccap, 8);
     set_inc_at(ninc, key);
     ninc = ninc + 1;
 }

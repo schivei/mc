@@ -38,3 +38,9 @@ sqlite3 = "/usr/lib/libsqlite3.dylib"
 # root below is what lets a file be moved into lib/ and included by bare name.
 [include]
 paths = ["lib"]
+
+# M23: how much slack `mc build` reserves on top of its own estimate of what
+# this build needs. 0.25 is the default; `mc limits` reports how good the guess
+# was and `mc build --fix-limits` is what raises this number.
+[limits]
+tolerance = 0.25

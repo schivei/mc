@@ -13,6 +13,7 @@ mc/driver	src/driver.mc
 mc/gen_arm64	src/gen_arm64.mc
 mc/hooks	src/hooks.mc
 mc/lex	src/lex.mc
+mc/limits	src/limits.mc
 mc/macho	src/macho.mc
 mc/main	src/main.mc
 mc/parse	src/parse.mc

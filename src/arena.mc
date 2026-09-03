@@ -15,6 +15,10 @@ extern void _exit(i64 code);
 // through `creat`, which is not variadic; `stage0/arena.c` uses the same call, and
 // both versions of write_file have exactly the same I/O shape.
 extern i64 creat(uptr path, i64 mode);
+// M23: the arena grows by mapping one more chunk instead of dying. mmap is a
+// libSystem routine, like every other extern above; lib/sys.mc declares the same
+// prototype so a program can do it too (docs/build.md § limits).
+extern uptr mmap(uptr addr, i64 len, i64 prot, i64 flags, i64 fd, i64 off);
 
 // macOS values (sys/fcntl.h)
 #define O_RDONLY 0
@@ -23,20 +27,191 @@ extern i64 creat(uptr path, i64 mode);
 #define O_TRUNC 0x400
 #define MODE_644 420                  // 0644 in decimal: no octal literal
 
-// ---- limits shared by parse.mc and gen_arm64.mc (stage0's mc.h) ----
-#define MAXSECS   32                  // #section entries the source can register
+// mmap: PROT_READ|PROT_WRITE and MAP_PRIVATE|MAP_ANON (sys/mman.h)
+#define PROT_RW   3
+#define MAP_ANONP 0x1002
+
+// ---- limit shared by parse.mc and gen_arm64.mc (stage0's mc.h) ----
+// MAXPARAMS is not a table: it is the ABI. Every other MAX* of the seed became a
+// growable table at M23 -- see the registry below and docs/build.md § limits.
 #define MAXPARAMS 8                   // never passes an argument on the stack
 
+// ---- M23: the limits registry ----
+// Every table of the compiler is an arena block that doubles on demand. The
+// registry holds, per table, the estimate the pre-scan made, the capacity that
+// was reserved from it, the high-water usage and how many times the table had to
+// grow past that reserve. `mc limits` prints exactly these four numbers
+// (src/limits.mc). Order is fixed by the ids below and never sorted.
+#define T_TOKENS    0
+#define T_INCLUDES  1
+#define T_OPENS     2
+#define T_INCPATH   3
+#define T_NODES     4
+#define T_DEFINES   5
+#define T_INFIX     6
+#define T_PREFIX    7
+#define T_OPCODES   8
+#define T_SECTIONS  9
+#define T_DYLIBS   10
+#define T_EXTLIB   11
+#define T_EXTPAT   12
+#define T_RULES    13
+#define T_FUNCS    14
+#define T_LOWERED  15
+#define T_GLOBALS  16
+#define T_STRINGS  17
+#define T_LOCALS   18
+#define T_LOOPS    19
+#define T_PREL     20
+#define T_INS      21
+#define T_SYMBOLS  22
+#define T_MSECS    23
+#define T_XSECS    24
+#define T_XSEGS    25
+#define T_UNDEF    26
+#define T_PASSES   27
+#define T_BACKENDS 28
+#define T_SYNTAX   29
+#define T_ALIAS    30
+#define T_TOMLENT  31
+#define T_TOMLAOT  32
+#define T_HEAP     33
+#define T_COUNT    34
+
+uptr lim_names[] = {
+    "tokens", "includes", "opens", "incpath", "nodes", "defines", "infix",
+    "prefix", "opcodes", "sections", "dylibs", "extlib", "extpat", "rules",
+    "funcs", "lowered", "globals", "strings", "locals", "loops", "prel",
+    "ins", "symbols", "msecs", "xsecs", "xsegs", "undef", "passes",
+    "backends", "syntax", "alias", "tomlent", "tomlaot", "heap"
+};
+
+// cold-start capacity: what a table gets when the pre-scan said nothing about
+// it. Never a ceiling -- doubling takes over from here.
+i64 lim_seeds[] = {
+    512, 64, 16, 8, 256, 128, 64,
+    32, 32, 16, 8, 32, 16, 32,
+    64, 64, 32, 64, 128, 16, 64,
+    256, 64, 16, 32, 8, 64, 8,
+    8, 16, 16, 128, 8, 0
+};
+
+i64 lim_est[T_COUNT];                 // estimate, in elements
+i64 lim_res[T_COUNT];                 // estimate * (1 + tolerance)
+i64 lim_used[T_COUNT];                // high-water usage
+i64 lim_grew[T_COUNT];                // reallocations past the first reserve
+
+uptr lim_name_at(i64 i) { return ld64(lim_names + i * 8); }
+i64  lim_seed_at(i64 i) { return ld64(lim_seeds + i * 8); }
+i64  lim_est_at(i64 i)  { return ld64(lim_est + i * 8); }
+i64  lim_res_at(i64 i)  { return ld64(lim_res + i * 8); }
+i64  lim_used_at(i64 i) { return ld64(lim_used + i * 8); }
+i64  lim_grew_at(i64 i) { return ld64(lim_grew + i * 8); }
+void set_lim_est(i64 i, i64 v)  { st64(lim_est + i * 8, v); }
+void set_lim_res(i64 i, i64 v)  { st64(lim_res + i * 8, v); }
+void set_lim_grew(i64 i, i64 v) { st64(lim_grew + i * 8, v); }
+
+// records n as used by table i, keeping the maximum: tables like `locals` and
+// `loops` restart at every function, so the report needs the high-water mark
+void lim_note(i64 i, i64 n) {
+    if (n > lim_used_at(i)) st64(lim_used + i * 8, n);
+}
+
+// capacity for the FIRST allocation of a table: the reserve the plan computed,
+// never below the cold-start seed
+i64 lim_reserve(i64 i) {
+    i64 e = lim_res_at(i);
+    if (e < lim_seed_at(i)) e = lim_seed_at(i);
+    return e;
+}
+
+// ---- the arena ----
+// One static chunk in bss plus, when it runs out, one mmap'd chunk per growth.
+// Chunks are never moved and never freed, so every pointer handed out stays
+// valid -- that is what lets the tables above be plain arena blocks.
 #define HEAP_SIZE (32 << 20)
 u8  heap[HEAP_SIZE];
 i64 hp = 0;
+uptr hbase = 0;                       // current chunk; 0 = the static heap[]
+i64  hsize = HEAP_SIZE;               // its size
+i64  heap_res = HEAP_SIZE;            // bytes reserved across every chunk
+i64  heap_used = 0;                   // bytes handed out
+
+uptr arena_base() {
+    if (hbase) return hbase;
+    return heap;
+}
+
+// maps a chunk of exactly n bytes (rounded up to 64 KiB) and makes it current;
+// 0 = the kernel refused. What is left of the previous chunk is abandoned, never
+// freed, so every pointer already handed out stays valid.
+i64 arena_map(i64 n) {
+    i64 sz = (n + 0xffff) & ~0xffff;
+    uptr p = mmap(0, sz, PROT_RW, MAP_ANONP, 0 - 1, 0);
+    if (p == 0 || p == 0 - 1) return 0;
+    hbase = p;
+    hsize = sz;
+    hp = 0;
+    heap_res = heap_res + sz;
+    return 1;
+}
+
+// organic growth: double, or take what was asked if that is bigger
+i64 arena_chunk(i64 n) {
+    i64 sz = hsize * 2;
+    if (sz < n) sz = n;
+    return arena_map(sz);
+}
+
+// reserves n bytes for the arena up front, and exactly n: the plan already knows
+// how much it wants. Only maps when what is left of the static heap cannot hold
+// them -- bss is already there, and mapping next to it would waste the pages
+// nobody asked for.
+void arena_reserve(i64 n) {
+    if (n <= hsize - hp) return;
+    if (arena_map(n)) return;
+    die("cannot reserve the arena");
+}
 
 uptr xalloc(i64 n) {
     n = (n + 15) & ~15;
-    if (hp + n > HEAP_SIZE) die("arena exhausted");
-    uptr p = heap + hp;
+    if (hp + n > hsize) {
+        if (!arena_chunk(n)) die("arena exhausted");
+        set_lim_grew(T_HEAP, lim_grew_at(T_HEAP) + 1);
+    }
+    uptr p = arena_base() + hp;
     hp = hp + n;
+    heap_used = heap_used + n;
+    lim_note(T_HEAP, heap_used);
     return p;
+}
+
+// ---- the one growth helper (M23) ----
+// grow(id, p, n, &cap, elem) is called at every append site, right where the
+// `if (n == MAX) die(...)` used to be. The block doubles, the elements already
+// there are copied in the same order, and the registry records the append.
+uptr grow(i64 id, uptr p, i64 n, uptr pcap, i64 esz) {
+    lim_note(id, n + 1);
+    i64 cap = ld64(pcap);
+    if (n < cap) return p;
+    i64 nc = lim_reserve(id);
+    if (cap != 0) {
+        nc = cap * 2;
+        set_lim_grew(id, lim_grew_at(id) + 1);
+    }
+    if (nc <= n) nc = n + 1;
+    uptr np = xalloc(nc * esz);
+    mem_copy(np, p, n * esz);
+    st64(pcap, nc);
+    return np;
+}
+
+// the parallel arrays that share one counter with a table grow() has just
+// resized: same new capacity, same copy, no second accounting
+uptr grow_to(uptr p, i64 n, i64 cap, i64 esz) {
+    uptr np = xalloc(cap * esz);
+    mem_copy(np, p, n * esz);
+    return np;
 }
 
 i64 cstrlen(uptr s) {

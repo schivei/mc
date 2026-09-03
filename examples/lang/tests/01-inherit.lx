@@ -1,0 +1,54 @@
+// Three levels of inheritance and virtual dispatch: the vtable of a subclass is
+// a prefix extension of its base's, `override` fills the inherited slot and
+// `base.m()` calls the parent's implementation directly.
+// expect-exit: 0
+// expect-stdout: shape
+// expect-stdout: 0
+// expect-stdout: circle
+// expect-stdout: 12
+// expect-stdout: ball
+// expect-stdout: 24
+// expect-stdout: 36
+// expect-stdout: 0
+
+#include "../lib/prelude.lx"
+
+class Shape {
+    virtual i64 area(self) { return 0; }
+    virtual str name(self) { return "shape"; }
+}
+
+class Circle : Shape {
+    i64 r;
+    override i64 area(self) { return 3 * self.r * self.r; }
+    override str name(self) { return "circle"; }
+}
+
+class Ball : Circle {
+    override i64 area(self) { return 2 * base.area(); }
+    override str name(self) { return "ball"; }
+}
+
+// the parameter is a Shape: every call below goes through the vtable
+fn report(Shape s) -> i64 {
+    prints(s.name());
+    print(s.area());
+    return s.area();
+}
+
+fn main() -> i64 {
+    i64 total = 0;
+    {
+        Shape s = new Shape();
+        Circle c = new Circle();
+        c.r = 2;
+        Ball  b = new Ball();
+        b.r = 2;
+        total += report(s);
+        total += report(c);
+        total += report(b);
+    }
+    print(total);
+    print(live());
+    return 0;
+}

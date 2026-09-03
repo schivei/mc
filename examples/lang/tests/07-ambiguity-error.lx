@@ -1,0 +1,13 @@
+// Two namespaces in scope declare `Rect`. The unqualified name has two winners
+// and the module refuses to pick one.
+// expect-error: tests/07-ambiguity-error.lx:11: ambiguous name: Rect (shapes, phys)
+
+#include "../lib/prelude.lx"
+
+import shapes;
+import phys;
+
+fn main() -> i64 {
+    Rect r = new Rect(1, 2);
+    return 0;
+}

@@ -1,4 +1,4 @@
-# build.md — `mc build` and `mc.toml` (M14), the bundle and `#embed` (M15), Linux targets (M16)
+# build.md — `mc build` and `mc.toml` (M14), the bundle and `#embed` (M15), Linux targets (M16), limits (M23)
 
 Through M13 the only way to compile was one file at a time:
 
@@ -252,6 +252,7 @@ what it was before M14 — not even an extra `open` happens.
 key = "value"                    # bare key, quoted key, or dotted: a.b.c
 "quoted key" = 1                 # a key with * has to be quoted
 n     = -42                      # decimal integer, + - and _ separators allowed
+t     = 0.25                     # M23: decimal float, kept as BASIS POINTS (2500)
 flag  = true                     # true | false
 list  = ["a", "b"]               # array of strings or of integers, multi-line,
                                  # trailing comma allowed, no nesting
@@ -277,7 +278,14 @@ $ build/tomldump tests/toml/bad-escape.toml
 tests/toml/bad-escape.toml:2:11: unknown escape
 $ build/tomldump tests/toml/bad-value.toml
 tests/toml/bad-value.toml:2:9: value expected
+$ build/tomldump tests/toml/bad-float.toml
+tests/toml/bad-float.toml:3:21: float with more than 4 fraction digits
 ```
+
+A float has no type of its own in the language, so it has none here either: `src/toml.mc` reads
+the decimal text into an `i64` of **basis points** (hundredths of a percent), which is what
+`[limits].tolerance` needs and all it needs — `0.25` is `2500`, `1.0` is `10000`, `0.0001` is `1`,
+and a fifth fraction digit is an error. `tomldump` prints those entries as `bp`.
 
 The column is what distinguishes `entry = main.mc` (a bare word where a value goes) from a typo in
 the key.
@@ -703,6 +711,239 @@ not running, it prints `test-linux: SKIPPED (...)` and the build stays green.
 
 ---
 
+## M23 — limits: one estimate, one tolerance, no ceilings
+
+Until M22 every table in the compiler was a static array with a `MAX*` ceiling, and a program that
+outgrew one died with `too many X`. Since M23 there is no ceiling in `src/`: every table is an
+arena block that **doubles on demand**, and the only thing left to decide is how big it should be
+*before* the first append, so the doubling stays the exception.
+
+```
+mc limits [DIR|FILE.mc]        # build, then report; exit 0 / 3 / 1
+mc build [DIR] --limits        # the same report at the end of a normal build
+mc build [DIR] --fix-limits    # ... and, with your consent, raise the tolerance
+```
+
+```toml
+[limits]
+tolerance = 0.25               # a float in [0, 1]; 0.25 is the default
+```
+
+### How a table is sized
+
+`grow()` in `src/arena.mc` is the whole mechanism — five lines at every append site:
+
+```
+    toktab = grow(T_TOKENS, toktab, ntok, &tokcap, TE_SIZE);
+```
+
+The first call allocates `estimate * (1 + tolerance)` elements; every call after that returns the
+same block until it is full, and then doubles it and counts one **growth event**. Elements keep
+their insertion order across a growth, so nothing the compiler emits can depend on when a table
+grew — see `docs/determinism.md` § capacity.
+
+The arena itself works the same way. It starts as the 32 MiB static `heap[]` in bss, and when that
+runs out it maps one more chunk with `mmap` (`extern uptr mmap(...)` in `src/arena.mc`, and the
+same prototype in `lib/sys.mc` so a program can do it too). Chunks are never moved and never
+freed, which is what lets every table be a plain arena block. `arena exhausted` now only happens
+if the kernel itself refuses.
+
+### Where the estimate comes from
+
+Two sources, and the bigger one wins.
+
+**Static**, from a byte-level pre-scan of the entry file plus every include it can reach —
+relative ones from disk, `<name>` ones from the bundle (inflated once and cached, so the lexer
+pays nothing twice). The scan follows only a `#include` that **opens a line**: the ones inside
+`//` comments and inside the string literals `src/driver.mc` writes are not directives, and
+following them would pull whole modules into the estimate that the lexer never reads.
+
+It counts four things — `bytes`, `"` (`quotes`), occurrences of `") {"` and occurrences of
+`"#define"` — and turns them into this:
+
+| table | estimate |
+|---|---|
+| `nodes` | `bytes / 11` |
+| `ins` | `nodes * 9 / 10` |
+| `strings` | `quotes / 3` |
+| `funcs`, `lowered` | occurrences of `") {"` |
+| `globals` | `funcs / 3` |
+| `defines` | occurrences of `"#define"` |
+| `symbols` | `funcs + globals + strings` (exact, by construction) |
+| `includes` | files the pre-scan reached |
+| `heap` | `sum(count * record size) * 5 / 3 + 7 * bytes` |
+| everything else | its cold-start seed in `lim_seeds` (`src/arena.mc`) |
+
+The token table is deliberately **not** byte-derived: it holds *distinct lexemes* — the core
+keywords plus whatever `#token`, `#rule` and `syntax()` register — so 512 covers every source in
+this repository and doubling covers a taught language.
+
+The coefficients were calibrated against `src/mc.mc` (769 KB of reachable source, 22 files). What
+`mc limits src/mc.mc` reports today:
+
+| table | estimate | used | error |
+|---|---|---|---|
+| `nodes` | 71 546 | 68 105 | +5% |
+| `ins` | 64 391 | 57 078 | +13% |
+| `strings` | 602 | 571 | +5% |
+| `funcs` | 961 | 836 | +15% |
+| `globals` | 320 | 259 | +24% |
+| `defines` | 514 | 493 | +4% |
+| `symbols` | 1 883 | 1 666 | +13% |
+| `includes` | 22 | 22 | exact |
+| `heap` | 24 139 550 B | 23 489 728 B | +3% |
+
+`examples/api` is the honest counter-example. Its taught compiler (`build/mc-api.mc`, which pulls
+`<mc/core>` in) lands the same way — `nodes` 73 343 estimated against 70 360 used, verdict `ok` —
+but its **entry** does not: `main.mc` is 33 KB of source in which seven `class`/`interface`
+declarations expand into 39 ordinary ones, so the AST is bigger than the bytes suggest
+(`nodes` 3 075 estimated, 3 932 used; `ins` 2 767 against 4 692). The first build grows; the
+second does not, because of the second source below.
+
+**Remembered**, from `build/.mc-usage.toml`, which `mc build` writes at the end of every build:
+
+```toml
+# written by `mc build`: high-water usage per table (M23).
+# One section per compiled source. Safe to delete.
+[usage."build/mc-api.mc"]
+nodes = 63731
+...
+[usage."main.mc"]
+nodes = 3932
+...
+```
+
+One section per compiled source, keyed by the path the way `mc.toml` writes it — a project with a
+`[compiler]` compiles **two** sources of very different sizes in two processes, and neither should
+pre-size the other. The next build reads its own section and takes the larger of it and the static
+estimate. Only capacities depend on this file; deleting it changes how much memory the build takes
+and nothing else.
+
+### The report
+
+```
+$ build/mc1 limits src/mc.mc
+limits src/mc.mc
+table         estimate   reserved       used  grow  verdict
+tokens               0        512         51     0  ok
+...
+nodes            71546      89432      68105     0  ok
+...
+heap          24139550   33554432   23489728     0  ok
+tolerance 0.25, verdict ok (heap in bytes, every other table in elements)
+```
+
+* **estimate** — what the two sources above agreed on.
+* **reserved** — `estimate * (1 + tolerance)`, never below the table's cold-start seed. This is
+  what was set aside *before* the first append; a table that grew ended up with more, and the
+  `grow` column is what says so. For `heap` it is the bytes actually mapped, the static 32 MiB
+  included.
+* **used** — the high-water mark. Tables that restart per function (`locals`, `loops`) report the
+  largest function, not the last one.
+* **grow** — reallocations past that first reserve.
+* **verdict** — `grew` (it had to grow), `tight` (no growth, but `used` is over 90% of `reserved`),
+  `ok`.
+
+The exit code is **0** for `ok`, **3** for `grew` or `tight`, and **1** if the build itself failed
+— so a CI job can treat 3 as a warning and 1 as a break. `mc limits FILE.mc` runs the same
+pipeline as a real compile up to `gen_encode_all()` and writes no object: the tables are the point.
+A project with a `[compiler]` prints **two** reports, the compiler's first and the entry's second
+(the child gets the same flag), and the worse of the two verdicts is what comes back.
+
+### `--fix-limits`
+
+`mc build --fix-limits` is the only thing that ever writes to `mc.toml`, and it writes exactly one
+line: the smallest tolerance — a multiple of 0.05, in `[0, 1]` — that would have kept every table
+off `grew` *and* off `tight` **with the static estimate alone**, because the static estimate is
+what a clean checkout has. Every other byte of the file comes out as it went in; if there is no
+`[limits]` section it is appended, and if there is one without a `tolerance` key the line is
+inserted at its end.
+
+```
+$ build/mc1 build examples/api --fix-limits
+...
+fix-limits: tolerance 0.00 -> 0.10 in examples/api/mc.toml
+...
+fix-limits: tolerance 0.10 -> 0.95 in examples/api/mc.toml
+$ diff before examples/api/mc.toml
+46c46
+< tolerance = 0.0
+---
+> tolerance = 0.95
+```
+
+When even `1.0` is not enough — a table whose static estimate is only its cold-start seed, for
+instance — it says so and leaves the tolerance alone; the remembered usage is what covers that
+case, and it was just written.
+
+### Floats in `mc.toml`
+
+The language has no floating point and does not need it here. `src/toml.mc` reads a decimal float
+as **basis points**: an `i64` hundredth of a percent, so `0.25` is `2500`, `1.0` is `10000` and
+`0.0001` is `1`. At most four fraction digits; a fifth is
+`file:line:col: float with more than 4 fraction digits`. A value outside `[0, 1]` is refused at
+the position where it was written:
+
+```
+$ build/mc1 limits examples/api
+examples/api/mc.toml:46:13: tolerance must be between 0 and 1
+```
+
+### What this replaces
+
+`MAX*` is gone from `src/`, with four exceptions that are not tables that scale with a program:
+`MAXPARAMS` (8, the ABI), `MAXDEPTH` (64, the expression depth that produces `expression too
+deep`), `MAXBIND`/`MAXRDEPTH`/`MAXITEMS`/`MAXNAMES`, which bound **one** `#rule` and size the
+inline fields of a rule's record, and `MAXSUBST` (16, M21), which bounds **one** lexer frame's
+substitutions and produces `too many substitutions`. The two tables M23 did not see, because they
+came in with M16 and M21, follow the same rule as the rest: the ELF section table
+(`src/backend_elf.mc`) is allocated at exactly `2 * nsections + 4` slots — the count is known
+before the first append — and M21's four substitution arrays are parallel to the `#include` stack,
+so `lex_push_mem` re-sizes them with it. `stage0/*.c` keeps every one of its ceilings: the C seed
+is a seed and only ever has to compile `src/mc.mc`. `make check-limits` is what watches that gap —
+`mc limits src/mc.mc` against the constants read straight out of `stage0/mc.h` and `stage0/*.c`,
+failing at 90%:
+
+```
+$ scripts/check-limits.sh build/mc1
+ok   tokens        51 / 2048     2%  (MAXTOK)
+ok   defines      493 / 2048    24%  (MAXDEFS)
+ok   funcs        836 / 2048    40%  (MAXFUNCS)
+ok   globals      259 / 512     50%  (MAXGLOBALS)
+ok   strings      571 / 2048    27%  (MAXSTRS)
+...
+16/16 seed limits under 90%
+```
+
+### What it buys
+
+A generated program with 5 000 functions and 5 000 string literals — well past the seed's
+`MAXFUNCS`/`MAXSTRS` of 2 048 — builds with **no change to any TOML**:
+
+```
+$ build/mc1 build tmp/big --limits  # first build
+nodes            22858      28572      55133     1  grew
+funcs             5004       6255       5015     0  ok
+strings           3338       4172       5000     1  grew
+ins              20572      25715      90118     2  grew
+heap           8732233   33554432   28241744     0  ok
+tolerance 0.25, verdict grew            # exit 3
+
+$ build/mc1 build tmp/big --limits  # second build, remembered usage
+nodes            55133      68916      55133     0  ok
+funcs             5015       6268       5015     0  ok
+strings           5000       6250       5000     0  ok
+ins              90118     112647      90118     0  ok
+heap          28241744   68878336   22706336     0  ok
+tolerance 0.25, verdict ok              # exit 0
+```
+
+`build/big` runs and exits 42 either way. The second build is also the cheaper one: right-sized
+tables allocate once instead of doubling, which is why its arena high-water drops from 28 MB to
+22 MB.
+
+---
+
 ## The Makefile still works
 
 `examples/api/Makefile` does by hand exactly what `mc build` does from `mc.toml`, and both are
@@ -730,14 +971,18 @@ make -C examples/api test        # test-oop + tests/lib_test.sh + test.sh
 | `check-mc` | `scripts/check-mc.sh`: `tests/mc/*.mc` (`#embed`, `#include <name>`) through `.o` + `ld` and through `--exe`, plus the assertion that `build/mc0` rejects them |
 | `check-standalone` | `scripts/check-standalone.sh`: `build/mc-exe` copied alone into a temporary directory, compiling `<sys>`/`<prelude>`, a taught compiler from `<mc/core>`, and the byte-for-byte comparison against `build/mc2.o` |
 | `test-linux` | `scripts/test-linux.sh`: every `tests/*.mc` without `// skip-linux` cross-compiled with `elf-obj`, linked by `ld.lld` against musl and run in `docker --platform linux/arm64`, plus the no-libc case. Guarded: skipped with a message when Docker or `ld.lld` is missing |
+| `check-limits` | `scripts/check-limits.sh`: `mc limits src/mc.mc` against the fixed `MAX*` constants still in `stage0/mc.h` and `stage0/*.c`; fails when any of them is over 90% used |
 
 ```
 $ scripts/check-toml.sh build/mc1
 ...
-9/9 TOML files match
+10/10 TOML files match
 $ scripts/check-build.sh build/mc1
 ...
 11/11 mc build checks passed
+$ scripts/check-limits.sh build/mc1
+...
+16/16 seed limits under 90%
 $ scripts/test-linux.sh build/mc1
 ...
 32/32 tests passed on linux/arm64
@@ -745,7 +990,7 @@ $ scripts/test-linux.sh build/mc1
 
 ---
 
-## Limits of M14, M15 and M16
+## Limits of M14, M15, M16 and M23
 
 - **aarch64 only, and for Linux only through an external linker.** `[target].arch` other than
   `aarch64` is a clear error, and so is `[target].os` other than `macos`/`linux`; COFF and x86-64
@@ -789,3 +1034,16 @@ $ scripts/test-linux.sh build/mc1
   quick experiment; edit `src/`/`lib/` and run `make bundle` instead.
 - **`#embed` costs one AST node per byte.** The declared ceiling is 16 MiB; the practical one is
   the arena.
+- **The estimate is a byte scan, not a parse.** It counts `"` without knowing about comments or
+  escapes and `") {"` without knowing about function pointers, and it cannot see what a `syntax()`
+  handler or a `#rule` will expand into. That is what the tolerance and the remembered usage are
+  for; being wrong costs memory and one reallocation, never a failed build.
+- **`--fix-limits` reasons about the static estimate only.** It answers "what tolerance would a
+  clean checkout have needed", which is why it can land on a number as large as 0.95 for a project
+  whose expansion the pre-scan cannot see.
+- **The remembered usage is not a lock file.** `build/.mc-usage.toml` is written on every
+  `mc build`, is safe to delete, and never affects a single byte of the output — only how much
+  memory the build takes.
+- **Deleting a source does not shrink its section.** Sections in `build/.mc-usage.toml` are keyed
+  by source path and copied through untouched; one for a file that no longer exists just sits
+  there until the file is deleted.

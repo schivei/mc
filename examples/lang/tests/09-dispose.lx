@@ -1,0 +1,51 @@
+// dispose order. `rc_dec` reaching zero runs the class's own `dispose` first,
+// then releases the class-typed fields (the most derived class's first), then
+// frees the block. Locals of one scope go in reverse declaration order.
+// expect-exit: 0
+// expect-stdout: 3
+// expect-stdout: node 1
+// expect-stdout: leaf 10
+// expect-stdout: leaf 20
+// expect-stdout: 0
+// expect-stdout: base 7
+// expect-stdout: 0
+
+#include "../lib/prelude.lx"
+
+class Leaf {
+    i64 id;
+    fn dispose(self) { out("leaf "); print(self.id); }
+}
+
+class Node {
+    Leaf a;
+    Leaf b;
+    i64  id;
+    fn dispose(self) { out("node "); print(self.id); }
+}
+
+// a base class's dispose is inherited: the subclass has none of its own, so
+// releasing a Derived runs Base_dispose
+class Base    { i64 id; fn dispose(self) { out("base "); print(self.id); } }
+class Derived : Base { i64 extra; }
+
+fn main() -> i64 {
+    {
+        Node n = new Node();
+        n.id = 1;
+        Leaf p = new Leaf();
+        p.id = 10;
+        Leaf q = new Leaf();
+        q.id = 20;
+        n.a = p;
+        n.b = q;
+        print(live());              // 3 objects alive
+    }                               // n, q, p released in reverse; n first
+    print(live());
+    {
+        Derived d = new Derived();
+        d.id = 7;
+    }
+    print(live());
+    return 0;
+}

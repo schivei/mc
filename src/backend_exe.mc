@@ -84,33 +84,35 @@ extern i64 chmod(uptr path, i64 mode);
 #define CD_HASHTYPE_SHA256         2
 #define CD_HASHSIZE                32
 
-#define MAXXSEC  64                        // sections in the executable (4 + #section + 2)
-#define MAXXSEG  16                        // distinct segment names
-#define MAXUNDEF 256                       // imported symbols
+// M23: the section, segment and import tables are arena blocks that double on
+// demand (arena.mc grow()); sec2x is sized exactly by the module's sections.
 
 // ---- table of executable sections (final order = order in the file) ----
-i64 xs_src[MAXXSEC];                       // index in sections[]; -1 if synthetic
-i64 xs_kind[MAXXSEC];                      // 0 = from the module, 1 = __stubs, 2 = __got
-i64 xs_addr[MAXXSEC];
-i64 xs_off[MAXXSEC];
-i64 xs_size[MAXXSEC];
-i64 xs_seg[MAXXSEC];
+uptr xs_src;                               // index in sections[]; -1 if synthetic
+uptr xs_kind;                              // 0 = from the module, 1 = __stubs, 2 = __got
+uptr xs_addr;
+uptr xs_off;
+uptr xs_size;
+uptr xs_seg;
+i64 xseccap = 0;
 i64 nxsec = 0;
-i64 sec2x[MAXXSEC];                        // module section -> index in xs_*
+uptr sec2x;                                // module section -> index in xs_*
 
 // ---- segment table ----
-uptr xg_name[MAXXSEG];
-i64  xg_addr[MAXXSEG];
-i64  xg_vmsize[MAXXSEG];
-i64  xg_off[MAXXSEG];
-i64  xg_fsize[MAXXSEG];
+uptr xg_name;
+uptr xg_addr;
+uptr xg_vmsize;
+uptr xg_off;
+uptr xg_fsize;
+i64  xsegcap = 0;
 i64  nxseg = 0;
 
 uptr xg_name_at(i64 i)            { return ld64(xg_name + i * 8); }
 void set_xg_name_at(i64 i, uptr v) { st64(xg_name + i * 8, v); }
 
 // ---- imported symbols, in creation order ----
-i64 undef_sym[MAXUNDEF];
+uptr undef_sym;
+i64 undefcap = 0;
 i64 nundef = 0;
 
 // ---- __LINKEDIT ----
@@ -183,7 +185,7 @@ void exe_collect_undef() {
     i64 i = 0;
     while (i < nsymbols) {
         if (sym_sect(sym_at(i)) == 0) {
-            if (nundef == MAXUNDEF) die("too many imported symbols");
+            undef_sym = grow(T_UNDEF, undef_sym, nundef, &undefcap, 8);
             set_ivec_at(undef_sym, nundef, i);
             nundef = nundef + 1;
         }
@@ -211,13 +213,28 @@ i64 exe_seg_find(uptr nm) {
 }
 
 void exe_seg_add(uptr nm) {
-    if (nxseg == MAXXSEG) die("too many segments in the executable");
+    i64 oc = xsegcap;
+    xg_name = grow(T_XSEGS, xg_name, nxseg, &xsegcap, 8);
+    if (xsegcap != oc) {
+        xg_addr   = grow_to(xg_addr,   nxseg, xsegcap, 8);
+        xg_vmsize = grow_to(xg_vmsize, nxseg, xsegcap, 8);
+        xg_off    = grow_to(xg_off,    nxseg, xsegcap, 8);
+        xg_fsize  = grow_to(xg_fsize,  nxseg, xsegcap, 8);
+    }
     set_xg_name_at(nxseg, nm);
     nxseg = nxseg + 1;
 }
 
 void exe_add_sec(i64 src, i64 kind, i64 seg) {
-    if (nxsec == MAXXSEC) die("too many sections in the executable");
+    i64 oc = xseccap;
+    xs_src = grow(T_XSECS, xs_src, nxsec, &xseccap, 8);
+    if (xseccap != oc) {
+        xs_kind = grow_to(xs_kind, nxsec, xseccap, 8);
+        xs_addr = grow_to(xs_addr, nxsec, xseccap, 8);
+        xs_off  = grow_to(xs_off,  nxsec, xseccap, 8);
+        xs_size = grow_to(xs_size, nxsec, xseccap, 8);
+        xs_seg  = grow_to(xs_seg,  nxsec, xseccap, 8);
+    }
     set_ivec_at(xs_src, nxsec, src);
     set_ivec_at(xs_kind, nxsec, kind);
     set_ivec_at(xs_seg, nxsec, seg);
@@ -272,6 +289,7 @@ i64 exe_seg_nsec(i64 g) {
 void exe_plan_sections() {
     nxseg = 0;
     nxsec = 0;
+    sec2x = xalloc(8 * (nsections + 1));   // one slot per module section, exactly
     i64 i = 0;
     while (i < nsections) {
         uptr nm = exe_segname(sec_seg(sec_at(i)));

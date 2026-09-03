@@ -501,6 +501,128 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `b2579419…51be6` (M21) / `f20c1332…e14aa0` (M16) ->
   `0bfa736630cd50ce99671f95990b8b80e79cb1bb6248bdb197be11e948720788`.
   `build/mc-exe` 437011 B.
+- M22 done (`docs/specs/M22.md`): **`examples/lang`** — the `lx` language (classes, interfaces,
+  generics with `where` constraints, namespaces, `ref` parameters, reference counting) taught to
+  `mc` by a prelude. Nothing in `src/`, `stage0/`, `lib/`, `tests/` or `docs/` was touched: the
+  whole language is `examples/lang/*.mc` (9 modules, 2810 lines) registering M12/M21 hooks, plus
+  `lib/rt.mc` (204, a 4 MiB arena with free lists by size class and `rc_inc`/`rc_dec`) and
+  `lib/prelude.lx` (30). `mc build` assembles the taught compiler from `examples/lang/mc.toml` and
+  compiles `main.lx` with it; `examples/lang/test.sh` (= `make check-lang`, inside `make check`)
+  runs 12 `.lx` tests, the sample, `--dump-asm` (mangled generic instantiations and vtables),
+  `--dump-rules`, a byte-for-byte re-compile, and the check that the DEFAULT compiler refuses the
+  same source. Deviation on record: `[compiler].core = "lang_core.mc"` (a copy of `src/core.mc`'s
+  include list without `bundle_data.mc`/`bundle.mc`/`backend_elf.mc`), because `<mc/core>` plus a
+  module of this size exhausted the 32 MiB arena — M23's growable arena removes that cause, but
+  the example was left as it was verified. Open gaps reported to the architect and kept in
+  `examples/lang/README.md` § Limits: `arena exhausted` carries no position, `parse_block()`
+  bypasses `syntax_stmt("{")`, `syntax_stmt` cannot own `return`/`break`/`continue`, there is no
+  hook for a core-declared local, and `parse_call` hard-codes `TY_I64`.
+  — `make check` green with `check-lang` added; golden **not** rewritten by M22.
+- M23 done (`docs/specs/M23.md`, `docs/build.md` § limits, `docs/determinism.md` § capacity):
+  **dynamic limits — growable tables, one estimate, one tolerance, no ceilings**. `stage0/`
+  untouched (2846/3000): the C seed keeps every `MAX*` it had, and the whole change is in `src/`.
+  * **Growable tables.** Every `MAX*`-sized array in `src/` became an arena block that doubles on
+    demand through one helper, `grow(id, p, n, &cap, elem)` in `src/arena.mc` (+179/-4), called at
+    the append site where the `if (n == MAX) die(...)` used to be; `grow_to()` re-sizes the
+    parallel arrays that share a counter (the seven `fn_*`, the three `prel_*`, `xs_*`, `xg_*`,
+    `syn_*`, `alias_*`, `extlib_*`, `extpat_*`). 34 tables in all, in a fixed registry
+    (`T_TOKENS`..`T_HEAP`) that also records estimate / reserve / high-water / growth events.
+    Insertion order is untouched by a growth, so nothing the compiler emits can depend on it.
+    `MAX*` is gone from `src/` except `MAXPARAMS` (8, the ABI), `MAXDEPTH` (64, the
+    `expression too deep` bound) and `MAXBIND`/`MAXRDEPTH`/`MAXITEMS`/`MAXNAMES`, which bound ONE
+    `#rule` and size the inline fields of a rule record.
+  * **The arena** is the static 32 MiB `heap[]` plus, when it runs out, one `mmap` chunk per
+    growth (`extern uptr mmap(...)` in `src/arena.mc`, same prototype added to `lib/sys.mc`).
+    Chunks are never moved and never freed, so every pointer stays valid; `arena exhausted` now
+    only happens if the kernel refuses.
+  * **The estimate** (`src/limits.mc`, 586 lines, new): a byte-level pre-scan of the entry plus
+    every include it can reach — relative ones from disk, `<name>` ones from the bundle (inflated
+    once and cached, so the lexer pays nothing twice), following only a `#include` that OPENS a
+    line (the ones inside `//` comments and inside the string literals `driver.mc` writes are not
+    directives). Coefficients, calibrated against `src/mc.mc` and documented in `docs/build.md`:
+    `nodes = bytes/11`, `ins = nodes*9/10`, `strings = quotes/3`, `funcs = ") {"`,
+    `globals = funcs/3`, `defines = "#define"`, `symbols = funcs+globals+strings`,
+    `heap = sum(count*record)*5/3 + 7*bytes`. Measured on `src/mc.mc` (690 KB, 21 files): nodes
+    +2%, heap +3%, defines +4%, strings +5%, ins +7%, funcs +13%, symbols +13%, globals +29%,
+    includes exact. The token table is deliberately not byte-derived (it holds distinct lexemes).
+  * **Remembered usage**: `mc build` writes `build/.mc-usage.toml`, ONE SECTION PER COMPILED
+    SOURCE (`[usage."main.mc"]`) — a project with a `[compiler]` compiles two sources of very
+    different sizes in two processes and neither should pre-size the other. The next build takes
+    the larger of its own section and the static estimate. Capacities only; the output never
+    depends on it.
+  * **`[limits] tolerance = 0.25`** (default), a float in `[0, 1]`. `src/toml.mc` (+69/-9) reads a
+    decimal float as BASIS POINTS (`i64`, `0.25` -> 2500), at most four fraction digits;
+    `TV_FLOAT` prints as `bp` in `src/tomldump.mc`. Out of range is
+    `examples/api/mc.toml:46:13: tolerance must be between 0 and 1` (`toml_err_val`, no key
+    appended); `tests/toml/values.toml` gained five float cases and `tests/toml/bad-float.toml`
+    the fifth-digit error.
+  * **`mc limits [DIR|FILE.mc]`** and **`mc build --limits`** (`src/driver.mc` +109/-31): one line
+    per table with estimate, reserved, used, growth events and a verdict (`ok`, `tight` = used
+    over 90% of reserved, `grew`), exit **0 / 3 / 1**. `mc limits FILE.mc` runs the real pipeline
+    up to `gen_encode_all()` and writes no object. A project with a `[compiler]` prints two
+    reports (compiler first, entry second — the child gets the same flag) and returns the worse
+    verdict.
+  * **`mc build --fix-limits`** rewrites ONLY the `[limits]` section — the smallest multiple of
+    0.05 in `[0, 1]` that would have avoided `grew` and `tight` against the STATIC estimate (what
+    a clean checkout has); every other byte of `mc.toml` comes out as it went in. When `1.0` is
+    not enough it says so and leaves the file alone (the remembered usage, just written, is what
+    covers that case). Never writes without the flag.
+  * **`make check-limits`** (`scripts/check-limits.sh`, 85 lines, new, inside `make check`): the
+    seed guard the architect lacked at M15 — `mc limits src/mc.mc` against the constants read
+    straight out of `stage0/mc.h`/`stage0/*.c`, failing above 90%. Today: tokens 51/2048 (2%),
+    defines 454/2048 (22%), funcs 788/2048 (38%), globals 231/512 (45%), strings 539/2048 (26%),
+    locals 25/256 (9%) — **16/16 under 90%**.
+  Proofs: a generated program with **5000 functions and 5000 string literals** (well past the
+  seed's `MAXFUNCS`/`MAXSTRS` of 2048) builds with no TOML change and runs (exit 42); `mc limits`
+  gives `grew` on the first build (nodes/strings/ins/heap) and `ok` on the second, whose arena
+  high-water also drops from 35 MB to 20 MB. `tolerance = 0` on `examples/api` grows and exits 3;
+  `--fix-limits` moves the file from `0.0` to `0.95` and `diff` shows that single line; the next
+  run with the usage file deleted exits 0. `tolerance = 1.5` is refused at `mc.toml:46:13`.
+  — `stage0/` untouched, 2846/3000; `src/*.mc` 12596 lines (3238 of them generated);
+  `make check` green end to end: `test` 32/32, `check-lex` 68/68, `check-ast` 68/68,
+  `check-asm` 68/68, `check-obj` 32/32, `check-bundle` (reproducible + fresh, 30 files),
+  `check-surface` 32/32 + Tier 3, `test-exe` 32/32, `check-mc` 6/6, `check-standalone` green,
+  `check-toml` 10/10, `check-build` 10/10, `check-limits` 16/16, `check-examples` green,
+  `bootstrap` at a fixed point (`mc2.o == mc3.o`, 469752 bytes; the `--dump-asm` diff between
+  `mc1` and `mc2` is empty) and golden rewritten once
+  (`2673c65e...94a3ed5` -> `743302fa...0e3e752ff`).
+- M22 + M23 merged (2026-09-03): same situation as M16 + M21 — M22 (`examples/lang`) was in the
+  working tree and M23 (dynamic limits) on a branch forked BEFORE the M16 + M21 merge, so the
+  three-way apply had to reconcile five files by hand: `CLAUDE.md` § State and `docs/build.md`
+  (both entries kept), the `Makefile` (`check-limits` **and** `test-linux`/`check-lang` in
+  `check:` and `.PHONY`), `src/driver.mc` (M16's `drv_obj_backend()` with M23's extra `entry`
+  argument to `drv_compile`) and `src/lex.mc` — the only semantic one: M23 deleted `MAXOPEN`, and
+  M21's four substitution arrays were sized `(MAXOPEN + 1) * MAXSUBST`. They are parallel to the
+  frame stack, so they now follow it: `lex_push_mem` re-sizes them with `grow_to` whenever
+  `fstack` grows, copying `nopen + 1` slots so the PENDING slot survives the growth. `MAXSUBST`
+  stays — it bounds one frame, like `MAXDEPTH`. `src/bundle_data.mc` and `tests/golden/mc2.sha256`
+  were kept out of the patch and regenerated. Two tables M23 could not see, because they arrived
+  with M16 and M21, were brought under the same rule instead of keeping a ceiling: the ELF section
+  table (`src/backend_elf.mc`, `MAXELFSEC 128` gone) is allocated at exactly `2 * nsections + 4`
+  slots, and `src/limits.mc` reaches the bundle through the lexer's `bopen_fn` pointer rather than
+  calling `bundle_open`, so a taught compiler assembled without `src/bundle.mc` still links —
+  which is what `examples/lang/lang_core.mc` is (it gained `#include "../../src/limits.mc"`, its
+  only edit). **The numbers in the two entries above are each milestone's own; the merged tree's
+  are these.**
+  — `stage0/` untouched, 2846/3000; `src/*.mc` 13965 lines (3779 of them generated);
+  836/2048 functions, 571/2048 strings and 259/512 globals in `src/mc.mc` against the C seed.
+  `make check` green end to end (RC 0): `test` 32/32, `check-lex` 71/71, `check-ast` 71/71,
+  `check-bundle` (33 files, raw 396273 B -> LZ 179062 B, blob 179400 B), `check-asm` 71/71,
+  `check-obj` 32/32, `bootstrap` at a fixed point (`mc2.o == mc3.o`, 523120 bytes; the
+  `--dump-asm` diff between `mc1` and `mc2` is empty), `check-surface` 32/32 + every M21 case,
+  `test-exe` 32/32, `check-mc` 6/6, `check-standalone` green, `check-toml` 10/10,
+  `check-build` 11/11, `check-limits` 16/16 under 90%, `test-linux` 32/32 on linux/arm64
+  (1 skipped: `032-svc`), `check-examples` green, `check-lang` green (12 tests + main.lx).
+  Golden: the tree goes from `0bfa7366…20788` (the M22 working tree) and `743302fa…e752ff` (the
+  M23 branch) to a single new value,
+  `94db4b12b772d418ae44399b4ecd984d790c92c2bfb12798a568a70112f11918` — written twice during the
+  merge (once for the regenerated bundle, once after the last `src/limits.mc` edit), each time
+  only after `diff <(build/mc1 --dump-asm src/mc.mc) <(build/mc2 --dump-asm src/mc.mc)` came out
+  empty and `cmp build/mc2.o build/mc3.o` matched.
+  `build/mc-exe` 474355 B. M23's own acceptance re-run on the merged tree: a generated program
+  with 5000 functions and 5000 string literals builds with no TOML change (`grew`, exit 3, then
+  `ok`, exit 0) and exits 42; `mc limits examples/api` is exit 3 cold and exit 0 remembered;
+  `tolerance = 1.5` is refused at `examples/api/mc.toml:46:13`.
 - Next: M17 (`docs/specs/M17.md` — machine-interface split and x86-64); M13 stays in
   the backlog (`docs/specs/M13.md`: sizing a program's memory at compile time — the fixed 4 MiB
   arena in `examples/api/lib/rt.mc` is one more motivating case).
@@ -509,3 +631,4 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   output, identifiers, comments, and docs (`docs/*.md`, `docs/specs/*.md`, `CLAUDE.md`,
   `.claude/agents/*.md` re-synced to match `scripts/i18n-map.tsv`/`scripts/i18n-idents.tsv`).
   Language keywords were already English and untouched.
+- CI (2026-09-03): `.github/workflows/` ci/tag/release/site; first run green (`make check` on macos-15 in 41 s, Linux arm64 suite native on ubuntu-24.04-arm in 28 s); site live at https://minicompiler.dev (preview until M27). See `docs/ci.md`.

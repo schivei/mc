@@ -3,6 +3,7 @@
 //
 //   str  project.name = "api"
 //   int  project.jobs = 4
+//   bp   limits.tolerance = 2500       (a float, in basis points)
 //   bool project.strict = true
 //   str  include.paths[0] = "lib"
 //
@@ -38,9 +39,10 @@ void toml_dump() {
     while (i < tm_n) {
         uptr e = tme_at(i);
         i64 t = tme_type(e);
-        if (t == TV_STR)      out_str(1, "str  ");
-        else if (t == TV_INT) out_str(1, "int  ");
-        else                  out_str(1, "bool ");
+        if (t == TV_STR)        out_str(1, "str  ");
+        else if (t == TV_INT)   out_str(1, "int  ");
+        else if (t == TV_FLOAT) out_str(1, "bp   ");
+        else                    out_str(1, "bool ");
         out_str(1, tme_path(e));
         if (tme_idx(e) >= 0) {
             out_str(1, "[");

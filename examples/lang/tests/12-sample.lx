@@ -1,0 +1,32 @@
+// The sample of docs/specs/M22.md, verbatim except for the include. It is also
+// what test.sh runs --dump-asm over, to show the mangled instantiation and its
+// vtable in the generated assembly.
+// expect-exit: 0
+// expect-stdout: 13
+
+#include "../lib/prelude.lx"
+
+class Shape {
+    virtual i64 area(self) { return 0; }
+    virtual str name(self) { return "shape"; }
+}
+class Circle : Shape {
+    i64 r;
+    override i64 area(self) { return 3 * self.r * self.r; }
+    override str name(self) { return "circle"; }
+}
+interface Printable { str show(self); }
+class Box<T, const N: i64> : Printable where T : Shape {
+    T items[N];  i64 count;
+    fn push(self, T s) { self.items[self.count] = s; self.count += 1; }
+    fn total(self) -> i64 { i64 t = 0; for (i64 i = 0; i < self.count; i += 1) { t += self.items[i].area(); } return t; }
+    str show(self) { return "box"; }
+}
+fn bump(ref i64 x) { x += 1; }
+fn main() -> i64 {
+    Box<Circle, 4> b = new Box<Circle, 4>();
+    Circle c = new Circle(); c.r = 2; b.push(c);
+    i64 n = 0; bump(ref n);
+    print(b.total() + n);          // 13
+    return 0;
+}

@@ -116,13 +116,7 @@ void node_assign(i64 d, i64 s) { mem_copy(node_at(d), node_at(s), ND_SIZE); }
 void node_zero(i64 n)          { mem_zero(node_at(n), ND_SIZE); }
 
 void nodes_grow() {
-    if (nnodes < nodecap) return;
-    i64 cap = nodecap * 2;
-    if (nodecap == 0) cap = 256;
-    uptr np = xalloc(ND_SIZE * cap);
-    mem_copy(np, nodes, nnodes * ND_SIZE);
-    nodes = np;
-    nodecap = cap;
+    nodes = grow(T_NODES, nodes, nnodes, &nodecap, ND_SIZE);
 }
 
 // file comes from the token that gave the line: the lexer may already be back from an #include

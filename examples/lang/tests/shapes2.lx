@@ -1,0 +1,5 @@
+// shapes2.lx — the SAME namespace reopened in a second file. Nothing merges the
+// two: the prefix is all there is, so `shapes.perimeter` simply exists too.
+namespace shapes {
+    fn perimeter(i64 w, i64 h) -> i64 { return 2 * (w + h); }
+}

@@ -25,15 +25,14 @@
 // Depends on arena.mc (str_eq, cstrlen, out_str, die, die2, _exit), on lex.mc
 // (tok_add and the ids K_U8..K_EXTERN) and on ast.mc (TY_MAX).
 
-#define MAXPASSES   32
-#define MAXBACKENDS 16
-#define MAXSYNTAX   256
-#define MAXALIAS    256
-
-uptr pass_fn[MAXPASSES];
+// M23: the four registries below are arena blocks that double on demand
+// (arena.mc grow()); the MAX* ceilings they used to carry are gone.
+uptr pass_fn;
+i64  passcap = 0;
 i64  npasses = 0;
-uptr backend_name[MAXBACKENDS];
-uptr backend_fn[MAXBACKENDS];
+uptr backend_name;
+uptr backend_fn;
+i64  backendcap = 0;
 i64  nbackends = 0;
 
 uptr pass_fn_at(i64 i)         { return ld64(pass_fn + i * 8); }
@@ -42,7 +41,7 @@ uptr backend_fn_at(i64 i)      { return ld64(backend_fn + i * 8); }
 
 // pass(&f): f runs over the source AST, in the order it was registered
 void pass(uptr fn) {
-    if (npasses == MAXPASSES) die("too many passes");
+    pass_fn = grow(T_PASSES, pass_fn, npasses, &passcap, 8);
     st64(pass_fn + npasses * 8, fn);
     npasses = npasses + 1;
 }
@@ -50,7 +49,9 @@ void pass(uptr fn) {
 // backend("name", &f): f writes the object when `--backend=name` is requested.
 // The last registration of the same name wins, as in the #rule table.
 void backend(uptr name, uptr fn) {
-    if (nbackends == MAXBACKENDS) die("too many backends");
+    i64 oc = backendcap;
+    backend_name = grow(T_BACKENDS, backend_name, nbackends, &backendcap, 8);
+    if (backendcap != oc) backend_fn = grow_to(backend_fn, nbackends, backendcap, 8);
     st64(backend_name + nbackends * 8, name);
     st64(backend_fn + nbackends * 8, fn);
     nbackends = nbackends + 1;
@@ -99,14 +100,17 @@ i64 run_passes(i64 root) {
 // Two linear tables in registration order, one per grammar position. The
 // search goes back to front: the last registration of the same word wins,
 // as in the backend table and the #rule table.
-i64  syn_tok[MAXSYNTAX];              // token id of the word that opens
-uptr syn_fn[MAXSYNTAX];
+uptr syn_tok;                         // token id of the word that opens
+uptr syn_fn;
+i64  syncap = 0;
 i64  nsyn = 0;
-i64  syns_tok[MAXSYNTAX];
-uptr syns_fn[MAXSYNTAX];
+uptr syns_tok;
+uptr syns_fn;
+i64  synscap = 0;
 i64  nsyns = 0;
-i64  syne_tok[MAXSYNTAX];             // M21: the same, at the expression position
-uptr syne_fn[MAXSYNTAX];
+uptr syne_tok;                        // M21: the same, at the expression position
+uptr syne_fn;
+i64  synecap = 0;
 i64  nsyne = 0;
 
 i64  syn_tok_at(i64 i)        { return ld64(syn_tok + i * 8); }
@@ -128,7 +132,9 @@ i64 word_add(uptr word) {
 // syntax("class", &f): f consumes the tokens starting at `class` (inclusive) in the
 // top-level declaration position and produces declarations with top_add()
 void syntax(uptr word, uptr fn) {
-    if (nsyn == MAXSYNTAX) die("too many top-level syntaxes");
+    i64 oc = syncap;
+    syn_tok = grow(T_SYNTAX, syn_tok, nsyn, &syncap, 8);
+    if (syncap != oc) syn_fn = grow_to(syn_fn, nsyn, syncap, 8);
     st64(syn_tok + nsyn * 8, word_add(word));
     st64(syn_fn + nsyn * 8, fn);
     nsyn = nsyn + 1;
@@ -137,7 +143,9 @@ void syntax(uptr word, uptr fn) {
 // syntax_stmt("unless", &f): same at the statement position; f returns the index
 // of the statement node (0 = none)
 void syntax_stmt(uptr word, uptr fn) {
-    if (nsyns == MAXSYNTAX) die("too many statement syntaxes");
+    i64 oc = synscap;
+    syns_tok = grow(T_SYNTAX, syns_tok, nsyns, &synscap, 8);
+    if (synscap != oc) syns_fn = grow_to(syns_fn, nsyns, synscap, 8);
     st64(syns_tok + nsyns * 8, word_add(word));
     st64(syns_fn + nsyns * 8, fn);
     nsyns = nsyns + 1;
@@ -169,7 +177,9 @@ i64 syntax_stmt_find(i64 tok) {
 // with parse_unary into a fixed tree, so it reads neither a type (`bits i64`)
 // nor an argument list (`pipe(x, f, g)`).
 void syntax_expr(uptr word, uptr fn) {
-    if (nsyne == MAXSYNTAX) die("too many expression syntaxes");
+    i64 oc = synecap;
+    syne_tok = grow(T_SYNTAX, syne_tok, nsyne, &synecap, 8);
+    if (synecap != oc) syne_fn = grow_to(syne_fn, nsyne, synecap, 8);
     st64(syne_tok + nsyne * 8, word_add(word));
     st64(syne_fn + nsyne * 8, fn);
     nsyne = nsyne + 1;
@@ -211,16 +221,19 @@ void syntax_infix(uptr word, i64 prec, uptr fn) {
 // type_alias("bool", TY_U8) makes `bool` valid as a type in declaration, parameter,
 // cast and p_type(): all of them go through type_of_token, which consults this table
 // after the core words.
-i64 alias_tok[MAXALIAS];
-i64 alias_base[MAXALIAS];
+uptr alias_tok;
+uptr alias_base;
+i64 aliascap = 0;
 i64 nalias = 0;
 
 i64 alias_tok_at(i64 i)  { return ld64(alias_tok + i * 8); }
 i64 alias_base_at(i64 i) { return ld64(alias_base + i * 8); }
 
 void type_alias(uptr name, i64 base) {
-    if (nalias == MAXALIAS) die("too many type aliases");
     if (base < 0 || base >= TY_MAX) die2("type_alias with invalid type", name);
+    i64 oc = aliascap;
+    alias_tok = grow(T_ALIAS, alias_tok, nalias, &aliascap, 8);
+    if (aliascap != oc) alias_base = grow_to(alias_base, nalias, aliascap, 8);
     st64(alias_tok + nalias * 8, word_add(name));
     st64(alias_base + nalias * 8, base);
     nalias = nalias + 1;

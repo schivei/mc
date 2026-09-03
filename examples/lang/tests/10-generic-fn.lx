@@ -1,0 +1,38 @@
+// A generic FUNCTION, instantiated per call site by the same record-and-replay
+// the generic classes use, with its `where` clause checked at instantiation.
+// expect-exit: 0
+// expect-stdout: 7
+// expect-stdout: 3
+// expect-stdout: 9
+// expect-stdout: 0
+
+#include "../lib/prelude.lx"
+
+interface Ranked { i64 rank(self); }
+
+class Num  : Ranked { i64 v; i64 rank(self) { return self.v; } }
+class Card : Ranked { i64 face; i64 rank(self) { return self.face * 3; } }
+
+fn best<T>(T a, T b) where T : Ranked -> T {
+    if (a.rank() > b.rank()) { return a; }
+    return b;
+}
+
+fn main() -> i64 {
+    {
+        Num p = new Num();   p.v = 3;
+        Num q = new Num();   q.v = 7;
+        Num r = best<Num>(p, q);
+        print(r.v);                        // 7
+        Num r2 = best<Num>(q, p);
+        Num r3 = best<Num>(p, p);          // memoized: nothing new is generated
+        print(r3.v);                       // 3
+
+        Card c1 = new Card();  c1.face = 3;
+        Card c2 = new Card();  c2.face = 1;
+        Card w = best<Card>(c1, c2);       // a second instantiation
+        print(w.rank());                   // 9
+    }
+    print(live());
+    return 0;
+}

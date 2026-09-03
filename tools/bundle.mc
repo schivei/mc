@@ -24,6 +24,12 @@
 #include "../src/bundle_data.mc"
 #include "../src/bundle.mc"
 
+// M23 removed every MAX* from src/, including src/bundle.mc's BUNDLE_MAX (the
+// cache there is now sized by the generated BUNDLE_COUNT itself). This is a
+// build tool, not the compiler: the manifest is a checked-in file with 30 lines,
+// so the ceiling stays here, where it is also the error message.
+#define BUNDLE_MAX 128
+
 i64  bl_idx[BUNDLE_MAX * BI_N];
 uptr bl_name[BUNDLE_MAX];
 uptr bl_path[BUNDLE_MAX];

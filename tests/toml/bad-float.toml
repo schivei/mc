@@ -1,0 +1,3 @@
+# bad-float.toml -- a float carries at most four fraction digits (basis points)
+[limits]
+tolerance = 0.123456

@@ -117,6 +117,13 @@ test-linux: build/mc1
 	    scripts/test-linux.sh build/mc1; \
 	fi
 
+# M23: the seed guard -- `mc limits src/mc.mc` against the fixed MAX* constants
+# still in stage0/mc.h and stage0/*.c. Fails when any of them is over 90% used,
+# which is the early warning that the C seed has to be raised before it stops
+# being able to compile src/mc.mc.
+check-limits: build/mc1
+	scripts/check-limits.sh build/mc1
+
 # M12: the full example (examples/api) — a taught compiler with class/interface,
 # #dylib for libsqlite3, and the HTTP server. None of this goes through stage0:
 # the starting compiler is build/mc1. Depends on curl and the system's sqlite3.
@@ -124,7 +131,14 @@ test-linux: build/mc1
 check-examples: build/mc1
 	$(MAKE) -C examples/api test
 
-check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build test-linux check-examples
+# M22: examples/lang -- the `lx` language taught to `mc` by a prelude (classes,
+# interfaces, generics, namespaces, reference counting). Nothing in src/ knows
+# any of it; `mc build` assembles the taught compiler from examples/lang/mc.toml
+# and test.sh runs the whole tests/ suite through it with --exe.
+check-lang: build/mc1
+	sh examples/lang/test.sh
+
+check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-limits test-linux check-examples check-lang
 
 budget:
 	scripts/loc-budget.sh $(BUDGET)
@@ -132,4 +146,4 @@ budget:
 clean:
 	rm -rf build
 
-.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build sysroot-linux test-linux check-examples check budget clean
+.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-limits sysroot-linux test-linux check-examples check-lang check budget clean

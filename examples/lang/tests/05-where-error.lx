@@ -1,0 +1,16 @@
+// A `where` constraint that the argument does not satisfy. The error is
+// reported inside the instantiation's own frame, so it names the mangled class
+// and the line of the use that asked for it.
+// expect-error: Box__Thing instantiated from tests/05-where-error.lx:14:1: constraint not satisfied: Thing : Shape
+
+#include "../lib/prelude.lx"
+
+class Shape { virtual i64 area(self) { return 0; } }
+class Thing { i64 x; }
+
+class Box<T> where T : Shape { T item; }
+
+fn main() -> i64 {
+    Box<Thing> b = new Box<Thing>();
+    return 0;
+}

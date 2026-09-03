@@ -1,0 +1,58 @@
+// Release is per SCOPE, not per function, and `break`/`continue`/`return`
+// release everything the scopes they leave were holding. That is what
+// syntax_stmt("{") buys: the module owns every statement-position block.
+// expect-exit: 0
+// expect-stdout: 1
+// expect-stdout: 2
+// expect-stdout: 0
+// expect-stdout: 1
+// expect-stdout: 0
+// expect-stdout: 0
+// expect-stdout: 0
+// expect-stdout: 5
+// expect-stdout: 0
+
+#include "../lib/prelude.lx"
+
+class Obj { i64 v; }
+
+// `return x` transfers ownership: the caller gets a reference of its own, and
+// everything else alive in the function is released before the jump
+fn make(i64 v) -> Obj {
+    Obj scratch = new Obj();
+    Obj r = new Obj();
+    r.v = v;
+    return r;
+}
+
+fn walk() -> i64 {
+    i64 i = 0;
+    while (i < 10) {
+        Obj a = new Obj();
+        a.v = i;
+        i += 1;
+        if (i == 3) { continue; }
+        if (i == 5) { break; }
+    }
+    return i;
+}
+
+fn main() -> i64 {
+    {
+        Obj a = new Obj();
+        print(live());                 // 1
+        {
+            Obj b = new Obj();
+            print(live());             // 2
+        }                              // inner scope releases b
+        print(live() - 1);             // 0 besides a
+    }
+    print(live() + 1);                 // 1: nothing is alive, so 0 + 1
+    Obj m = make(4);
+    print(live() - 1);                 // 0 besides m: make's scratch is gone
+    print(m.v - 4);                    // 0
+    print(walk() - 5);                 // 0: walk stops at 5, nothing survives
+    print(walk());                     // 5
+    print(live() - 1);                 // 0 besides m
+    return 0;
+}

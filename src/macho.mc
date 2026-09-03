@@ -152,15 +152,7 @@ void name16(uptr dst, uptr s) {
 i64 sec_new(uptr seg, uptr sect, i64 flags, i64 align) {
     i64 i = sec_find(seg, sect);
     if (i >= 0) return i;
-    if (nsections == seccap) {
-        if (seccap == 0) seccap = 8;
-        else             seccap = seccap * 2;
-        uptr n = xalloc(SEC_SIZE * seccap);
-        for (i64 k = 0; k < nsections; k = k + 1) {
-            mem_copy(n + k * SEC_SIZE, sec_at(k), SEC_SIZE);
-        }
-        sections = n;
-    }
+    sections = grow(T_MSECS, sections, nsections, &seccap, SEC_SIZE);
     uptr s = sec_at(nsections);
     mem_zero(s, SEC_SIZE);
     name16(sec_seg(s), seg);
@@ -207,15 +199,7 @@ i64 sym_new(uptr name, i64 sect, i64 value, i64 global) {
         }
         return i;
     }
-    if (nsymbols == symcap) {
-        if (symcap == 0) symcap = 64;
-        else             symcap = symcap * 2;
-        uptr n = xalloc(SYM_SIZE * symcap);
-        for (i64 k = 0; k < nsymbols; k = k + 1) {
-            mem_copy(n + k * SYM_SIZE, sym_at(k), SYM_SIZE);
-        }
-        symbols = n;
-    }
+    symbols = grow(T_SYMBOLS, symbols, nsymbols, &symcap, SYM_SIZE);
     uptr e = sym_at(nsymbols);
     set_sym_name(e, name);
     set_sym_sect(e, sect);

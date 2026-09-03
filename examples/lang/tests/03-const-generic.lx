@@ -1,0 +1,53 @@
+// A const generic parameter reaching an array bound, and a nested type argument
+// whose `>>` the lexer built by longest match and p_resplit_punct takes apart.
+// expect-exit: 0
+// expect-stdout: 4
+// expect-stdout: 30
+// expect-stdout: 2
+// expect-stdout: 7
+// expect-stdout: 0
+
+#include "../lib/prelude.lx"
+
+class Num { i64 v; }
+
+// `T items[N]` is an inline array of N elements inside the object, so the
+// object's size depends on the const argument
+class Bag<T, const N: i64> {
+    T   items[N];
+    i64 count;
+
+    fn cap(self) -> i64 { return N; }
+    fn add(self, T v) { self.items[self.count] = v; self.count += 1; }
+    fn sum(self) -> i64 {
+        i64 t = 0;
+        for (i64 i = 0; i < self.count; i += 1) { t += self.items[i].v; }
+        return t;
+    }
+}
+
+// a generic whose argument is itself a generic instantiation: `Bag<Num, 2>>`
+// closes with a single `>>` token
+class Holder<T> { T inner; }
+
+fn main() -> i64 {
+    {
+        Bag<Num, 4> b = new Bag<Num, 4>();
+        print(b.cap());                        // 4: the const parameter is a literal here
+        Num a = new Num();  a.v = 10;
+        Num c = new Num();  c.v = 20;
+        b.add(a);
+        b.add(c);
+        print(b.sum());                        // 30
+        print(b.count);
+
+        Holder<Bag<Num, 2>> h = new Holder<Bag<Num, 2>>();
+        Bag<Num, 2> small = new Bag<Num, 2>();
+        Num d = new Num();  d.v = 7;
+        small.add(d);
+        h.inner = small;
+        print(h.inner.sum());                  // 7
+    }
+    print(live());
+    return 0;
+}

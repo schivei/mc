@@ -32,7 +32,7 @@
 // C's forward declarations (gen_expr, gen_stmt, str_sym) are not
 // needed: the top of the .mc registers every signature before the bodies.
 //
-// MAXPARAMS and MAXSECS come from parse.mc, as they came from mc.h.
+// MAXPARAMS comes from arena.mc, as it came from mc.h.
 // Depends on arena.mc (xalloc, cstrlen, str_eq, mem_eq, mem_copy, buf_*,
 // out_*, die), on ast.mc (nodes, err_node, type_width), on parse.mc (opc_find,
 // opc_expand, sec_pending, sec_make) and on macho.mc (sections, symbols,
@@ -48,23 +48,12 @@
 #define REG_LR    30
 #define REG_SP    31
 #define REG_FRAME 32                  // fictitious base swapped for sp in fix_frame
-#define MAXDEPTH  64
-#define MAXLOCALS 256
-#define MAXFUNCS  2048
-#define MAXLOOPS  32
-#define MAXGLOBALS 512                // M14: the C stage0 stays at 256 -- see below
-#define MAXSTRS    2048               // M14: the C stage0 stays at 512 -- see below
-#define MAXPREL   512                 // reloc() relocations for the whole module
-// M14: MAXGLOBALS and MAXSTRS are the first two limits where this file
-// deliberately does NOT match stage0/gen_arm64.c. The reason is the same one
-// that raised MAXFUNCS at M11: stage0 only ever has to compile ONE program,
-// src/mc.mc (493 strings, 169 globals -- both under the C limits, which is what
-// `make bootstrap` keeps proving), while the self-hosted compiler has to compile
-// whatever a project throws at it. src/core.mc grew by toml.mc + driver.mc at
-// M14, and a taught compiler on top of it (examples/api/mc-api.mc = core + oop)
-// went past 512 strings. Raising the limit only changes behaviour above the old
-// ceiling, so every file in the check-lex/ast/asm corpus still comes out
-// identical under mc0 and mc1.
+#define MAXDEPTH  64                  // expression depth: an ERROR, not a table
+// M23: locals, loops, prel, funcs, globals and strings became arena blocks that
+// double on demand (arena.mc grow()), so the MAX* constants this file used to
+// carry -- and the M14 note about deliberately diverging from stage0 on MAXSTRS
+// and MAXGLOBALS -- are gone. The seed in C still has its ceilings, and
+// `make check-limits` is what watches how close src/mc.mc gets to them.
 
 // ---- full plan enum; the encoder only implements what it uses ----
 #define I_LABEL    0
@@ -182,48 +171,55 @@ i64  inscap = 0;
 i64  nlabels = 0;
 
 // ---- current function state ----
-u8  locals[MAXLOCALS * LOC_SIZE];
+uptr locals;
+i64 localcap = 0;
 i64 nlocals = 0;
 i64 dslot[MAXDEPTH];                  // slot for the depth: save (<=6) or spill (>=7)
 i64 frame_off = 0;
-i64 lbreak[MAXLOOPS];
-i64 lcont[MAXLOOPS];
+uptr lbreak;
+uptr lcont;
+i64 loopcap = 0;
 i64 nloops = 0;
 // reloc(): the relocation stays pending until the next raw word (gen_word)
-i64 prel_ins[MAXPREL];
-i64 prel_sym[MAXPREL];
-i64 prel_type[MAXPREL];
+uptr prel_ins;
+uptr prel_sym;
+uptr prel_type;
+i64 prelcap = 0;
 i64 nprel = 0;
 i64 pend_type = -1;
 i64 pend_sym = 0;
 i64 pend_node = 0;
 
 // ---- functions already lowered: ibuf is append-only and each function is a slice of it ----
-i64 fn_start[MAXFUNCS];
-i64 fn_count[MAXFUNCS];
-i64 fn_labels[MAXFUNCS];
-i64 fn_sec[MAXFUNCS];
-i64 fn_sym[MAXFUNCS];
-i64 fn_pstart[MAXFUNCS];
-i64 fn_pcount[MAXFUNCS];
+uptr fn_start;
+uptr fn_count;
+uptr fn_labels;
+uptr fn_sec;
+uptr fn_sym;
+uptr fn_pstart;
+uptr fn_pcount;
+i64 fncap = 0;
 i64 nfn = 0;
 i64 ins_base = 0;                     // start of the current function in ibuf
 i64 prel_base = 0;                    // start of the current function in prel_*
 
 // signatures for the whole file (N_FUNC and N_EXTERN), registered before the bodies
-u8  funcs[MAXFUNCS * FS_SIZE];
+uptr funcs;
+i64 funccap = 0;
 i64 nfuncs = 0;
 
 // ---- module state: globals, strings and the sections in fixed order ----
-u8  globals[MAXGLOBALS * GLB_SIZE];
+uptr globals;
+i64 globalcap = 0;
 i64 nglobals = 0;
-u8  strs[MAXSTRS * STR_SIZE];
+uptr strs;
+i64 strcap = 0;
 i64 nstrs = 0;
 i64 isec_text = 0;                    // -1 = section not created
 i64 isec_cstr = 0;
 i64 isec_data = 0;
 i64 isec_bss  = 0;
-i64 secmap[MAXSECS];                  // parser's #section i -> real section
+uptr secmap;                          // parser's #section i -> real section
 
 // ---- Ins accessors ----
 uptr ins_at(i64 i)     { return ibuf + i * INS_SIZE; }
@@ -301,6 +297,28 @@ i64  prel_type_at(i64 i)  { return ld64(prel_type + i * 8); }
 void set_prel_type_at(i64 i, i64 v) { st64(prel_type + i * 8, v); }
 i64  secmap_at(i64 i)     { return ld64(secmap + i * 8); }
 void set_secmap_at(i64 i, i64 v) { st64(secmap + i * 8, v); }
+// M23: the seven fn_* arrays share `nfn`, so one grow() accounts for them and
+// grow_to() re-sizes the rest to the same capacity. Same for the three prel_*.
+void fn_grow() {
+    i64 oc = fncap;
+    fn_start = grow(T_LOWERED, fn_start, nfn, &fncap, 8);
+    if (fncap == oc) return;
+    fn_count  = grow_to(fn_count,  nfn, fncap, 8);
+    fn_labels = grow_to(fn_labels, nfn, fncap, 8);
+    fn_sec    = grow_to(fn_sec,    nfn, fncap, 8);
+    fn_sym    = grow_to(fn_sym,    nfn, fncap, 8);
+    fn_pstart = grow_to(fn_pstart, nfn, fncap, 8);
+    fn_pcount = grow_to(fn_pcount, nfn, fncap, 8);
+}
+
+void prel_grow() {
+    i64 oc = prelcap;
+    prel_ins = grow(T_PREL, prel_ins, nprel, &prelcap, 8);
+    if (prelcap == oc) return;
+    prel_sym  = grow_to(prel_sym,  nprel, prelcap, 8);
+    prel_type = grow_to(prel_type, nprel, prelcap, 8);
+}
+
 i64  fn_start_at(i64 i)   { return ld64(fn_start + i * 8); }
 void set_fn_start_at(i64 i, i64 v) { st64(fn_start + i * 8, v); }
 i64  fn_count_at(i64 i)   { return ld64(fn_count + i * 8); }
@@ -324,14 +342,7 @@ void ins_add(i64 op, i64 rd, i64 rn, i64 rm, i64 imm, i64 label, i64 sym) {
     // the pending relocation only sticks to the raw word that gen_word puts in the
     // buffer; a label does not become a word and is transparent, everything else is an error
     if (pend_type >= 0 && op != I_LABEL) err_node(pend_node, "reloc without an immediately following emit");
-    if (nins == inscap) {
-        i64 cap = 256;
-        if (inscap) cap = inscap * 2;
-        uptr np = xalloc(INS_SIZE * cap);
-        mem_copy(np, ibuf, nins * INS_SIZE);
-        ibuf = np;
-        inscap = cap;
-    }
+    ibuf = grow(T_INS, ibuf, nins, &inscap, INS_SIZE);
     uptr e = ins_at(nins);
     set_ins_op(e, op);
     set_ins_rd(e, rd);
@@ -448,7 +459,7 @@ i64 local_find(uptr name) {
 }
 
 void local_add(uptr name, i64 type, i64 off, i64 nelem) {
-    if (nlocals == MAXLOCALS) die("too many locals");
+    locals = grow(T_LOCALS, locals, nlocals, &localcap, LOC_SIZE);
     uptr e = loc_at(nlocals);
     set_loc_name(e, name);
     set_loc_type(e, type);
@@ -480,7 +491,7 @@ void func_add(uptr name, i64 type, i64 nparams, i64 def, i64 n) {
         if (def) { set_fs_def(e, 1); set_fs_node(e, n); }
         return;
     }
-    if (nfuncs == MAXFUNCS) die("too many functions");
+    funcs = grow(T_FUNCS, funcs, nfuncs, &funccap, FS_SIZE);
     uptr ne = fs_at(nfuncs);
     set_fs_name(ne, name);
     set_fs_type(ne, type);
@@ -589,7 +600,7 @@ i64 str_sym(uptr bytes, i64 len) {
         if (ste_len(old) == len && mem_eq(ste_bytes(old), bytes, len)) return ste_sym(old);
         i = i + 1;
     }
-    if (nstrs == MAXSTRS) die("too many strings");
+    strs = grow(T_STRINGS, strs, nstrs, &strcap, STR_SIZE);
     uptr b = sec_data(sec_at(isec_cstr));
     i64 off = buf_len(b);
     buf_put(b, bytes, len);
@@ -835,7 +846,7 @@ void gen_word(i64 n, i64 w) {
         // UNSIGNED is 8 bytes (length 3) and would run over the next word
         if (pend_type == R_UNSIGNED)
             err_node(pend_node, "reloc UNSIGNED requires 8 bytes: use a global array initializer");
-        if (nprel == MAXPREL) die("too many raw relocations");
+        prel_grow();
         set_prel_ins_at(nprel, nins - ins_base);  // index relative to the function
         set_prel_sym_at(nprel, pend_sym);
         set_prel_type_at(nprel, pend_type);
@@ -1046,7 +1057,9 @@ void gen_if(i64 n, i64 lepi) {
 }
 
 void gen_loop(i64 n, i64 lepi) {
-    if (nloops == MAXLOOPS) die("too many nested loops");
+    i64 loc = loopcap;
+    lbreak = grow(T_LOOPS, lbreak, nloops, &loopcap, 8);
+    if (loopcap != loc) lcont = grow_to(lcont, nloops, loopcap, 8);
     nlabels = nlabels + 1;
     i64 lbeg = nlabels;
     nlabels = nlabels + 1;
@@ -1438,7 +1451,7 @@ void gen_func(i64 f, i64 text) {
     if (frame == 0) { set_ins_op(ins_at(isub), I_NOP); set_ins_op(ins_at(iadd), I_NOP); }
     fix_frame(frame);
 
-    if (nfn == MAXFUNCS) die("too many functions");  // the function becomes a slice of ibuf
+    fn_grow();                                   // the function becomes a slice of ibuf
     set_fn_start_at(nfn, ins_base);
     set_fn_count_at(nfn, nins - ins_base);
     set_fn_pstart_at(nfn, prel_base);
@@ -1462,7 +1475,7 @@ void gen_globals(i64 unit) {
     loop {
         if (g == 0) break;
         if (nd_kind(g) == N_GLOBAL) {
-            if (nglobals == MAXGLOBALS) die("too many globals");
+            globals = grow(T_GLOBALS, globals, nglobals, &globalcap, GLB_SIZE);
             if (global_find(nd_name(g)) >= 0 || func_find(nd_name(g)) >= 0)
                 err_node(g, "global name declared twice");
             i64 ty = nd_type(g);
@@ -1526,7 +1539,7 @@ void gen_sections(i64 unit) {
     if (want_str)  isec_cstr = sec_new("__TEXT", "__cstring", S_CSTRING_LITERALS, 0);
     if (want_data) isec_data = sec_new("__DATA", "__data", S_REGULAR, 4);
     if (want_bss)  isec_bss  = sec_new("__DATA", "__bss", S_ZEROFILL, 4);
-    if (sec_pending() > MAXSECS) die("too many sections");
+    secmap = xalloc(8 * (sec_pending() + 1));  // one slot per #section, exactly
     i = 0;
     loop {
         if (i >= sec_pending()) break;

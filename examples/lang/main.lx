@@ -1,0 +1,65 @@
+// main.lx — the sample of docs/specs/M22.md, extended with a namespace that
+// lives in a second file.
+//
+// Not one line of this is `mc`. `class`, `interface`, `virtual`, `override`,
+// `fn`, `new`, `ref`, `where`, `import`, the `.` operator and the automatic
+// release of every object all come from examples/lang/lang.mc, a module that
+// runs inside the compiler `mc build` assembles from mc.toml.
+//
+//   ../../build/mc1 build examples/lang        # builds the compiler, then this
+//   examples/lang/build/lang-demo              # runs it
+//
+// Expected output: 13, 25, 12, box, 0
+
+#include "lib/prelude.lx"
+
+import geo;
+
+class Shape {
+    virtual i64 area(self) { return 0; }
+    virtual str name(self) { return "shape"; }
+}
+
+class Circle : Shape {
+    i64 r;
+    override i64 area(self) { return 3 * self.r * self.r; }
+    override str name(self) { return "circle"; }
+}
+
+interface Printable { str show(self); }
+
+class Box<T, const N: i64> : Printable where T : Shape {
+    T   items[N];
+    i64 count;
+
+    fn push(self, T s) { self.items[self.count] = s; self.count += 1; }
+
+    fn total(self) -> i64 {
+        i64 t = 0;
+        for (i64 i = 0; i < self.count; i += 1) { t += self.items[i].area(); }
+        return t;
+    }
+
+    str show(self) { return "box"; }
+}
+
+fn bump(ref i64 x) { x += 1; }
+
+fn main() -> i64 {
+    Box<Circle, 4> b = new Box<Circle, 4>();
+    Circle c = new Circle();
+    c.r = 2;
+    b.push(c);
+    i64 n = 0;
+    bump(ref n);
+    print(b.total() + n);            // 13
+
+    geo.Point p = new geo.Point(3, 4);
+    print(p.dist2());                // 25 -- a qualified type and a constructor
+    print(box_area(3, 4));           // 12 -- unqualified, through import's `using`
+
+    Printable pr = b;
+    prints(pr.show());               // box -- dispatch through the interface table
+
+    return 0;
+}

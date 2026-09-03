@@ -1,0 +1,38 @@
+# mc.toml — the whole directory built by `mc build`, with no make and no ld:
+#
+#   ../../build/mc1 build examples/lang       # from the repository root
+#   ../../build/mc1 build                     # from inside examples/lang
+#
+# Two steps come out of it: the taught compiler (`build/mc-lang`, the `mc` core
+# plus lang.mc) and then `main.lx` compiled BY that binary into a signed
+# executable. Nothing in src/ changes.
+
+[project]
+name  = "lang"
+entry = "main.lx"
+out   = "build/lang-demo"
+kind  = "exe"
+
+[target]
+os   = "macos"
+arch = "aarch64"
+
+# The compiler that compiles `entry` is not the one running: `class`,
+# `interface`, `fn`, `new`, `ref`, generics, namespaces and the whole memory
+# model come from lang.mc.
+#
+# `core` is set on purpose, and the reason is a core limit, not a preference:
+# `<mc/core>` carries `src/bundle_data.mc`, a 48 000-element array initializer
+# that the compiler turns into one AST node per element, and that alone leaves
+# too little of `mc`'s 32 MiB arena for a module this size (`mc: arena
+# exhausted`). `lang_core.mc` is the same list of modules with the bundle and
+# the ELF backend left out; lang_main.mc's header has the measurement.
+[compiler]
+core    = "lang_core.mc"
+modules = ["lang.mc"]
+out     = "build/mc-lang"
+
+# `#include "lib/prelude.lx"` already resolves against main.lx's own directory;
+# this root is what lets a file be moved into lib/ and included by bare name.
+[include]
+paths = ["lib"]

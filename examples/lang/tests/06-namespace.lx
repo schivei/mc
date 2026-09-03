@@ -1,0 +1,36 @@
+// Namespaces across three files: `import` (include + implicit using), a
+// qualified type and a qualified call, the same namespace reopened in a second
+// file, and an explicit `using`.
+// expect-exit: 0
+// expect-stdout: 12
+// expect-stdout: 14
+// expect-stdout: 25
+// expect-stdout: 12
+// expect-stdout: 25
+// expect-stdout: 27
+// expect-stdout: 6
+// expect-stdout: 0
+
+#include "../lib/prelude.lx"
+
+import shapes;                     // = #include "shapes.lx" + using shapes;
+#include "shapes2.lx"              // reopens `namespace shapes`, and merges
+
+fn main() -> i64 {
+    {
+        shapes.Rect r = new shapes.Rect(3, 4);   // qualified type + constructor
+        print(r.area());                         // 12
+        print(shapes.perimeter(3, 4));           // 14, from the second file
+        print(shapes.square(5));                 // 25
+
+        Rect u = new Rect(2, 6);                 // unqualified, through `using`
+        print(u.area());                         // 12
+        print(square(5));                        // 25, an unqualified function
+
+        shapes.solid.Cube k = new shapes.solid.Cube(3);   // a nested namespace
+        print(k.volume());                       // 27
+        print(shapes.solid.faces());             // 6
+    }
+    print(live());
+    return 0;
+}

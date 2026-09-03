@@ -74,28 +74,28 @@
 #define R_AARCH64_LDST32_ABS_LO12_NC 285
 #define R_AARCH64_LDST64_ABS_LO12_NC 286
 
-// content sections + one .rela per section with relocations + symtab + strtab
-// + shstrtab + the null one
-#define MAXELFSEC 128
-
 #define EK_NULL     0
 #define EK_CONTENT  1
 #define EK_RELA     2
 #define EK_TABLE    3                  // symtab / strtab / shstrtab
 
 // ---- the ELF section table, in the order the headers come out ----
-i64  es_kind[MAXELFSEC];
-i64  es_src[MAXELFSEC];                // module section; -1 when there is none
-uptr es_name[MAXELFSEC];
-i64  es_nameoff[MAXELFSEC];            // offset into .shstrtab
-i64  es_type[MAXELFSEC];
-i64  es_flags[MAXELFSEC];
-i64  es_off[MAXELFSEC];
-i64  es_size[MAXELFSEC];
-i64  es_link[MAXELFSEC];
-i64  es_info[MAXELFSEC];
-i64  es_align[MAXELFSEC];
-i64  es_ent[MAXELFSEC];
+// M23: no ceiling. The count is known exactly before the first append -- the
+// null one, one per module section, at most one .rela per module section, and
+// the three tables -- so elf_plan allocates 2 * nsections + 4 slots and the
+// table never grows.
+uptr es_kind;
+uptr es_src;                           // module section; -1 when there is none
+uptr es_name;
+uptr es_nameoff;                       // offset into .shstrtab
+uptr es_type;
+uptr es_flags;
+uptr es_off;
+uptr es_size;
+uptr es_link;
+uptr es_info;
+uptr es_align;
+uptr es_ent;
 i64  nesec = 0;
 
 uptr es_name_at(i64 i)             { return ld64(es_name + i * 8); }
@@ -180,7 +180,6 @@ i64 elf_sec_size(i64 i) {
 // ---- the section table ----
 void elf_add_sec(i64 kind, i64 src, uptr name, i64 type, i64 flags, i64 size,
                  i64 align, i64 ent) {
-    if (nesec == MAXELFSEC) die("too many sections in the ELF object");
     set_ivec_at(es_kind, nesec, kind);
     set_ivec_at(es_src, nesec, src);
     set_es_name_at(nesec, name);
@@ -200,6 +199,19 @@ void elf_add_sec(i64 kind, i64 src, uptr name, i64 type, i64 flags, i64 size,
 // has relocations, then the three tables.
 void elf_plan() {
     nesec = 0;
+    i64 cap = nsections * 2 + 4;       // exact upper bound, see the table above
+    es_kind = xalloc(8 * cap);
+    es_src = xalloc(8 * cap);
+    es_name = xalloc(8 * cap);
+    es_nameoff = xalloc(8 * cap);
+    es_type = xalloc(8 * cap);
+    es_flags = xalloc(8 * cap);
+    es_off = xalloc(8 * cap);
+    es_size = xalloc(8 * cap);
+    es_link = xalloc(8 * cap);
+    es_info = xalloc(8 * cap);
+    es_align = xalloc(8 * cap);
+    es_ent = xalloc(8 * cap);
     elf_add_sec(EK_NULL, 0 - 1, "", SHT_NULL, 0, 0, 0, 0);
     i64 i = 0;
     while (i < nsections) {

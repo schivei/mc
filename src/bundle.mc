@@ -29,8 +29,6 @@
 // lex.mc: the lexer reaches this file only through the function pointer that
 // main.mc registers, so src/lexdump.mc and src/astdump.mc stay bundle-free.
 
-#define BUNDLE_MAX 128                // ceiling on BUNDLE_COUNT; tools/bundle.mc checks it
-
 // bundle_idx: four i64 per entry, in this order
 #define BI_NAME  0                    // offset of the name inside bundle_blob
 #define BI_OFF   1                    // offset of the LZ stream inside bundle_blob
@@ -38,8 +36,10 @@
 #define BI_RSIZE 3                    // bytes of the file it expands to
 #define BI_N     4
 
-uptr bundle_cache[BUNDLE_MAX];        // inflated source, per index (0 = not yet)
-i64  bundle_clen[BUNDLE_MAX];         // its length, without the NUL
+// M23: sized by the generated BUNDLE_COUNT itself (+1 for `mc/bundle_data`),
+// not by a ceiling -- bundle_data.mc is included before this file.
+uptr bundle_cache[BUNDLE_COUNT + 1];  // inflated source, per index (0 = not yet)
+i64  bundle_clen[BUNDLE_COUNT + 1];   // its length, without the NUL
 
 i64  bd_at(uptr a, i64 i) { return ld64(a + i * 8); }
 void bd_put(uptr b, uptr s) { buf_put(b, s, cstrlen(s)); }

@@ -35,6 +35,17 @@ extern void exit(i64 code);
 // syscall -- it is a libSystem routine that marshals a struct this language
 // cannot lay out into __posix_spawn(2). A program that wants to spawn without
 // libSystem has to fork/exec by hand, which the core does not offer either.
+// M23: anonymous memory straight from the kernel, which is how the compiler's
+// own arena grows past its static heap (src/arena.mc). PROT_READ|PROT_WRITE is
+// 3 and MAP_PRIVATE|MAP_ANON is 0x1002; fd is -1 and off 0:
+//
+//   uptr p = mmap(0, 1 << 20, 3, 0x1002, 0 - 1, 0);   // 0 - 1 == MAP_FAILED
+//
+// There is no equivalent in lib/sys_svc.mc for the same reason as posix_spawn:
+// mmap on macOS is a libSystem routine, not a stable syscall number.
+extern uptr mmap(uptr addr, i64 len, i64 prot, i64 flags, i64 fd, i64 off);
+extern i64 munmap(uptr addr, i64 len);
+
 extern i64 posix_spawnp(uptr pid, uptr file, uptr fa, uptr attr, uptr av, uptr envp);
 extern i64 waitpid(i64 pid, uptr status, i64 options);
 extern uptr _NSGetEnviron();
