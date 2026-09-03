@@ -82,6 +82,8 @@
 #define K_OROR     296
 #define K_BANG     297
 #define K_ASSIGN   298
+#define K_COLON    299       // so o #rule usa: `stmt:`
+#define K_ARROW    300       // so o #rule usa: `=>`
 
 // ---- TokEnt: { text, len, word, id } ----
 #define TE_TEXT 0
@@ -254,6 +256,8 @@ void tok_init() {
     tok_add("||", 2);
     tok_add("!", 1);
     tok_add("=", 1);
+    tok_add(":", 1);         // so o #rule usa; no fim para nao renumerar
+    tok_add("=>", 2);
 }
 
 // identificador: so casa com entradas word=true

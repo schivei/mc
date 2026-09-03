@@ -140,6 +140,81 @@ int opc_expand(int i, int call) {
     return fold(node_copy_subst(opcs[i].tmpl, holes, k));
 }
 
+/* ---- #rule: tabela linear de regras, indexada pelo token que abre o statement.
+ * Nada de backtracking: o token corrente escolhe a regra e dali cada item tem de
+ * casar. Buracos de NO (expr/stmt/block) viajam por node_copy_subst; buracos de
+ * NOME (`ident $x` e o gensym `$$t`) sao trocados por identidade de ponteiro
+ * depois da copia — e o que permite `$x` aparecer onde a AST guarda um nome
+ * (esquerda de atribuicao, declaracao de local) e nao um no. ---- */
+#define MAXRULES 32
+#define MAXBIND  12               /* buracos citados por uma regra (padrao + gensym) */
+#define MAXRDEPTH 64              /* aninhamento de regra num template (MAXDEPTH em
+                                   * gen_arm64.c ja e a profundidade de expressao) */
+
+static RuleEnt rules[MAXRULES]; static int nrules;
+static int gensym_n;              /* contador de __g<N>: determinista, nunca reinicia */
+static int rule_depth;            /* regras aninhadas na definicao de um template */
+
+/* buracos da regra sendo definida agora; bnd_txt guarda o texto com o $ */
+static const char *bnd_txt[MAXBIND];
+static int bnd_kind[MAXBIND], bnd_slot[MAXBIND], nbnd;
+static int rule_def;              /* 1 enquanto do_rule le o padrao e o template */
+/* padrao em construcao: so vai para a tabela quando a definicao termina */
+static int r_items[MAXITEMS], r_nitems, r_nholes, r_nnames, r_lead;
+
+static const char *nt_names[] = { "lit", "expr", "stmt", "block", "ident" };
+
+static int bnd_find(const u8 *s, int len) {
+    for (int i = 0; i < nbnd; i++)
+        if ((int)cstrlen(bnd_txt[i]) == len && mem_eq(bnd_txt[i], s, (size_t)len)) return i;
+    return -1;
+}
+/* registra o buraco do token corrente ($nome ou $$nome) e devolve o indice */
+static int bnd_add(int kind, int slot) {
+    if (nbnd == MAXBIND) die("buracos demais em #rule");
+    if (bnd_find(cur.start, cur.len) >= 0) err_at(cur.file, cur.line, "buraco repetido em #rule");
+    bnd_txt[nbnd] = cur_name(); bnd_kind[nbnd] = kind; bnd_slot[nbnd] = slot;
+    return nbnd++;
+}
+/* reserva mais um buraco de nome (ident do padrao ou gensym do template) */
+static int name_slot(void) {
+    if (r_nnames == MAXNAMES) err_at(cur.file, cur.line, "buracos de nome demais em #rule");
+    return r_nnames++;
+}
+/* um nome novo por expansao: __g1, __g2, ... na ordem em que sao criados */
+static const char *gensym_new(void) {
+    char tmp[24]; int i = 24; i64 v = ++gensym_n;
+    do { tmp[--i] = (char)('0' + v % 10); v /= 10; } while (v);
+    char *s = xalloc((size_t)(28 - i));
+    s[0] = '_'; s[1] = '_'; s[2] = 'g';
+    for (int k = i; k < 24; k++) s[3 + k - i] = tmp[k];
+    return s;
+}
+/* nome de nao-terminal no padrao; 0 = o token corrente nao e um */
+static int nt_kind(void) {
+    for (int i = IT_EXPR; i <= IT_IDENT; i++) if (cur_is(nt_names[i])) return i;
+    if (cur_is("type")) err_at(cur.file, cur.line, "nt `type` fora do escopo do M9");
+    return 0;
+}
+/* a ultima regra definida para o mesmo token de abertura vence */
+static int rule_find(int tok, int lead) {
+    for (int i = nrules - 1; i >= 0; i--)
+        if (rules[i].tok == tok && rules[i].lead == lead) return i;
+    return -1;
+}
+/* troca por to[j] todo nome que ainda aponta para o placeholder ph[j]: e assim
+ * que `ident $x` e `$$t` viram nomes de verdade na copia recem-expandida */
+static void name_fix(int n, const char **ph, const char **to, int nn) {
+    if (n == 0) return;
+    for (int j = 0; j < nn; j++)
+        if (nodes[n].name == ph[j]) { nodes[n].name = to[j]; break; }
+    name_fix(nodes[n].a, ph, to, nn);
+    name_fix(nodes[n].b, ph, to, nn);
+    name_fix(nodes[n].c, ph, to, nn);
+    name_fix(nodes[n].d, ph, to, nn);
+    name_fix(nodes[n].next, ph, to, nn);
+}
+
 /* ---- expressoes ---- */
 static int parse_expr(int minprec);
 
@@ -193,7 +268,25 @@ static int parse_primary(void) {
         return n;
     }
     if (cur.id == T_HOLE) {
-        int n = node_new(N_HOLE, line, fl);
+        int b = bnd_find(cur.start, cur.len);    /* buraco ligado por #rule */
+        if (b < 0 && cur.val == -2) {            /* $$nome novo: gensym do template */
+            if (!rule_def) err_at(fl, line, "$$nome so vale no template de #rule");
+            b = bnd_add(IT_GEN, name_slot());
+        }
+        if (b >= 0) {
+            if (bnd_kind[b] == IT_IDENT || bnd_kind[b] == IT_GEN) {
+                int n = node_new(N_IDENT, line, fl);     /* buraco de nome */
+                nodes[n].name = bnd_txt[b]; nodes[n].type = TY_I64;
+                next();
+                return n;
+            }
+            int n = node_new(N_HOLE, line, fl);
+            nodes[n].val = bnd_slot[b];
+            next();
+            return n;
+        }
+        if (cur.val < 0) err_at(fl, line, "buraco $nome sem regra que o ligue");
+        int n = node_new(N_HOLE, line, fl);      /* $1/$2 do #infix/#prefix */
         nodes[n].val = cur.val;
         next();
         return n;
@@ -374,6 +467,8 @@ int fold(int n) {
 
 /* ---- statements ---- */
 static int parse_block(void);
+static int parse_stmt(void);
+static int rule_expand(int ri, int lead);
 
 /* tamanho entre [ ]; devolve 0 quando os colchetes vem vazios (`[]`) */
 static i64 parse_dim(int line, const char *fl) {
@@ -389,14 +484,30 @@ static i64 parse_dim(int line, const char *fl) {
     return nel;
 }
 
+/* nome numa declaracao: um T_IDENT normal ou, dentro de um template de #rule,
+ * um buraco de nome (`$x` ligado a um `ident` do padrao, ou o gensym `$$t`) */
+static const char *decl_name(const char *msg) {
+    if (cur.id == T_HOLE) {
+        int b = bnd_find(cur.start, cur.len);
+        if (b < 0 && cur.val == -2 && rule_def) b = bnd_add(IT_GEN, name_slot());
+        if (b >= 0 && (bnd_kind[b] == IT_IDENT || bnd_kind[b] == IT_GEN)) {
+            const char *s = bnd_txt[b];
+            next();
+            return s;
+        }
+    }
+    if (cur.id != T_IDENT) err_at(cur.file, cur.line, msg);
+    check_def();
+    const char *s = cur_name();
+    next();
+    return s;
+}
+
 /* declaracao de local: tipo nome = expr; | tipo nome; | tipo nome[CONST]; */
 static int parse_var(int line, const char *fl, int ty) {
     if (ty == TY_VOID) err_at(fl, line, "local de tipo void");
     next();                                  /* tipo */
-    if (cur.id != T_IDENT) err_at(cur.file, cur.line, "nome de variavel esperado");
-    check_def();
-    const char *name = cur_name();
-    next();
+    const char *name = decl_name("nome de variavel esperado");
     i64 nel = 0;
     int init = 0;
     if (cur.id == K_LBRACK) {
@@ -415,6 +526,17 @@ static int parse_var(int line, const char *fl, int ty) {
 
 static int parse_stmt(void) {
     int line = cur.line; const char *fl = cur.file;
+    int ri = rule_find(cur.id, 0);               /* o token corrente abre uma regra? */
+    if (ri >= 0) return rule_expand(ri, 0);
+    if (cur.id == T_HOLE) {                      /* `$init`/`$b` soltos no template */
+        int b = bnd_find(cur.start, cur.len);
+        if (b >= 0 && (bnd_kind[b] == IT_STMT || bnd_kind[b] == IT_BLOCK)) {
+            int n = node_new(N_HOLE, line, fl);
+            nodes[n].val = bnd_slot[b];
+            next();
+            return n;
+        }
+    }
     if (cur.id == K_LBRACE) return parse_block();
     int ty = type_of_token(cur.id);
     if (ty >= 0) return parse_var(line, fl, ty);
@@ -472,6 +594,13 @@ static int parse_stmt(void) {
         nodes[n].name = name; nodes[n].a = v;
         return n;
     }
+    /* regra que comeca por `ident $x`: o nome ja foi lido como expressao e o
+     * despacho continua sendo por token literal (`+=`, `++`), sem backtracking */
+    ri = rule_find(cur.id, 1);
+    if (ri >= 0) {
+        if (nodes[e].kind != N_IDENT) err_at(fl, line, "a regra esperava um nome a esquerda");
+        return rule_expand(ri, e);
+    }
     expect(K_SEMI, "esperado ; apos expressao");
     int n = node_new(N_EXPRSTMT, line, fl);
     nodes[n].a = e;
@@ -492,6 +621,107 @@ static int parse_block(void) {
     int b = node_new(N_BLOCK, line, fl);
     nodes[b].a = head;
     return b;
+}
+
+/* casa os itens da regra ri contra o fonte e devolve o template expandido.
+ * lead != 0 e o N_IDENT que ja foi lido antes do token de despacho. */
+static int rule_expand(int ri, int lead) {
+    int holes[MAXITEMS + 1];
+    const char *to[MAXNAMES];
+    int nn = rules[ri].nnames;
+    if (++rule_depth > MAXRDEPTH) die("regras aninhadas demais");
+    for (int j = 0; j < nn; j++) to[j] = 0;
+    if (rules[ri].lead) to[0] = nodes[lead].name;
+    for (int k = 0; k < rules[ri].nitems; k++) {
+        int it = rules[ri].items[k], kd = it & 7, v = it >> 3;
+        if (kd == IT_LIT) {
+            if (cur.id != v) err_at2(cur.file, cur.line, "a regra esperava", tok_text(v));
+            next();
+        } else if (kd == IT_IDENT) {
+            if (cur.id != T_IDENT) err_at(cur.file, cur.line, "a regra esperava um nome");
+            to[v] = cur_name();
+            next();
+        } else if (kd == IT_EXPR)  holes[v] = parse_expr(0);
+        else if (kd == IT_STMT)    holes[v] = parse_stmt();
+        else                       holes[v] = parse_block();
+    }
+    for (int j = 0; j < nn; j++) if (!to[j]) to[j] = gensym_new();   /* $$t da vez */
+    int e = node_copy_subst(rules[ri].tmpl, holes, rules[ri].nholes);
+    name_fix(e, rules[ri].ph, to, nn);
+    rule_depth--;
+    return e;
+}
+
+/* #rule stmt: PADRAO => TEMPLATE — o padrao e uma sequencia plana de tokens
+ * literais e `nt $nome`; o template e um statement parseado aqui, agora, com os
+ * $nome ja virando buracos. Um identificador usado como token literal vira
+ * palavra-chave reservada na hora (tok_add). */
+static void do_rule(int line, const char *fl) {
+    if (cur.id != T_IDENT) err_at(fl, line, "#rule espera a categoria stmt");
+    if (cur_is("expr")) err_at(fl, line, "#rule expr: reservado, ainda nao suportado");
+    if (!cur_is("stmt")) err_at(fl, line, "#rule so conhece a categoria stmt");
+    next();
+    expect(K_COLON, "esperado : apos a categoria do #rule");
+    if (nrules == MAXRULES) die("regras demais");
+    nbnd = 0; r_nitems = 0; r_nholes = 0; r_nnames = 0; r_lead = 0;
+    rule_def = 1;
+    if (cur.id == T_IDENT && nt_kind() == IT_IDENT) {   /* `ident $x` antes do token */
+        next();
+        if (cur.id != T_HOLE || cur.val != -1) err_at(cur.file, cur.line, "esperado $nome no padrao");
+        bnd_add(IT_IDENT, name_slot());
+        next();
+        r_lead = 1;
+    }
+    while (cur.id != K_ARROW) {
+        if (cur.id == T_EOF) err_at(fl, line, "#rule sem =>");
+        if (r_nitems == MAXITEMS) err_at(fl, line, "itens demais no padrao do #rule");
+        int k = cur.id == T_IDENT ? nt_kind() : 0;
+        int it;
+        if (k) {
+            next();
+            if (cur.id != T_HOLE || cur.val != -1) err_at(cur.file, cur.line, "esperado $nome no padrao");
+            int slot = k == IT_IDENT ? name_slot() : ++r_nholes;
+            bnd_add(k, slot);
+            next();
+            it = k + slot * 8;
+        } else {
+            /* cur_name e nao cur.start: o lexema de um token fica guardado na
+             * tabela e tok_text o imprime como string — tem de estar na arena */
+            int id = cur.id == T_IDENT ? tok_add(cur_name(), cur.len) : cur.id;
+            next();
+            it = IT_LIT + id * 8;
+        }
+        if (r_nitems == 0 && (it & 7) != IT_LIT)
+            err_at(fl, line, "o padrao do #rule tem de abrir por um token literal");
+        r_items[r_nitems++] = it;
+    }
+    if (r_nitems == 0) err_at(fl, line, "padrao de #rule vazio");
+    next();                                       /* => */
+    int tmpl = parse_stmt();                      /* os $nome ja viraram buracos */
+    rule_def = 0;
+    RuleEnt *r = &rules[nrules];
+    r->tok = r_items[0] >> 3; r->lead = r_lead; r->nitems = r_nitems;
+    r->nholes = r_nholes;     r->nnames = r_nnames; r->tmpl = tmpl;
+    for (int k = 0; k < r_nitems; k++) r->items[k] = r_items[k];
+    for (int i = 0; i < nbnd; i++)
+        if (bnd_kind[i] == IT_IDENT || bnd_kind[i] == IT_GEN) r->ph[bnd_slot[i]] = bnd_txt[i];
+    nbnd = 0;
+    nrules++;
+}
+
+/* --dump-rules: uma linha por regra, na ordem de definicao */
+void dump_rules(void) {
+    for (int i = 0; i < nrules; i++) {
+        out_str(1, "regra "); out_num(1, i); out_str(1, ": stmt:");
+        if (rules[i].lead) out_str(1, " ident $0");
+        for (int k = 0; k < rules[i].nitems; k++) {
+            int it = rules[i].items[k];
+            out_str(1, " ");
+            if ((it & 7) == IT_LIT) out_str(1, tok_text(it >> 3));
+            else { out_str(1, nt_names[it & 7]); out_str(1, " $"); out_num(1, it >> 3); }
+        }
+        out_str(1, " => "); out_num(1, node_size(rules[i].tmpl)); out_str(1, " nos\n");
+    }
 }
 
 /* uma constante do fonte, ja dobrada; usada pelos argumentos de #section */
@@ -553,7 +783,7 @@ static void do_opcode(int line, const char *fl) {
 }
 
 /* ---- diretivas suportadas: #include, #define, #token, #infix, #prefix,
- * #section, #opcode ---- */
+ * #rule, #section, #opcode ---- */
 static void do_directive(void) {
     int d = (int)cur.val, line = cur.line;
     const char *fl = cur.file;
@@ -602,6 +832,7 @@ static void do_directive(void) {
         else              prefix_set(tok, tmpl);
         return;
     }
+    if (d == D_RULE)    { do_rule(line, fl);    return; }
     if (d == D_SECTION) { do_section(line, fl); return; }
     if (d == D_OPCODE)  { do_opcode(line, fl);  return; }
     err_at(fl, line, "diretiva ainda nao suportada");

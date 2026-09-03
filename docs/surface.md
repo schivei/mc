@@ -1,9 +1,10 @@
 # surface.md — superfície de ensino
 
-Fonte: `docs/plan.md` § "Superfície de ensino" e `docs/specs/M1.md`/`M5.md`/`M5.5.md`. Estado neste
-marco (**M5.5 fechado**): `#token`, `#infix`/`#prefix`, `#section`, `#opcode`, `emit()`/`reloc()`
-implementados e testados de verdade com `build/mc0`. `#rule` (parser de statements) e o Tier 2
-programático (`pass()`/`backend()`) continuam **planejados** — ver as seções marcadas abaixo.
+Fonte: `docs/plan.md` § "Superfície de ensino" e `docs/specs/M1.md`/`M5.md`/`M5.5.md`/`M9.md`.
+Estado neste marco (**M9 fechado**): `#token`, `#infix`/`#prefix`, `#rule`, `#section`, `#opcode`,
+`emit()`/`reloc()` implementados e testados de verdade com `build/mc0` **e** com o compilador
+auto-hospedado `build/mc1` (o mecanismo existe nos dois lados: `stage0/parse.c` e `src/parse.mc`).
+Só o Tier 2 programático (`pass()`/`backend()`) continua **planejado** — ver a seção marcada no fim.
 
 ## Tier 1 — diretivas `#...`
 
@@ -28,22 +29,115 @@ pelo parser já existente e vira AST com "buracos" (`N_HOLE`) — nunca substitu
 i64 main() { return 10 <+> 11; }   // (10 + 11) * 2 = 42
 ```
 
-### `#rule` — planejado (M9)
-Parser de statements: casa um padrão plano (tokens literais e `nt $nome`, onde `nt` é
-`expr | stmt | block | ident | type`) contra um template. O primeiro item do padrão é sempre um
-token literal — regras são indexadas por ele, zero backtracking. Ainda não existe no lexer/parser
-atuais (`stage0/parse.c`); sintaxe planejada:
+### `#rule` — implementado (M9)
+Parser de statements: casa um padrão plano contra um template. O padrão é uma sequência de itens,
+cada item ou um **token literal** (qualquer lexema, inclusive os criados por `#token`) ou
+`nt $nome`, com `nt ∈ { expr, stmt, block, ident }`. O template é **um statement**, parseado pelo
+parser normal no momento da definição — os `$nome` viram buracos ali, então a expansão é cópia de
+árvore (`node_copy_subst`), nunca substituição textual.
 
 ```c
 #rule stmt: while ( expr $c ) block $b
     => loop { if (!$c) break; $b }
-
-#rule stmt: for ( stmt $init expr $cond ; expr $step ) block $b
-    => { $init loop { if (!$cond) break; $b $step; } }
-
-#rule stmt: ident $x += expr $e ;
-    => $x = $x + $e;
 ```
+
+**Despacho por token, sem backtracking.** A tabela de regras é linear e indexada pelo token que
+abre o statement; a última regra definida para o mesmo token vence. Escolhida a regra, cada item
+tem de casar — não há volta atrás. Se o item literal for um identificador (`while`, `for`,
+`repeat`), ele é registrado no lexer (`tok_add`, entrada *word*) e **vira palavra reservada** dali
+em diante: `i64 while = 1;` depois do `#include` é erro (`tests/err/055-keyword.mc`).
+
+**`ident $x` antes do token de despacho.** É a única forma em que o primeiro item do padrão não é
+um literal, e serve aos compostos:
+
+```c
+#rule stmt: ident $x += expr $e ;   => $x = $x + $e;
+#rule stmt: ident $x ++ ;           => $x = $x + 1;
+```
+
+O zero-backtracking continua valendo: quando `+=` aparece, o nome à esquerda **já foi lido** como
+expressão pelo caminho normal de `parse_stmt`, e o despacho acontece no token literal (`+=`, `++`).
+Depois do `ident $x` de abertura, o próximo item tem de ser um literal.
+
+**Dois tipos de buraco.** `expr`/`stmt`/`block` viram `N_HOLE` e viajam pela cópia de árvore.
+`ident $x` e o gensym `$$t` viram **nomes**: no template são um `N_IDENT` com um marcador único, e
+a expansão troca o marcador pelo nome real. É o que permite `$x` aparecer onde a AST guarda um
+nome e não um nó — esquerda de atribuição (`$x = ...`) e declaração de local (`i64 $$t = ...`).
+
+**Higiene: só gensym.** `$$nome` no template vira um local novo por expansão, `__g1`, `__g2`, ...
+(contador global, determinístico). Duas expansões da mesma regra no mesmo bloco não colidem —
+`tests/053-gensym.mc`:
+
+```c
+#rule stmt: swap ( ident $a , ident $b ) ;
+    => { i64 $$t = $a; $a = $b; $b = $$t; }
+```
+
+**Regra que usa regra.** O template é parseado com o parser que já conhece as regras anteriores,
+então `#rule` sobre `while` funciona naturalmente e a expansão acontece **na definição**
+(`tests/054-rule-in-rule.mc`). Não há reexpansão textual do resultado: recursão infinita é
+impossível por construção. O aninhamento na definição tem teto de 64 níveis.
+
+**Fora do escopo do M9** (decisão registrada em `docs/specs/M9.md`): a categoria `#rule expr:`
+(reservada — usá-la é erro claro) e o buraco `type $t` (usar `type` no padrão é erro
+`nt \`type\` fora do escopo do M9`). `type $t` só serviria para declarações genéricas
+(`type $t ident $x = expr $e;`) e exigiria um `N_TYPE` novo mais o buraco de tipo em `parse_var` e
+no codegen — mais do que os "20 linhas" que a spec autorizava. Sem `type $t` não há `struct`, que
+por isso também ficou fora do M9.
+
+### `--dump-rules` — implementado (M9)
+Lista as regras registradas por um fonte, na ordem de definição: token de abertura, itens e
+tamanho do template em nós. Saída real de `build/mc0 --dump-rules tests/053-gensym.mc` (as seis
+primeiras vêm de `lib/prelude.mc`, a última do próprio teste):
+
+```
+regra 0: stmt: while ( expr $1 ) block $2 => 7 nos
+regra 1: stmt: for ( stmt $1 expr $2 ; ident $0 = expr $3 ) block $4 => 11 nos
+regra 2: stmt: ident $0 += expr $1 ; => 4 nos
+regra 3: stmt: ident $0 -= expr $1 ; => 4 nos
+regra 4: stmt: ident $0 ++ ; => 4 nos
+regra 5: stmt: ident $0 -- ; => 4 nos
+regra 6: stmt: swap ( ident $0 , ident $1 ) ; => 7 nos
+```
+
+`ident $N` no dump é o N-ésimo buraco de **nome**; `expr/stmt/block $N` é o N-ésimo buraco de
+**nó**. As regras 2–5 são as de `ident $x` na abertura: o `ident $0` mostrado antes do literal é o
+nome já lido. `build/mc1 --dump-rules` dá byte a byte a mesma saída.
+
+### `--dump-ast` mostra a AST expandida
+A expansão acontece no parser, então `--dump-ast` já é pós-`#rule`. `while (i < 3) { s += i; i++; }`
+com o prelúdio (saída real de `build/mc0 --dump-ast`, recortada):
+
+```
+    LOOP
+      BLOCK
+        IF
+          UNARY op=!
+            BINARY op=<
+              IDENT type=i64 name=i
+              INT val=3 type=i64
+          BREAK val=1
+        BLOCK
+          ASSIGN name=s
+            BINARY op=+
+              IDENT type=i64 name=s
+              IDENT type=i64 name=i
+          ASSIGN name=i
+            BINARY op=+
+              IDENT type=i64 name=i
+              INT val=1 type=i64
+```
+
+É esse `!` que faz o `while` do prelúdio custar duas instruções a mais por teste de laço do que o
+`loop { if (i >= 3) break; ... }` escrito à mão: o núcleo não simplifica `!(a < b)` para `a >= b`
+(não há peephole de AST no M9), e a regra do prelúdio é literalmente
+`loop { if (!$c) break; $b }`. Ver `docs/core-language.md` § Prelúdio.
+
+### `lib/prelude.mc` — a biblioteca de superfície
+`while`, `for`, `+=`, `-=`, `++`, `--`: seis `#rule` e quatro `#token`, 36 linhas, entrando só por
+`#include` explícito. `src/macho.mc` é o primeiro módulo do próprio compilador a usá-la (M9);
+`docs/core-language.md` § Prelúdio documenta a sintaxe, o `continue` que pula o passo do `for` e
+por que o passo é `ident $x = expr $step`.
 
 ### `#section` — implementado
 Placement: define a seção de destino dos bytes emitidos depois (funções e globais), até o próximo
@@ -139,8 +233,19 @@ i64 main() {
 5. Reexpansão no resultado com teto de 64 níveis.
 6. Tamanho do frame é calculado depois da expansão (os gensyms são locais).
 7. `#define` é constante dobrada, não macro textual — implementado. `#opcode` só aceita argumentos
-   constantes, senão é erro — implementado. As regras 1-6 descrevem `#rule`, que continua
-   planejado (M9).
+   constantes, senão é erro — implementado.
+
+Estado das sete depois do M9: **1, 2, 3, 4, 6 e 7 estão implementadas e testadas**. A regra 5
+("reexpansão no resultado com teto de 64 níveis") foi cumprida de forma mais forte do que o texto:
+**não há reexpansão do resultado**. O template é parseado — e portanto já expandido — na definição,
+então uma regra que usa outra regra fica resolvida ali; o teto de 64 níveis vale para o
+aninhamento *na definição*. Isso torna a recursão infinita impossível por construção, em vez de
+apenas limitada.
+
+A regra 2 ganhou uma exceção declarada: o padrão pode começar por um único `ident $nome` antes do
+token literal de despacho (é o que `+=`/`++` exigem, e é a forma que o próprio `docs/plan.md`
+usa nos exemplos). O despacho continua sendo por token literal e continua sem backtracking — o
+nome já foi lido como expressão quando o token aparece.
 
 ## Tier 2 — programático (stage1+, custo zero em C) — planejado
 

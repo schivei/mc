@@ -239,6 +239,20 @@ void err_at(uptr file, i64 line, uptr msg) {
     _exit(1);
 }
 
+// mesma coisa com um detalhe no fim: o lexema que a regra esperava, por exemplo
+void err_at2(uptr file, i64 line, uptr msg, uptr detail) {
+    if (file) out_str(2, file);
+    else      out_str(2, "?");
+    out_str(2, ":");
+    out_num(2, line);
+    out_str(2, ": ");
+    out_str(2, msg);
+    out_str(2, ": ");
+    out_str(2, detail);
+    out_str(2, "\n");
+    _exit(1);
+}
+
 #define RF_CHUNK 65536                // o C usa `u8 tmp[65536]` no frame; aqui vem da arena
 
 uptr read_file(uptr path, uptr plen) {

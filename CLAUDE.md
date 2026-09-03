@@ -39,5 +39,26 @@ Agentes reportam fatos (comandos rodados + saída), nunca suposições.
   variádica ao escrever arquivo — `stage0/arena.c`, `lib/sys.mc`, `lib/sys_svc.mc`,
   `src/arena.mc`; `cmp_cond` por tabela)
   — 2497/3000 linhas, `make test` 24/24, `make check-lex` 36/36
-- M6 em andamento (`docs/specs/M6-M7.md`): `src/macho.mc` ✔, `src/parse.mc` em curso.
-  Atualize esta seção ao fechar cada marco.
+- M6 ✔ (`docs/specs/M6-M7.md`): `src/mc.mc` completo (`arena.mc`, `macho.mc`, `lex.mc`, `ast.mc`,
+  `parse.mc`, `gen_arm64.mc`, `main.mc`) — 4310 linhas de `.mc` contra 2678 de C (`stage0/*.c` +
+  `mc.h`), fator 1,6. `MAXDEFS 512` nos dois lados (`stage0/parse.c` e `src/parse.mc`). stage0
+  2500/3000 linhas (`make budget`). `make mc1` gera `build/mc1`; `check-asm` 39/39, `check-obj`
+  24/24, `scripts/test.sh build/mc1` 24/24.
+- M7 ✔ (ponto fixo, `scripts/bootstrap.sh` + `make bootstrap`): `mc0→mc1.o`, `mc1→mc2.o`,
+  `mc2→mc3.o`, `cmp mc2.o mc3.o` idênticos (163632 bytes). Golden gravado em
+  `tests/golden/mc2.sha256` (ver `tests/golden/README.md` para quando atualizar).
+- M8 ✔ (`docs/bootstrap.md`): `clang` só compila `stage0` (`CC = clang` no Makefile, alvos
+  `build/mc0`/`build/mc0-san`); confirmado com `grep -rn clang scripts/ Makefile`. `ld` continua
+  em uso via `scripts/link.sh`. Binários não versionados (`build/` no `.gitignore`).
+- M9 ✔ (`docs/specs/M9.md`): `#rule stmt:` implementado no stage0 **e** em `src/parse.mc` —
+  tabela linear indexada pelo token de abertura, itens `{literal | nt $nome}` com
+  `nt ∈ {expr,stmt,block,ident}`, template parseado na definição (`N_HOLE` para nó, marcador de
+  nome para `ident $x`/gensym), casamento sem backtracking, gensym `__g<N>` determinístico,
+  `--dump-rules`. `lib/prelude.mc` (36 linhas) dá `while`/`for`/`+=`/`-=`/`++`/`--`; testes
+  `050`–`054` na suíte e `tests/err/055-keyword.mc` como caso de erro fora dela.
+  `src/macho.mc` migrado para o prelúdio (módulo folha). Fora de escopo por decisão da spec:
+  `#rule expr:` (reservado), buraco `type $t` e portanto `struct`.
+  — stage0 2747/3000 linhas; `make check` verde: `test` 29/29, `check-lex` 45/45,
+  `check-ast` 45/45, `check-asm` 45/45, `check-obj` 29/29, `bootstrap` com ponto fixo
+  (`mc2.o == mc3.o`, 181504 bytes) e golden regravado em `tests/golden/mc2.sha256`.
+- M10 é o próximo marco (backend ensinado pela superfície). Atualize esta seção ao fechar cada marco.

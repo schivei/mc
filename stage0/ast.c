@@ -68,6 +68,13 @@ int node_copy_subst(int n, const int *holes, int nholes) {
     return c;
 }
 
+/* quantos nos tem a subarvore (com a lista de irmaos): so o --dump-rules usa */
+int node_size(int n) {
+    if (n == 0) return 0;
+    return 1 + node_size(nodes[n].a) + node_size(nodes[n].b) + node_size(nodes[n].c)
+             + node_size(nodes[n].d) + node_size(nodes[n].next);
+}
+
 static const char *kind_names[] = {
     "NONE", "INT", "STR", "IDENT", "UNARY", "BINARY", "CAST", "CALL",
     "RETURN", "BLOCK", "EXPRSTMT", "FUNC", "PARAM", "HOLE",

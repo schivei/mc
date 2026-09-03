@@ -91,6 +91,12 @@ void err_at(const char *file, int line, const char *msg) {
     out_str(2, file ? file : "?"); out_str(2, ":"); out_num(2, line);
     out_str(2, ": "); out_str(2, msg); out_str(2, "\n"); _exit(1);
 }
+/* mesma coisa com um detalhe no fim: o lexema que a regra esperava, por exemplo */
+void err_at2(const char *file, int line, const char *msg, const char *detail) {
+    out_str(2, file ? file : "?"); out_str(2, ":"); out_num(2, line);
+    out_str(2, ": "); out_str(2, msg); out_str(2, ": "); out_str(2, detail);
+    out_str(2, "\n"); _exit(1);
+}
 
 u8 *read_file(const char *path, size_t *len) {
     int fd = open(path, O_RDONLY);

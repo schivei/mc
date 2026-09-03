@@ -40,10 +40,15 @@ check-asm: build/mc0 build/mc1
 check-obj: build/mc0 build/mc1
 	scripts/check-obj.sh build/mc0 build/mc1
 
+bootstrap: stage0
+	scripts/bootstrap.sh
+
+check: budget test check-lex check-ast check-asm check-obj bootstrap
+
 budget:
 	scripts/loc-budget.sh $(BUDGET)
 
 clean:
 	rm -rf build
 
-.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 budget clean
+.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check budget clean

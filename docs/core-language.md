@@ -113,8 +113,8 @@ u8 big[4090];   // frame grande demais (arredondado a 16 estoura o subimediato)
 ## Controle
 
 - `if (c) stmt [else stmt]`.
-- `loop { }`. Não há `while`/`for` no núcleo; vêm do prelúdio via `#rule` (**planejado, M9**,
-  `lib/prelude.mc`).
+- `loop { }`. Não há `while`/`for` no núcleo; vêm do prelúdio via `#rule` (**M9, implementado** —
+  `lib/prelude.mc`, § Prelúdio abaixo).
 - `break;` / `break N;` (sai N níveis, sem precisar de labels; N maior que a profundidade de loops
   é erro).
 - `continue;`.
@@ -162,13 +162,74 @@ i64 dobro(i64 x) { return x + x; }
   i64 f(i64 N)         // idem para parametro, se N ja for #define
   ```
 
+## Prelúdio (`lib/prelude.mc`) — `while`, `for`, `+=`, `-=`, `++`, `--`
+
+Nada disso é sintaxe do núcleo: são seis `#rule stmt:` e quatro `#token` escritos na própria
+linguagem, num arquivo que só entra por `#include` explícito (§ `docs/surface.md` § `#rule`). O
+núcleo continua compilando sem ele — `src/lex.mc`, `src/parse.mc` e `src/gen_arm64.mc` não o
+incluem; `src/macho.mc` inclui, e é o módulo folha migrado no M9.
+
+```c
+#include "../lib/prelude.mc"
+
+i64 soma(i64 n) {
+    i64 s = 0;
+    for (i64 i = 0; i < n; i = i + 1) {   // passo e `ident $x = expr $step`
+        s += i;
+    }
+    i64 k = n;
+    while (k > 0) {                        // corpo e sempre um bloco: { }
+        k--;
+    }
+    return s;
+}
+```
+
+O que o prelúdio dá e o que ele **não** dá:
+
+| Escrito | Vira |
+|---|---|
+| `while (c) { B }` | `loop { if (!c) break; { B } }` |
+| `for (INIT COND ; x = PASSO) { B }` | `{ INIT loop { if (!COND) break; { B } x = PASSO; } }` |
+| `x += e;` · `x -= e;` | `x = x + e;` · `x = x - e;` |
+| `x++;` · `x--;` | `x = x + 1;` · `x = x - 1;` |
+
+- **O corpo é sempre um bloco.** O padrão diz `block $b`, então `while (c) x++;` sem chaves é erro.
+- **O passo do `for` é `ident $x = expr $step`, não uma expressão qualquer.** No núcleo a
+  atribuição é um *statement*, não um operador (`=` não está na tabela Pratt), então um `expr`
+  sozinho no lugar do passo só poderia ser uma chamada de função — inútil para um contador. Por
+  isso o passo se escreve `i = i + 1` (e não `i++`, que é um statement inteiro, com `;`).
+- **`for (; c; i = i + 1)` não existe**: o padrão exige um `stmt $init` e o núcleo não tem
+  statement vazio. Onde o C usa `for` sem inicializador, o `.mc` usa `while`.
+- **`while` e `for` viram palavras reservadas** a partir do `#include`: o primeiro item literal de
+  uma regra é registrado como lexema (`tok_add`), então `i64 while = 1;` passa a ser erro
+  (`nome de variavel esperado`) — ver `tests/err/055-keyword.mc`.
+
+### `continue` dentro de `for` pula o passo
+
+O passo fica **no fim do corpo** do `loop` gerado, e `continue` volta para o topo do `loop` — logo
+`continue` pula o passo, exatamente como pularia num `loop{}` escrito à mão. Não é um bug do
+prelúdio: é a consequência direta de o núcleo não ter cláusula de passo, e o `#rule` não inventar
+uma. Quem sai por `continue` precisa avançar o contador antes:
+
+```c
+for (k = 0; k < 10; k = k + 1) {
+    if (k % 2) { k = k + 1; continue; }   // sem esta linha o laco nao anda
+    t = t + k;
+}
+```
+
+`tests/051-for.mc` cobre os dois casos (o `for` normal e o `continue` que anda na mão). `break`
+dentro de `while`/`for` é o `break` do núcleo e sai do `loop` gerado, como se espera.
+
 ## Estilo obrigatório em `mc.mc`
 
 Nunca acessar layout cru (`ld64(n + 16)`) no meio do código: sempre `#define NODE_LHS 16` +
-acessoras `node_lhs(n)` / `set_node_lhs(n, v)`. Quando `struct` chegar pela superfície (M9),
-trocam-se ~20 acessoras, não milhares de call sites. `src/lex.mc` (M4) já segue essa disciplina;
-`src/mc.mc` propriamente dito — o compilador autohospedado completo — é escopo de **M6**
-(`docs/specs/M6-M7.md`), ainda não iniciado neste marco.
+acessoras `node_lhs(n)` / `set_node_lhs(n, v)`. Quando `struct` chegar pela superfície, trocam-se
+~20 acessoras, não milhares de call sites. Todo `src/*.mc` segue essa disciplina desde M6
+(`docs/specs/M6-M7.md`); o M9 **não** trouxe `struct` — a spec (`docs/specs/M9.md`) tirou-o de
+escopo depois que o M6 mostrou que `#define` + acessora resolve, e `struct` de verdade exigiria o
+buraco `type $t` e um modelo de layout, que é mais do que `#rule` entrega.
 
 ## Programa de exemplo
 
@@ -216,3 +277,51 @@ i64 main(i64 argc, uptr argv) {
     return 0;
 }
 ```
+
+## Armadilhas de transliteração
+
+Transliterar `stage0/*.c` função a função para `src/*.mc` (M6, `docs/specs/M6-M7.md`) esbarra em
+recursos do C que o núcleo do `.mc` não tem. Cada item abaixo é um caso real encontrado no
+`stage0`, com o contorno que ficou no `.mc`:
+
+- **`struct`** — não existe. Vira `#define CAMPO off` + acessoras `campo(p)`/`set_campo(p, v)` (ver
+  "Estilo obrigatório em mc.mc" acima) — regra desde a primeira linha de `arena.mc`.
+- **`?:`** — não existe. Vira `if` explícito atribuindo a mesma variável nos dois ramos:
+  `size_t cap = b->cap ? b->cap : 64;` (`stage0/arena.c`) virou
+  `i64 cap = buf_cap(b); if (cap == 0) cap = 64;` (`src/arena.mc`).
+- **`for`** — não existe, só `loop { }` + `break N`/`continue`. `for (init; cond; step) corpo` vira
+  `init; loop { if (!cond) break; corpo; step; }`, com o "passo" escrito à mão no fim do corpo.
+- **`static`** (linkage interna + forward declaration) — `.mc` não tem unidades de tradução: tudo
+  entra por `#include` num só arquivo, então `static` não tem o que fazer e é descartado. A parte
+  que importa — declarar a assinatura antes da definição, para recursão mútua (`parse_expr`/
+  `parse_unary` em `stage0/parse.c`, `gen_stmt`/`gen_expr` em `stage0/gen_arm64.c`) — usa o
+  protótipo nativo do `.mc` (testado em `tests/042-proto.mc`, M5.5), não o idioma do C.
+- **comparação sem sinal** — `.mc` só tem comparação com sinal (ver § Tipos acima). O C usa
+  `size_t`/`u64` sem sinal para offset e capacidade o tempo todo; o contorno é a convenção
+  "endereços e tamanhos ficam sempre abaixo de 2^63" (documentada, não verificada em runtime), que
+  torna `<`/`<=`/etc. assinados equivalentes aos sem sinal do C para todo valor que aparece de
+  verdade em `arena.mc`/`gen_arm64.mc`/`macho.mc`.
+- **`++`/`--`** — não existem **no núcleo**. Sem o prelúdio, `i++` vira `i = i + 1` e `i--` vira
+  `i = i - 1` — mecânico, mas espalhado por todo loop transliterado. Com
+  `#include "../lib/prelude.mc"` (M9) `i++`/`i--`/`i += e`/`i -= e` passam a existir como quatro
+  `#rule`, e é isso que `src/macho.mc` usa hoje.
+- **literais de string adjacentes** — o C concatena `"a" "b"` em compile time; `.mc` não tem essa
+  regra. `out_str(2, "uso: mc0 ... " "entrada.mc [-o saida.o]\n");` (`stage0/main.c`) virou um
+  único literal em `src/main.mc`.
+- **`&arr[i]` (endereço de elemento indexado)** — `&` só aceita um nome direto (`&nome`), não uma
+  expressão indexada — `.mc` não tem `p[i]` nem `p->f` (§ Operadores acima). `Node *p =
+  &nodes[nnodes]; p->kind = k;` (`stage0/ast.c`, `node_new`) virou passar o **índice** adiante e
+  deixar as acessoras calcularem `base + índice*tamanho`: `set_nd_kind(nnodes, kind);`
+  (`src/ast.mc`) — nunca se materializa "o endereço do elemento", só o índice.
+- **`continue` dentro de `loop{}` sem passo separado** (vale igual para o `for` do prelúdio, § acima) — num `for` do C, `continue` roda o `step` e
+  reavalia a condição; `loop{}` não tem cláusula de passo, então um `continue` ingênuo pula
+  justamente o avanço que fecharia o laço (`e = nodes[e].next`, `i++`), podendo travar em loop
+  infinito. O contorno usado: eliminar o `continue` reescrevendo o `if (cond) { ...; continue; }`
+  seguido de mais código como `if (cond) { ... } else { ... }`, com o avanço (`e = nd_next(e);`)
+  incondicional no fim do corpo. Exemplo real: o `for` com `continue` de `stage0/gen_arm64.c` (globais
+  com ponteiro para string) virou o `if`/`else` com `e = nd_next(e)` ao final em `src/gen_arm64.mc`.
+- **`open` variádica → `creat`** — `open(path, flags, ...)` da libSystem é variádica (`...` para o
+  `mode`), e no ABI arm64 da Apple os argumentos variádicos viajam pela pilha — que o `.mc` não sabe
+  montar (só `x0..x7`). O contorno é usar `creat(path, mode)` para criar arquivo (sem variádico;
+  `open` sem `O_CREAT` continua servindo para leitura, com `mode` sempre 0) — ver o comentário em
+  `stage0/arena.c` e `src/arena.mc`.

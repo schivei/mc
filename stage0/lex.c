@@ -61,7 +61,8 @@ void tok_init(void) {
         "if", "else", "loop", "break", "continue", "return", "extern",
         "(", ")", "{", "}", "[", "]", ",", ";",
         "+", "-", "*", "/", "%", "&", "|", "^", "~", "<<", ">>",
-        "==", "!=", "<", "<=", ">", ">=", "&&", "||", "!", "=", 0 };
+        "==", "!=", "<", "<=", ">", ">=", "&&", "||", "!", "=",
+        ":", "=>", 0 };                    /* so o #rule usa; no fim para nao renumerar */
     for (int i = 0; core[i]; i++) tok_add(core[i], (int)cstrlen(core[i]));
 }
 

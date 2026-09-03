@@ -313,6 +313,187 @@ i64 opc_expand(i64 i, i64 call) {
     return fold(node_copy_subst(oe_tmpl(oe_at(i)), holes, k));
 }
 
+// ---- #rule: tabela linear de regras, indexada pelo token que abre o statement.
+// Nada de backtracking: o token corrente escolhe a regra e dali cada item tem de
+// casar. Buracos de NO (expr/stmt/block) viajam por node_copy_subst; buracos de
+// NOME (`ident $x` e o gensym `$$t`) sao trocados por identidade de ponteiro
+// depois da copia — e o que permite `$x` aparecer onde a AST guarda um nome
+// (esquerda de atribuicao, declaracao de local) e nao um no.
+//
+//   C: enum { IT_LIT, IT_EXPR, IT_STMT, IT_BLOCK, IT_IDENT, IT_GEN };
+//      typedef struct { int tok, lead, nitems, nholes, nnames, tmpl;
+//                       int items[MAXITEMS]; const char *ph[MAXNAMES]; } RuleEnt;
+//      RU_TOK 0  RU_LEAD 8  RU_NITEMS 16  RU_NHOLES 24  RU_NNAMES 32
+//      RU_TMPL 40  RU_ITEMS 48 (16*8)  RU_PH 176 (8*8)      -> RU_SIZE 240
+#define MAXRULES 32
+#define MAXBIND  12               // buracos citados por uma regra (padrao + gensym)
+#define MAXRDEPTH 64              // aninhamento de regra dentro de um template
+                                  // (MAXDEPTH ja e a profundidade de expressao em gen_arm64.mc)
+#define MAXITEMS 16               // itens de um padrao
+#define MAXNAMES 8                // buracos de nome (ident $x e $$t) de uma regra
+
+#define IT_LIT   0
+#define IT_EXPR  1
+#define IT_STMT  2
+#define IT_BLOCK 3
+#define IT_IDENT 4
+#define IT_GEN   5
+
+#define RU_TOK    0
+#define RU_LEAD   8
+#define RU_NITEMS 16
+#define RU_NHOLES 24
+#define RU_NNAMES 32
+#define RU_TMPL   40
+#define RU_ITEMS  48
+#define RU_PH     176
+#define RU_SIZE   240
+
+u8  rules[MAXRULES * RU_SIZE];
+i64 nrules = 0;
+i64 gensym_n = 0;                 // contador de __g<N>: determinista, nunca reinicia
+i64 rule_depth = 0;               // regras aninhadas na definicao de um template
+
+// buracos da regra sendo definida agora; bnd_txt guarda o texto com o $
+u8  bnd_txt[MAXBIND * 8];
+u8  bnd_kind[MAXBIND * 8];
+u8  bnd_slot[MAXBIND * 8];
+i64 nbnd = 0;
+i64 rule_def = 0;                 // 1 enquanto do_rule le o padrao e o template
+// padrao em construcao: so vai para a tabela quando a definicao termina
+u8  r_items[MAXITEMS * 8];
+i64 r_nitems = 0;
+i64 r_nholes = 0;
+i64 r_nnames = 0;
+i64 r_lead = 0;
+
+uptr nt_names[] = { "lit", "expr", "stmt", "block", "ident" };
+
+// ---- acessoras de RuleEnt e das tabelas auxiliares ----
+uptr ru_at(i64 i)      { return rules + i * RU_SIZE; }
+i64  ru_tok(uptr r)    { return ld64(r + RU_TOK); }
+i64  ru_lead(uptr r)   { return ld64(r + RU_LEAD); }
+i64  ru_nitems(uptr r) { return ld64(r + RU_NITEMS); }
+i64  ru_nholes(uptr r) { return ld64(r + RU_NHOLES); }
+i64  ru_nnames(uptr r) { return ld64(r + RU_NNAMES); }
+i64  ru_tmpl(uptr r)   { return ld64(r + RU_TMPL); }
+void set_ru_tok(uptr r, i64 v)    { st64(r + RU_TOK, v); }
+void set_ru_lead(uptr r, i64 v)   { st64(r + RU_LEAD, v); }
+void set_ru_nitems(uptr r, i64 v) { st64(r + RU_NITEMS, v); }
+void set_ru_nholes(uptr r, i64 v) { st64(r + RU_NHOLES, v); }
+void set_ru_nnames(uptr r, i64 v) { st64(r + RU_NNAMES, v); }
+void set_ru_tmpl(uptr r, i64 v)   { st64(r + RU_TMPL, v); }
+i64  ru_item(uptr r, i64 k)             { return ld64(r + RU_ITEMS + k * 8); }
+void set_ru_item(uptr r, i64 k, i64 v)  { st64(r + RU_ITEMS + k * 8, v); }
+uptr ru_ph(uptr r, i64 j)               { return ld64(r + RU_PH + j * 8); }
+void set_ru_ph(uptr r, i64 j, uptr v)   { st64(r + RU_PH + j * 8, v); }
+
+uptr bt_at(i64 i)             { return ld64(bnd_txt + i * 8); }
+void set_bt_at(i64 i, uptr v) { st64(bnd_txt + i * 8, v); }
+i64  bk_at(i64 i)             { return ld64(bnd_kind + i * 8); }
+void set_bk_at(i64 i, i64 v)  { st64(bnd_kind + i * 8, v); }
+i64  bs_at(i64 i)             { return ld64(bnd_slot + i * 8); }
+void set_bs_at(i64 i, i64 v)  { st64(bnd_slot + i * 8, v); }
+i64  ri_at(i64 i)             { return ld64(r_items + i * 8); }
+void set_ri_at(i64 i, i64 v)  { st64(r_items + i * 8, v); }
+uptr nt_name(i64 i)           { return ld64(nt_names + i * 8); }
+
+i64 bnd_find(uptr s, i64 len) {
+    i64 i = 0;
+    loop {
+        if (i >= nbnd) break;
+        if (cstrlen(bt_at(i)) == len && mem_eq(bt_at(i), s, len)) return i;
+        i = i + 1;
+    }
+    return -1;
+}
+
+// registra o buraco do token corrente ($nome ou $$nome) e devolve o indice
+i64 bnd_add(i64 kind, i64 slot) {
+    if (nbnd == MAXBIND) die("buracos demais em #rule");
+    if (bnd_find(tok_start(cur), tok_len(cur)) >= 0)
+        err_at(tok_file(cur), tok_line(cur), "buraco repetido em #rule");
+    set_bt_at(nbnd, cur_name());
+    set_bk_at(nbnd, kind);
+    set_bs_at(nbnd, slot);
+    nbnd = nbnd + 1;
+    return nbnd - 1;
+}
+
+// reserva mais um buraco de nome (ident do padrao ou gensym do template)
+i64 name_slot() {
+    if (r_nnames == MAXNAMES)
+        err_at(tok_file(cur), tok_line(cur), "buracos de nome demais em #rule");
+    r_nnames = r_nnames + 1;
+    return r_nnames - 1;
+}
+
+// um nome novo por expansao: __g1, __g2, ... na ordem em que sao criados
+uptr gensym_new() {
+    u8 tmp[24];
+    i64 i = 24;
+    gensym_n = gensym_n + 1;
+    i64 v = gensym_n;
+    loop {
+        i = i - 1;
+        st8(tmp + i, '0' + v % 10);
+        v = v / 10;
+        if (v == 0) break;
+    }
+    uptr s = xalloc(28 - i);
+    st8(s, '_');
+    st8(s + 1, '_');
+    st8(s + 2, 'g');
+    i64 k = i;
+    loop {
+        if (k >= 24) break;
+        st8(s + 3 + k - i, ld8(tmp + k));
+        k = k + 1;
+    }
+    return s;
+}
+
+// nome de nao-terminal no padrao; 0 = o token corrente nao e um
+i64 nt_kind() {
+    i64 i = IT_EXPR;
+    loop {
+        if (i > IT_IDENT) break;
+        if (cur_is(nt_name(i))) return i;
+        i = i + 1;
+    }
+    if (cur_is("type")) err_at(tok_file(cur), tok_line(cur), "nt `type` fora do escopo do M9");
+    return 0;
+}
+
+// a ultima regra definida para o mesmo token de abertura vence
+i64 rule_find(i64 tok, i64 lead) {
+    i64 i = nrules - 1;
+    loop {
+        if (i < 0) break;
+        uptr r = ru_at(i);
+        if (ru_tok(r) == tok && ru_lead(r) == lead) return i;
+        i = i - 1;
+    }
+    return -1;
+}
+
+// troca por to[j] todo nome que ainda aponta para o placeholder ph[j]: e assim
+// que `ident $x` e `$$t` viram nomes de verdade na copia recem-expandida
+void name_fix(i64 n, uptr ph, uptr to, i64 nn) {
+    if (n == 0) return;
+    i64 j = 0;
+    loop {
+        if (j >= nn) break;
+        if (nd_name(n) == ld64(ph + j * 8)) { set_nd_name(n, ld64(to + j * 8)); break; }
+        j = j + 1;
+    }
+    name_fix(nd_a(n), ph, to, nn);
+    name_fix(nd_b(n), ph, to, nn);
+    name_fix(nd_c(n), ph, to, nn);
+    name_fix(nd_d(n), ph, to, nn);
+    name_fix(nd_next(n), ph, to, nn);
+}
+
 // ---- expressoes ----
 i64 type_of_token(i64 id) {
     if (id == K_U8)   return TY_U8;
@@ -368,7 +549,26 @@ i64 parse_primary() {
         return n;
     }
     if (tok_id(cur) == T_HOLE) {
-        i64 n = node_new(N_HOLE, line, fl);
+        i64 b = bnd_find(tok_start(cur), tok_len(cur));   // buraco ligado por #rule
+        if (b < 0 && tok_val(cur) == 0 - 2) {             // $$nome novo: gensym do template
+            if (!rule_def) err_at(fl, line, "$$nome so vale no template de #rule");
+            b = bnd_add(IT_GEN, name_slot());
+        }
+        if (b >= 0) {
+            if (bk_at(b) == IT_IDENT || bk_at(b) == IT_GEN) {
+                i64 ni = node_new(N_IDENT, line, fl);     // buraco de nome
+                set_nd_name(ni, bt_at(b));
+                set_nd_type(ni, TY_I64);
+                next();
+                return ni;
+            }
+            i64 nh = node_new(N_HOLE, line, fl);
+            set_nd_val(nh, bs_at(b));
+            next();
+            return nh;
+        }
+        if (tok_val(cur) < 0) err_at(fl, line, "buraco $nome sem regra que o ligue");
+        i64 n = node_new(N_HOLE, line, fl);               // $1/$2 do #infix/#prefix
         set_nd_val(n, tok_val(cur));
         next();
         return n;
@@ -611,15 +811,30 @@ i64 parse_dim(i64 line, uptr fl) {
     return nel;
 }
 
+// nome numa declaracao: um T_IDENT normal ou, dentro de um template de #rule,
+// um buraco de nome (`$x` ligado a um `ident` do padrao, ou o gensym `$$t`)
+uptr decl_name(uptr msg) {
+    if (tok_id(cur) == T_HOLE) {
+        i64 b = bnd_find(tok_start(cur), tok_len(cur));
+        if (b < 0 && tok_val(cur) == 0 - 2 && rule_def) b = bnd_add(IT_GEN, name_slot());
+        if (b >= 0 && (bk_at(b) == IT_IDENT || bk_at(b) == IT_GEN)) {
+            uptr p = bt_at(b);
+            next();
+            return p;
+        }
+    }
+    if (tok_id(cur) != T_IDENT) err_at(tok_file(cur), tok_line(cur), msg);
+    check_def();
+    uptr s = cur_name();
+    next();
+    return s;
+}
+
 // declaracao de local: tipo nome = expr; | tipo nome; | tipo nome[CONST];
 i64 parse_var(i64 line, uptr fl, i64 ty) {
     if (ty == TY_VOID) err_at(fl, line, "local de tipo void");
     next();                                  // tipo
-    if (tok_id(cur) != T_IDENT)
-        err_at(tok_file(cur), tok_line(cur), "nome de variavel esperado");
-    check_def();
-    uptr name = cur_name();
-    next();
+    uptr name = decl_name("nome de variavel esperado");
     i64 nel = 0;
     i64 init = 0;
     if (tok_id(cur) == K_LBRACK) {
@@ -643,6 +858,17 @@ i64 parse_var(i64 line, uptr fl, i64 ty) {
 i64 parse_stmt() {
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
+    i64 ri = rule_find(tok_id(cur), 0);          // o token corrente abre uma regra?
+    if (ri >= 0) return rule_expand(ri, 0);
+    if (tok_id(cur) == T_HOLE) {                 // `$init`/`$b` soltos no template
+        i64 b = bnd_find(tok_start(cur), tok_len(cur));
+        if (b >= 0 && (bk_at(b) == IT_STMT || bk_at(b) == IT_BLOCK)) {
+            i64 h = node_new(N_HOLE, line, fl);
+            set_nd_val(h, bs_at(b));
+            next();
+            return h;
+        }
+    }
     if (tok_id(cur) == K_LBRACE) return parse_block();
     i64 ty = type_of_token(tok_id(cur));
     if (ty >= 0) return parse_var(line, fl, ty);
@@ -704,6 +930,13 @@ i64 parse_stmt() {
         set_nd_a(n, v);
         return n;
     }
+    // regra que comeca por `ident $x`: o nome ja foi lido como expressao e o
+    // despacho continua sendo por token literal (`+=`, `++`), sem backtracking
+    ri = rule_find(tok_id(cur), 1);
+    if (ri >= 0) {
+        if (nd_kind(ex) != N_IDENT) err_at(fl, line, "a regra esperava um nome a esquerda");
+        return rule_expand(ri, ex);
+    }
     expect(K_SEMI, "esperado ; apos expressao");
     i64 st = node_new(N_EXPRSTMT, line, fl);
     set_nd_a(st, ex);
@@ -727,6 +960,169 @@ i64 parse_block() {
     i64 b = node_new(N_BLOCK, line, fl);
     set_nd_a(b, head);
     return b;
+}
+
+// casa os itens da regra ri contra o fonte e devolve o template expandido.
+// lead != 0 e o N_IDENT que ja foi lido antes do token de despacho.
+i64 rule_expand(i64 ri, i64 lead) {
+    i64 holes[MAXITEMS + 1];
+    i64 to[MAXNAMES];
+    uptr r = ru_at(ri);
+    i64 nn = ru_nnames(r);
+    rule_depth = rule_depth + 1;
+    if (rule_depth > MAXRDEPTH) die("regras aninhadas demais");
+    i64 j = 0;
+    loop {
+        if (j >= nn) break;
+        st64(to + j * 8, 0);
+        j = j + 1;
+    }
+    if (ru_lead(r)) st64(to, nd_name(lead));
+    i64 k = 0;
+    loop {
+        if (k >= ru_nitems(r)) break;
+        i64 it = ru_item(r, k);
+        i64 kd = it & 7;
+        i64 v = it >> 3;
+        if (kd == IT_LIT) {
+            if (tok_id(cur) != v)
+                err_at2(tok_file(cur), tok_line(cur), "a regra esperava", tok_text(v));
+            next();
+        } else if (kd == IT_IDENT) {
+            if (tok_id(cur) != T_IDENT)
+                err_at(tok_file(cur), tok_line(cur), "a regra esperava um nome");
+            st64(to + v * 8, cur_name());
+            next();
+        } else if (kd == IT_EXPR)  st64(holes + v * 8, parse_expr(0));
+        else if (kd == IT_STMT)    st64(holes + v * 8, parse_stmt());
+        else                       st64(holes + v * 8, parse_block());
+        k = k + 1;
+    }
+    j = 0;
+    loop {                                       // os buracos de nome que sobraram
+        if (j >= nn) break;                      // sao os $$t desta expansao
+        if (ld64(to + j * 8) == 0) st64(to + j * 8, gensym_new());
+        j = j + 1;
+    }
+    i64 e = node_copy_subst(ru_tmpl(r), holes, ru_nholes(r));
+    name_fix(e, r + RU_PH, to, nn);
+    rule_depth = rule_depth - 1;
+    return e;
+}
+
+// #rule stmt: PADRAO => TEMPLATE — o padrao e uma sequencia plana de tokens
+// literais e `nt $nome`; o template e um statement parseado aqui, agora, com os
+// $nome ja virando buracos. Um identificador usado como token literal vira
+// palavra-chave reservada na hora (tok_add).
+void do_rule(i64 line, uptr fl) {
+    if (tok_id(cur) != T_IDENT) err_at(fl, line, "#rule espera a categoria stmt");
+    if (cur_is("expr")) err_at(fl, line, "#rule expr: reservado, ainda nao suportado");
+    if (!cur_is("stmt")) err_at(fl, line, "#rule so conhece a categoria stmt");
+    next();
+    expect(K_COLON, "esperado : apos a categoria do #rule");
+    if (nrules == MAXRULES) die("regras demais");
+    nbnd = 0;
+    r_nitems = 0;
+    r_nholes = 0;
+    r_nnames = 0;
+    r_lead = 0;
+    rule_def = 1;
+    if (tok_id(cur) == T_IDENT && nt_kind() == IT_IDENT) {   // `ident $x` antes do token
+        next();
+        if (tok_id(cur) != T_HOLE || tok_val(cur) != 0 - 1)
+            err_at(tok_file(cur), tok_line(cur), "esperado $nome no padrao");
+        bnd_add(IT_IDENT, name_slot());
+        next();
+        r_lead = 1;
+    }
+    loop {
+        if (tok_id(cur) == K_ARROW) break;
+        if (tok_id(cur) == T_EOF) err_at(fl, line, "#rule sem =>");
+        if (r_nitems == MAXITEMS) err_at(fl, line, "itens demais no padrao do #rule");
+        i64 k = 0;
+        if (tok_id(cur) == T_IDENT) k = nt_kind();
+        i64 it = 0;
+        if (k) {
+            next();
+            if (tok_id(cur) != T_HOLE || tok_val(cur) != 0 - 1)
+                err_at(tok_file(cur), tok_line(cur), "esperado $nome no padrao");
+            i64 slot = 0;
+            if (k == IT_IDENT) slot = name_slot();
+            else {
+                r_nholes = r_nholes + 1;
+                slot = r_nholes;
+            }
+            bnd_add(k, slot);
+            next();
+            it = k + slot * 8;
+        } else {
+            // cur_name e nao tok_start: o lexema de um token fica guardado na
+            // tabela e tok_text o imprime como string — tem de estar na arena
+            i64 id = tok_id(cur);
+            if (id == T_IDENT) id = tok_add(cur_name(), tok_len(cur));
+            next();
+            it = IT_LIT + id * 8;
+        }
+        if (r_nitems == 0 && (it & 7) != IT_LIT)
+            err_at(fl, line, "o padrao do #rule tem de abrir por um token literal");
+        set_ri_at(r_nitems, it);
+        r_nitems = r_nitems + 1;
+    }
+    if (r_nitems == 0) err_at(fl, line, "padrao de #rule vazio");
+    next();                                       // =>
+    i64 tmpl = parse_stmt();                      // os $nome ja viraram buracos
+    rule_def = 0;
+    uptr r = ru_at(nrules);
+    set_ru_tok(r, ri_at(0) >> 3);
+    set_ru_lead(r, r_lead);
+    set_ru_nitems(r, r_nitems);
+    set_ru_nholes(r, r_nholes);
+    set_ru_nnames(r, r_nnames);
+    set_ru_tmpl(r, tmpl);
+    i64 k = 0;
+    loop {
+        if (k >= r_nitems) break;
+        set_ru_item(r, k, ri_at(k));
+        k = k + 1;
+    }
+    i64 i = 0;
+    loop {
+        if (i >= nbnd) break;
+        if (bk_at(i) == IT_IDENT || bk_at(i) == IT_GEN) set_ru_ph(r, bs_at(i), bt_at(i));
+        i = i + 1;
+    }
+    nbnd = 0;
+    nrules = nrules + 1;
+}
+
+// --dump-rules: uma linha por regra, na ordem de definicao
+void dump_rules() {
+    i64 i = 0;
+    loop {
+        if (i >= nrules) break;
+        uptr r = ru_at(i);
+        out_str(1, "regra ");
+        out_num(1, i);
+        out_str(1, ": stmt:");
+        if (ru_lead(r)) out_str(1, " ident $0");
+        i64 k = 0;
+        loop {
+            if (k >= ru_nitems(r)) break;
+            i64 it = ru_item(r, k);
+            out_str(1, " ");
+            if ((it & 7) == IT_LIT) out_str(1, tok_text(it >> 3));
+            else {
+                out_str(1, nt_name(it & 7));
+                out_str(1, " $");
+                out_num(1, it >> 3);
+            }
+            k = k + 1;
+        }
+        out_str(1, " => ");
+        out_num(1, node_size(ru_tmpl(r)));
+        out_str(1, " nos\n");
+        i = i + 1;
+    }
 }
 
 // uma constante do fonte, ja dobrada; usada pelos argumentos de #section
@@ -796,7 +1192,7 @@ void do_opcode(i64 line, uptr fl) {
 }
 
 // ---- diretivas suportadas: #include, #define, #token, #infix, #prefix,
-// #section, #opcode ----
+// #rule, #section, #opcode ----
 void do_directive() {
     i64 d = tok_val(cur);
     i64 line = tok_line(cur);
@@ -849,6 +1245,7 @@ void do_directive() {
         else              prefix_set(tok, tmpl);
         return;
     }
+    if (d == D_RULE)    { do_rule(line, fl);    return; }
     if (d == D_SECTION) { do_section(line, fl); return; }
     if (d == D_OPCODE)  { do_opcode(line, fl);  return; }
     err_at(fl, line, "diretiva ainda nao suportada");

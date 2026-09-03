@@ -34,6 +34,7 @@ void out_hex(int fd, u64 v);
 [[noreturn]] void die2(const char *msg, const char *detail);
 /* arquivo:linha: msg — o arquivo vem sempre do token/no que deu a linha */
 [[noreturn]] void err_at(const char *file, int line, const char *msg);
+[[noreturn]] void err_at2(const char *file, int line, const char *msg, const char *detail);
 u8  *read_file(const char *path, size_t *len);   /* NUL-terminado; die se falhar */
 void write_file(const char *path, Buf *b);
 size_t cstrlen(const char *s);
@@ -53,7 +54,8 @@ enum {
     K_IF, K_ELSE, K_LOOP, K_BREAK, K_CONTINUE, K_RETURN, K_EXTERN,
     K_LPAR, K_RPAR, K_LBRACE, K_RBRACE, K_LBRACK, K_RBRACK, K_COMMA, K_SEMI,
     K_ADD, K_SUB, K_MUL, K_DIV, K_MOD, K_AND, K_OR, K_XOR, K_TILDE, K_SHL, K_SHR,
-    K_EQ, K_NE, K_LT, K_LE, K_GT, K_GE, K_ANDAND, K_OROR, K_BANG, K_ASSIGN
+    K_EQ, K_NE, K_LT, K_LE, K_GT, K_GE, K_ANDAND, K_OROR, K_BANG, K_ASSIGN,
+    K_COLON, K_ARROW                 /* so o #rule usa: `stmt:` e `=>` */
 };
 
 /* diretivas conhecidas, na ordem da lista: val de um token T_DIR */
@@ -95,6 +97,7 @@ extern Node *nodes; extern int nnodes;
 int  node_new(int kind, int line, const char *file);
 /* copia profunda trocando N_HOLE(i) por holes[i] (i de 1 a nholes) */
 int  node_copy_subst(int n, const int *holes, int nholes);
+int  node_size(int n);           /* nos da subarvore + irmaos (so --dump-rules) */
 [[noreturn]] void err_node(int n, const char *msg);   /* erro no arquivo/linha do no */
 const char *type_name(int t);
 int  type_width(int t);          /* bytes de um tipo */
@@ -112,7 +115,19 @@ typedef struct { const char *name; i64 val; } DefEnt;   /* #define ja dobrado */
 typedef struct { const char *name; int nparams, tmpl; } OpcEnt;
 /* #section so registra aqui; a secao real nasce em gen_sections, na ordem certa */
 typedef struct { const char *seg, *sect; u32 flags, align; } SecEnt;
+/* #rule stmt: padrao plano -> template. Item = kind + val*8; kind IT_LIT guarda o
+ * id do token literal, os demais o numero do buraco (de no) ou do nome.
+ * lead = 1 quando o padrao comeca por `ident $x` antes do token de despacho. */
+enum { IT_LIT = 0, IT_EXPR, IT_STMT, IT_BLOCK, IT_IDENT, IT_GEN };
+#define MAXITEMS 16               /* itens de um padrao */
+#define MAXNAMES 8                /* buracos de nome (ident $x e $$t) de uma regra */
+typedef struct {
+    int tok, lead, nitems, nholes, nnames, tmpl;
+    int items[MAXITEMS];
+    const char *ph[MAXNAMES];     /* placeholder de cada buraco de nome */
+} RuleEnt;
 int  parse_unit(void);       /* devolve a lista de N_FUNC do topo */
+void dump_rules(void);       /* --dump-rules: as regras registradas, em ordem */
 int  fold(int n);            /* dobra constantes no lugar; devolve n */
 int  opc_find(const char *name);      /* indice na tabela de #opcode, -1 se nao ha */
 int  opc_expand(int i, int call);     /* poe os args da chamada no template e dobra */

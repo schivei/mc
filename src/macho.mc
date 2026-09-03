@@ -33,6 +33,16 @@
 // Arrays de registros = base + indice * TAMANHO. Strings do C = uptr para bytes
 // NUL-terminados na arena. Depende de arena.mc (xalloc, mem_copy, mem_zero,
 // str_eq, cstrlen, buf_*, out_*, die2, write_file).
+//
+// M9: este e o modulo folha migrado para o prelude. Cada `for`/`while` do C
+// virou o `for`/`while` de lib/prelude.mc — que sao #rule sobre o `loop {}` do
+// nucleo, nao sintaxe embutida — e cada `x += e` do C virou `+=`. Onde o C usa
+// `for` sem inicializador (`for (; cond; incr)`) fica um `while`: o padrao do
+// `for` do prelude exige um `stmt $init`, e o nucleo nao tem statement vazio.
+// O passo e `i = i + 1` e nao `i++` pela mesma razao: o passo do padrao e
+// `ident $x = expr $step`.
+
+#include "../lib/prelude.mc"
 
 // ---- Section ----
 #define SEC_SEG    0
@@ -129,16 +139,13 @@ void set_rel_len(uptr r, i64 v)   { st64(r + REL_LEN, v); }
 // copia s para dst em 16 bytes, preenchendo o resto com zero (pode nao ter NUL)
 void name16(uptr dst, uptr s) {
     i64 i = 0;
-    loop {
-        if (i >= 16) break;
-        if (ld8(s + i) == 0) break;
+    while (i < 16 && ld8(s + i)) {
         st8(dst + i, ld8(s + i));
-        i = i + 1;
+        i++;
     }
-    loop {
-        if (i >= 16) break;
+    while (i < 16) {
         st8(dst + i, 0);
-        i = i + 1;
+        i++;
     }
 }
 
@@ -149,11 +156,8 @@ i64 sec_new(uptr seg, uptr sect, i64 flags, i64 align) {
         if (seccap == 0) seccap = 8;
         else             seccap = seccap * 2;
         uptr n = xalloc(SEC_SIZE * seccap);
-        i64 k = 0;
-        loop {
-            if (k >= nsections) break;
+        for (i64 k = 0; k < nsections; k = k + 1) {
             mem_copy(n + k * SEC_SIZE, sec_at(k), SEC_SIZE);
-            k = k + 1;
         }
         sections = n;
     }
@@ -172,30 +176,21 @@ i64 sec_find(uptr seg, uptr sect) {
     u8 b[16];
     name16(a, seg);
     name16(b, sect);
-    i64 i = 0;
-    loop {
-        if (i >= nsections) break;
+    for (i64 i = 0; i < nsections; i = i + 1) {
         uptr s = sec_at(i);
         i64 eq = 1;
-        i64 k = 0;
-        loop {
-            if (k >= 16) break;
+        for (i64 k = 0; k < 16; k = k + 1) {
             if (ld8(sec_seg(s) + k) != ld8(a + k))   { eq = 0; break; }
             if (ld8(sec_sect(s) + k) != ld8(b + k))  { eq = 0; break; }
-            k = k + 1;
         }
         if (eq) return i;
-        i = i + 1;
     }
     return 0 - 1;
 }
 
 i64 sym_find(uptr name) {
-    i64 i = 0;
-    loop {
-        if (i >= nsymbols) break;
+    for (i64 i = 0; i < nsymbols; i = i + 1) {
         if (str_eq(sym_name(sym_at(i)), name)) return i;
-        i = i + 1;
     }
     return 0 - 1;
 }
@@ -216,11 +211,8 @@ i64 sym_new(uptr name, i64 sect, i64 value, i64 global) {
         if (symcap == 0) symcap = 64;
         else             symcap = symcap * 2;
         uptr n = xalloc(SYM_SIZE * symcap);
-        i64 k = 0;
-        loop {
-            if (k >= nsymbols) break;
+        for (i64 k = 0; k < nsymbols; k = k + 1) {
             mem_copy(n + k * SYM_SIZE, sym_at(k), SYM_SIZE);
-            k = k + 1;
         }
         symbols = n;
     }
@@ -248,11 +240,8 @@ void reloc_add(i64 sec, i64 off, i64 sym, i64 type, i64 pcrel, i64 len) {
         else          cap = cap * 2;
         set_sec_relcap(s, cap);
         uptr n = xalloc(REL_SIZE * cap);
-        i64 k = 0;
-        loop {
-            if (k >= sec_nrel(s)) break;
+        for (i64 k = 0; k < sec_nrel(s); k = k + 1) {
             mem_copy(rel_at(n, k), rel_at(sec_rel(s), k), REL_SIZE);
-            k = k + 1;
         }
         set_sec_rel(s, n);
     }
@@ -290,40 +279,30 @@ void sym_order(uptr order, uptr pos, uptr count) {
     st64(count, 0);
     st64(count + 8, 0);
     st64(count + 16, 0);
-    i64 c = 0;
-    loop {
-        if (c >= 3) break;
-        i64 i = 0;
-        loop {
-            if (i >= nsymbols) break;
+    for (i64 c = 0; c < 3; c = c + 1) {
+        for (i64 i = 0; i < nsymbols; i = i + 1) {
             if (sym_class(sym_at(i)) == c) {
                 st64(pos + i * 8, n);
                 st64(order + n * 8, i);
-                n = n + 1;
+                n++;
                 st64(count + c * 8, ld64(count + c * 8) + 1);
             }
-            i = i + 1;
         }
-        c = c + 1;
     }
 }
 
 // nomes de seg/sect ocupam 16 bytes preenchidos com zero e podem nao ter NUL
 void out_name16(uptr p) {
     i64 n = 0;
-    loop {
-        if (n >= 16) break;
-        if (ld8(p + n) == 0) break;
-        n = n + 1;
+    while (n < 16 && ld8(p + n)) {
+        n++;
     }
     out_bytes(1, p, n);
 }
 
 // --dump-syms: as secoes na ordem de criacao e os simbolos na ordem final da symtab
 void dump_syms() {
-    i64 i = 0;
-    loop {
-        if (i >= nsections) break;
+    for (i64 i = 0; i < nsections; i = i + 1) {
         uptr s = sec_at(i);
         i64 zf = (sec_flags(s) & 0xff) == S_ZEROFILL;
         out_str(1, "section "); out_name16(sec_seg(s));
@@ -335,15 +314,12 @@ void dump_syms() {
         else    out_num(1, buf_len(sec_data(s)));
         out_str(1, " nreloc="); out_num(1, sec_nrel(s));
         out_str(1, "\n");
-        i = i + 1;
     }
     uptr order = xalloc(8 * (nsymbols + 1));
     uptr pos   = xalloc(8 * (nsymbols + 1));
     u8   count[24];
     sym_order(order, pos, count);
-    i64 k = 0;
-    loop {
-        if (k >= nsymbols) break;
+    for (i64 k = 0; k < nsymbols; k = k + 1) {
         uptr s = sym_at(ld64(order + k * 8));
         out_str(1, "sym "); out_num(1, k); out_str(1, " ");
         if (sym_sect(s) == 0)   out_str(1, "undef");
@@ -355,7 +331,6 @@ void dump_syms() {
         out_str(1, " value="); out_num(1, sym_value(s));
         out_str(1, " ");       out_str(1, sym_name(s));
         out_str(1, "\n");
-        k = k + 1;
     }
 }
 
@@ -369,12 +344,8 @@ void macho_write(uptr path) {
     uptr addr = xalloc(8 * (nsections + 1));
     i64 vm = 0;
     i64 filesz = 0;
-    i64 pass = 0;
-    loop {
-        if (pass >= 2) break;
-        i64 i = 0;
-        loop {
-            if (i >= nsections) break;
+    for (i64 pass = 0; pass < 2; pass = pass + 1) {
+        for (i64 i = 0; i < nsections; i = i + 1) {
             uptr s = sec_at(i);
             i64 zf = (sec_flags(s) & 0xff) == S_ZEROFILL;
             i64 want = 0;
@@ -383,13 +354,11 @@ void macho_write(uptr path) {
                 i64 al = 1 << sec_align(s);
                 vm = (vm + al - 1) & ~(al - 1);
                 st64(addr + i * 8, vm);
-                if (zf) vm = vm + sec_zsize(s);
-                else    vm = vm + buf_len(sec_data(s));
+                if (zf) vm += sec_zsize(s);
+                else    vm += buf_len(sec_data(s));
                 if (!zf) filesz = vm;
             }
-            i = i + 1;
         }
-        pass = pass + 1;
     }
 
     i64 ncmds = 4;
@@ -399,10 +368,8 @@ void macho_write(uptr path) {
     reloff = (reloff + 7) & ~7;
     i64 nreloc_total = 0;
     i64 i = 0;
-    loop {
-        if (i >= nsections) break;
-        nreloc_total = nreloc_total + sec_nrel(sec_at(i));
-        i = i + 1;
+    for (i = 0; i < nsections; i = i + 1) {
+        nreloc_total += sec_nrel(sec_at(i));
     }
     i64 symoff = reloff + 8 * nreloc_total;
     i64 stroff = symoff + 16 * nsymbols;
@@ -413,11 +380,9 @@ void macho_write(uptr path) {
     buf_u8(str, 0);
     uptr strx = xalloc(8 * (nsymbols + 1));
     i64 k = 0;
-    loop {
-        if (k >= nsymbols) break;
+    for (k = 0; k < nsymbols; k = k + 1) {
         st64(strx + k * 8, buf_len(str));
         buf_put(str, sym_name(sym_at(k)), cstrlen(sym_name(sym_at(k))) + 1);
-        k = k + 1;
     }
     buf_pad(str, 8);
 
@@ -428,18 +393,13 @@ void macho_write(uptr path) {
     buf_u32(o, MH_SUBSECTIONS_VIA_SYMBOLS); buf_u32(o, 0);
 
     buf_u32(o, LC_SEGMENT_64); buf_u32(o, 72 + 80 * nsections);
-    i = 0;                                     // segname vazio: 16 bytes zerados
-    loop {
-        if (i >= 16) break;
+    for (i = 0; i < 16; i = i + 1) {            // segname vazio: 16 bytes zerados
         buf_u8(o, 0);
-        i = i + 1;
     }
     buf_u64(o, 0); buf_u64(o, vm); buf_u64(o, dataoff); buf_u64(o, filesz);
     buf_u32(o, 7); buf_u32(o, 7); buf_u32(o, nsections); buf_u32(o, 0);
     i64 roff = reloff;
-    i = 0;
-    loop {
-        if (i >= nsections) break;
+    for (i = 0; i < nsections; i = i + 1) {
         uptr s = sec_at(i);
         i64 zf = (sec_flags(s) & 0xff) == S_ZEROFILL;
         buf_put(o, sec_sect(s), 16);
@@ -454,8 +414,7 @@ void macho_write(uptr path) {
         else                  buf_u32(o, 0);
         buf_u32(o, sec_nrel(s)); buf_u32(o, sec_flags(s));
         buf_u32(o, 0); buf_u32(o, 0); buf_u32(o, 0);
-        roff = roff + 8 * sec_nrel(s);
-        i = i + 1;
+        roff += 8 * sec_nrel(s);
     }
     buf_u32(o, LC_BUILD_VERSION); buf_u32(o, 24);
     buf_u32(o, 1); buf_u32(o, 0x000D0000); buf_u32(o, 0x000D0000); buf_u32(o, 0);
@@ -465,40 +424,28 @@ void macho_write(uptr path) {
     buf_u32(o, 0); buf_u32(o, ld64(count));
     buf_u32(o, ld64(count)); buf_u32(o, ld64(count + 8));
     buf_u32(o, ld64(count) + ld64(count + 8)); buf_u32(o, ld64(count + 16));
-    k = 0;
-    loop {
-        if (k >= 12) break;
+    for (k = 0; k < 12; k = k + 1) {
         buf_u32(o, 0);
-        k = k + 1;
     }
 
     // dados das secoes
-    i = 0;
-    loop {
-        if (i >= nsections) break;
+    for (i = 0; i < nsections; i = i + 1) {
         uptr s = sec_at(i);
         if ((sec_flags(s) & 0xff) != S_ZEROFILL) {
-            loop {
-                if (buf_len(o) >= dataoff + ld64(addr + i * 8)) break;
+            while (buf_len(o) < dataoff + ld64(addr + i * 8)) {
                 buf_u8(o, 0);
             }
             buf_put(o, buf_p(sec_data(s)), buf_len(sec_data(s)));
         }
-        i = i + 1;
     }
-    loop {
-        if (buf_len(o) >= reloff) break;
+    while (buf_len(o) < reloff) {
         buf_u8(o, 0);
     }
 
     // relocacoes: ordem decrescente de endereco, como o clang faz
-    i = 0;
-    loop {
-        if (i >= nsections) break;
+    for (i = 0; i < nsections; i = i + 1) {
         uptr s = sec_at(i);
-        i64 j = sec_nrel(s) - 1;
-        loop {
-            if (j < 0) break;
+        for (i64 j = sec_nrel(s) - 1; j >= 0; j = j - 1) {
             uptr r = rel_at(sec_rel(s), j);
             i64 symnum = rel_sym(r);
             i64 ext = 0;
@@ -509,15 +456,11 @@ void macho_write(uptr path) {
             buf_u32(o, rel_off(r));
             buf_u32(o, (symnum & 0xffffff) | (rel_pcrel(r) << 24) | (rel_len(r) << 25)
                        | (ext << 27) | (rel_type(r) << 28));
-            j = j - 1;
         }
-        i = i + 1;
     }
 
     // symtab
-    k = 0;
-    loop {
-        if (k >= nsymbols) break;
+    for (k = 0; k < nsymbols; k = k + 1) {
         i64 oi = ld64(order + k * 8);
         uptr s = sym_at(oi);
         buf_u32(o, ld64(strx + oi * 8));
@@ -530,7 +473,6 @@ void macho_write(uptr path) {
         buf_u16(o, 0);
         if (sym_sect(s) == 0) buf_u64(o, 0);
         else buf_u64(o, ld64(addr + (sym_sect(s) - 1) * 8) + sym_value(s));
-        k = k + 1;
     }
     buf_put(o, buf_p(str), buf_len(str));
     write_file(path, o);

@@ -107,8 +107,8 @@ Diretivas `#...` no estilo pré-processador, processadas **em tempo de compilaç
 #rule stmt: while ( expr $c ) block $b
     => loop { if (!$c) break; $b }
 
-#rule stmt: for ( stmt $init expr $cond ; expr $step ) block $b
-    => { $init loop { if (!$cond) break; $b $step; } }
+#rule stmt: for ( stmt $init expr $cond ; ident $i = expr $step ) block $b
+    => { $init loop { if (!$cond) break; $b $i = $step; } }   // passo é atribuição: no núcleo `=` é statement
 
 #rule stmt: ident $x += expr $e ;
     => $x = $x + $e;
@@ -141,7 +141,7 @@ void call_helper() {
 
 Regras que mantêm o mecanismo pequeno:
 1. Padrão de `#rule` é sequência plana — sem alternação, opcional ou recursão no padrão.
-2. Primeiro item é token literal → indexação por token, sem backtracking.
+2. Primeiro item é token literal (opcionalmente precedido de um único `ident $x`, já lido pelo caminho normal) → indexação por token, sem backtracking.
 3. Template é parseado pelo parser existente no momento da definição (os `$nome` viram `Hole(i)`); expansão é cópia de árvore — nunca substituição textual, logo sem bugs de precedência.
 4. Higiene: só gensym — `$$tmp` no template vira local fresco por expansão. Nada mais.
 5. Reexpansão no resultado com teto de 64 níveis.
@@ -173,7 +173,7 @@ mini_compiler/
     arena.c  lex.c  parse.c  ast.c  types.c  gen_arm64.c  macho.c  main.c  mc.h
   lib/
     sys.mc                    open/read/write/close/exit (extern libSystem por padrão; #opcode svc atrás de flag)
-    prelude.mc                while/for/+=/++/struct via #rule (M9) — só via #include explícito, versionado
+    prelude.mc                while/for/+=/-=/++/-- via #rule (M9) — só via #include explícito, versionado
   src/                        compilador auto-hospedado (mesma divisão do stage0)
     mc.mc  lex.mc  parse.mc  ast.mc  types.mc  gen_arm64.mc  macho.mc  obj.mc
   tests/
@@ -226,7 +226,7 @@ Orçamento do stage0 (meta ≤ 3000 linhas): lexer + tabela de tokens 350 · Pra
 | **M6** | `src/mc.mc` completo **só com o núcleo** (sem `#rule`, sem prelúdio) → `mc1` | `mc1` passa a mesma suíte que o stage0 | tudo — aqui os `--dump-*` se pagam |
 | **M7** | ponto fixo | `mc1 mc.mc → mc2.o`, `mc2 mc.mc → mc3.o`, `cmp` idênticos; golden gravado | ordem de tabelas, padding, leituras curtas |
 | **M8** | cortar o cordão | `make bootstrap` só usa clang para o stage0; binários não versionados; `loc-budget.sh` ≤ 3000 |
-| **M9** | `#rule` no stage0 **e** em `mc.mc`; `lib/prelude.mc` com `while`/`for`/`+=`/`++`/`struct` | programa com `while`/`struct` gera `.o` **idêntico** sob stage0 e `mc1`; migrar um módulo folha do `mc.mc` e reverificar M7 | ordem de expansão, gensym |
+| **M9** | `#rule` no stage0 **e** em `mc.mc`; `lib/prelude.mc` com `while`/`for`/`+=`/`++` (`struct` adiado: exige `type $t` e layout, mais do que `#rule` entrega; acessoras + `#define` cobrem o caso) | programa com `while`/`struct` gera `.o` **idêntico** sob stage0 e `mc1`; migrar um módulo folha do `mc.mc` e reverificar M7 | ordem de expansão, gensym |
 | **M10** | backend ensinado pela superfície: módulo `.mc` com `backend("asm", fn)` emitindo texto AArch64 | `__text` do backend da superfície byte a byte igual ao embutido no corpus | primitivos de emissão insuficientes (é o que este marco existe para descobrir) |
 | **M11** | executável direto (`MH_EXECUTE`): `__PAGEZERO/__TEXT/__DATA/__LINKEDIT`, `LC_LOAD_DYLINKER`, `LC_LOAD_DYLIB libSystem`, `LC_MAIN`, bind de `_open/_read/_write/_close/_exit`, `LC_CODE_SIGNATURE` ad-hoc (CodeDirectory v0x20400, SHA-256 por página 4 KiB, `CS_ADHOC`) | `mc --exe` roda sem `ld`; `codesign -dvvv` válido; ponto fixo segue valendo por esse caminho | SHA-256 em `.mc` (~150 linhas), `execSegBase/Limit`, bind opcodes |
 

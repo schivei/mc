@@ -189,6 +189,13 @@ i64 node_copy_subst(i64 n, uptr holes, i64 nholes) {
     return c;
 }
 
+// quantos nos tem a subarvore (com a lista de irmaos): so o --dump-rules usa
+i64 node_size(i64 n) {
+    if (n == 0) return 0;
+    return 1 + node_size(nd_a(n)) + node_size(nd_b(n)) + node_size(nd_c(n))
+             + node_size(nd_d(n)) + node_size(nd_next(n));
+}
+
 // os dois arrays de ponteiros do stage0, na mesma ordem dos enums
 uptr kind_names[] = {
     "NONE", "INT", "STR", "IDENT", "UNARY", "BINARY", "CAST", "CALL",
