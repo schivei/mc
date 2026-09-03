@@ -37,6 +37,7 @@
 #define D_RULE    5
 #define D_SECTION 6
 #define D_OPCODE  7
+#define D_DYLIB   8       // M12: no fim da lista, para nao renumerar as anteriores
 
 // ---- ids do nucleo: 256 em diante, na ordem fixa de insercao de tok_init ----
 #define K_U8       256
@@ -302,6 +303,7 @@ i64 dir_index(uptr s, i64 nl) {
     if (nl == 4 && mem_eq("rule", s, 4))    return D_RULE;
     if (nl == 7 && mem_eq("section", s, 7)) return D_SECTION;
     if (nl == 6 && mem_eq("opcode", s, 6))  return D_OPCODE;
+    if (nl == 5 && mem_eq("dylib", s, 5))   return D_DYLIB;
     return -1;
 }
 

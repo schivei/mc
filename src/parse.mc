@@ -25,10 +25,18 @@
 // As declaracoes adiantadas do C (parse_expr, parse_unary, parse_block) nao sao
 // necessarias: o topo do .mc registra todas as assinaturas antes dos corpos.
 //
+// M12 (Tier 3): parse_top e parse_stmt consultam antes de tudo as tabelas de
+// `syntax`/`syntax_stmt` de hooks.mc e chamam o handler com callp; type_of_token
+// cai nos aliases de `type_alias`; `#dylib` registra a dylib das declaracoes
+// `extern` seguintes. A API que um handler usa esta na secao "API publica do
+// parser", logo antes de "---- topo ----".
+//
 // Depende de arena.mc (xalloc, xstrdup, cstrlen, str_eq, mem_eq, die),
 // de lex.mc (Token, lex_next, lex_include, tok_add, ids K_*/T_*/D_*),
-// de ast.mc (nos, fold sobre eles, err_node, type_width), de arena.mc (err_at) e de
-// macho.mc (sec_new e os R_* que defs_init registra como constantes internas).
+// de ast.mc (nos, fold sobre eles, err_node, type_width), de arena.mc (err_at),
+// de macho.mc (sec_new e os R_* que defs_init registra como constantes internas)
+// e de hooks.mc (syntax_find/syntax_stmt_find/alias_find — tabelas vazias quando
+// ninguem ensinou nada, e entao o parse e exatamente o do stage0).
 
 #define MAXOPS    128
 // 512 e nao 256: a transliteracao para .mc gasta ~104 #define so com os
@@ -36,6 +44,8 @@
 // src/mc.mc chega a 319 constantes. stage0/parse.c tem o mesmo valor.
 #define MAXDEFS   512
 #define MAXOPCS   64
+#define MAXDYLIBS 8                   // #dylib: ordinal = indice + 2 (libSystem e 1)
+#define MAXEXTLIB 256                 // externs com dylib anotada, por nome
 // MAXSECS e MAXPARAMS vivem em arena.mc, como viviam em stage0/mc.h: parse.mc e
 // gen_arm64.mc compartilham os dois e `#define` repetido e erro.
 
@@ -85,7 +95,23 @@ u8  opc_params[MAXPARAMS * 8];
 i64 opc_nparams = 0;
 i64 cur_sect = 0;                     // #section corrente + 1; 0 = secao default
 
+// ---- #dylib: caminhos na ordem de registro; o ordinal da dylib no executavel
+// e indice + 2, porque a libSystem sempre ocupa o 1. `cur_dylib` e o ordinal em
+// vigor: todo `extern` declarado depois cai nele, ate o proximo #dylib. Tabelas
+// lineares, sem hash: docs/determinism.md, regra 1.
+u8  dylibs[MAXDYLIBS * 8];
+i64 ndylibs = 0;
+i64 cur_dylib = 1;                    // 1 = /usr/lib/libSystem.B.dylib
+u8  extlib_name[MAXEXTLIB * 8];
+u8  extlib_ord[MAXEXTLIB * 8];
+i64 nextlib = 0;
+
 u8 cur[TOK_SIZE];                     // lookahead de 1 token
+
+// a unidade em construcao: parse_unit anexa por top_add, e os handlers de
+// `syntax` tambem — e o que permite um handler produzir varias declaracoes
+i64 unit_head = 0;
+i64 unit_tail = 0;
 
 // ---- acessoras das tabelas ----
 uptr ie_at(i64 i)     { return infixes + i * INF_SIZE; }
@@ -130,6 +156,13 @@ void set_se_align(uptr e, i64 v)  { st64(e + SE_ALIGN, v); }
 
 uptr op_at(i64 i)             { return ld64(opc_params + i * 8); }
 void set_op_at(i64 i, uptr v) { st64(opc_params + i * 8, v); }
+
+uptr dl_at(i64 i)             { return ld64(dylibs + i * 8); }
+void set_dl_at(i64 i, uptr v) { st64(dylibs + i * 8, v); }
+uptr xl_name(i64 i)             { return ld64(extlib_name + i * 8); }
+void set_xl_name(i64 i, uptr v) { st64(extlib_name + i * 8, v); }
+i64  xl_ord(i64 i)              { return ld64(extlib_ord + i * 8); }
+void set_xl_ord(i64 i, i64 v)   { st64(extlib_ord + i * 8, v); }
 
 // ---- lookahead ----
 void next() { lex_next(cur); }
@@ -271,6 +304,51 @@ i64 sec_ent(uptr seg, uptr sect, i64 flags, i64 align) {
     set_se_align(ne, align);
     nsecs = nsecs + 1;
     return nsecs - 1;
+}
+
+// ---- #dylib: uma dylib a mais para o executavel; o `.o` + `ld` ignora ----
+// Ordinal = indice + 2: no two-level namespace do Mach-O o 1 e sempre a
+// libSystem, que o backend do executavel carrega de qualquer jeito.
+i64 dylib_count()      { return ndylibs; }
+uptr dylib_path(i64 i) { return dl_at(i); }
+
+i64 dylib_add(uptr path) {
+    i64 i = 0;
+    loop {
+        if (i >= ndylibs) break;
+        if (str_eq(dl_at(i), path)) return i + 2;
+        i = i + 1;
+    }
+    if (ndylibs == MAXDYLIBS) die("dylibs demais");
+    set_dl_at(ndylibs, path);
+    ndylibs = ndylibs + 1;
+    return ndylibs + 1;
+}
+
+// anota de qual dylib vem o extern `name`; o ultimo registro do mesmo nome vence
+void extern_lib_add(uptr name, i64 ord) {
+    if (ord == 1) return;                      // libSystem e o default: nao ocupa slot
+    i64 i = 0;
+    loop {
+        if (i >= nextlib) break;
+        if (str_eq(xl_name(i), name)) { set_xl_ord(i, ord); return; }
+        i = i + 1;
+    }
+    if (nextlib == MAXEXTLIB) die("externs com #dylib demais");
+    set_xl_name(nextlib, name);
+    set_xl_ord(nextlib, ord);
+    nextlib = nextlib + 1;
+}
+
+// ordinal da dylib de um extern; 1 (libSystem) para todo nome nao anotado
+i64 extern_lib_find(uptr name) {
+    i64 i = 0;
+    loop {
+        if (i >= nextlib) break;
+        if (str_eq(xl_name(i), name)) return xl_ord(i);
+        i = i + 1;
+    }
+    return 1;
 }
 
 // ---- #opcode: tabela linear de encoders, na ordem de definicao ----
@@ -504,7 +582,7 @@ i64 type_of_token(i64 id) {
     if (id == K_I64)  return TY_I64;
     if (id == K_UPTR) return TY_UPTR;
     if (id == K_VOID) return TY_VOID;
-    return -1;
+    return alias_find(id);               // Tier 3: type_alias(); -1 se nao ha
 }
 
 i64 parse_primary() {
@@ -859,6 +937,14 @@ i64 parse_var(i64 line, uptr fl, i64 ty) {
 i64 parse_stmt() {
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
+    i64 si = syntax_stmt_find(tok_id(cur));      // Tier 3: statement ensinado
+    if (si >= 0) {
+        i64 sn = callp(syntax_stmt_fn_at(si));   // o handler come a palavra tambem
+        // 0 = o handler nao produziu statement; um bloco vazio ocupa o lugar
+        // sem quebrar a lista de irmaos de quem chamou
+        if (sn == 0) sn = node_new(N_BLOCK, line, fl);
+        return sn;
+    }
     i64 ri = rule_find(tok_id(cur), 0);          // o token corrente abre uma regra?
     if (ri >= 0) return rule_expand(ri, 0);
     if (tok_id(cur) == T_HOLE) {                 // `$init`/`$b` soltos no template
@@ -1251,13 +1337,111 @@ void do_directive() {
         else              prefix_set(tok, tmpl);
         return;
     }
+    if (d == D_DYLIB) {
+        if (tok_id(cur) != T_STR) err_at(fl, line, "#dylib espera uma string");
+        uptr path = cur_name();
+        next();
+        // string vazia volta ao default: e o jeito de um modulo que declarou
+        // externs de outra dylib nao contaminar quem for incluido depois
+        if (ld8(path) == 0) cur_dylib = 1;
+        else                cur_dylib = dylib_add(path);
+        return;
+    }
     if (d == D_RULE)    { do_rule(line, fl);    return; }
     if (d == D_SECTION) { do_section(line, fl); return; }
     if (d == D_OPCODE)  { do_opcode(line, fl);  return; }
     err_at(fl, line, "diretiva ainda nao suportada");
 }
 
+// ---- API publica do parser (Tier 3) ----
+// O que um handler de `syntax`/`syntax_stmt` pode usar. Sao nomes fixos: um
+// modulo que ensina sintaxe (examples/api/oop.mc, lib/user_syntax_demo.mc) so
+// depende disto, de `node_new`/`nd_*`/`set_nd_*` de ast.mc, e das quatro
+// funcoes de descida que ja existiam — parse_expr(0), parse_stmt(),
+// parse_block() e parse_params(). Nada aqui e novo mecanismo: e o lookahead e
+// as rotinas que o proprio nucleo usa, com nome estavel. Ver docs/surface.md.
+i64  p_id()   { return tok_id(cur); }        // id do token corrente
+i64  p_val()  { return tok_val(cur); }       // valor (T_INT/T_CHAR/T_DIR/T_HOLE)
+uptr p_name() { return cur_name(); }         // lexema corrente, copiado na arena
+i64  p_line() { return tok_line(cur); }
+uptr p_file() { return tok_file(cur); }
+void p_next() { next(); }
+void p_expect(i64 id, uptr msg) { expect(id, msg); }
+
+// consome o token se ele for `id`; 1 se consumiu, 0 se nao
+i64 p_accept(i64 id) {
+    if (tok_id(cur) != id) return 0;
+    next();
+    return 1;
+}
+
+// exige um identificador (que nao seja nome de #define), devolve-o e avanca
+uptr p_ident() {
+    if (tok_id(cur) != T_IDENT) err_at(tok_file(cur), tok_line(cur), "nome esperado");
+    check_def();
+    uptr s = cur_name();
+    next();
+    return s;
+}
+
+// exige uma palavra de tipo — do nucleo ou registrada por type_alias — e avanca
+i64 p_type() {
+    i64 ty = type_of_token(tok_id(cur));
+    if (ty < 0) err_at(tok_file(cur), tok_line(cur), "tipo esperado");
+    next();
+    return ty;
+}
+
+// um N_PARAM solto, para o handler que precisa prepender `self` a uma lista
+i64 param_new(i64 ty, uptr name) {
+    i64 p = node_new(N_PARAM, tok_line(cur), tok_file(cur));
+    set_nd_type(p, ty);
+    set_nd_name(p, name);
+    return p;
+}
+
+// anexa `n` ao fim da lista `head` (por nd_next) e devolve a cabeca
+i64 list_append(i64 head, i64 n) {
+    if (head == 0) return n;
+    i64 t = head;
+    loop {
+        if (nd_next(t) == 0) break;
+        t = nd_next(t);
+    }
+    set_nd_next(t, n);
+    return head;
+}
+
+// anexa uma declaracao de topo (ou uma lista delas) a unidade, na ordem em que
+// chega, ja com o #section em vigor. E por aqui que um handler de `syntax`
+// entrega o que produziu — parse_top devolve 0 nesse caso.
+void top_add(i64 n) {
+    if (n == 0) return;
+    if (unit_tail) set_nd_next(unit_tail, n); else unit_head = n;
+    loop {
+        set_nd_sect(n, cur_sect);
+        unit_tail = n;
+        n = nd_next(n);
+        if (n == 0) break;
+    }
+}
+
 // ---- topo ----
+// le o bloco de uma funcao cujo tipo, nome e parametros o chamador ja montou
+// (um handler pode ter prependido `self` a lista) e devolve o N_FUNC. A linha e
+// a do `{`; parse_top a corrige para a do tipo, onde a declaracao comeca.
+i64 parse_function(i64 ty, uptr name, i64 params) {
+    i64 line = tok_line(cur);
+    uptr fl = tok_file(cur);
+    i64 body = parse_block();
+    i64 f = node_new(N_FUNC, line, fl);
+    set_nd_name(f, name);
+    set_nd_type(f, ty);
+    set_nd_a(f, params);
+    set_nd_b(f, body);
+    return f;
+}
+
 // lista de parametros, ja com os parenteses; nenhum passa pela pilha
 i64 parse_params() {
     expect(K_LPAR, "esperado ( na lista de parametros");
@@ -1305,6 +1489,7 @@ i64 parse_extern() {
     next();
     i64 params = parse_params();
     expect(K_SEMI, "esperado ; apos extern");
+    extern_lib_add(name, cur_dylib);         // #dylib em vigor (1 = libSystem)
     i64 f = node_new(N_EXTERN, line, fl);
     set_nd_name(f, name);
     set_nd_type(f, ty);
@@ -1372,6 +1557,11 @@ i64 parse_global(i64 line, uptr fl, i64 ty, uptr name) {
 i64 parse_top() {
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
+    i64 si = syntax_find(tok_id(cur));       // Tier 3: declaracao de topo ensinada
+    if (si >= 0) {
+        callp(syn_fn_at(si));                // o handler come a palavra e chama top_add
+        return 0;
+    }
     i64 ty = type_of_token(tok_id(cur));
     if (ty < 0) err_at(fl, line, "tipo esperado no topo");
     next();
@@ -1389,12 +1579,9 @@ i64 parse_top() {
         set_nd_a(p, params);
         return p;
     }
-    i64 body = parse_block();
-    i64 f = node_new(N_FUNC, line, fl);
-    set_nd_name(f, name);
-    set_nd_type(f, ty);
-    set_nd_a(f, params);
-    set_nd_b(f, body);
+    i64 f = parse_function(ty, name, params);
+    set_nd_line(f, line);                    // a declaracao comeca no tipo, nao no {
+    set_nd_file(f, fl);
     return f;
 }
 
@@ -1402,17 +1589,13 @@ i64 parse_unit() {
     ops_init();
     defs_init();
     next();
-    i64 head = 0;
-    i64 tail = 0;
+    unit_head = 0;
+    unit_tail = 0;
     loop {
         if (tok_id(cur) == T_EOF) break;
         if (tok_id(cur) == T_DIR) { do_directive(); continue; }
-        i64 f = 0;
-        if (tok_id(cur) == K_EXTERN) f = parse_extern();
-        else                         f = parse_top();
-        set_nd_sect(f, cur_sect);                // placement do #section em vigor
-        if (tail) set_nd_next(tail, f); else head = f;
-        tail = f;
+        if (tok_id(cur) == K_EXTERN) top_add(parse_extern());
+        else                         top_add(parse_top());
     }
-    return head;
+    return unit_head;
 }

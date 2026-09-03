@@ -145,4 +145,4 @@ Agentes reportam fatos (comandos rodados + saída), nunca suposições.
   exhausted`, exit 1 (sintético de 1000 funções × 12 statements, 14001 linhas; com 11 statements,
   13001 linhas, ainda compila). `make check` verde: `test` 32/32, `check-lex`/`check-ast`/`check-asm`
   57/57, `check-obj` 32/32, `check-surface` 32/32, `test-exe` 32/32, `bootstrap` com ponto fixo.
-- M12 é o próximo marco. Atualize esta seção ao fechar cada marco.
+- Próximo: M12 (`docs/specs/M12.md`); M13 em backlog (`docs/specs/M13.md`). Atualize esta seção ao fechar cada marco.

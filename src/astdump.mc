@@ -8,12 +8,15 @@
 //
 // macho.mc entra porque parse.mc usa sec_new (em sec_make) e as constantes
 // R_UNSIGNED/BRANCH26/PAGE21/PAGEOFF12 que defs_init registra; e tambem a ordem
-// de #include que src/mc.mc vai usar.
+// de #include que src/core.mc usa. hooks.mc entrou no M12: parse.mc consulta as
+// tabelas de syntax/syntax_stmt/type_alias que moram la. Nenhuma esta povoada
+// aqui (este driver nao chama user_init), entao o parse e o mesmo do mc0.
 #include "arena.mc"
 #include "macho.mc"
 #include "lex.mc"
 #include "ast.mc"
 #include "parse.mc"
+#include "hooks.mc"
 
 i64 main(i64 argc, uptr argv) {
     if (argc < 2) {

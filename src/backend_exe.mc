@@ -61,6 +61,7 @@ extern i64 chmod(uptr path, i64 mode);
 #define STUB_SIZE 12                        // adrp + ldr + br
 
 #define N_DESC_ORD1 0x100                  // ordinal 1 (libSystem) em n_desc
+#define DYLIB_HDR   24                     // bytes de LC_LOAD_DYLIB antes do nome
 
 // opcodes de rebase/bind (mach-o/loader.h)
 #define REBASE_SET_TYPE_IMM      0x10
@@ -118,6 +119,7 @@ u8  lk_bind[BUF_SIZE];
 u8  lk_str[BUF_SIZE];
 i64 rb_open = 0;                           // ja emitiu o SET_TYPE do rebase?
 i64 bd_open = 0;                           // ja emitiu ordinal e tipo do bind?
+i64 bd_ord = 0;                            // ordinal de dylib em vigor nos binds
 i64 lk_off = 0;
 i64 lk_addr = 0;
 i64 stubs_addr = 0;
@@ -299,8 +301,11 @@ void exe_plan_sections() {
     }
 }
 
+// LC_LOAD_DYLIB: cabecalho fixo + caminho com NUL, arredondado para 8
+i64 exe_dylib_size(uptr path) { return exe_up(DYLIB_HDR + cstrlen(path) + 1, 8); }
+
 // tamanho de todas as load commands: sabido antes do layout porque so depende do
-// numero de segmentos e de secoes
+// numero de segmentos, de secoes e de dylibs
 i64 exe_sizeofcmds() {
     i64 n = 72;                                   // __PAGEZERO
     i64 g = 0;
@@ -316,7 +321,12 @@ i64 exe_sizeofcmds() {
     n = n + 24;                                   // LC_UUID
     n = n + 24;                                   // LC_BUILD_VERSION
     n = n + 24;                                   // LC_MAIN
-    n = n + 56;                                   // LC_LOAD_DYLIB
+    n = n + exe_dylib_size("/usr/lib/libSystem.B.dylib");
+    i64 dl = 0;                                   // uma LC_LOAD_DYLIB por #dylib
+    while (dl < dylib_count()) {
+        n = n + exe_dylib_size(dylib_path(dl));
+        dl++;
+    }
     n = n + 16;                                   // LC_CODE_SIGNATURE
     return n;
 }
@@ -386,12 +396,21 @@ void exe_rebase_add(i64 seg, i64 off) {
     buf_u8(lk_rebase, REBASE_DO_IMM_TIMES | 1);
 }
 
-void exe_bind_add(i64 seg, i64 off, uptr name) {
+// ordinal da dylib de um simbolo importado: o nome do simbolo tem o `_` que o
+// compilador poe, a tabela de #dylib e indexada pelo nome do fonte
+i64 exe_sym_ord(uptr symname) { return extern_lib_find(symname + 1); }
+
+void exe_bind_add(i64 seg, i64 off, uptr name, i64 ord) {
     if (seg > 15) die("segmentos demais para o opcode de bind");
+    if (ord > 15) die("dylibs demais para o opcode de bind");
     if (!bd_open) {
-        buf_u8(lk_bind, BIND_SET_DYLIB_ORD_IMM | 1);      // ordinal 1 = libSystem
+        buf_u8(lk_bind, BIND_SET_DYLIB_ORD_IMM | ord);
         buf_u8(lk_bind, BIND_SET_TYPE_IMM | TYPE_POINTER);
         bd_open = 1;
+        bd_ord = ord;
+    } else if (ord != bd_ord) {
+        buf_u8(lk_bind, BIND_SET_DYLIB_ORD_IMM | ord);    // trocou de dylib
+        bd_ord = ord;
     }
     buf_u8(lk_bind, BIND_SET_SYMBOL_FLAGS);
     buf_put(lk_bind, name, cstrlen(name) + 1);
@@ -503,7 +522,8 @@ void exe_bind_got() {
     i64 k = 0;
     while (k < nundef) {
         i64 off = got_addr + k * 8 - ivec_at(xg_addr, got_seg);
-        exe_bind_add(got_seg + 1, off, sym_name(sym_at(ivec_at(undef_sym, k))));
+        uptr nm = sym_name(sym_at(ivec_at(undef_sym, k)));
+        exe_bind_add(got_seg + 1, off, nm, exe_sym_ord(nm));
         k++;
     }
 }
@@ -561,15 +581,26 @@ void exe_dylinker(uptr o) {
     buf_pad(o, 8);
 }
 
-void exe_dylib(uptr o) {
+void exe_dylib_one(uptr o, uptr path) {
     buf_u32(o, LC_LOAD_DYLIB);
-    buf_u32(o, 56);
-    buf_u32(o, 24);                                 // offset do nome
+    buf_u32(o, exe_dylib_size(path));
+    buf_u32(o, DYLIB_HDR);                          // offset do nome
     buf_u32(o, 2);                                  // timestamp fixo (determinismo)
     buf_u32(o, 0x054C0000);                         // current 1356.0.0
     buf_u32(o, 0x00010000);                         // compatibility 1.0.0
-    buf_put(o, "/usr/lib/libSystem.B.dylib", 27);
+    buf_put(o, path, cstrlen(path) + 1);
     buf_pad(o, 8);
+}
+
+// a libSystem e sempre a primeira (ordinal 1); depois as de #dylib, na ordem de
+// registro — e a ordem que define o ordinal que n_desc e os binds citam
+void exe_dylib(uptr o) {
+    exe_dylib_one(o, "/usr/lib/libSystem.B.dylib");
+    i64 i = 0;
+    while (i < dylib_count()) {
+        exe_dylib_one(o, dylib_path(i));
+        i++;
+    }
 }
 
 // ---- symtab ----
@@ -583,7 +614,7 @@ void exe_symtab(uptr o, uptr order, uptr strx) {
         if (sym_sect(s) == 0) {
             buf_u8(o, N_UNDF | N_EXT);
             buf_u8(o, 0);
-            buf_u16(o, N_DESC_ORD1);                // two-level: ordinal da dylib
+            buf_u16(o, N_DESC_ORD1 * exe_sym_ord(sym_name(s)));  // two-level: ordinal
             buf_u64(o, 0);
         } else {
             i64 x = ivec_at(sec2x, sym_sect(s) - 1);
@@ -714,7 +745,7 @@ void exe_write(uptr path) {
     buf_u32(o, CPU_TYPE_ARM64);
     buf_u32(o, 0);
     buf_u32(o, MH_EXECUTE);
-    buf_u32(o, nxseg + 11);
+    buf_u32(o, nxseg + 11 + dylib_count());
     buf_u32(o, sizeofcmds);
     buf_u32(o, EXE_FLAGS);
     buf_u32(o, 0);

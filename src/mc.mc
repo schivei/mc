@@ -1,31 +1,10 @@
-// mc.mc — o compilador auto-hospedado: so a lista de #include, na ordem de
-// dependencia, exatamente como o stage0 compila stage0/*.c contra mc.h.
+// mc.mc — o compilador padrao: o nucleo (core.mc) mais o ponto de extensao do
+// usuario (user.mc, que por padrao so tem um `user_init` vazio).
 //
-//   arena.mc     xalloc/buf_*/out_*/die/err_at/read_file/write_file e os limites
-//                compartilhados (MAXSECS, MAXPARAMS), o papel do mc.h
-//   macho.mc     secoes, simbolos, relocacoes e a escrita do MH_OBJECT
-//   lex.mc       tabela de tokens mutavel e lexer incremental
-//   ast.mc       nos em array plano na arena + dump
-//   parse.mc     descida recursiva + Pratt dirigido por tabela + dobra
-//   gen_arm64.mc buffer de instrucoes, encoders AArch64 e --dump-asm
-//   sha256.mc    SHA-256 puro, para a assinatura ad-hoc e o UUID do executavel
-//   backend_exe.mc backend `macho-exe`: MH_EXECUTE assinado, sem `ld` (M11)
-//   hooks.mc     Tier 2: tabelas de passes (pass) e de backends (backend)
-//   user.mc      ponto de extensao do usuario; por padrao lib/user_default.mc
-//   main.mc      CLI
-//
-// macho.mc vem antes de lex.mc porque parse.mc usa sec_new (via sec_make) e as
-// constantes R_* que defs_init registra; e a mesma ordem que src/astdump.mc ja
-// usava na fatia 3.
+// A divisao existe desde o M12: um compilador ensinado nao edita src/, ele e um
+// arquivo proprio que inclui `src/core.mc` e define o seu proprio `user_init`
+// (ver docs/surface.md § Tier 3 e examples/api/mc-api.mc). src/user.mc continua
+// sendo a costura de quem prefere ensinar o compilador padrao no lugar.
 
-#include "arena.mc"
-#include "macho.mc"
-#include "lex.mc"
-#include "ast.mc"
-#include "parse.mc"
-#include "gen_arm64.mc"
-#include "sha256.mc"
-#include "backend_exe.mc"
-#include "hooks.mc"
+#include "core.mc"
 #include "user.mc"
-#include "main.mc"
