@@ -5,7 +5,14 @@
 // argv chega como uptr: argv[i] e ld64(argv + i * 8) (nao ha ponteiro tipado).
 // Depende de arena.mc (str_eq, out_str, die, die2), de lex.mc (tok_init,
 // lex_init, dump_tokens), de parse.mc (parse_unit, fold), de ast.mc (dump_ast),
-// de gen_arm64.mc (gen_unit) e de macho.mc (dump_syms, macho_write).
+// de gen_arm64.mc (gen_lower, gen_encode_all, gen_dump_asm), de macho.mc
+// (dump_syms, macho_write), de hooks.mc (pass/backend/run_passes/backend_find) e
+// de user.mc (user_init).
+//
+// M10: o driver chama user_init() antes de qualquer parse (e ali que os modulos
+// do usuario registram passes e backends), aplica os passes sobre a AST e
+// escolhe o backend por --backend=NOME. O backend `macho` embutido e
+// gen_lower + gen_encode_all + macho_write e e o default.
 
 #define M_COMPILE 0
 #define M_TOKENS  1
@@ -14,14 +21,36 @@
 #define M_SYMS    4
 #define M_RULES   5
 
+// backend embutido: as duas metades do gen mais a escrita do MH_OBJECT
+void backend_macho(i64 unit, uptr out) {
+    gen_lower(unit);
+    gen_encode_all();
+    macho_write(out);
+}
+
+// texto depois do prefixo `pre` em `a`, ou 0 se `a` nao comeca por `pre`
+uptr opt_val(uptr a, uptr pre) {
+    i64 i = 0;
+    loop {
+        if (ld8(pre + i) == 0) break;
+        if (ld8(a + i) != ld8(pre + i)) return 0;
+        i = i + 1;
+    }
+    return a + i;
+}
+
 void usage() {
-    out_str(2, "uso: mc0 [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] entrada.mc [-o saida.o]\n");
+    out_str(2, "uso: mc0 [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NOME] entrada.mc [-o saida.o]\n");
 }
 
 i64 main(i64 argc, uptr argv) {
     uptr in = 0;
     uptr out = "out.o";
+    uptr bname = "macho";
     i64 mode = M_COMPILE;
+
+    backend("macho", &backend_macho);           // o embutido, sempre registrado
+    user_init();                                // Tier 2: passes e backends do usuario
 
     i64 i = 1;
     loop {
@@ -36,7 +65,11 @@ i64 main(i64 argc, uptr argv) {
             if (i + 1 >= argc) die("-o exige um argumento");
             i = i + 1;
             out = ld64(argv + i * 8);
-        } else if (ld8(a) == '-')  die2("opcao desconhecida", a);
+        } else if (ld8(a) == '-') {
+            uptr bn = opt_val(a, "--backend=");
+            if (bn == 0) die2("opcao desconhecida", a);
+            bname = bn;
+        }
         else if (in == 0)          in = a;
         else                       die2("entrada duplicada", a);
         i = i + 1;
@@ -49,13 +82,15 @@ i64 main(i64 argc, uptr argv) {
 
     i64 unit = parse_unit();
     if (mode == M_RULES) { dump_rules(); return 0; }   // regras que o fonte registrou
-    if (mode == M_AST) { dump_ast(unit); return 0; }   // arvore ja com #rule expandido
+    unit = run_passes(unit);                           // Tier 2: passes do usuario
+    if (mode == M_AST) { dump_ast(unit); return 0; }   // arvore ja com #rule e passes
 
     unit = fold(unit);                                 // dobra antes do codegen
-    gen_unit(unit, mode == M_ASM);
-    if (mode == M_ASM) return 0;
-    if (mode == M_SYMS) { dump_syms(); return 0; }
+    if (mode == M_ASM) { gen_lower(unit); gen_dump_asm(); return 0; }
+    if (mode == M_SYMS) { gen_lower(unit); gen_encode_all(); dump_syms(); return 0; }
 
-    macho_write(out);
+    i64 bi = backend_find(bname);
+    if (bi < 0) backend_die(bname);
+    callp(backend_fn_at(bi), unit, out);
     return 0;
 }

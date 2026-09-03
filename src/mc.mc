@@ -8,6 +8,8 @@
 //   ast.mc       nos em array plano na arena + dump
 //   parse.mc     descida recursiva + Pratt dirigido por tabela + dobra
 //   gen_arm64.mc buffer de instrucoes, encoders AArch64 e --dump-asm
+//   hooks.mc     Tier 2: tabelas de passes (pass) e de backends (backend)
+//   user.mc      ponto de extensao do usuario; por padrao lib/user_default.mc
 //   main.mc      CLI
 //
 // macho.mc vem antes de lex.mc porque parse.mc usa sec_new (via sec_make) e as
@@ -20,4 +22,6 @@
 #include "ast.mc"
 #include "parse.mc"
 #include "gen_arm64.mc"
+#include "hooks.mc"
+#include "user.mc"
 #include "main.mc"

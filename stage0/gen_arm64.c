@@ -22,11 +22,11 @@ static int nlabels;
 #define REG_FRAME 32              /* base ficticia trocada por sp em fix_frame */
 #define MAXDEPTH  64
 #define MAXLOCALS 256
-#define MAXFUNCS  512
+#define MAXFUNCS 1024
 #define MAXLOOPS  32
 #define MAXGLOBALS 256
 #define MAXSTRS    512
-#define MAXPREL    64             /* relocacoes de reloc() por funcao */
+#define MAXPREL   512             /* relocacoes de reloc() do modulo inteiro */
 
 /* ---- estado da funcao atual ---- */
 static Local locals[MAXLOCALS]; static int nlocals;
@@ -36,6 +36,11 @@ static int lbreak[MAXLOOPS], lcont[MAXLOOPS]; static int nloops;
 /* reloc(): a relocacao fica pendente ate a proxima palavra crua (gen_word) */
 static int prel_ins[MAXPREL], prel_sym[MAXPREL], prel_type[MAXPREL]; static int nprel;
 static int pend_type = -1, pend_sym, pend_node;
+
+/* ---- funcoes ja baixadas: ibuf e append-only e cada funcao e uma fatia dele ---- */
+static int fn_start[MAXFUNCS], fn_count[MAXFUNCS], fn_labels[MAXFUNCS];
+static int fn_sec[MAXFUNCS], fn_sym[MAXFUNCS], fn_pstart[MAXFUNCS], fn_pcount[MAXFUNCS];
+static int nfn, ins_base, prel_base;   /* ins_base/prel_base: inicio da funcao atual */
 
 /* assinaturas de todo o arquivo (N_FUNC e N_EXTERN), registradas antes dos corpos */
 static FuncSig funcs[MAXFUNCS]; static int nfuncs;
@@ -238,11 +243,12 @@ static void gen_gaddr(int rd, int sym) {
 }
 
 /* ---- intrinsics (nome, nao simbolo); as de memoria e as de saida crua ---- */
-enum { IN_NONE = 0, IN_EMIT, IN_RELOC,
+enum { IN_NONE = 0, IN_EMIT, IN_RELOC, IN_CALLP,
        IN_LD8, IN_LD16, IN_LD32, IN_LD64, IN_ST8, IN_ST16, IN_ST32, IN_ST64 };
 static int intrin_id(const char *name) {
     if (str_eq(name, "emit"))  return IN_EMIT;
     if (str_eq(name, "reloc")) return IN_RELOC;
+    if (str_eq(name, "callp")) return IN_CALLP;
     if (str_eq(name, "ld8"))  return IN_LD8;
     if (str_eq(name, "ld16")) return IN_LD16;
     if (str_eq(name, "ld32")) return IN_LD32;
@@ -370,10 +376,20 @@ static void gen_ident(int n, int depth) {
     dst_done(depth, rd);
 }
 
+/* &nome: local, global ou — novo no M10 — funcao/extern, que vira o endereco do
+ * simbolo `_nome` (adrp/add, com PAGE21+PAGEOFF12; indefinido quando extern) */
 static void gen_addr(int n, int depth) {
-    int rd = dst_reg(depth), i = name_find(n);
+    int rd = dst_reg(depth), i = local_find(nodes[n].name);
     if (i >= 0) ei(I_ADDI, rd, REG_FRAME, -locals[i].off);
-    else        gen_gaddr(rd, globals[-i - 1].sym);
+    else {
+        int g = global_find(nodes[n].name);
+        if (g >= 0) gen_gaddr(rd, globals[g].sym);
+        else {
+            int fi = func_find(nodes[n].name);
+            if (fi < 0) err_node(n, "nome desconhecido");
+            gen_gaddr(rd, sym_ref(usym(funcs[fi].name)));
+        }
+    }
     nodes[n].type = TY_UPTR;
     dst_done(depth, rd);
 }
@@ -417,8 +433,9 @@ static void gen_intrin(int n, int depth, int in) {
 static void gen_word(int n, i64 w) {
     if ((u64)w > 0xffffffffu) err_node(n, "palavra emitida nao cabe em 32 bits");
     if (pend_type >= 0) {                        /* a relocacao pendente cola nesta palavra */
-        if (nprel == MAXPREL) die("relocacoes cruas demais na funcao");
-        prel_ins[nprel] = nins; prel_sym[nprel] = pend_sym; prel_type[nprel] = pend_type;
+        if (nprel == MAXPREL) die("relocacoes cruas demais");
+        prel_ins[nprel] = nins - ins_base;            /* indice relativo a funcao */
+        prel_sym[nprel] = pend_sym; prel_type[nprel] = pend_type;
         nprel++;
         pend_type = -1;
     }
@@ -451,11 +468,45 @@ static void gen_reloc(int n) {
     nodes[n].type = TY_VOID;
 }
 
+/* salva as profundidades vivas (as que estao em registrador) antes de uma chamada */
+static void save_live(int depth) {
+    for (int d = 0; d < depth && in_reg(d); d++)
+        em(I_STR, REG_BASE + d, REG_FRAME, -slot_depth(d));
+}
+static void restore_live(int depth) {
+    for (int d = 0; d < depth && in_reg(d); d++)
+        em(I_LDR, REG_BASE + d, REG_FRAME, -slot_depth(d));
+}
+/* leva a profundidade depth+i para o registrador r (da ABI ou o x16 do callp) */
+static void arg_to_reg(int r, int d) {
+    if (in_reg(d)) e2(I_MOV, r, REG_BASE + d);
+    else           em(I_LDR, r, REG_FRAME, -slot_depth(d));
+}
+
+/* callp(p, a1..a7): args em x0..x6, ponteiro em x16 (fora da ABI), blr x16.
+ * Mesmo salvamento das profundidades vivas do bl; resultado i64 em x0. */
+static void gen_callp(int n, int depth) {
+    int na = arg_count(n);
+    if (na < 1 || na > MAXPARAMS) err_node(n, "callp espera de 1 a 8 argumentos");
+    int i = 0;
+    for (int a = nodes[n].a; a; a = nodes[a].next) { gen_value(a, depth + i); i++; }
+    save_live(depth);
+    i = 0;                                       /* o ponteiro (arg 0) vai para x16 */
+    for (int a = nodes[n].a; a; a = nodes[a].next) { arg_to_reg(i ? i - 1 : REG_S1, depth + i); i++; }
+    ins_add(I_BLR, REG_S1, 0, 0, 0, 0, 0);
+    restore_live(depth);
+    int rd = dst_reg(depth);
+    e2(I_MOV, rd, 0);
+    dst_done(depth, rd);
+    nodes[n].type = TY_I64;
+}
+
 /* chamada: args nas profundidades cur..cur+n-1, salvamento dos vivos, bl, resultado */
 static void gen_call(int n, int depth) {
     int in = intrin_id(nodes[n].name);
     if (in == IN_EMIT)  { gen_emit(n);  return; }
     if (in == IN_RELOC) { gen_reloc(n); return; }
+    if (in == IN_CALLP) { gen_callp(n, depth); return; }
     if (in) { gen_intrin(n, depth, in); return; }
     int oi = opc_find(nodes[n].name);
     if (oi >= 0) { gen_opcode(n, oi); return; }
@@ -464,17 +515,11 @@ static void gen_call(int n, int depth) {
     if (arg_count(n) != funcs[fi].nparams) err_node(n, "numero de argumentos errado");
     int i = 0;
     for (int a = nodes[n].a; a; a = nodes[a].next) { gen_value(a, depth + i); i++; }
-    for (int d = 0; d < depth && in_reg(d); d++)      /* vivos: profundidades abaixo */
-        em(I_STR, REG_BASE + d, REG_FRAME, -slot_depth(d));
+    save_live(depth);                                /* vivos: profundidades abaixo */
     i = 0;
-    for (int a = nodes[n].a; a; a = nodes[a].next) {
-        if (in_reg(depth + i)) e2(I_MOV, i, REG_BASE + depth + i);
-        else                   em(I_LDR, i, REG_FRAME, -slot_depth(depth + i));
-        i++;
-    }
+    for (int a = nodes[n].a; a; a = nodes[a].next) { arg_to_reg(i, depth + i); i++; }
     ins_add(I_BL, 0, 0, 0, 0, 0, sym_ref(usym(funcs[fi].name)));
-    for (int d = 0; d < depth && in_reg(d); d++)
-        em(I_LDR, REG_BASE + d, REG_FRAME, -slot_depth(d));
+    restore_live(depth);
     int rd = dst_reg(depth);
     e2(I_MOV, rd, 0);
     dst_done(depth, rd);
@@ -697,18 +742,20 @@ static void dump_ins(Ins *in) {
                         d_head(op == I_CBZ ? "cbz" : "cbnz"); d_reg(in->rd);
                         out_str(1, ", L"); out_num(1, in->label); out_str(1, "\n"); return; }
     if (op == I_EMIT) { d_word((u32)in->imm); return; }
+    if (op == I_BLR)  { d_head("blr"); d_reg(in->rd); out_str(1, "\n"); return; }
     die("instrucao sem dump");
 }
 
 /* o buffer com as relocacoes de reloc() antes da palavra em que cada uma cola */
-static void dump_buf(void) {
-    for (int k = 0; k < nins; k++) {
-        for (int j = 0; j < nprel; j++)
-            if (prel_ins[j] == k) {
-                out_str(1, "  .reloc "); out_str(1, rel_name(prel_type[j]));
-                out_str(1, " "); out_str(1, symbols[prel_sym[j]].name); out_str(1, "\n");
+static void dump_buf(int f) {
+    for (int k = 0; k < fn_count[f]; k++) {
+        for (int j = 0; j < fn_pcount[f]; j++)
+            if (prel_ins[fn_pstart[f] + j] == k) {
+                out_str(1, "  .reloc "); out_str(1, rel_name(prel_type[fn_pstart[f] + j]));
+                out_str(1, " "); out_str(1, symbols[prel_sym[fn_pstart[f] + j]].name);
+                out_str(1, "\n");
             }
-        dump_ins(&ibuf[k]);
+        dump_ins(&ibuf[fn_start[f] + k]);
     }
 }
 
@@ -777,44 +824,52 @@ static u32 encode(Ins *in, int pc, const int *lab) {
     if (op == I_ADRP)  return 0x90000000u | (u32)rd;
     if (op == I_ADDLO) return 0x91000000u | ((u32)rn << 5) | (u32)rd;
     if (op == I_EMIT)  return im;
+    if (op == I_BLR)   return 0xD63F0000u | ((u32)rd << 5);
     die("instrucao sem encoder");
 }
 
-static void gen_encode(int text, u64 base) {
-    int *off = xalloc(sizeof(int) * (size_t)(nins + 1));
-    int *lab = xalloc(sizeof(int) * (size_t)(nlabels + 2));
+/* encoda a funcao f: reserva o lugar dela no __text, fixa o valor do simbolo e
+ * escreve as palavras. E a segunda metade do gen — a que um backend substitui. */
+static void gen_encode_one(int f) {
+    Ins *b = &ibuf[fn_start[f]];
+    int n = fn_count[f], text = fn_sec[f], p0 = fn_pstart[f];
+    int *off = xalloc(sizeof(int) * (size_t)(n + 1));
+    int *lab = xalloc(sizeof(int) * (size_t)(fn_labels[f] + 2));
+    buf_pad(&sections[text].data, 4);                /* cada funcao alinhada a 4 */
+    u64 base = sections[text].data.len;
+    sym_set_value(fn_sym[f], base);
     int pc = 0;
-    for (int i = 0; i < nins; i++) {                 /* passada 1: offsets e labels */
+    for (int i = 0; i < n; i++) {                    /* passada 1: offsets e labels */
         off[i] = pc;
-        if (ibuf[i].op == I_LABEL) lab[ibuf[i].label] = pc;
-        else if (ibuf[i].op != I_NOP) pc += 4;
+        if (b[i].op == I_LABEL) lab[b[i].label] = pc;
+        else if (b[i].op != I_NOP) pc += 4;
     }
-    for (int i = 0; i < nins; i++) {                 /* passada 2: palavras e relocacoes */
-        if (ibuf[i].op == I_LABEL || ibuf[i].op == I_NOP) continue;
+    for (int i = 0; i < n; i++) {                    /* passada 2: palavras e relocacoes */
+        if (b[i].op == I_LABEL || b[i].op == I_NOP) continue;
         u32 at = (u32)base + (u32)off[i];
         /* estas tres sempre carregam simbolo; 0 e um indice valido, entao quem
          * decide se ha relocacao e o opcode, nunca o valor de sym */
-        if (ibuf[i].op == I_BL)         reloc_add(text, at, ibuf[i].sym, R_BRANCH26, 1, 2);
-        else if (ibuf[i].op == I_ADRP)  reloc_add(text, at, ibuf[i].sym, R_PAGE21, 1, 2);
-        else if (ibuf[i].op == I_ADDLO) reloc_add(text, at, ibuf[i].sym, R_PAGEOFF12, 0, 2);
-        for (int k = 0; k < nprel; k++)              /* as que reloc() pendurou aqui */
-            if (prel_ins[k] == i)
-                reloc_add(text, at, prel_sym[k], prel_type[k],
-                          rel_pcrel(prel_type[k]), rel_len(prel_type[k]));
-        buf_u32(&sections[text].data, encode(&ibuf[i], off[i], lab));
+        if (b[i].op == I_BL)         reloc_add(text, at, b[i].sym, R_BRANCH26, 1, 2);
+        else if (b[i].op == I_ADRP)  reloc_add(text, at, b[i].sym, R_PAGE21, 1, 2);
+        else if (b[i].op == I_ADDLO) reloc_add(text, at, b[i].sym, R_PAGEOFF12, 0, 2);
+        for (int k = 0; k < fn_pcount[f]; k++)       /* as que reloc() pendurou aqui */
+            if (prel_ins[p0 + k] == i)
+                reloc_add(text, at, prel_sym[p0 + k], prel_type[p0 + k],
+                          rel_pcrel(prel_type[p0 + k]), rel_len(prel_type[p0 + k]));
+        buf_u32(&sections[text].data, encode(&b[i], off[i], lab));
     }
 }
 
 /* ---- funcoes ---- */
 /* troca a base ficticia do frame por sp: endereco = x29 - off = sp + (frame - off) */
 static void fix_frame(int frame) {
-    for (int i = 0; i < nins; i++)
+    for (int i = ins_base; i < nins; i++)
         if (ibuf[i].rn == REG_FRAME) { ibuf[i].rn = REG_SP; ibuf[i].imm += frame; }
 }
 
-static void gen_func(int f, int text, bool dump) {
-    nins = 0; nlabels = 0; nlocals = 0; nloops = 0; frame_off = 0;
-    nprel = 0; pend_type = -1;
+static void gen_func(int f, int text) {
+    ins_base = nins; nlabels = 0; nlocals = 0; nloops = 0; frame_off = 0;
+    prel_base = nprel; pend_type = -1;
     for (int d = 0; d < MAXDEPTH; d++) dslot[d] = 0;
     if ((sections[text].flags & 0xff) == S_ZEROFILL) err_node(f, "funcao em secao zerofill");
     int lepi = ++nlabels;
@@ -842,12 +897,13 @@ static void gen_func(int f, int text, bool dump) {
     if (frame == 0) { ibuf[isub].op = I_NOP; ibuf[iadd].op = I_NOP; }
     fix_frame(frame);
 
-    const char *sym = usym(nodes[f].name);
-    if (dump) { out_str(1, sym); out_str(1, ":\n"); dump_buf(); }
-    buf_pad(&sections[text].data, 4);             /* cada funcao alinhada a 4 */
-    u64 base = sections[text].data.len;
-    sym_new(sym, text + 1, base, true);
-    gen_encode(text, base);
+    if (nfn == MAXFUNCS) die("funcoes demais");   /* a funcao vira uma fatia de ibuf */
+    fn_start[nfn] = ins_base;  fn_count[nfn]  = nins - ins_base;
+    fn_pstart[nfn] = prel_base; fn_pcount[nfn] = nprel - prel_base;
+    fn_labels[nfn] = nlabels;  fn_sec[nfn]    = text;
+    /* o simbolo nasce aqui (a ordem da symtab e a da baixada); o valor so em gen_encode_one */
+    fn_sym[nfn] = sym_new(usym(nodes[f].name), text + 1, 0, true);
+    nfn++;
 }
 
 /* secao de uma funcao ou global: a do #section em vigor, senao a default */
@@ -900,7 +956,7 @@ static void gen_sections(int unit) {
     for (int i = 0; i < sec_pending(); i++) secmap[i] = sec_make(i);
 }
 
-void gen_unit(int unit, bool dump) {
+void gen_lower(int unit) {
     gen_sections(unit);
     for (int f = unit; f; f = nodes[f].next) {    /* assinaturas antes dos corpos */
         int k = nodes[f].kind;
@@ -914,5 +970,30 @@ void gen_unit(int unit, bool dump) {
         if (!funcs[i].def) err_node(funcs[i].node, "prototipo sem definicao");
     gen_globals(unit);
     for (int f = unit; f; f = nodes[f].next)
-        if (nodes[f].kind == N_FUNC) gen_func(f, node_sec(f, sec_text), dump);
+        if (nodes[f].kind == N_FUNC) gen_func(f, node_sec(f, sec_text));
 }
+
+void gen_encode_all(void) { for (int f = 0; f < nfn; f++) gen_encode_one(f); }
+void gen_dump_asm(void) {
+    for (int f = 0; f < nfn; f++) {
+        out_str(1, gen_func_name(f)); out_str(1, ":\n");
+        dump_buf(f);
+    }
+}
+
+/* ---- acessoras publicas: tudo o que um backend da superficie precisa ler ---- */
+int  gen_func_count(void)         { return nfn; }
+const char *gen_func_name(int f)  { return symbols[fn_sym[f]].name; }
+int  gen_func_sec(int f)          { return fn_sec[f]; }
+int  gen_func_sym(int f)          { return fn_sym[f]; }
+int  gen_func_labels(int f)       { return fn_labels[f]; }
+int  gen_ins_count(int f)         { return fn_count[f]; }
+Ins *gen_ins_at(int f, int i)     { return &ibuf[fn_start[f] + i]; }
+int  gen_prel_count(int f)        { return fn_pcount[f]; }
+int  gen_prel_ins(int f, int k)   { return prel_ins[fn_pstart[f] + k]; }
+int  gen_prel_sym(int f, int k)   { return prel_sym[fn_pstart[f] + k]; }
+int  gen_prel_type(int f, int k)  { return prel_type[fn_pstart[f] + k]; }
+int  gen_global_count(void)       { return nglobals; }
+int  gen_global_sym(int g)        { return globals[g].sym; }
+int  gen_str_count(void)          { return nstrs; }
+int  gen_str_sym(int s)           { return strs[s].sym; }

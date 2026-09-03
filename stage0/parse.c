@@ -152,7 +152,7 @@ int opc_expand(int i, int call) {
                                    * gen_arm64.c ja e a profundidade de expressao) */
 
 static RuleEnt rules[MAXRULES]; static int nrules;
-static int gensym_n;              /* contador de __g<N>: determinista, nunca reinicia */
+static int gensym_n;              /* contador de $g<N>: determinista, nunca reinicia */
 static int rule_depth;            /* regras aninhadas na definicao de um template */
 
 /* buracos da regra sendo definida agora; bnd_txt guarda o texto com o $ */
@@ -181,13 +181,15 @@ static int name_slot(void) {
     if (r_nnames == MAXNAMES) err_at(cur.file, cur.line, "buracos de nome demais em #rule");
     return r_nnames++;
 }
-/* um nome novo por expansao: __g1, __g2, ... na ordem em que sao criados */
+/* um nome novo por expansao: $g1, $g2, ... na ordem em que sao criados. O `$`
+ * torna a captura impossivel por construcao: o lexer nunca forma um T_IDENT com
+ * `$`, entao nenhum nome escrito pelo usuario pode colidir com um gensym. */
 static const char *gensym_new(void) {
     char tmp[24]; int i = 24; i64 v = ++gensym_n;
     do { tmp[--i] = (char)('0' + v % 10); v /= 10; } while (v);
-    char *s = xalloc((size_t)(28 - i));
-    s[0] = '_'; s[1] = '_'; s[2] = 'g';
-    for (int k = i; k < 24; k++) s[3 + k - i] = tmp[k];
+    char *s = xalloc((size_t)(27 - i));
+    s[0] = '$'; s[1] = 'g';
+    for (int k = i; k < 24; k++) s[2 + k - i] = tmp[k];
     return s;
 }
 /* nome de nao-terminal no padrao; 0 = o token corrente nao e um */
@@ -662,7 +664,7 @@ static void do_rule(int line, const char *fl) {
     if (!cur_is("stmt")) err_at(fl, line, "#rule so conhece a categoria stmt");
     next();
     expect(K_COLON, "esperado : apos a categoria do #rule");
-    if (nrules == MAXRULES) die("regras demais");
+    if (nrules == MAXRULES) err_at(fl, line, "regras demais");
     nbnd = 0; r_nitems = 0; r_nholes = 0; r_nnames = 0; r_lead = 0;
     rule_def = 1;
     if (cur.id == T_IDENT && nt_kind() == IT_IDENT) {   /* `ident $x` antes do token */
@@ -696,6 +698,11 @@ static void do_rule(int line, const char *fl) {
         r_items[r_nitems++] = it;
     }
     if (r_nitems == 0) err_at(fl, line, "padrao de #rule vazio");
+    /* o literal de despacho manda no parser de statements: deixar `if`, `loop`,
+     * `return`, `i64` ... abrirem uma regra sequestraria a propria linguagem.
+     * Pontuacao continua livre (`ident $x [ expr $i ] = expr $e ;` e legitimo). */
+    if ((r_items[0] >> 3) >= K_U8 && (r_items[0] >> 3) <= K_EXTERN)
+        err_at(fl, line, "nao pode redefinir palavra-chave do nucleo");
     next();                                       /* => */
     int tmpl = parse_stmt();                      /* os $nome ja viraram buracos */
     rule_def = 0;

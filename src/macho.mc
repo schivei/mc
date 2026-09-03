@@ -232,6 +232,10 @@ i64 sym_ref(uptr name) {
     return sym_new(name, 0, 0, 1);
 }
 
+// o endereco de uma funcao so existe depois de encodar: gen_lower cria o
+// simbolo (fixando a ordem da symtab) e gen_encode_all preenche o valor
+void sym_set_value(i64 sym, i64 value) { set_sym_value(sym_at(sym), value); }
+
 void reloc_add(i64 sec, i64 off, i64 sym, i64 type, i64 pcrel, i64 len) {
     uptr s = sec_at(sec);
     if (sec_nrel(s) == sec_relcap(s)) {

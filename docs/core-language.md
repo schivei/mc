@@ -57,7 +57,8 @@ Tabela Pratt do núcleo, maior prec liga mais forte.
 | 2 | `&&` | curto-circuito obrigatório |
 | 1 | `\|\|` | curto-circuito obrigatório |
 
-Unários prefixos `- ~ !`. `&x` (endereço de local/global) — prefixo, mesma precedência de unário.
+Unários prefixos `- ~ !`. `&x` (endereço de local, global **ou função** — ver abaixo) — prefixo,
+mesma precedência de unário.
 Cast C `(u32) x` (inequívoco: depois de `(` vem palavra-chave de tipo) — `and`/`mov wd,wn` para
 mascarar u8/u16/u32. Atribuição `x = e` (só `=`, sem `+=` nativo).
 
@@ -79,6 +80,39 @@ if (neg / 2 != 0 - 4) return 5;                                    // i64 contin
 
 `ld8 ld16 ld32 ld64` (leitura, zero-extend) e `st8 st16 st32 st64(p, v)` (escrita). Não existe `*p`
 nem `p->f`: acesso é sempre por largura explícita. Nome de array decai para `uptr` automaticamente.
+
+## `&funcao` e `callp` — ponteiro de função (M10)
+
+O núcleo não tem tipo de função: um ponteiro de função é um `uptr` como qualquer outro, e a chamada
+indireta é uma intrinsic. São as duas peças que o Tier 2 (`pass()`/`backend()`) precisa.
+
+**`&nome` onde `nome` é uma função ou um `extern`** dá o endereço do símbolo `_nome`: `adrp`/`add`
+com as relocações `PAGE21` + `PAGEOFF12`, do mesmo jeito que `&global`. Se o nome veio de um
+`extern`, o símbolo sai **indefinido externo** no `.o`. `&local`, `&global` e `&funcao` são a mesma
+sintaxe: o codegen procura local, depois global, depois a tabela de assinaturas, e só então erra
+`nome desconhecido`.
+
+**`callp(p, a1, ..., a7)`** chama o endereço `p`: os argumentos `a1..a7` vão para `x0..x6`, o
+ponteiro vai para `x16` (IP0 — caller-saved e fora de `x0..x7`, então nenhum argumento o atropela)
+e a chamada é `blr x16`. O salvamento das profundidades vivas é o mesmo de um `bl` normal. O
+resultado é `x0` e o tipo do resultado é `i64` — se a função chamada devolve outra coisa, cabe a
+quem escreve converter. Aridade de 1 a 8 (o ponteiro conta): sete argumentos é o máximo.
+
+```c
+i64 add2(i64 a) { return a + 2; }
+uptr tbl[2];
+
+i64 main() {
+    st64(tbl, &add2);                 // guarda o endereco de add2 na tabela
+    return callp(ld64(tbl), 40);      // add2(40) = 42
+}
+```
+
+Testado em `tests/060-callp.mc` (tabela de `uptr` com `&add2`/`&mul2`, chamada de 7 argumentos,
+exit 42). **Limite conhecido:** `&nome` de um `extern` que mora numa dylib (`&write` da libSystem)
+gera o `.o` correto, mas o `ld` recusa o link — um símbolo importado só tem endereço via `__got`,
+e o núcleo ainda não emite relocação `GOT_LOAD_PAGE21` (é assunto do M11). Com um `extern`
+resolvido por outro `.o` do mesmo link, `&nome` funciona.
 
 ## Arrays
 

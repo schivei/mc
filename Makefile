@@ -43,7 +43,12 @@ check-obj: build/mc0 build/mc1
 bootstrap: stage0
 	scripts/bootstrap.sh
 
-check: budget test check-lex check-ast check-asm check-obj bootstrap
+# M10: liga lib/user_demo.mc em src/user.mc, recompila e compara o backend da
+# superficie com o embutido. Devolve src/user.mc como estava.
+check-surface: build/mc0
+	scripts/check-surface.sh build/mc0
+
+check: budget test check-lex check-ast check-asm check-obj bootstrap check-surface
 
 budget:
 	scripts/loc-budget.sh $(BUDGET)
@@ -51,4 +56,4 @@ budget:
 clean:
 	rm -rf build
 
-.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check budget clean
+.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface check budget clean

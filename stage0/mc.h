@@ -143,7 +143,8 @@ enum { I_LABEL = 0, I_MOVZ, I_MOVK, I_MOVN, I_MOV, I_MOVW, I_ADD, I_SUB, I_MUL,
        I_ASRV, I_CMP, I_CMPI, I_CSET, I_ANDI, I_ADDI, I_SUBI, I_STP_PRE, I_LDP_POST,
        I_RET, I_B, I_BCOND, I_CBZ, I_CBNZ, I_BL, I_ADRP, I_ADDLO,
        I_LDR, I_STR, I_LDRB, I_STRB, I_LDRH, I_STRH, I_LDRW, I_STRW, I_EMIT,
-       I_NOP };            /* I_NOP: apagada no fixup do frame, nao gera palavra */
+       I_NOP,              /* I_NOP: apagada no fixup do frame, nao gera palavra */
+       I_BLR };            /* blr xN: chamada indireta do callp */
 /* condicoes AArch64 usadas pelo M1 */
 enum { C_EQ = 0, C_NE = 1, C_GE = 10, C_LT = 11, C_GT = 12, C_LE = 13 };
 /* local/parametro: endereco = x29 - off; nelem > 0 marca array */
@@ -155,7 +156,28 @@ typedef struct { const char *bytes; int len, sym; } StrEnt;
 /* assinatura do arquivo (N_FUNC, N_EXTERN ou N_PROTO), registrada antes dos corpos.
  * def = 0 enquanto so ha prototipo; node e o no que a declarou (para o erro final) */
 typedef struct { const char *name; int type, nparams, def, node; } FuncSig;
-void gen_unit(int funcs, bool dump);
+/* o gen tem duas metades: gen_lower baixa a AST para os buffers Ins de cada
+ * funcao (sem encodar) e gen_encode_all escreve as palavras no __text. O backend
+ * embutido `macho` e gen_lower + gen_encode_all + macho_write; um backend da
+ * superficie substitui a segunda metade usando so as acessoras abaixo. */
+void gen_lower(int unit);
+void gen_encode_all(void);
+void gen_dump_asm(void);
+int  gen_func_count(void);
+const char *gen_func_name(int f);   /* nome do simbolo da funcao (ja com _) */
+int  gen_func_sec(int f);
+int  gen_func_sym(int f);
+int  gen_func_labels(int f);        /* quantos labels a funcao usou */
+int  gen_ins_count(int f);
+Ins *gen_ins_at(int f, int i);
+int  gen_prel_count(int f);         /* relocacoes cruas de reloc() na funcao */
+int  gen_prel_ins(int f, int k);    /* indice da instrucao, relativo a funcao */
+int  gen_prel_sym(int f, int k);
+int  gen_prel_type(int f, int k);
+int  gen_global_count(void);
+int  gen_global_sym(int g);
+int  gen_str_count(void);
+int  gen_str_sym(int s);
 
 /* ---- modelo de objeto (macho.c) ---- */
 enum { R_UNSIGNED = 0, R_SUBTRACTOR = 1, R_BRANCH26 = 2, R_PAGE21 = 3,
@@ -186,6 +208,7 @@ int  sec_find(const char *seg, const char *sect);
 int  sym_new(const char *name, int sect, u64 value, bool global);
 int  sym_find(const char *name);
 int  sym_ref(const char *name);            /* acha ou cria indefinido */
+void sym_set_value(int sym, u64 value);    /* o valor so e conhecido ao encodar */
 void reloc_add(int sec, u32 off, int sym, int type, int pcrel, int len);
 /* ordem final da symtab (particao estavel): order[k] = indice de criacao */
 void sym_order(int *order, int *pos, int *count);

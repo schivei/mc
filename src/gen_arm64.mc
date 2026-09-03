@@ -54,7 +54,7 @@
 #define MAXLOOPS  32
 #define MAXGLOBALS 256
 #define MAXSTRS    512
-#define MAXPREL    64                 // relocacoes de reloc() por funcao
+#define MAXPREL   512                 // relocacoes de reloc() do modulo inteiro
 
 // ---- enum completo do plano; o encoder so implementa o que usa ----
 #define I_LABEL    0
@@ -103,6 +103,7 @@
 #define I_STRW    43
 #define I_EMIT    44
 #define I_NOP     45                  // apagada no fixup do frame, nao gera palavra
+#define I_BLR     46                  // blr xN: chamada indireta do callp
 
 // condicoes AArch64 usadas pelo M1
 #define C_EQ  0
@@ -116,14 +117,15 @@
 #define IN_NONE  0
 #define IN_EMIT  1
 #define IN_RELOC 2
-#define IN_LD8   3
-#define IN_LD16  4
-#define IN_LD32  5
-#define IN_LD64  6
-#define IN_ST8   7
-#define IN_ST16  8
-#define IN_ST32  9
-#define IN_ST64 10
+#define IN_CALLP 3
+#define IN_LD8   4
+#define IN_LD16  5
+#define IN_LD32  6
+#define IN_LD64  7
+#define IN_ST8   8
+#define IN_ST16  9
+#define IN_ST32 10
+#define IN_ST64 11
 
 // ---- Ins ----
 #define INS_OP    0
@@ -185,6 +187,18 @@ i64 nprel = 0;
 i64 pend_type = -1;
 i64 pend_sym = 0;
 i64 pend_node = 0;
+
+// ---- funcoes ja baixadas: ibuf e append-only e cada funcao e uma fatia dele ----
+i64 fn_start[MAXFUNCS];
+i64 fn_count[MAXFUNCS];
+i64 fn_labels[MAXFUNCS];
+i64 fn_sec[MAXFUNCS];
+i64 fn_sym[MAXFUNCS];
+i64 fn_pstart[MAXFUNCS];
+i64 fn_pcount[MAXFUNCS];
+i64 nfn = 0;
+i64 ins_base = 0;                     // inicio da funcao atual em ibuf
+i64 prel_base = 0;                    // inicio da funcao atual em prel_*
 
 // assinaturas de todo o arquivo (N_FUNC e N_EXTERN), registradas antes dos corpos
 u8  funcs[MAXFUNCS * FS_SIZE];
@@ -277,6 +291,20 @@ i64  prel_type_at(i64 i)  { return ld64(prel_type + i * 8); }
 void set_prel_type_at(i64 i, i64 v) { st64(prel_type + i * 8, v); }
 i64  secmap_at(i64 i)     { return ld64(secmap + i * 8); }
 void set_secmap_at(i64 i, i64 v) { st64(secmap + i * 8, v); }
+i64  fn_start_at(i64 i)   { return ld64(fn_start + i * 8); }
+void set_fn_start_at(i64 i, i64 v) { st64(fn_start + i * 8, v); }
+i64  fn_count_at(i64 i)   { return ld64(fn_count + i * 8); }
+void set_fn_count_at(i64 i, i64 v) { st64(fn_count + i * 8, v); }
+i64  fn_labels_at(i64 i)  { return ld64(fn_labels + i * 8); }
+void set_fn_labels_at(i64 i, i64 v) { st64(fn_labels + i * 8, v); }
+i64  fn_sec_at(i64 i)     { return ld64(fn_sec + i * 8); }
+void set_fn_sec_at(i64 i, i64 v) { st64(fn_sec + i * 8, v); }
+i64  fn_sym_at(i64 i)     { return ld64(fn_sym + i * 8); }
+void set_fn_sym_at(i64 i, i64 v) { st64(fn_sym + i * 8, v); }
+i64  fn_pstart_at(i64 i)  { return ld64(fn_pstart + i * 8); }
+void set_fn_pstart_at(i64 i, i64 v) { st64(fn_pstart + i * 8, v); }
+i64  fn_pcount_at(i64 i)  { return ld64(fn_pcount + i * 8); }
+void set_fn_pcount_at(i64 i, i64 v) { st64(fn_pcount + i * 8, v); }
 // vetores de i64 que gen_encode aloca na arena (off e lab)
 i64  ivec_at(uptr v, i64 i)          { return ld64(v + i * 8); }
 void set_ivec_at(uptr v, i64 i, i64 x) { st64(v + i * 8, x); }
@@ -574,6 +602,7 @@ void gen_gaddr(i64 rd, i64 sym) {
 i64 intrin_id(uptr name) {
     if (str_eq(name, "emit"))  return IN_EMIT;
     if (str_eq(name, "reloc")) return IN_RELOC;
+    if (str_eq(name, "callp")) return IN_CALLP;
     if (str_eq(name, "ld8"))  return IN_LD8;
     if (str_eq(name, "ld16")) return IN_LD16;
     if (str_eq(name, "ld32")) return IN_LD32;
@@ -726,11 +755,21 @@ void gen_ident(i64 n, i64 depth) {
     dst_done(depth, rd);
 }
 
+// &nome: local, global ou — novo no M10 — funcao/extern, que vira o endereco do
+// simbolo `_nome` (adrp/add, com PAGE21+PAGEOFF12; indefinido quando extern)
 void gen_addr(i64 n, i64 depth) {
     i64 rd = dst_reg(depth);
-    i64 i = name_find(n);
+    i64 i = local_find(nd_name(n));
     if (i >= 0) ei(I_ADDI, rd, REG_FRAME, 0 - loc_off(loc_at(i)));
-    else        gen_gaddr(rd, glb_sym(glb_at(0 - i - 1)));
+    else {
+        i64 g = global_find(nd_name(n));
+        if (g >= 0) gen_gaddr(rd, glb_sym(glb_at(g)));
+        else {
+            i64 fi = func_find(nd_name(n));
+            if (fi < 0) err_node(n, "nome desconhecido");
+            gen_gaddr(rd, sym_ref(usym(fs_name(fs_at(fi)))));
+        }
+    }
     set_nd_type(n, TY_UPTR);
     dst_done(depth, rd);
 }
@@ -783,8 +822,8 @@ void gen_intrin(i64 n, i64 depth, i64 in) {
 void gen_word(i64 n, i64 w) {
     if (w < 0 || w > 0xffffffff) err_node(n, "palavra emitida nao cabe em 32 bits");
     if (pend_type >= 0) {                        // a relocacao pendente cola nesta palavra
-        if (nprel == MAXPREL) die("relocacoes cruas demais na funcao");
-        set_prel_ins_at(nprel, nins);
+        if (nprel == MAXPREL) die("relocacoes cruas demais");
+        set_prel_ins_at(nprel, nins - ins_base);  // indice relativo a funcao
         set_prel_sym_at(nprel, pend_sym);
         set_prel_type_at(nprel, pend_type);
         nprel = nprel + 1;
@@ -823,11 +862,67 @@ void gen_reloc(i64 n) {
     set_nd_type(n, TY_VOID);
 }
 
+// salva as profundidades vivas (as que estao em registrador) antes de uma chamada
+void save_live(i64 depth) {
+    i64 d = 0;
+    loop {
+        if (d >= depth || !in_reg(d)) break;
+        em(I_STR, REG_BASE + d, REG_FRAME, 0 - slot_depth(d));
+        d = d + 1;
+    }
+}
+void restore_live(i64 depth) {
+    i64 d = 0;
+    loop {
+        if (d >= depth || !in_reg(d)) break;
+        em(I_LDR, REG_BASE + d, REG_FRAME, 0 - slot_depth(d));
+        d = d + 1;
+    }
+}
+// leva a profundidade d para o registrador r (da ABI ou o x16 do callp)
+void arg_to_reg(i64 r, i64 d) {
+    if (in_reg(d)) e2(I_MOV, r, REG_BASE + d);
+    else           em(I_LDR, r, REG_FRAME, 0 - slot_depth(d));
+}
+
+// callp(p, a1..a7): args em x0..x6, ponteiro em x16 (fora da ABI), blr x16.
+// Mesmo salvamento das profundidades vivas do bl; resultado i64 em x0.
+void gen_callp(i64 n, i64 depth) {
+    i64 na = arg_count(n);
+    if (na < 1 || na > MAXPARAMS) err_node(n, "callp espera de 1 a 8 argumentos");
+    i64 i = 0;
+    i64 a = nd_a(n);
+    loop {
+        if (a == 0) break;
+        gen_value(a, depth + i);
+        i = i + 1;
+        a = nd_next(a);
+    }
+    save_live(depth);
+    i = 0;                                       // o ponteiro (arg 0) vai para x16
+    a = nd_a(n);
+    loop {
+        if (a == 0) break;
+        i64 r = REG_S1;
+        if (i) r = i - 1;
+        arg_to_reg(r, depth + i);
+        i = i + 1;
+        a = nd_next(a);
+    }
+    ins_add(I_BLR, REG_S1, 0, 0, 0, 0, 0);
+    restore_live(depth);
+    i64 rd = dst_reg(depth);
+    e2(I_MOV, rd, 0);
+    dst_done(depth, rd);
+    set_nd_type(n, TY_I64);
+}
+
 // chamada: args nas profundidades cur..cur+n-1, salvamento dos vivos, bl, resultado
 void gen_call(i64 n, i64 depth) {
     i64 in = intrin_id(nd_name(n));
     if (in == IN_EMIT)  { gen_emit(n);  return; }
     if (in == IN_RELOC) { gen_reloc(n); return; }
+    if (in == IN_CALLP) { gen_callp(n, depth); return; }
     if (in) { gen_intrin(n, depth, in); return; }
     i64 oi = opc_find(nd_name(n));
     if (oi >= 0) { gen_opcode(n, oi); return; }
@@ -842,28 +937,17 @@ void gen_call(i64 n, i64 depth) {
         i = i + 1;
         a = nd_next(a);
     }
-    i64 d = 0;
-    loop {                                       // vivos: profundidades abaixo
-        if (d >= depth || !in_reg(d)) break;
-        em(I_STR, REG_BASE + d, REG_FRAME, 0 - slot_depth(d));
-        d = d + 1;
-    }
+    save_live(depth);                            // vivos: profundidades abaixo
     i = 0;
     a = nd_a(n);
     loop {
         if (a == 0) break;
-        if (in_reg(depth + i)) e2(I_MOV, i, REG_BASE + depth + i);
-        else                   em(I_LDR, i, REG_FRAME, 0 - slot_depth(depth + i));
+        arg_to_reg(i, depth + i);
         i = i + 1;
         a = nd_next(a);
     }
     ins_add(I_BL, 0, 0, 0, 0, 0, sym_ref(usym(fs_name(fs_at(fi)))));
-    d = 0;
-    loop {
-        if (d >= depth || !in_reg(d)) break;
-        em(I_LDR, REG_BASE + d, REG_FRAME, 0 - slot_depth(d));
-        d = d + 1;
-    }
+    restore_live(depth);
     i64 rd = dst_reg(depth);
     e2(I_MOV, rd, 0);
     dst_done(depth, rd);
@@ -1128,24 +1212,27 @@ void dump_ins(uptr in) {
                         d_reg(ins_rd(in));
                         out_str(1, ", L"); out_num(1, ins_label(in)); out_str(1, "\n"); return; }
     if (op == I_EMIT) { d_word((u32) ins_imm(in)); return; }
+    if (op == I_BLR)  { d_head("blr"); d_reg(ins_rd(in)); out_str(1, "\n"); return; }
     die("instrucao sem dump");
 }
 
 // o buffer com as relocacoes de reloc() antes da palavra em que cada uma cola
-void dump_buf() {
+void dump_buf(i64 f) {
+    i64 p0 = fn_pstart_at(f);
     i64 k = 0;
     loop {
-        if (k >= nins) break;
+        if (k >= fn_count_at(f)) break;
         i64 j = 0;
         loop {
-            if (j >= nprel) break;
-            if (prel_ins_at(j) == k) {
-                out_str(1, "  .reloc "); out_str(1, rel_name(prel_type_at(j)));
-                out_str(1, " "); out_str(1, sym_name(sym_at(prel_sym_at(j)))); out_str(1, "\n");
+            if (j >= fn_pcount_at(f)) break;
+            if (prel_ins_at(p0 + j) == k) {
+                out_str(1, "  .reloc "); out_str(1, rel_name(prel_type_at(p0 + j)));
+                out_str(1, " "); out_str(1, sym_name(sym_at(prel_sym_at(p0 + j))));
+                out_str(1, "\n");
             }
             j = j + 1;
         }
-        dump_ins(ins_at(k));
+        dump_ins(ins_at(fn_start_at(f) + k));
         k = k + 1;
     }
 }
@@ -1229,18 +1316,28 @@ i64 encode(uptr in, i64 pc, uptr lab) {
     if (op == I_ADRP)  return 0x90000000 | rd;
     if (op == I_ADDLO) return 0x91000000 | (rn << 5) | rd;
     if (op == I_EMIT)  return im;
+    if (op == I_BLR)   return 0xD63F0000 | (rd << 5);
     die("instrucao sem encoder");
     return 0;
 }
 
-void gen_encode(i64 text, i64 base) {
-    uptr off = xalloc(8 * (nins + 1));
-    uptr lab = xalloc(8 * (nlabels + 2));
+// encoda a funcao f: reserva o lugar dela no __text, fixa o valor do simbolo e
+// escreve as palavras. E a segunda metade do gen — a que um backend substitui.
+void gen_encode_one(i64 f) {
+    i64 b = fn_start_at(f);
+    i64 n = fn_count_at(f);
+    i64 text = fn_sec_at(f);
+    i64 p0 = fn_pstart_at(f);
+    uptr off = xalloc(8 * (n + 1));
+    uptr lab = xalloc(8 * (fn_labels_at(f) + 2));
+    buf_pad(sec_data(sec_at(text)), 4);              // cada funcao alinhada a 4
+    i64 base = buf_len(sec_data(sec_at(text)));
+    sym_set_value(fn_sym_at(f), base);
     i64 pc = 0;
     i64 i = 0;
     loop {                                           // passada 1: offsets e labels
-        if (i >= nins) break;
-        uptr e = ins_at(i);
+        if (i >= n) break;
+        uptr e = ins_at(b + i);
         set_ivec_at(off, i, pc);
         if (ins_op(e) == I_LABEL) set_ivec_at(lab, ins_label(e), pc);
         else if (ins_op(e) != I_NOP) pc = pc + 4;
@@ -1248,8 +1345,8 @@ void gen_encode(i64 text, i64 base) {
     }
     i = 0;
     loop {                                           // passada 2: palavras e relocacoes
-        if (i >= nins) break;
-        uptr e = ins_at(i);
+        if (i >= n) break;
+        uptr e = ins_at(b + i);
         if (ins_op(e) != I_LABEL && ins_op(e) != I_NOP) {
             i64 at = (u32) (base + ivec_at(off, i));
             // estas tres sempre carregam simbolo; 0 e um indice valido, entao quem
@@ -1259,10 +1356,10 @@ void gen_encode(i64 text, i64 base) {
             else if (ins_op(e) == I_ADDLO) reloc_add(text, at, ins_sym(e), R_PAGEOFF12, 0, 2);
             i64 k = 0;
             loop {                                   // as que reloc() pendurou aqui
-                if (k >= nprel) break;
-                if (prel_ins_at(k) == i)
-                    reloc_add(text, at, prel_sym_at(k), prel_type_at(k),
-                              relt_pcrel(prel_type_at(k)), relt_len(prel_type_at(k)));
+                if (k >= fn_pcount_at(f)) break;
+                if (prel_ins_at(p0 + k) == i)
+                    reloc_add(text, at, prel_sym_at(p0 + k), prel_type_at(p0 + k),
+                              relt_pcrel(prel_type_at(p0 + k)), relt_len(prel_type_at(p0 + k)));
                 k = k + 1;
             }
             buf_u32(sec_data(sec_at(text)), encode(e, ivec_at(off, i), lab));
@@ -1274,7 +1371,7 @@ void gen_encode(i64 text, i64 base) {
 // ---- funcoes ----
 // troca a base ficticia do frame por sp: endereco = x29 - off = sp + (frame - off)
 void fix_frame(i64 frame) {
-    i64 i = 0;
+    i64 i = ins_base;
     loop {
         if (i >= nins) break;
         uptr e = ins_at(i);
@@ -1286,9 +1383,9 @@ void fix_frame(i64 frame) {
     }
 }
 
-void gen_func(i64 f, i64 text, i64 dump) {
-    nins = 0; nlabels = 0; nlocals = 0; nloops = 0; frame_off = 0;
-    nprel = 0; pend_type = -1;
+void gen_func(i64 f, i64 text) {
+    ins_base = nins; nlabels = 0; nlocals = 0; nloops = 0; frame_off = 0;
+    prel_base = nprel; pend_type = -1;
     i64 d = 0;
     loop {
         if (d >= MAXDEPTH) break;
@@ -1328,12 +1425,16 @@ void gen_func(i64 f, i64 text, i64 dump) {
     if (frame == 0) { set_ins_op(ins_at(isub), I_NOP); set_ins_op(ins_at(iadd), I_NOP); }
     fix_frame(frame);
 
-    uptr sym = usym(nd_name(f));
-    if (dump) { out_str(1, sym); out_str(1, ":\n"); dump_buf(); }
-    buf_pad(sec_data(sec_at(text)), 4);          // cada funcao alinhada a 4
-    i64 base = buf_len(sec_data(sec_at(text)));
-    sym_new(sym, text + 1, base, 1);
-    gen_encode(text, base);
+    if (nfn == MAXFUNCS) die("funcoes demais");  // a funcao vira uma fatia de ibuf
+    set_fn_start_at(nfn, ins_base);
+    set_fn_count_at(nfn, nins - ins_base);
+    set_fn_pstart_at(nfn, prel_base);
+    set_fn_pcount_at(nfn, nprel - prel_base);
+    set_fn_labels_at(nfn, nlabels);
+    set_fn_sec_at(nfn, text);
+    // o simbolo nasce aqui (a ordem da symtab e a da baixada); o valor so em gen_encode_one
+    set_fn_sym_at(nfn, sym_new(usym(nd_name(f)), text + 1, 0, 1));
+    nfn = nfn + 1;
 }
 
 // secao de uma funcao ou global: a do #section em vigor, senao a default
@@ -1421,7 +1522,7 @@ void gen_sections(i64 unit) {
     }
 }
 
-void gen_unit(i64 unit, i64 dump) {
+void gen_lower(i64 unit) {
     gen_sections(unit);
     i64 f = unit;
     loop {                                        // assinaturas antes dos corpos
@@ -1452,7 +1553,43 @@ void gen_unit(i64 unit, i64 dump) {
     f = unit;
     loop {
         if (f == 0) break;
-        if (nd_kind(f) == N_FUNC) gen_func(f, node_sec(f, isec_text), dump);
+        if (nd_kind(f) == N_FUNC) gen_func(f, node_sec(f, isec_text));
         f = nd_next(f);
     }
 }
+
+void gen_encode_all() {
+    i64 f = 0;
+    loop {
+        if (f >= nfn) break;
+        gen_encode_one(f);
+        f = f + 1;
+    }
+}
+
+void gen_dump_asm() {
+    i64 f = 0;
+    loop {
+        if (f >= nfn) break;
+        out_str(1, gen_func_name(f)); out_str(1, ":\n");
+        dump_buf(f);
+        f = f + 1;
+    }
+}
+
+// ---- acessoras publicas: tudo o que um backend da superficie precisa ler ----
+i64  gen_func_count()            { return nfn; }
+uptr gen_func_name(i64 f)        { return sym_name(sym_at(fn_sym_at(f))); }
+i64  gen_func_sec(i64 f)         { return fn_sec_at(f); }
+i64  gen_func_sym(i64 f)         { return fn_sym_at(f); }
+i64  gen_func_labels(i64 f)      { return fn_labels_at(f); }
+i64  gen_ins_count(i64 f)        { return fn_count_at(f); }
+uptr gen_ins_at(i64 f, i64 i)    { return ins_at(fn_start_at(f) + i); }
+i64  gen_prel_count(i64 f)       { return fn_pcount_at(f); }
+i64  gen_prel_ins(i64 f, i64 k)  { return prel_ins_at(fn_pstart_at(f) + k); }
+i64  gen_prel_sym(i64 f, i64 k)  { return prel_sym_at(fn_pstart_at(f) + k); }
+i64  gen_prel_type(i64 f, i64 k) { return prel_type_at(fn_pstart_at(f) + k); }
+i64  gen_global_count()          { return nglobals; }
+i64  gen_global_sym(i64 g)       { return glb_sym(glb_at(g)); }
+i64  gen_str_count()             { return nstrs; }
+i64  gen_str_sym(i64 s)          { return ste_sym(ste_at(s)); }

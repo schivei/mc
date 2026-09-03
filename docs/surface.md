@@ -1,10 +1,12 @@
 # surface.md — superfície de ensino
 
-Fonte: `docs/plan.md` § "Superfície de ensino" e `docs/specs/M1.md`/`M5.md`/`M5.5.md`/`M9.md`.
-Estado neste marco (**M9 fechado**): `#token`, `#infix`/`#prefix`, `#rule`, `#section`, `#opcode`,
+Fonte: `docs/plan.md` § "Superfície de ensino" e
+`docs/specs/M1.md`/`M5.md`/`M5.5.md`/`M9.md`/`M10.md`.
+Estado neste marco (**M10 fechado**): `#token`, `#infix`/`#prefix`, `#rule`, `#section`, `#opcode`,
 `emit()`/`reloc()` implementados e testados de verdade com `build/mc0` **e** com o compilador
 auto-hospedado `build/mc1` (o mecanismo existe nos dois lados: `stage0/parse.c` e `src/parse.mc`).
-Só o Tier 2 programático (`pass()`/`backend()`) continua **planejado** — ver a seção marcada no fim.
+O Tier 2 programático (`pass()`/`backend()`) também está **implementado**, mas só no compilador
+em `.mc` — o stage0 em C é a semente e não é ensinável por Tier 2. Ver a seção no fim.
 
 ## Tier 1 — diretivas `#...`
 
@@ -64,14 +66,57 @@ Depois do `ident $x` de abertura, o próximo item tem de ser um literal.
 a expansão troca o marcador pelo nome real. É o que permite `$x` aparecer onde a AST guarda um
 nome e não um nó — esquerda de atribuição (`$x = ...`) e declaração de local (`i64 $$t = ...`).
 
-**Higiene: só gensym.** `$$nome` no template vira um local novo por expansão, `__g1`, `__g2`, ...
-(contador global, determinístico). Duas expansões da mesma regra no mesmo bloco não colidem —
+**Higiene: só gensym.** `$$nome` no template vira um local novo por expansão, `$g1`, `$g2`, ...
+(contador global, determinístico). O `$` no nome não é decoração: o lexer nunca forma um
+identificador com `$`, então **nenhum nome escrito pelo usuário pode colidir com um gensym** — a
+captura é impossível por construção, não apenas improvável. (Até o M9 o prefixo era `__g`, que é um
+identificador legal: `i64 __g1 = 42; mk(1); return __g1;` devolvia o valor do gensym. É o caso de
+`tests/056-gensym-nocapture.mc`.) Duas expansões da mesma regra no mesmo bloco também não colidem —
 `tests/053-gensym.mc`:
 
 ```c
 #rule stmt: swap ( ident $a , ident $b ) ;
     => { i64 $$t = $a; $a = $b; $b = $$t; }
 ```
+
+**O literal de despacho não pode ser palavra-chave do núcleo.** Os tipos (`u8`..`void`) e as
+palavras de controle (`if`, `else`, `loop`, `break`, `continue`, `return`, `extern`) são recusadas
+com `nao pode redefinir palavra-chave do nucleo`: uma regra aberta por `if` sequestraria o parser de
+statements do próprio núcleo, e nada mais no arquivo voltaria a compilar. Pontuação continua livre
+— `#rule stmt: ident $x [ expr $i ] = expr $e ;` é legítimo, e um `#token` novo também.
+
+```
+$ build/mc0 hijack.mc -o x.o          # #rule stmt: if ( expr $c ) block $b => ...
+hijack.mc:1: nao pode redefinir palavra-chave do nucleo
+```
+
+**Dois modos de falha que valem conhecer.**
+
+1. *O literal composto precisa de `#token` antes.* Um padrão que abre (ou continua) com `+=` sem
+   um `#token "+="` anterior não vê `+=` coisa nenhuma: o lexer entrega `+` e `=`, o `+` já é
+   infixo, e o Pratt consome `a +` procurando o operando da direita antes de qualquer despacho.
+   O erro sai longe da causa:
+
+   ```
+   $ build/mc0 noplus.mc -o x.o       # #rule stmt: ident $x += expr $e ;  (sem #token)
+   noplus.mc:3: expressao esperada
+   ```
+
+   Com `#token "+="` na frente, a mesma regra funciona (é o que `lib/prelude.mc` faz).
+
+2. *A palavra de abertura vira palavra-chave para o resto da unidade — inclusive sobre nomes já
+   declarados.* `tok_add` registra o identificador na tabela do lexer; dali em diante ele nunca
+   mais é um `T_IDENT`. Uma função `repeat` declarada **antes** de `#rule stmt: repeat ...`
+   continua no `.o` (o símbolo `_repeat` existe), mas ninguém consegue mais chamá-la: a chamada
+   deixa de ser uma expressão.
+
+   ```
+   $ build/mc0 kw2.mc -o x.o          # i64 repeat(...) ...; #rule stmt: repeat ...
+   kw2.mc:3: expressao esperada      #  ... i64 x = repeat(7);
+   ```
+
+   É a mesma regra de `tests/err/055-keyword.mc`, vista do outro lado: lá o nome é declarado
+   depois da regra, aqui antes. Escolha palavras de abertura que você não pretende usar como nome.
 
 **Regra que usa regra.** O template é parseado com o parser que já conhece as regras anteriores,
 então `#rule` sobre `while` funciona naturalmente e a expansão acontece **na definição**
@@ -247,21 +292,124 @@ token literal de despacho (é o que `+=`/`++` exigem, e é a forma que o própri
 usa nos exemplos). O despacho continua sendo por token literal e continua sem backtracking — o
 nome já foi lido como expressão quando o token aparece.
 
-## Tier 2 — programático (stage1+, custo zero em C) — planejado
+## Tier 2 — programático (`pass()` / `backend()`) — implementado (M10)
 
-A partir de M6 o compilador é escrito em `.mc`; um pass de AST ou um backend novo passa a ser só um
-módulo `.mc` incluído via `#include` que chama `pass(fn)` / `backend("nome", fn)` na inicialização.
-Recompilar `mc` com esse módulo **é** ensinar o compilador — sem interpretador, sem dylib, sem ABI
-de plugin.
+Do M6 em diante o compilador é escrito em `.mc`. Um pass de AST ou um backend novo é, por isso,
+**só um módulo `.mc` compilado junto com o compilador**: sem interpretador, sem dylib, sem ABI de
+plugin. Ensinar o compilador é editar um arquivo e rodar `make mc1`.
 
-A AST é dado plano em arena com offsets `#define`; os primitivos de saída são funções comuns:
-`sec_new(seg, sect, flags)`, `sym_def(name, sec, off, global)`, `reloc_add(sec, off, sym, type,
-pcrel, len)`, `emit_u32(sec, w)`. Um backend na superfície é só código `.mc` que os chama.
+### O passo a passo real
 
-Estado hoje: os primitivos já existem em C e são usados internamente pelo próprio stage0 desde M0 —
-`sec_new`, `sym_new`, `reloc_add` em `stage0/macho.c` (`sym_def`/`emit_u32` do plano correspondem a
-`sym_new`/`buf_u32` na implementação atual), e desde M5 também por `#section`/`#opcode`/`emit`/
-`reloc` do lado da superfície (mesmas funções, chamadas pelo parser em vez de só internamente). A
-versão `.mc` desses primitivos e `pass()`/`backend()` como conceito da superfície continuam
-planejados para stage1+ (M6 em diante); `backend("asm", fn)` concreto, comparado byte a byte com o
-`__text` embutido, é o critério de aceite do **M10**.
+1. **Escreva o módulo** em `lib/` (ou onde quiser). Ele define suas funções e um `user_init` que as
+   registra:
+
+   ```c
+   // lib/user_demo.mc
+   #include "backend_arm64.mc"
+   #include "pass_demo.mc"
+
+   void user_init() {
+       backend("arm64-surface", &sur_backend);   // --backend=arm64-surface
+       pass(&pass_mul1);                          // roda sobre a AST de todo fonte
+   }
+   ```
+
+2. **Ligue o módulo** trocando o `#include` de `src/user.mc` — é a única costura entre o compilador
+   e quem o ensina:
+
+   ```c
+   // src/user.mc
+   #include "../lib/user_demo.mc"      // no default: ../lib/user_default.mc
+   ```
+
+3. **Recompile o compilador**: `make mc1`. O `build/mc1` que sai já tem o pass e o backend dentro.
+
+4. **Use**: `build/mc1 --backend=arm64-surface prog.mc -o prog.o`. Sem `--backend=`, o default é o
+   backend embutido `macho`. Um nome desconhecido é erro e lista o que existe:
+
+   ```
+   $ build/mc1 --backend=xyz tests/001-return42.mc -o x.o
+   backend desconhecido: xyz
+   registrados: macho arm64-surface
+   ```
+
+`make check-surface` faz os passos 2–4 sozinho (liga o demo, recompila em `build/mc1s`, compara os
+objetos, e devolve `src/user.mc` como estava). O default do repositório é `lib/user_default.mc`,
+com `void user_init() { }`: a demonstração é **opt-in**.
+
+### As duas assinaturas
+
+| registro | assinatura do que você escreve | quando roda |
+|---|---|---|
+| `pass(&f)` | `i64 f(i64 root)` — devolve a raiz (a mesma ou outra) | logo depois de `parse_unit`, antes de `fold` e de `--dump-ast` |
+| `backend("nome", &f)` | `void f(i64 root, uptr out)` | no lugar do `macho`, quando `--backend=nome` |
+
+As duas entram como `uptr` (o que `&nome` produz) e são chamadas com `callp` — ver
+`docs/core-language.md` § `&funcao` e `callp`. As tabelas em `src/hooks.mc` são lineares e
+percorridas na ordem de registro: os passes rodam na ordem em que foram registrados; para backends
+de mesmo nome, o último registro vence.
+
+O pass roda **antes** de `fold` (e portanto antes de `--dump-ast`): assim o pass vê a árvore com a
+forma do fonte, e a dobra de constantes limpa o que o pass produzir. É por isso que
+`--dump-ast tests/061-pass.mc` muda quando o demo está ligado.
+
+### O gen em duas metades
+
+O backend embutido `macho` é literalmente `gen_lower` + `gen_encode_all` + `macho_write`:
+
+- **`gen_lower(root)`** baixa a AST para um buffer `Ins` por função (o mesmo que `--dump-asm`
+  imprime), cria seções, aloca globais, emite as strings em `__cstring` e cria os símbolos — mas
+  **não encoda nada**. O `__text` continua vazio.
+- **`gen_encode_all()`** percorre as funções, alinha cada uma a 4, fixa o valor do símbolo, resolve
+  os labels e escreve as palavras de 32 bits com as relocações.
+
+Um backend da superfície chama `gen_lower` e substitui a segunda metade. Para isso ele lê o buffer
+pelas acessoras públicas de `src/gen_arm64.mc`:
+
+```
+gen_func_count()            quantas funcoes foram baixadas
+gen_func_name(f)            nome do simbolo (_nome)
+gen_func_sec(f)             secao de destino
+gen_func_sym(f)             indice do simbolo (para sym_set_value)
+gen_func_labels(f)          quantos labels a funcao usou
+gen_ins_count(f)            instrucoes da funcao
+gen_ins_at(f, i)            a instrucao i -> ins_op/ins_rd/ins_rn/ins_rm/ins_imm/ins_label/ins_sym
+gen_prel_count(f)           relocacoes cruas de reloc() na funcao
+gen_prel_ins/sym/type(f,k)  cada uma delas
+gen_global_count()/gen_global_sym(g)   globais ja alocadas
+gen_str_count()/gen_str_sym(s)         literais ja emitidas em __cstring
+```
+
+e escreve com os primitivos de `src/macho.mc`, que são funções comuns: `sec_new`, `sec_at`,
+`sec_data`, `sym_new`, `sym_ref`, `sym_set_value`, `reloc_add`, `buf_u32`, `buf_pad`, `buf_len`,
+`macho_write`.
+
+### A prova: `lib/backend_arm64.mc`
+
+`lib/backend_arm64.mc` registra o backend `arm64-surface`. Ele chama `gen_lower` e depois
+**reimplementa o encoder inteiro em `.mc`**, com tabelas de opcode próprias (`sur_rrr_base`,
+`sur_mem_base`, ...), resolução de labels própria e as chamadas de `reloc_add`/`buf_u32` — tudo por
+cima da API acima, nada de `static` do núcleo. As fórmulas de encoding são as mesmas de `encode`
+(copiadas de propósito: o ponto é que dá para chegar nelas de fora, não que sejam diferentes).
+
+Critério de aceite, rodado por `make check-surface`: para **todo** `tests/*.mc`,
+
+```
+build/mc1s --backend=arm64-surface X -o a.o
+build/mc1s                         X -o b.o
+cmp a.o b.o        # byte a byte identicos, 31/31
+```
+
+`lib/pass_demo.mc` é o par do backend do lado da AST: um pass que varre `1..nnodes-1` e troca
+`x * 1` por `x`, reescrevendo o nó no lugar (preservando `next`, que pertence à lista de irmãos).
+O núcleo não faz isso — `fold` só dobra constante com constante — e `tests/061-pass.mc` mostra a
+diferença em `--dump-ast`.
+
+### O stage0 não é ensinável
+
+`pass()`/`backend()` só existem no compilador em `.mc`. O stage0 em C é a semente: o driver aceita
+`--backend=macho` (para que a linha de comando seja a mesma) e nada mais — `--backend=arm64-surface`
+com `build/mc0` é `opcao desconhecida`. Isso é deliberado: o Tier 2 custa **zero** linhas de
+mecanismo em C justamente porque o compilador que se ensina é o que está escrito na própria
+linguagem. O que o C precisou ganhar no M10 foi só o que a linguagem precisa para expressar um
+hook: `&funcao`, `callp` e a divisão do gen em duas metades.

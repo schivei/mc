@@ -351,7 +351,7 @@ i64 opc_expand(i64 i, i64 call) {
 
 u8  rules[MAXRULES * RU_SIZE];
 i64 nrules = 0;
-i64 gensym_n = 0;                 // contador de __g<N>: determinista, nunca reinicia
+i64 gensym_n = 0;                 // contador de $g<N>: determinista, nunca reinicia
 i64 rule_depth = 0;               // regras aninhadas na definicao de um template
 
 // buracos da regra sendo definida agora; bnd_txt guarda o texto com o $
@@ -428,7 +428,9 @@ i64 name_slot() {
     return r_nnames - 1;
 }
 
-// um nome novo por expansao: __g1, __g2, ... na ordem em que sao criados
+// um nome novo por expansao: $g1, $g2, ... na ordem em que sao criados. O `$`
+// torna a captura impossivel por construcao: o lexer nunca forma um T_IDENT com
+// `$`, entao nenhum nome escrito pelo usuario pode colidir com um gensym.
 uptr gensym_new() {
     u8 tmp[24];
     i64 i = 24;
@@ -440,14 +442,13 @@ uptr gensym_new() {
         v = v / 10;
         if (v == 0) break;
     }
-    uptr s = xalloc(28 - i);
-    st8(s, '_');
-    st8(s + 1, '_');
-    st8(s + 2, 'g');
+    uptr s = xalloc(27 - i);
+    st8(s, '$');
+    st8(s + 1, 'g');
     i64 k = i;
     loop {
         if (k >= 24) break;
-        st8(s + 3 + k - i, ld8(tmp + k));
+        st8(s + 2 + k - i, ld8(tmp + k));
         k = k + 1;
     }
     return s;
@@ -1020,7 +1021,7 @@ void do_rule(i64 line, uptr fl) {
     if (!cur_is("stmt")) err_at(fl, line, "#rule so conhece a categoria stmt");
     next();
     expect(K_COLON, "esperado : apos a categoria do #rule");
-    if (nrules == MAXRULES) die("regras demais");
+    if (nrules == MAXRULES) err_at(fl, line, "regras demais");
     nbnd = 0;
     r_nitems = 0;
     r_nholes = 0;
@@ -1069,6 +1070,11 @@ void do_rule(i64 line, uptr fl) {
         r_nitems = r_nitems + 1;
     }
     if (r_nitems == 0) err_at(fl, line, "padrao de #rule vazio");
+    // o literal de despacho manda no parser de statements: deixar `if`, `loop`,
+    // `return`, `i64` ... abrirem uma regra sequestraria a propria linguagem.
+    // Pontuacao continua livre (`ident $x [ expr $i ] = expr $e ;` e legitimo).
+    if ((ri_at(0) >> 3) >= K_U8 && (ri_at(0) >> 3) <= K_EXTERN)
+        err_at(fl, line, "nao pode redefinir palavra-chave do nucleo");
     next();                                       // =>
     i64 tmpl = parse_stmt();                      // os $nome ja viraram buracos
     rule_def = 0;

@@ -64,6 +64,10 @@ int sym_ref(const char *name) {
     return i >= 0 ? i : sym_new(name, 0, 0, true);
 }
 
+/* o endereco de uma funcao so existe depois de encodar: gen_lower cria o
+ * simbolo (fixando a ordem da symtab) e gen_encode_all preenche o valor */
+void sym_set_value(int sym, u64 value) { symbols[sym].value = value; }
+
 void reloc_add(int sec, u32 off, int sym, int type, int pcrel, int len) {
     Section *s = &sections[sec];
     if (s->nrel == s->relcap) {

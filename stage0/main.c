@@ -25,7 +25,10 @@ int main(int argc, char **argv) {
         else if (str_eq(a, "-o")) {
             if (i + 1 >= argc) die("-o exige um argumento");
             out = argv[++i];
-        } else if (a[0] == '-')  die2("opcao desconhecida", a);
+        /* Tier 2 (pass()/backend()) so existe no compilador em .mc: o stage0 e a
+         * semente e nao e ensinavel. Aqui --backend=macho e aceito e nada mais. */
+        } else if (str_eq(a, "--backend=macho")) { }
+        else if (a[0] == '-')  die2("opcao desconhecida", a);
         else if (in == 0)        in = a;
         else                     die2("entrada duplicada", a);
     }
@@ -40,8 +43,9 @@ int main(int argc, char **argv) {
     if (mode == M_AST) { dump_ast(unit); return 0; }   /* arvore ja com #rule expandido */
 
     unit = fold(unit);                                 /* dobra antes do codegen */
-    gen_unit(unit, mode == M_ASM);
-    if (mode == M_ASM) return 0;
+    gen_lower(unit);                                   /* AST -> buffers Ins */
+    if (mode == M_ASM) { gen_dump_asm(); return 0; }
+    gen_encode_all();                                  /* Ins -> palavras no __text */
     if (mode == M_SYMS) { dump_syms(); return 0; }
 
     macho_write(out);
