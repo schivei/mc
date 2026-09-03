@@ -332,3 +332,45 @@ hardest problems and blocks bisection.
 4. `--dump-*` left for later. **It's in M1.**
 5. Without M10, extensibility is just a hypothesis. **M10 is part of the scope.**
 6. M11 (signing) delaying everything. **Stays behind the fixed point; `ld` remains a valid path.**
+
+---
+
+# Phase 2 — standalone distribution and cross-OS targets
+
+Owner's direction (2026-09-03): a developer downloads the `mc` binary and compiles their own code
+with no make/clang/gcc and without cloning this repository; everything the compiler needs is served
+by the self-hosted binary. Programs must be buildable for other operating systems, with the
+developer telling `mc` how (object format, linker, static libraries such as musl `libc.a` or mingw
+`kernel32.lib`). A TOML definitions file is read by default. Bundled includes are resolved with
+`#include <name>`, `#embed` (optionally compressed) is available to programs, and `mc` finds what to
+compile with little ceremony.
+
+## Principles carried over
+- stage0 (C) stays the seed and is frozen except for bug fixes; every Phase 2 feature lives in
+  `src/*.mc` (Tier 2/3 style), so the self-hosted `mc` grows while the C stays under budget.
+- Determinism and the fixed point still gate every milestone (`make check`); the bundle is
+  generated deterministically and checked in as source.
+- Teaching by surface remains the extension mechanism: target-specific object writers are backends,
+  system layers are `.mc` libraries, and configuration is data (TOML), not code.
+
+## Target order decided by the owner (2026-09-03)
+Linux arm64 -> Linux x86 (32-bit) -> Linux x64 -> Windows arm64 -> Windows x64, in stages. `mc`
+itself keeps running on macOS arm64 for now (cross-hosting comes later with CI). Foreign targets are
+produced as objects and linked by an external linker configured in the TOML (`ld.lld`, `lld-link`).
+Linux binaries are executed for real in Docker (linux/arm64 native; amd64 via emulation).
+
+Architect's caveat, to be decided when the stage arrives: 32-bit x86 is expensive for semantic, not
+encoding, reasons — `i64` needs register pairs and `uptr` becomes 4 bytes, which breaks the
+8-bytes-per-field layouts the language (and the compiler itself) assume. Recommended: x64 before x86,
+and x86 only if still wanted afterwards.
+
+## Milestones (specs in `docs/specs/M14.md`...)
+| # | Deliverable | Acceptance |
+|---|---|---|
+| **M14** | Project driver + TOML: `mc build [dir]` reads `mc.toml` (`[project] entry/out/kind`, `[target] os/arch`, `[linker] cmd/args` with `{out} {obj} {libs}`, `[libs]` paths, `[externs] symbol-or-prefix = lib`, `[include] paths`, `[compiler] modules` to build a taught compiler first); TOML subset parser in `.mc` with line/column errors; externs' libraries from the TOML feed the same ordinal table as `#dylib` | `examples/api` builds and passes with `mc build` alone (no Makefile); `tests/toml/*` dumps match; `make check` green, golden rewritten once |
+| **M15** | Bundled standard library + `#embed`: `#include <name>` served from a deterministic LZ-compressed bundle embedded in the binary (`tools/bundle.mc` generates `src/bundle_data.mc` from `lib/` and the compiler core; `<mc/core>` lets a taught compiler be built anywhere); `#embed name "file" [lz]` declares a byte array (+ sizes) for programs; `src/lz.mc` implements both directions | `mc` copied alone into an empty directory compiles a program using `<sys>`/`<prelude>` and a taught compiler from `<mc/core>`; `make bundle` is reproducible byte for byte; fixed point holds with the bundle |
+| **M16** | Linux arm64: ELF64 relocatable writer (`R_AARCH64_CALL26`, `ADR_PREL_PG_HI21`, `ADD_ABS_LO12_NC`, `LDST*_ABS_LO12_NC`, `ABS64`), `<sys/linux>` (syscalls via `svc #0`, number in `x8`), `_start` shim or musl `libc.a`, linker invocation from TOML | the test suite compiled with `[target] os = "linux"`, linked with `ld.lld` + musl from Alpine, executed in Docker linux/arm64 with identical stdout/exit |
+| **M17** | x86 family groundwork: split `gen_lower` into a target-independent walker (frames, depth stack, labels, calls) and a machine interface (~30 primitives) implemented by `arm64`; then the `x86-64` machine (SysV ABI, ModRM/SIB/REX encoder) as a `.mc` backend; ELF for Linux x64 executed in Docker linux/amd64 | suite green under emulation; arm64 objects unchanged byte for byte after the refactor |
+| **M18** | Linux x86 (32-bit) — only if still wanted: `i64` via register pairs, `uptr` = 4 bytes, layout audit of the language and the runtime | suite green in Docker linux/386 |
+| **M19** | Windows arm64: COFF writer (`IMAGE_REL_ARM64_BRANCH26/PAGEBASE_REL21/PAGEOFFSET_12A/ADDR64`), `<sys/windows>` on kernel32 (`WriteFile`, `ReadFile`, `CreateFileA`, `ExitProcess`), `lld-link` from TOML against mingw `kernel32.lib` | objects link; PE inspected with `llvm-readobj`; executed when a Windows host exists |
+| **M20** | Windows x64: COFF x64 relocations + Win64 ABI on the x86-64 machine | same as M19 |

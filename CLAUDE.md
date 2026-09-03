@@ -228,7 +228,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   61/61, `check-ast` 61/61, `check-asm` 61/61, `check-obj` 32/32, `check-surface` 32/32,
   `test-exe` 32/32, `bootstrap` at a fixed point (`mc2.o == mc3.o`) and golden **unchanged**
   (`905f52c1…fbbc4` matches `tests/golden/mc2.sha256`), `check-examples` green.
-- M13 is the next milestone (`docs/specs/M13.md`: sizing a program's memory at compile time — the
+- Next: M14 (`docs/specs/M14.md`) and M15 (`docs/specs/M15.md`); M13 stays in the backlog (`docs/specs/M13.md`: sizing a program's memory at compile time — the
   fixed 4 MiB arena in `examples/api/lib/rt.mc` is one more motivating case).
   Update this section when each milestone closes.
 - i18n done (2026-09-03): the repository is fully in English — diagnostics, program/script
