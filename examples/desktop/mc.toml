@@ -1,0 +1,48 @@
+# mc.toml — Part A of M32: the whole directory built by `mc build`, with no
+# make, no ld and no pkg-config:
+#
+#   ../../build/mc1 build examples/desktop     # from the repository root
+#   ../../build/mc1 build                      # from inside examples/desktop
+#
+# Part B (the taught `.ui` language) is the SAME directory with a different
+# config: `mc build examples/desktop --config examples/desktop/ui.toml`.
+
+[project]
+name  = "desktop"
+entry = "main.mc"
+out   = "build/desktop"
+kind  = "exe"
+
+[target]
+os   = "macos"
+arch = "aarch64"
+
+# The four dylibs Homebrew's gtk4 is split across. Ordinals are handed out in
+# the order the keys appear (2, 3, 4, 5; 1 is always libSystem), and `mc --exe`
+# writes one bind opcode per imported symbol against its ordinal -- so a wrong
+# entry here is not a warning, it is dyld refusing to start the program.
+[libs]
+gtk4    = "/opt/homebrew/lib/libgtk-4.1.dylib"
+gobject = "/opt/homebrew/lib/libgobject-2.0.0.dylib"
+gio     = "/opt/homebrew/lib/libgio-2.0.0.dylib"
+glib    = "/opt/homebrew/lib/libglib-2.0.0.dylib"
+
+# Prefix mapping. The first pattern that matches wins, in the order the keys
+# are written, which is the whole reason the `g_*` fallback is last: it would
+# otherwise swallow g_signal_*, g_object_* and g_application_*. lib/gtk.mc
+# carries NO `#dylib` -- this table is the only thing that says where each
+# symbol lives.
+[externs]
+"gtk_*"           = "gtk4"
+"g_signal_*"      = "gobject"
+"g_object_*"      = "gobject"
+"g_application_*" = "gio"
+"g_*"             = "glib"
+
+# main.mc writes `#include "lib/gtk.mc"`, which already resolves against its own
+# directory; this root is what lets the binding be included by bare name.
+[include]
+paths = ["lib"]
+
+[limits]
+tolerance = 0.25
