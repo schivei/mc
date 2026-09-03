@@ -10,24 +10,27 @@ The binary comes out via `--exe` (M11): no `ld`, with an ad-hoc signature, linke
 
 ```
 examples/api/
-  mc-api.mc      this directory's compiler: src/core.mc + oop.mc + user_init()
+  mc-api.mc      this directory's compiler: <mc/core> + oop.mc + user_init()
   oop.mc         teaches `class` and `interface` via the parser's public API
   lib/rt.mc      fixed arena, strings, strbuf, itoa/atoi
   lib/http.mc    sockets, HTTP/1.1 request and response
   lib/sqlite.mc  #dylib "/usr/lib/libsqlite3.dylib" + externs + wrappers
   main.mc        the API: routes, handlers, the database
+  mc.toml        the whole build as data: `mc build examples/api` (M14)
   test.sh        brings the server up on a free port and hits every route
   tests/         oop_test.mc (the syntax in isolation) and lib_test.mc/.sh (the libs in isolation)
 ```
 
 ## 1. Teaching the compiler
 
-A taught compiler is a **file**, not an edit to `src/`. `src/core.mc` is the whole compiler minus
+A taught compiler is a **file**, not an edit to `src/`. `src/core.mc` — served from the bundle
+inside the binary as `<mc/core>` since M15, so no path into this repository is needed — is the
+whole compiler minus
 exactly one function — `void user_init()` — and that is what `mc-api.mc` supplies:
 
 ```c
 // mc-api.mc
-#include "../../src/core.mc"
+#include <mc/core>
 #include "oop.mc"
 
 void user_init() {
@@ -136,8 +139,25 @@ field at all — just the vtable word, 8 bytes.
 
 ## 3. Running it
 
+Since M14 the whole directory is one command, driven by `mc.toml` — no `make`, no `ld`
+(`docs/build.md`):
+
 ```
-make -C examples/api mc-api     # build/mc-api  — the compiler (232019 bytes)
+$ build/mc1 build examples/api
+compiler build/mc-api.mc -> build/mc-api
+compile main.mc -> build/api
+```
+
+The first line is `[compiler]`: `mc build` writes `build/mc-api.mc` (`#include <mc/core>` +
+`mc-api.mc`),
+compiles it with `--exe`, and then hands `main.mc` to the binary that came out. `[libs]` +
+`[externs] "sqlite3_*" = "sqlite3"` say what `#dylib` says inside `lib/sqlite.mc` — both are there
+on purpose, and the `#dylib` wins for its own externs.
+
+The Makefile is still the by-hand path and still works:
+
+```
+make -C examples/api mc-api     # build/mc-api  — the compiler (253475 bytes)
 make -C examples/api api        # build/api     — the server (55632 bytes)
 make -C examples/api test       # test-oop + tests/lib_test.sh + test.sh
 make -C examples/api clean

@@ -4,3 +4,8 @@
 Only update this file when `src/*.mc` or the codegen change **on purpose**.
 Before rewriting, review the `--dump-asm` diff between the old and new version to confirm the change is expected, not a regression.
 To rewrite: delete the file and run `make bootstrap` again.
+
+Since M15 the object also carries the bundle (`src/bundle_data.mc`, ~135 KB in `__DATA,__data`),
+so **any** change to `lib/*.mc` or to a core module moves this hash twice: once for the code and
+once for the blob. Run `make bundle` first — `make check` runs `check-bundle` before `bootstrap`
+precisely so a stale bundle is reported as a stale bundle and not as a golden mismatch.

@@ -1,0 +1,1 @@
+tests/toml/bad-equals.toml:2:6: expected = after the key

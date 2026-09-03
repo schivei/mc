@@ -46,6 +46,7 @@
 #define MAXOPCS   64
 #define MAXDYLIBS 8                   // #dylib: ordinal = index + 2 (libSystem is 1)
 #define MAXEXTLIB 256                 // externs with an annotated dylib, by name
+#define MAXEXTPAT 32                  // M14: [externs] patterns coming from mc.toml
 // MAXSECS and MAXPARAMS live in arena.mc, as they lived in stage0/mc.h: parse.mc
 // and gen_arm64.mc share both and a repeated `#define` is an error.
 
@@ -105,6 +106,11 @@ i64 cur_dylib = 1;                    // 1 = /usr/lib/libSystem.B.dylib
 u8  extlib_name[MAXEXTLIB * 8];
 u8  extlib_ord[MAXEXTLIB * 8];
 i64 nextlib = 0;
+// M14: the same idea by pattern, fed by [externs] in mc.toml. Consulted only
+// after the exact table, so `#dylib` in the source always wins.
+u8  extpat_name[MAXEXTPAT * 8];
+u8  extpat_ord[MAXEXTPAT * 8];
+i64 nextpat = 0;
 
 u8 cur[TOK_SIZE];                     // 1-token lookahead
 
@@ -163,6 +169,10 @@ uptr xl_name(i64 i)             { return ld64(extlib_name + i * 8); }
 void set_xl_name(i64 i, uptr v) { st64(extlib_name + i * 8, v); }
 i64  xl_ord(i64 i)              { return ld64(extlib_ord + i * 8); }
 void set_xl_ord(i64 i, i64 v)   { st64(extlib_ord + i * 8, v); }
+uptr xp_name(i64 i)             { return ld64(extpat_name + i * 8); }
+void set_xp_name(i64 i, uptr v) { st64(extpat_name + i * 8, v); }
+i64  xp_ord(i64 i)              { return ld64(extpat_ord + i * 8); }
+void set_xp_ord(i64 i, i64 v)   { st64(extpat_ord + i * 8, v); }
 
 // ---- lookahead ----
 void next() { lex_next(cur); }
@@ -352,12 +362,42 @@ void extern_lib_add(uptr name, i64 ord) {
     nextlib = nextlib + 1;
 }
 
-// dylib ordinal of an extern; 1 (libSystem) for every name with no annotation
+// M14: [externs] in mc.toml — "sqlite3_*" = "sqlite3". The pattern is a whole
+// name, or a prefix ending in '*'. Registration order decides ties: the first
+// pattern that matches wins, which is the order the keys are written in.
+void extern_lib_pattern_add(uptr pat, i64 ord) {
+    if (nextpat == MAXEXTPAT) die("too many [externs] patterns");
+    set_xp_name(nextpat, pat);
+    set_xp_ord(nextpat, ord);
+    nextpat = nextpat + 1;
+}
+
+// 1 if `name` matches `pat`: identical, or identical up to the '*' that closes
+// the pattern. '*' anywhere but at the end is just a literal character.
+i64 extern_pat_match(uptr pat, uptr name) {
+    i64 i = 0;
+    loop {
+        i64 c = ld8(pat + i);
+        if (c == '*' && ld8(pat + i + 1) == 0) return 1;
+        if (c != ld8(name + i)) return 0;
+        if (c == 0) return 1;
+        i = i + 1;
+    }
+}
+
+// dylib ordinal of an extern; the exact table (#dylib) first, then the
+// [externs] patterns; 1 (libSystem) for every name neither one claims
 i64 extern_lib_find(uptr name) {
     i64 i = 0;
     loop {
         if (i >= nextlib) break;
         if (str_eq(xl_name(i), name)) return xl_ord(i);
+        i = i + 1;
+    }
+    i = 0;
+    loop {
+        if (i >= nextpat) break;
+        if (extern_pat_match(xp_name(i), name)) return xp_ord(i);
         i = i + 1;
     }
     return 1;
@@ -1304,14 +1344,105 @@ void do_opcode(i64 line, uptr fl) {
     nopcs = nopcs + 1;
 }
 
+// ---- M15: #embed name "path" [lz] ----
+// Declares `u8 name[]` with the file's bytes -- or with the LZ stream, when
+// `lz` is written -- plus `#define name_size` (bytes in the array) and
+// `#define name_raw` (the file's original size). A program decompresses with
+//
+//     lz_inflate(name, name_size, buf, name_raw);
+//
+// The path resolves exactly like `#include "x"` (includer's directory, then
+// [include].paths). The bytes become a normal global array initializer: one
+// N_INT node per byte, which is what glob_place already knows how to write.
+// The 16 MiB ceiling is the declared limit; well before it the arena is what
+// runs out, since each byte costs one node.
+#define EMBED_MAX (16 << 20)
+
+// name + a slice of `sfx`. Two suffixes out of one string literal: the frozen
+// stage0/gen_arm64.c has MAXSTRS 512 and the core is a handful of literals
+// away from it, so every avoidable one is avoided. See the note in bundle.mc.
+uptr p_cat(uptr name, uptr sfx, i64 off, i64 len) {
+    i64 ln = cstrlen(name);
+    uptr s = xalloc(ln + len + 1);             // the arena comes zeroed: NUL already there
+    mem_copy(s, name, ln);
+    mem_copy(s + ln, sfx + off, len);
+    return s;
+}
+
+i64 do_embed(i64 line, uptr fl) {
+    if (tok_id(cur) != T_IDENT) err_at(fl, line, "#embed expects NAME \"path\" [lz]");
+    uptr name = cur_name();
+    next();
+    if (tok_id(cur) != T_STR) err_at(fl, line, "#embed expects NAME \"path\" [lz]");
+    uptr rel = cur_name();
+    next();
+    // `lz` compared character by character, again to spend no string literal
+    i64 comp = 0;
+    if (tok_id(cur) == T_IDENT && tok_len(cur) == 2
+        && ld8(tok_start(cur)) == 'l' && ld8(tok_start(cur) + 1) == 'z') { comp = 1; next(); }
+    i64 raw = 0;
+    // The base is `fl`, the file that WROTE the directive, not the top of the
+    // lexer stack: the `lz` lookahead above may already have popped back to the
+    // includer. And when that file came from the bundle, so does the payload.
+    uptr data = lex_embed_bundled(fl, rel, &raw, line);
+    if (data == 0) data = read_file(lex_find_path_from(fl, rel), &raw);
+    if (raw == 0 || raw > EMBED_MAX) err_at(fl, line, "#embed file is empty or over 16 MiB");
+    i64 len = raw;
+    if (comp) {
+        uptr d = xalloc(lz_bound(raw) + 16);
+        len = lz_deflate(data, raw, d);
+        data = d;
+    }
+    i64 head = 0;
+    i64 tail = 0;
+    i64 k = 0;
+    loop {
+        if (k >= len) break;
+        i64 e = node_new(N_INT, line, fl);
+        set_nd_val(e, ld8(data + k));
+        set_nd_type(e, TY_I64);
+        if (tail) set_nd_next(tail, e); else head = e;
+        tail = e;
+        k = k + 1;
+    }
+    i64 g = node_new(N_GLOBAL, line, fl);
+    set_nd_name(g, name);
+    set_nd_type(g, TY_U8);
+    set_nd_a(g, head);
+    set_nd_val(g, len);
+    def_add(p_cat(name, "_size_raw", 0, 5), len, line, fl);
+    def_add(p_cat(name, "_size_raw", 5, 4), raw, line, fl);
+    return g;
+}
+
 // ---- supported directives: #include, #define, #token, #infix, #prefix,
-// #rule, #section, #opcode ----
+// #rule, #section, #opcode, #dylib, #embed ----
 void do_directive() {
     i64 d = tok_val(cur);
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
     next();
     if (d == D_INCLUDE) {
+        // M15: `#include <name>` is served by the bundle inside the binary.
+        // The lexer does not tokenize `<name>` specially -- it is `<`, the
+        // lexemes of the name and `>`, put back together here. That is on
+        // purpose: --dump-tokens stays byte for byte what the frozen
+        // stage0/lex.c produces, so check-lex keeps comparing the two.
+        if (tok_id(cur) == K_LT) {
+            next();
+            u8 nb[BUF_SIZE];
+            buf_init(nb);
+            loop {
+                if (tok_id(cur) == K_GT) break;
+                if (tok_id(cur) == T_EOF) err_at(fl, line, "unterminated #include <name>");
+                buf_put(nb, tok_start(cur), tok_len(cur));
+                next();
+            }
+            buf_u8(nb, 0);
+            lex_include_name(buf_p(nb), line);   // still on the `>`, as with the string
+            next();
+            return;
+        }
         if (tok_id(cur) != T_STR) err_at(fl, line, "#include expects a string");
         uptr path = cur_name();
         lex_include(path, line);                 // 0 = already included: carries on
@@ -1368,6 +1499,7 @@ void do_directive() {
         else                cur_dylib = dylib_add(path);
         return;
     }
+    if (d == D_EMBED)   { top_add(do_embed(line, fl)); return; }
     if (d == D_RULE)    { do_rule(line, fl);    return; }
     if (d == D_SECTION) { do_section(line, fl); return; }
     if (d == D_OPCODE)  { do_opcode(line, fl);  return; }

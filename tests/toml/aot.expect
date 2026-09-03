@@ -1,0 +1,7 @@
+str  server.0.host = "a"
+int  server.0.port = 1
+str  server.1.host = "b"
+int  server.1.port = 2
+str  other.x = "y"
+str  server.2.host = "c"
+int  server.2.port = 3

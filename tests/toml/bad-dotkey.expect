@@ -1,0 +1,1 @@
+tests/toml/bad-dotkey.toml:5:1: quoted key must not contain .

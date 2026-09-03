@@ -236,6 +236,12 @@ no, and will be no, built-in list of known symbols). If you want the error at bu
 
 ## `#include` and `#define`
 
+- `#include <name>` (M15): textual inclusion of a file carried **inside the binary** —
+  `<sys>`, `<prelude>`, `<lz>`, `<mc/core>`, … There is no filesystem fallback: an unknown name is
+  `unknown bundled include: <name>`. See `docs/build.md` § M15 and `docs/surface.md` § Tier 1.
+- `#embed NAME "path" [lz]` (M15): the file's bytes as `u8 NAME[]`, plus `NAME_size` and
+  `NAME_raw`. Same path resolution as `#include "x"`, taken from the file that wrote the
+  directive; inside a bundled `<name>` include the payload comes from the bundle as well.
 - `#include "file.mc"`: textual inclusion, once-only, relative to the directory of the including
   file. `path_join` normalizes `.` and `..` lexically (without touching the filesystem) before
   the once-only check, so two paths that reach the same file via different textual routes

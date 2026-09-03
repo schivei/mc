@@ -1,4 +1,4 @@
-# bootstrap.md — M8: cutting the cord (and M11: cutting `ld`)
+# bootstrap.md — M8: cutting the cord (M11: cutting `ld`; M15: cutting the checkout)
 
 This document describes `scripts/bootstrap.sh` (M7, fixed point), the state of M8 (the compiler
 stops depending on `clang` for anything beyond the first stage), and the `ld`-free chain that M11
@@ -176,6 +176,75 @@ opt-in) and is what `make test` and `scripts/bootstrap.sh` use.
 **`ld` remains the bootstrap path.** `scripts/bootstrap.sh` hasn't changed: M7's fixed-point
 criterion is about `.o` files, and `.o` remains the default output format. `--exe` is a second
 output, proven by `make test-exe` and the chain above, not a replacement.
+
+## M15 — the bundle inside the fixed point
+
+`src/bundle_data.mc` is **generated source**: `tools/bundle.mc` reads `tools/bundle.list`,
+LZ-compresses every file it names (all of `lib/*.mc` plus every module `src/core.mc` includes) and
+writes one blob plus one index. `src/core.mc` includes it, so it is part of `src/mc.mc`, so it is
+part of the fixed point:
+
+```
+mc0  src/mc.mc -> mc1.o     the blob is data in __DATA,__data -- 134870 bytes of it
+mc1  src/mc.mc -> mc2.o
+mc2  src/mc.mc -> mc3.o     cmp mc2.o mc3.o
+```
+
+The blob contains the *sources* of `lib/` and of the core, and `src/bundle_data.mc` itself is
+**not** in the manifest — the bundle cannot contain itself. That is what keeps this a fixed point
+and not a recursion: regenerating the bundle changes `src/bundle_data.mc`, but
+`src/bundle_data.mc` is not one of the files being compressed, so a second `make bundle` produces
+the same bytes.
+
+### Regenerate before you bootstrap
+
+**Whenever `lib/*.mc` or any module of the core changes, run `make bundle` and commit
+`src/bundle_data.mc` with the change.** Otherwise the binary carries a `<mc/core>` that is not the
+`src/` it was built from — the fixed point would still close (`mc2.o == mc3.o`), but it would be
+proving something about a compiler whose bundled copy of itself is stale.
+
+`make check` enforces it, and the order in the Makefile is deliberate:
+
+```
+check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap ...
+                                       ^^^^^^^^^^^^                    ^^^^^^^^^
+```
+
+`check-bundle` runs **before** `bootstrap`. It regenerates the bundle twice into temporary files
+and `cmp`s them against each other (reproducibility) and against the checked-in file
+(freshness). A stale bundle fails there with a message that says `make bundle`, instead of failing
+later as a mysterious difference.
+
+```
+$ scripts/check-bundle.sh build/mc1
+ok tools/bundle.mc is reproducible (two runs identical)
+ok src/bundle_data.mc matches tools/bundle.list (323997 bytes)
+```
+
+### The strongest statement: the bundled core *is* the core
+
+`scripts/check-standalone.sh` copies `build/mc-exe` alone into an empty temporary directory and,
+among other things, compiles
+
+```c
+#include <mc/core>
+#include <user_default>
+```
+
+to an object and `cmp`s it against `build/mc2.o`. Those two are the same program said two ways —
+`src/mc.mc` is `core.mc` + `user.mc` → `user_default.mc` — so equality means the bundle's copy of
+every core module, **including the `mc/bundle_data` that `src/bundle.mc` regenerates on the fly
+from the blob**, is byte for byte the `src/` tree the compiler was built from.
+
+```
+ok <sys> + <prelude>: hello runs, exit 42
+ok <mc/core> + <user_syntax_demo>: taught compiler built and signed
+ok the taught compiler compiles <syntax_demo_test> (exit 42)
+ok the copied compiler rejects the same source (syntax_demo_test:7: type expected at top level)
+ok <mc/core> + <user_default> == src/mc.mc, byte for byte
+ok unknown name: bad.mc:1: unknown bundled include: no/such/module
+standalone: the binary alone is the toolchain
+```
 
 ## Binaries are not versioned
 

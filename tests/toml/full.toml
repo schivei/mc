@@ -1,0 +1,28 @@
+# full.toml — every key mc build reads, in the order the driver expects them.
+[project]
+name  = "api"
+entry = "main.mc"
+out   = "build/api"
+kind  = "exe"
+
+[target]
+os   = "macos"
+arch = "aarch64"
+
+[compiler]
+core    = "../../src/core.mc"
+modules = ["mc-api.mc"]
+out     = "build/mc-api"
+
+[linker]
+cmd  = "ld"
+args = ["-o", "{out}", "{obj}", "-lSystem", "-syslibroot", "{sdk}", "-arch", "arm64", "{libs}"]
+
+[libs]
+sqlite3 = "/usr/lib/libsqlite3.dylib"
+
+[externs]
+"sqlite3_*" = "sqlite3"
+
+[include]
+paths = ["lib"]

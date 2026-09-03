@@ -11,7 +11,11 @@
 // #include order src/core.mc uses. hooks.mc came in at M12: parse.mc consults the
 // syntax/syntax_stmt/type_alias tables that live there. None of them is populated
 // here (this driver does not call user_init), so parsing is the same as mc0's.
+// lz.mc came in at M15: `#embed ... lz` compresses at parse time. src/bundle.mc
+// did NOT -- the lexer reaches the bundle by function pointer, and nobody
+// registers it here, so `#include <name>` fails the same way it does in mc0.
 #include "arena.mc"
+#include "lz.mc"
 #include "macho.mc"
 #include "lex.mc"
 #include "ast.mc"

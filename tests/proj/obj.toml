@@ -1,0 +1,8 @@
+# obj.toml — kind = "obj": stop at the relocatable object, no linking at all.
+[project]
+entry = "app.mc"
+out   = "build/app.o"
+kind  = "obj"
+
+[include]
+paths = ["inc"]

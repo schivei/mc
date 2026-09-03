@@ -1,0 +1,40 @@
+# mc.toml — this whole directory built by `mc build`, with no make and no ld:
+#
+#   ../../build/mc1 build examples/api        # from the repository root
+#   ../../build/mc1 build                     # from inside examples/api
+#
+# The Makefile still works and does exactly the same two steps by hand; see
+# docs/build.md.
+
+[project]
+name  = "api"
+entry = "main.mc"
+out   = "build/api"
+kind  = "exe"
+
+[target]
+os   = "macos"
+arch = "aarch64"
+
+# The compiler that compiles `entry` is not the one running: `class`,
+# `interface`, `bool` and `str` come from mc-api.mc + oop.mc. mc build writes
+# build/mc-api.mc (`#include <mc/core>` plus each module, in order), compiles it
+# with --exe, and hands main.mc to the binary that comes out. Since M15 there is
+# no `core = ...` here: the core comes from the bundle inside the binary.
+[compiler]
+modules = ["mc-api.mc"]
+out     = "build/mc-api"
+
+# libsqlite3 by ordinal, exactly like the `#dylib` in lib/sqlite.mc -- which is
+# still there and still wins for its own externs. This is the same thing said
+# from outside the source.
+[libs]
+sqlite3 = "/usr/lib/libsqlite3.dylib"
+
+[externs]
+"sqlite3_*" = "sqlite3"
+
+# main.mc already writes `#include "lib/rt.mc"`, which resolves on its own; the
+# root below is what lets a file be moved into lib/ and included by bare name.
+[include]
+paths = ["lib"]

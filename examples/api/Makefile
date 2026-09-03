@@ -5,6 +5,14 @@
 #   make -C examples/api test       # test-oop + tests/lib_test.sh + test.sh
 #   make -C examples/api clean
 #
+# Since M14 the same two steps are one command, driven by mc.toml and with no
+# make at all (docs/build.md):
+#
+#   ../../build/mc1 build examples/api      # from the repository root
+#
+# This Makefile stays as the by-hand path, and test.sh uses `mc build`, so both
+# are exercised by `make check`.
+#
 # None of this enters the root's `check-*` targets that run stage0: the C
 # `mc0` does not know `syntax`/`type_alias`/`#dylib` and never compiles this
 # example. The starting compiler is `../../build/mc1`, built by the root if

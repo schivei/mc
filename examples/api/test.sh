@@ -6,9 +6,10 @@
 # checks the database's final state with the system's `sqlite3`, and kills
 # the server. Exits 0 if everything passed.
 #
-# Depends only on: ../../build/mc1 (builds it if missing), build/mc-api, curl,
-# sqlite3. The default compiler will not do — `class`/`interface`/`#dylib`
-# come from mc-api.mc + oop.mc.
+# Depends only on: ../../build/mc1 (builds it if missing), curl and sqlite3.
+# The default compiler will not do -- `class`/`interface`/`#dylib` come from
+# mc-api.mc + oop.mc, and since M14 it is `mc build` that assembles that taught
+# compiler from mc.toml.
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 dir="$root/examples/api"
@@ -40,16 +41,18 @@ check() {
     fi
 }
 
-echo "== compiling =="
+echo "== compiling (mc build) =="
 if [ ! -x "$mc" ]; then
     make -C "$root" mc1 || { echo "FAIL: make mc1"; exit 1; }
 fi
-mkdir -p "$dir/build"
-# rm before each output: overwriting a signed executable on the same inode
-# makes the kernel kill its next execution with SIGKILL (cached signature)
-rm -f "$mcapi" "$api"
-"$mc" --exe "$dir/mc-api.mc" -o "$mcapi" || { echo "FAIL: mc-api"; exit 1; }
-"$mcapi" --exe "$dir/main.mc" -o "$api" || { echo "FAIL: main.mc"; exit 1; }
+# M14: one command for the whole directory. `mc build` reads examples/api/mc.toml,
+# writes build/mc-api.mc (src/core.mc + mc-api.mc), compiles it with --exe -- that
+# is the taught compiler -- and hands main.mc to the binary that comes out. It
+# also creates build/ and unlinks each output first: overwriting a signed
+# executable on the same inode makes the kernel kill its next execution with
+# SIGKILL (cached signature). See docs/build.md.
+"$mc" build "$dir" || { echo "FAIL: mc build"; exit 1; }
+[ -x "$mcapi" ] || { echo "FAIL: mc build did not produce $mcapi"; exit 1; }
 echo "  ok    $api ($(wc -c < "$api" | tr -d ' ') bytes)"
 
 echo "== signature and dylibs =="

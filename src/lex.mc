@@ -18,6 +18,7 @@
 #define MAXTOK  512
 #define MAXOPEN 16                    // maximum #include depth
 #define MAXINC  256                   // already-included files (once-only)
+#define MAXINCPATH 8                  // M14: extra roots from [include].paths
 
 // ---- untabled token ids (mc.h enum) ----
 #define T_EOF   0
@@ -38,6 +39,7 @@
 #define D_SECTION 6
 #define D_OPCODE  7
 #define D_DYLIB   8       // M12: at the end of the list, so as not to renumber the earlier ones
+#define D_EMBED   9       // M15: same reason -- appended, never inserted
 
 // ---- core ids: 256 onward, in tok_init's fixed insertion order ----
 #define K_U8       256
@@ -118,8 +120,11 @@ i64  cline = 0;
 
 // file stack: the top is the one being read; the ones below keep where they stopped
 u8  fstack[MAXOPEN * OF_SIZE];
+u8  fvirt[MAXOPEN * 8];               // M15: 1 = this level came from the bundle
 i64 nopen = 0;
 u8  inclist[MAXINC * 8];              // already-included paths, in order
+uptr incpath[MAXINCPATH];             // M14: extra roots, in registration order
+i64  nincpath = 0;
 i64 ninc = 0;
 
 // ---- TokEnt accessors ----
@@ -160,6 +165,8 @@ void set_of_name(uptr f, uptr v) { st64(f + OF_NAME, v); }
 
 uptr inc_at(i64 i)            { return ld64(inclist + i * 8); }
 void set_inc_at(i64 i, uptr v) { st64(inclist + i * 8, v); }
+uptr ip_at(i64 i)             { return ld64(incpath + i * 8); }
+void set_ip_at(i64 i, uptr v) { st64(incpath + i * 8, v); }
 
 // ---- character classification ----
 i64 is_alpha(i64 c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
@@ -304,6 +311,7 @@ i64 dir_index(uptr s, i64 nl) {
     if (nl == 7 && mem_eq("section", s, 7)) return D_SECTION;
     if (nl == 6 && mem_eq("opcode", s, 6))  return D_OPCODE;
     if (nl == 5 && mem_eq("dylib", s, 5))   return D_DYLIB;
+    if (nl == 5 && mem_eq("embed", s, 5))   return D_EMBED;
     return -1;
 }
 
@@ -402,7 +410,10 @@ uptr path_join(uptr base, uptr rel) {
     return path_norm(s);
 }
 
-void lex_push(uptr path, i64 line) {
+// pushes a source that is already in memory. `virt` marks the level as coming
+// from the bundle, which is what tells lex_include to resolve the file's own
+// relative includes by name instead of by path (M15).
+void lex_push_mem(uptr name, uptr src, i64 len, i64 virt, i64 line) {
     if (nopen == MAXOPEN) err_at(lex_file(), line, "too many nested includes");
     if (nopen) {
         uptr prev = of_at(nopen - 1);
@@ -410,13 +421,19 @@ void lex_push(uptr path, i64 line) {
         set_of_cend(prev, cend);
         set_of_line(prev, cline);
     }
-    i64 len = 0;
-    uptr src = read_file(path, &len);
-    set_of_name(of_at(nopen), path);
+    set_of_name(of_at(nopen), name);
+    st64(fvirt + nopen * 8, virt);
     nopen = nopen + 1;
     cp = src;
     cend = src + len;
     cline = 1;
+}
+
+void lex_push(uptr path, i64 line) {
+    if (nopen == MAXOPEN) err_at(lex_file(), line, "too many nested includes");
+    i64 len = 0;
+    uptr src = read_file(path, &len);
+    lex_push_mem(path, src, len, 0, line);
 }
 
 void lex_pop() {
@@ -432,6 +449,41 @@ uptr lex_file() {
     return "?";
 }
 
+// ---- M15: the bundle, reached through one function pointer ----
+// The lexer must not depend on src/bundle.mc: src/lexdump.mc and src/astdump.mc
+// include the lexer (and the parser) without the bundle, and check-lex/check-ast
+// compile them with mc0. So main.mc registers `bundle_open` here before the
+// first lex_init, and everything the lexer knows about the bundle is this
+// pointer. With nothing registered, every bundled include simply fails.
+//
+//   uptr bundle_open(uptr name, i64 base, uptr pcanon, uptr plen)
+//     returns the source (NUL-terminated, cached) or 0 if the name is not
+//     bundled; *pcanon receives the canonical name, *plen its length.
+uptr bopen_fn = 0;
+
+void lex_set_bundle(uptr openfn) { bopen_fn = openfn; }
+
+// ---- M14: extra search roots for #include "x" ([include].paths in mc.toml) ----
+// Each root is a DIRECTORY stored with a trailing '/', so path_join can treat it
+// as "a file inside it" and reuse the same normalization. They are tried in the
+// order they were registered, only after the includer's own directory fails --
+// so a project never shadows a relative include that already resolved.
+// With no root registered (every path except `mc build`) nincpath is 0 and
+// lex_include does exactly what it did before, with no extra syscall.
+void lex_add_include_path(uptr dir) {
+    if (nincpath == MAXINCPATH) die("too many include paths");
+    set_ip_at(nincpath, dir);
+    nincpath = nincpath + 1;
+}
+
+// 1 if the file can be opened for reading
+i64 lex_readable(uptr path) {
+    i64 fd = open(path, O_RDONLY, 0);
+    if (fd < 0) return 0;
+    close(fd);
+    return 1;
+}
+
 void lex_init(uptr path) {
     nopen = 0;
     ninc = 0;
@@ -441,18 +493,117 @@ void lex_init(uptr path) {
     lex_push(path, 0);
 }
 
-// #include: resolves rel against the current file's directory and pushes; 0 = already included
-i64 lex_include(uptr rel, i64 line) {
-    uptr path = path_join(of_name(of_at(nopen - 1)), rel);
+// resolves rel against a GIVEN file's directory and, if that file does not
+// exist, against each [include].paths root, in order. #embed uses the same
+// function, so `#embed x "f"` and `#include "f"` always find the same file.
+uptr lex_find_path_from(uptr file, uptr rel) {
+    uptr path = path_join(file, rel);
+    if (nincpath != 0 && !lex_readable(path)) {
+        i64 k = 0;
+        loop {
+            if (k >= nincpath) break;
+            uptr alt = path_join(ip_at(k), rel);
+            if (lex_readable(alt)) { path = alt; break; }
+            k = k + 1;
+        }
+    }
+    return path;
+}
+
+// the same, against the file being lexed right now. #include may use it: the
+// directive is handled while its own string is still the current token, so the
+// top of the stack is still the includer.
+uptr lex_find_path(uptr rel) { return lex_find_path_from(of_name(of_at(nopen - 1)), rel); }
+
+// once-only: the list holds paths and bundled names in the same table, in the
+// order they were first seen
+i64 lex_seen(uptr key) {
     i64 i = 0;
     loop {
         if (i >= ninc) break;
-        if (str_eq(inc_at(i), path)) return 0;
+        if (str_eq(inc_at(i), key)) return 1;
         i = i + 1;
     }
+    return 0;
+}
+
+void lex_remember(uptr key, i64 line) {
     if (ninc == MAXINC) err_at(lex_file(), line, "too many includes");
-    set_inc_at(ninc, path);
+    set_inc_at(ninc, key);
     ninc = ninc + 1;
+}
+
+// drops a trailing `.mc`: inside the bundle a module is `mc/lex`, not `mc/lex.mc`
+uptr lex_strip_mc(uptr p) {
+    i64 n = cstrlen(p);
+    if (n > 3 && ld8(p + n - 3) == '.' && ld8(p + n - 2) == 'm' && ld8(p + n - 1) == 'c')
+        return xstrdup(p, n - 3);
+    return p;
+}
+
+// M15: pushes a bundled file. -1 = the name is not in the bundle, 0 = already
+// included, 1 = pushed. `base` allows the last-component fallback, which only a
+// relative include inside a bundled file may use.
+i64 lex_include_bundled(uptr name, i64 base, i64 line) {
+    if (bopen_fn == 0) return -1;
+    u8 canon[8];
+    st64(canon, 0);
+    i64 len = 0;
+    uptr src = callp(bopen_fn, name, base, canon, &len);
+    if (src == 0) return -1;
+    uptr key = ld64(canon);
+    if (lex_seen(key)) return 0;
+    lex_remember(key, line);
+    lex_push_mem(key, src, len, 1, line);
+    return 1;
+}
+
+// `#embed x "f"` written inside `file`, when `file` came from the BUNDLE. A
+// bundled name ("embed_demo", "mc/core") is a name and not a directory, so
+// path_join + read_file would look for a file that does not exist and report a
+// misleading `cannot open`. The payload goes through the bundle exactly the way
+// lex_include sends a relative `#include` there: join + normalize + drop `.mc`,
+// with the last-component fallback. `file` is bundled iff the bundle serves it
+// under that exact name -- the source is already inflated and cached, so the
+// test costs a linear scan of the index. Returns 0 for a real path: do_embed
+// then reads from the filesystem, unchanged.
+uptr lex_embed_bundled(uptr file, uptr rel, uptr plen, i64 line) {
+    if (bopen_fn == 0) return 0;
+    u8 canon[8];
+    st64(canon, 0);
+    i64 flen = 0;
+    if (callp(bopen_fn, file, 0, canon, &flen) == 0) return 0;
+    uptr bn = lex_strip_mc(path_join(file, rel));
+    uptr src = callp(bopen_fn, bn, 1, canon, plen);
+    if (src == 0) err_at2(file, line, "unknown bundled include", bn);
+    return src;
+}
+
+// M15: `#include <name>`. The name is served by the bundle or it is an error --
+// there is no filesystem fallback, on purpose: `<name>` means "the copy that
+// came with this binary".
+i64 lex_include_name(uptr name, i64 line) {
+    i64 r = lex_include_bundled(name, 0, line);
+    if (r < 0) err_at2(lex_file(), line, "unknown bundled include", name);
+    return r;
+}
+
+// #include "x": resolves rel against the current file's directory and, if that
+// file does not exist, against each [include].paths root, in order; then
+// pushes. 0 = already included.
+// M15: inside a bundled file there is no directory to resolve against -- the
+// name is joined, normalized, stripped of `.mc` and looked up in the bundle
+// (with the last-component fallback). That is what makes core.mc's own
+// `#include "arena.mc"` work identically from src/ and from `<mc/core>`.
+i64 lex_include(uptr rel, i64 line) {
+    if (nopen && ld64(fvirt + (nopen - 1) * 8)) {
+        uptr bn = lex_strip_mc(path_join(of_name(of_at(nopen - 1)), rel));
+        i64 r = lex_include_bundled(bn, 1, line);
+        if (r >= 0) return r;
+    }
+    uptr path = lex_find_path(rel);
+    if (lex_seen(path)) return 0;
+    lex_remember(path, line);
     lex_push(path, line);
     return 1;
 }

@@ -1,0 +1,27 @@
+# values.toml — every value shape the subset accepts.
+[scalars]
+s     = "plain"
+esc   = "a\"b\\c\nd\te"
+zero  = 0
+pos   = +7
+neg   = -42
+under = 1_000_000
+yes   = true
+no    = false
+
+[arrays]
+empty  = []
+one    = ["only"]
+nums   = [1, 2, 3]
+multi  = [
+    "a",          # a comment inside the array
+    "b",
+    "c",          # trailing comma below
+]
+mixed-key_name = ["x"]
+
+[deep.nested.table]
+k = "v"
+
+a.dotted.key = "reached"
+"quoted key" = "also reached"

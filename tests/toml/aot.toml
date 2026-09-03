@@ -1,0 +1,15 @@
+# aot.toml — [[array of tables]]: parsed and kept, indexed by occurrence.
+[[server]]
+host = "a"
+port = 1
+
+[[server]]
+host = "b"
+port = 2
+
+[other]
+x = "y"
+
+[[server]]
+host = "c"
+port = 3

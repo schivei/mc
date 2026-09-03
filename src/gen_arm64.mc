@@ -52,9 +52,19 @@
 #define MAXLOCALS 256
 #define MAXFUNCS  1024
 #define MAXLOOPS  32
-#define MAXGLOBALS 256
-#define MAXSTRS    512
+#define MAXGLOBALS 512                // M14: the C stage0 stays at 256 -- see below
+#define MAXSTRS    2048               // M14: the C stage0 stays at 512 -- see below
 #define MAXPREL   512                 // reloc() relocations for the whole module
+// M14: MAXGLOBALS and MAXSTRS are the first two limits where this file
+// deliberately does NOT match stage0/gen_arm64.c. The reason is the same one
+// that raised MAXFUNCS at M11: stage0 only ever has to compile ONE program,
+// src/mc.mc (493 strings, 169 globals -- both under the C limits, which is what
+// `make bootstrap` keeps proving), while the self-hosted compiler has to compile
+// whatever a project throws at it. src/core.mc grew by toml.mc + driver.mc at
+// M14, and a taught compiler on top of it (examples/api/mc-api.mc = core + oop)
+// went past 512 strings. Raising the limit only changes behaviour above the old
+// ceiling, so every file in the check-lex/ast/asm corpus still comes out
+// identical under mc0 and mc1.
 
 // ---- full plan enum; the encoder only implements what it uses ----
 #define I_LABEL    0

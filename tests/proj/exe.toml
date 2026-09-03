@@ -1,0 +1,19 @@
+# exe.toml — the direct executable: no ld, ad-hoc signature, libsqlite3 bound by
+# ordinal from [libs]/[externs].
+[project]
+entry = "app.mc"
+out   = "build/app-exe"
+kind  = "exe"
+
+[target]
+os   = "macos"
+arch = "aarch64"
+
+[libs]
+sqlite3 = "/usr/lib/libsqlite3.dylib"
+
+[externs]
+"sqlite3_*" = "sqlite3"
+
+[include]
+paths = ["inc"]

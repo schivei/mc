@@ -1,0 +1,7 @@
+# A quoted key holding a '.' would flatten to the same path as the genuinely
+# nested key below it: both would be `a.b.c`, and toml_get would answer with
+# whichever came first. The parser refuses it instead.
+[a]
+"b.c" = 1
+[a.b]
+c = 2

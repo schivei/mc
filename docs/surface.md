@@ -15,6 +15,13 @@ backends: `macho` (the `.o`, default) and `macho-exe` (M11's direct executable, 
 
 Processed at compile time, in order of appearance, mutating the core's tables.
 
+Two of them, `#include <name>` and `#embed`, exist **only in the self-hosted compiler**: the C
+seed is frozen and does not have them (`build/mc0` answers `#include expects a string` and
+`unknown directive`). That is why their tests live in `tests/mc/` instead of `tests/` — the four
+cross-checks that compare `mc0` against `mc1` over `tests/*.mc` are supposed to find no
+difference, and these two are a difference on purpose. `scripts/check-mc.sh` runs them with the
+self-hosted compiler and asserts that the seed rejects them.
+
 ### `#token` — implemented
 Registers a new lexeme. Punctuation/operator matching is by longest prefix, scanning the table
 linearly (deterministic, rule 1 of `docs/determinism.md`).
@@ -182,6 +189,47 @@ That `!` is what makes the prelude's `while` cost two more instructions per loop
 hand-written `loop { if (i >= 3) break; ... }`: the core doesn't simplify `!(a < b)` into `a >= b`
 (there's no AST peephole at M9), and the prelude's rule is literally
 `loop { if (!$c) break; $b }`. See `docs/core-language.md` § Prelude.
+
+### `#include <name>` — implemented (M15)
+A second form of `#include`, served by the **bundle inside the binary** and never by the
+filesystem:
+
+```c
+#include <sys>            // lib/sys.mc
+#include <prelude>        // lib/prelude.mc
+#include <lz>             // src/lz.mc
+#include <mc/core>        // src/core.mc: the whole compiler minus user_init
+```
+
+The lexer does **not** tokenize `<name>` specially — it is `<`, the lexemes of the name and `>`,
+put back together by the parser. That is deliberate: `--dump-tokens` stays byte for byte what the
+frozen `stage0/lex.c` produces, so `scripts/check-lex.sh` keeps comparing the two lexers over
+every source in the repository.
+
+An unknown name is an error and lists nothing else (`unknown bundled include: <name>`); a bundled
+file appears in diagnostics under its bundled name (`syntax_demo_test:7: ...`); and a relative
+`#include "x"` written *inside* a bundled file is resolved by name in the bundle, which is how
+`src/core.mc`'s own `#include "arena.mc"` works identically from `src/` and from `<mc/core>`.
+Full description, the manifest and the format: `docs/build.md` § M15.
+
+### `#embed` — implemented (M15)
+```c
+#embed NAME "path" [lz]
+```
+Declares `u8 NAME[]` with the file's bytes (or the LZ stream, with `lz`), `#define NAME_size` (the
+bytes in the array) and `#define NAME_raw` (the original size). The path resolves like
+`#include "x"`, relative to the file that **wrote the directive** — including when that file came
+from the bundle, in which case the payload is served by the bundle too and has to be an entry of
+`tools/bundle.list` (`tests/mc/073-embed-bundle.mc`). Programs decompress with `<lz>`:
+
+```c
+#include <lz>
+#embed packed "data.txt" lz
+u8 out[8192];
+i64 main() { return lz_inflate(packed, packed_size, out, packed_raw); }
+```
+
+Ceiling 16 MiB; an empty file is an error. `docs/build.md` § M15 — `#embed`.
 
 ### `lib/prelude.mc` — the surface library
 `while`, `for`, `+=`, `-=`, `++`, `--`: six `#rule`s and four `#token`s, 36 lines, entering only
@@ -844,3 +892,27 @@ examples/api/main.mc:27: type expected in parameter
 That last line is the usual one: the default compiler doesn't know `str`. The surface belongs to
 the directory that teaches it. `make check` runs all of this in the `check-examples` target; the
 step-by-step guide is in `examples/api/README.md`.
+
+---
+
+## M14 — the same three things said from outside the source (`mc.toml`)
+
+Tier 3 is written *in* the source: `syntax`, `type_alias`, `#dylib`. M14 adds a place to say some
+of it from **outside** it, as data:
+
+- **which modules make up the compiler** — `[compiler] core/modules/out`, instead of writing a
+  `mc-api.mc` by hand and remembering to compile it first;
+- **which library an `extern` comes from** — `[libs]` + `[externs] "sqlite3_*" = "sqlite3"`, the
+  same table `#dylib` feeds. `#dylib` in the source still wins for its own `extern`s: the pattern
+  table is only consulted after the exact one;
+- **where `#include "x"` may look** — `[include].paths`, tried after the includer's own directory.
+
+```
+$ build/mc1 build examples/api
+compiler build/mc-api.mc -> build/mc-api
+compile main.mc -> build/api
+```
+
+The first line built the compiler that knows `class`/`interface`; the second used it. Nothing in
+`src/` changed, and neither `make` nor `ld` ran. The whole format, the driver and the limits are in
+**`docs/build.md`**.

@@ -22,6 +22,9 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
 ## Commands
 - `make stage0` → `build/mc0` · `make stage0-san` (sanitizers) · `make budget` · `make test`
 - `make mc1` → `build/mc1` · `make check` runs everything · `make test-exe` runs the suite via `--exe`.
+- `make bundle` regenerates `src/bundle_data.mc` (generated source) from `tools/bundle.list`;
+  run it whenever `lib/*.mc` or a core module changes, BEFORE `make bootstrap`. `make check`
+  runs `check-bundle` first and fails loudly if the checked-in bundle is stale.
 - `scripts/link.sh OUT IN.o` links with `ld -lSystem` (`ld` is allowed; gcc/cc/clang only for stage0).
   Since M11 it's optional: `build/mc1 --exe prog.mc -o prog` writes the signed executable directly.
 - Inspection: `otool -hlv X.o`, `otool -r X.o`, `nm -m X.o`; for the executable, `otool -l`,
@@ -228,8 +231,128 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   61/61, `check-ast` 61/61, `check-asm` 61/61, `check-obj` 32/32, `check-surface` 32/32,
   `test-exe` 32/32, `bootstrap` at a fixed point (`mc2.o == mc3.o`) and golden **unchanged**
   (`905f52c1…fbbc4` matches `tests/golden/mc2.sha256`), `check-examples` green.
-- Next: M14 (`docs/specs/M14.md`) and M15 (`docs/specs/M15.md`); M13 stays in the backlog (`docs/specs/M13.md`: sizing a program's memory at compile time — the
-  fixed 4 MiB arena in `examples/api/lib/rt.mc` is one more motivating case).
+- M14 done (`docs/specs/M14.md`, `docs/build.md`): **project driver and `mc.toml`**.
+  `mc build [DIR] [--config FILE]` reads a TOML file and drives the whole build; the single-file
+  CLI (`mc in.mc -o out.o`, `--exe`, `--backend=`, `--dump-*`) is unchanged, and `stage0/` was not
+  touched (2846/3000).
+  New files: `src/toml.mc` (475 lines — the TOML subset: `[table]`, `[[array of tables]]`, bare/
+  quoted/dotted keys, basic strings with `\" \\ \n \t \r`, integers with `+ - _`, booleans,
+  multi-line arrays with a trailing comma; every error is `file:line:col: message` and exit 1).
+  The result is deliberately a **flat (path, value, type, index) table in source order**, not a
+  tree — the same shape as every other table here (`docs/determinism.md` rule 1): array elements
+  share a path and carry an index (`include.paths[0]`), `[[x]]` puts the occurrence in the path
+  (`server.0.host`), and values are always text. API: `toml_get`, `toml_get_array`, `toml_count`,
+  `toml_int`, plus `toml_entries`/`toml_path_at`/`toml_val_at` — that last trio is what makes
+  `[libs]`/`[externs]` work, since the driver needs the KEYS of a table.
+  `src/tomldump.mc` (66) prints the table — the pretty-printer lives in the DRIVER, not in
+  `toml.mc`, because the compiler carries `toml.mc` in every binary and a dump nobody calls is a
+  dozen string literals against the seed's `MAXSTRS`; `scripts/check-toml.sh` (66) compares it against
+  `tests/toml/*.expect` — 5 well-formed files and 5 malformed ones (`bad-string`, `bad-equals`,
+  `bad-header`, `bad-escape`, `bad-value`) whose `.expect` holds the exact `file:line:col`.
+  `src/driver.mc` (421) implements `[project] name/entry/out/kind`, `[target] os/arch`
+  (macos/aarch64 only — anything else is an error pointing at the offending value),
+  `[compiler] core/modules/out`, `[linker] cmd/args`, `[libs]`, `[externs]`, `[include].paths`.
+  Every path is relative to the CONFIG's directory. Two shapes: with no `[compiler]` the entry is
+  compiled in-process; with it, the driver writes `<compiler.out>.mc` (`#include` of the core plus
+  each module, `../`-adjusted because the generated file lives next to the compiler), compiles it
+  with `macho-exe`, and **spawns** the result as `<compiler> build DIR --config FILE --entry-only`
+  — the compiler's tables are globals built once per process, so two compilations never fit in one
+  run; `--entry-only` is the second half and re-reads the same TOML, which is why
+  `[include]/[libs]/[externs]` apply either way. `[linker]` substitutes `{out} {obj} {sdk}` inside
+  each argument and expands `{libs}` (a whole argument) into one argument per `[libs]` entry, each
+  also substituted; `{sdk}` runs `xcrun --show-sdk-path` lazily, capturing stdout with a
+  `posix_spawn_file_actions_addopen` on fd 1 into `<out>.sdk`, read back and unlinked. Tools are
+  spawned with `posix_spawnp` + `waitpid` (inherited stderr, so their diagnostics pass through;
+  non-zero exit -> exit 1). Outputs get their parent directories created and are `unlink`ed before
+  writing (the cached-signature `SIGKILL`).
+  Support changes (`git diff --numstat`): `src/lex.mc` +38/-1 (`lex_add_include_path`/
+  `lex_readable`, extra `#include` roots tried only after the includer's own directory fails; with
+  none registered, not even an extra `open` happens), `src/parse.mc` +41/-1
+  (`extern_lib_pattern_add`/`extern_pat_match`, `MAXEXTPAT 32`; `extern_lib_find` consults the
+  exact `#dylib` table FIRST, so `#dylib` in the source still wins),
+  `src/main.mc` +6 (dispatch on `argv[1] == "build"`, after the backends are registered),
+  `src/core.mc` +4, `lib/sys.mc` +19 (`posix_spawnp`/`waitpid`/`_NSGetEnviron` for programs;
+  documented as having **no** `lib/sys_svc.mc` equivalent — `posix_spawn` is not a syscall, it is
+  a libSystem routine marshalling a struct this language cannot lay out).
+  Two limits in `src/gen_arm64.mc` (+12/-2) deliberately diverge from the C seed for the first time:
+  `MAXSTRS 512 -> 2048` and `MAXGLOBALS 256 -> 512`. Reason (same as MAXFUNCS at M11): stage0 only
+  has to compile ONE program, `src/mc.mc` (493 strings, 169 globals — under the C limits, which
+  `make bootstrap` keeps proving), while `src/core.mc` + a taught compiler on top of it
+  (`examples/api/mc-api.mc` = core + oop) went past 512 strings once `toml.mc`/`driver.mc` joined
+  the core. Raising a ceiling only changes behaviour above the old one, so the whole
+  check-lex/ast/asm corpus still comes out identical under `mc0` and `mc1`.
+  Proofs: `examples/api/mc.toml` (40 lines) — `build/mc1 build examples/api` prints
+  `compiler build/mc-api.mc -> build/mc-api` / `compile main.mc -> build/api` and produces both
+  binaries (253475 and 55632 bytes, `codesign --verify` OK, `otool -L` with libSystem **and**
+  libsqlite3 bound by ordinal from `[libs]`/`[externs]`); `examples/api/test.sh` now compiles with
+  `mc build` and all 11 route checks pass; the Makefile keeps working as the by-hand path.
+  `tests/proj/` (one program, three configs) + `scripts/check-build.sh` (160) cover
+  `[include].paths` (the `#include` only resolves through it), `[libs]`/`[externs]` with **no**
+  `#dylib` anywhere, `[linker]` with all four placeholders through real `ld`, `kind = "obj"`, and
+  four diagnostics. New `make` targets `check-toml` and `check-build`, both inside `make check`.
+  Docs: `docs/build.md` (381, new), `docs/surface.md` § "M14 — the same three things said from
+  outside the source", `examples/api/README.md` § 3 and `examples/api/Makefile` header.
+  — `stage0/` untouched, 2846/3000; `src/*.mc` 7731 lines; 674/1024 functions in `src/mc.mc`
+  (350 of headroom), 489/512 strings and 169/256 globals under the C seed's limits -- the
+  string budget is the tight one, and `MAXSTRS` in `stage0/gen_arm64.c` is the ceiling M15 will
+  probably have to raise.
+  `make check` green end to end: `test` 32/32, `check-lex` 64/64, `check-ast` 64/64, `check-asm`
+  64/64, `check-obj` 32/32, `check-surface` 32/32 + Tier 3, `test-exe` 32/32, `check-toml` 8/8,
+  `check-build` 10/10, `check-examples` green, `bootstrap` at a fixed point (`mc2.o == mc3.o`,
+  267552 bytes; the `--dump-asm` diff between `mc1` and `mc2` is empty) and golden rewritten once
+  in `tests/golden/mc2.sha256` (`d92fad26…cb69f` -> `20564a98…f343e`).
+- M15 done (`docs/specs/M15.md`, `docs/build.md` § M15, `docs/bootstrap.md` § M15):
+  **bundled standard library, `#include <name>`, `#embed`**. The binary alone is the toolchain.
+  New: `src/lz.mc` (199, LZ77 both ways, zero dependencies — not even `arena.mc` — so
+  `#include <lz>` is enough for a program; deterministic hash chain in bss, reset per call;
+  a 3-byte match is refused while a literal run is pending, which is what makes
+  `lz_bound(n) = n + n/128 + 8` a true bound), `src/bundle.mc` (229, `bundle_find`/
+  `bundle_read` with lazy inflate + cache, and `bundle_emit`, the ONE definition of the
+  generated file's format), `src/bundle_data.mc` (generated, 2845 lines / 323997 B),
+  `tools/bundle.list` (27 entries) + `tools/bundle.mc` (186) + `tools/lz_test.mc` (151),
+  `tests/mc/070-embed.mc`, `071-embed-lz.mc`, `072-include-bundle.mc` (+ 2 data files),
+  `scripts/check-mc.sh` (80), `scripts/check-bundle.sh` (55), `scripts/check-standalone.sh` (140).
+  Edited: `src/lex.mc` (+88: `fvirt`, `lex_push_mem`, `lex_find_path`, `lex_seen`/`lex_remember`,
+  `lex_strip_mc`, `lex_include_bundled`/`lex_include_name`, `D_EMBED`, the `bopen_fn` hook),
+  `src/parse.mc` (+88: `#include <name>` and `do_embed`), `src/core.mc`, `src/main.mc`,
+  `src/astdump.mc`, `src/driver.mc` (default core = `<mc/core>`), `examples/api/mc-api.mc` +
+  `mc.toml` (no more `core = "../../src/core.mc"`), `Makefile`, docs.
+  Design notes worth keeping:
+  * **The lexer does not tokenize `<name>`.** `#include <mc/core>` is `<`, the lexemes and `>`,
+    reassembled in `do_directive`. So `--dump-tokens` stays byte for byte what the frozen
+    `stage0/lex.c` produces and `check-lex` keeps comparing the two lexers over the whole tree.
+  * **The lexer does not depend on `src/bundle.mc`** either: `main.mc` registers `bundle_open`
+    through one function pointer (`lex_set_bundle`), so `src/lexdump.mc` and `src/astdump.mc`
+    stay bundle-free and `check-lex`/`check-ast` keep compiling them with `mc0`.
+  * **`mc/bundle_data` is regenerated on the fly** from the in-memory blob (the bundle cannot
+    contain itself), which is what makes `<mc/core>` complete. Proof:
+    `#include <mc/core>` + `#include <user_default>` compiles to an object **identical to
+    `build/mc2.o`** (`scripts/check-standalone.sh`).
+  * **Relative includes inside a bundled file** resolve by name: join + normalize + drop `.mc`,
+    then fall back to the last path component (`mc/driver` → `"../lib/prelude.mc"` → `prelude`).
+    `tools/bundle.mc` refuses a manifest with two entries sharing a last component.
+  * **`u64` hex elements, not `u8` decimal**, in `bundle_blob`: the parser makes one AST node per
+    initializer element and the frozen stage0 has a 32 MiB arena with 72-byte nodes — 134 KB of
+    bytes exhausts it (measured), as `u64` it costs ~17k nodes. Hex because an element ≥ 2^63
+    would need an unsigned divide to print in decimal.
+  — `stage0/` untouched, 2846/3000; `src/*.mc` 11205 lines (2845 of them generated);
+  **708/1024 functions** in `src/mc.mc` (316 of headroom), **500/512 strings**, 177/256 globals.
+  `make check` green end to end: `test` 32/32, `check-lex` 67/67, `check-ast` 67/67,
+  `check-asm` 67/67, `check-obj` 32/32, `check-bundle` (reproducible + fresh), `check-surface`
+  32/32 + Tier 3, `test-exe` 32/32, `check-mc` 5/5, `check-standalone` green, `check-toml` 8/8,
+  `check-build` 10/10, `check-examples` green, `bootstrap` at a fixed point (`mc2.o == mc3.o`,
+  416664 bytes; the `--dump-asm` diff between `mc1` and `mc2` is empty) and golden rewritten once
+  (`20564a98…f343e` -> `dea82035…4eb38`).
+  Sizes: source 304346 B -> LZ 134604 B (44%), blob 134870 B; `build/mc-exe` 252316 B without
+  the blob -> **384419 B** with it.
+  **The string budget is now the binding constraint**: the core is at 500/512 and
+  `lib/mc_syntax_demo.mc` (which `check-asm` compiles with `mc0`) at 508/512 — four literals of
+  headroom for the whole repository. M16 will have to either raise `MAXSTRS` in
+  `stage0/gen_arm64.c` (a seed change the owner has to authorize) or put the next milestone's
+  messages on a diet.
+- Next: M16 (`docs/specs/M16.md` — Linux arm64, ELF64); M13 stays in
+  the backlog (`docs/specs/M13.md`: sizing a program's memory at compile time — the fixed 4 MiB
+  arena in `examples/api/lib/rt.mc` is one more motivating case).
   Update this section when each milestone closes.
 - i18n done (2026-09-03): the repository is fully in English — diagnostics, program/script
   output, identifiers, comments, and docs (`docs/*.md`, `docs/specs/*.md`, `CLAUDE.md`,

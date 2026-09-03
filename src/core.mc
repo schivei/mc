@@ -11,6 +11,11 @@
 //   sha256.mc    pure SHA-256, for the ad-hoc signature and the executable UUID
 //   backend_exe.mc backend `macho-exe`: signed MH_EXECUTE, without `ld` (M11)
 //   hooks.mc     Tier 2/3: passes (pass), backends (backend), syntax (syntax)
+//   lz.mc        LZ77 both ways, for the bundle and for `#embed ... lz` (M15)
+//   toml.mc      the TOML subset mc.toml is written in (M14)
+//   driver.mc    `mc build`: reads mc.toml and drives the whole build (M14)
+//   bundle_data.mc GENERATED (tools/bundle.mc): lib/ and the core, LZ-compressed
+//   bundle.mc    `#include <name>` served from that blob (M15)
 //   main.mc      CLI
 //
 // macho.mc comes before lex.mc because parse.mc uses sec_new (via sec_make) and the
@@ -30,6 +35,7 @@
 // See docs/surface.md § Tier 3.
 
 #include "arena.mc"
+#include "lz.mc"
 #include "macho.mc"
 #include "lex.mc"
 #include "ast.mc"
@@ -38,4 +44,8 @@
 #include "sha256.mc"
 #include "backend_exe.mc"
 #include "hooks.mc"
+#include "toml.mc"
+#include "driver.mc"
+#include "bundle_data.mc"
+#include "bundle.mc"
 #include "main.mc"

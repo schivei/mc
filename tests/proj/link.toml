@@ -1,0 +1,26 @@
+# link.toml — the same source through an external linker: mc writes build/app-ld.o
+# and spawns `ld` with the four placeholders substituted. {sdk} only runs
+# `xcrun --show-sdk-path` because this file mentions it.
+[project]
+entry = "app.mc"
+out   = "build/app-ld"
+kind  = "exe"
+
+[target]
+os   = "macos"
+arch = "aarch64"
+
+[linker]
+cmd  = "ld"
+args = ["-arch", "arm64", "-platform_version", "macos", "13.0", "13.0",
+        "-syslibroot", "{sdk}", "-lSystem", "-o", "{out}", "{obj}", "{libs}"]
+
+# `ld` needs something it can open, and on macOS /usr/lib/libsqlite3.dylib only
+# exists inside the dyld shared cache -- the SDK stub is what gets linked. {sdk}
+# is substituted here too, exactly as in [linker].args. There is no [externs]
+# section: on this path it is `ld` that resolves the symbols, not mc.
+[libs]
+sqlite3 = "{sdk}/usr/lib/libsqlite3.tbd"
+
+[include]
+paths = ["inc"]

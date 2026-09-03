@@ -15,6 +15,9 @@
 // picks the backend via --backend=NAME. The built-in `macho` backend is
 // gen_lower + gen_encode_all + macho_write and is the default.
 //
+// M15: main() also registers `bundle_open` in the lexer, which is what makes
+// `#include <name>` work -- see src/bundle.mc and docs/build.md.
+//
 // M11: `macho-exe` (gen_lower + gen_encode_all + exe_write) is also built in and
 // writes a signed MH_EXECUTE, without `ld`. `--exe` is an alias for
 // `--backend=macho-exe`. This backend only exists in the .mc compiler: the stage0
@@ -47,6 +50,7 @@ uptr opt_val(uptr a, uptr pre) {
 
 void usage() {
     out_str(2, "usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NAME|--exe] source.mc [-o out]\n");
+    drv_usage();
 }
 
 i64 main(i64 argc, uptr argv) {
@@ -57,6 +61,16 @@ i64 main(i64 argc, uptr argv) {
 
     backend("macho", &backend_macho);           // the built-ins, always registered
     backend("macho-exe", &backend_exe);
+    // M15: the lexer only reaches the bundle through this pointer, so
+    // src/lexdump.mc and src/astdump.mc keep compiling without src/bundle.mc.
+    // Registered here, before any lex_init -- including the one inside
+    // `mc build`, which goes through this same main().
+    lex_set_bundle(&bundle_open);
+
+    // M14: `mc build [DIR] [--config FILE]` is a subcommand, not a flag -- it
+    // reads mc.toml and drives the whole build (src/driver.mc, docs/build.md).
+    // It comes after the backends because that is what the driver picks from.
+    if (argc >= 2 && str_eq(ld64(argv + 8), "build")) return drv_build(argc, argv);
 
     i64 i = 1;
     loop {
