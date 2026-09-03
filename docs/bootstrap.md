@@ -1,8 +1,9 @@
-# bootstrap.md — M8: cortar o cordão
+# bootstrap.md — M8: cortar o cordão (e M11: cortar o `ld`)
 
-Este documento descreve `scripts/bootstrap.sh` (M7, ponto fixo) e o estado de M8 (o compilador
-deixa de depender de `clang` para qualquer coisa além do primeiro estágio). Leia `docs/plan.md`
-§ Marcos e `docs/specs/M6-M7.md` § M7 antes deste texto — aqui só se documenta o que já está feito.
+Este documento descreve `scripts/bootstrap.sh` (M7, ponto fixo), o estado de M8 (o compilador deixa
+de depender de `clang` para qualquer coisa além do primeiro estágio) e a cadeia sem `ld` que o M11
+acrescentou. Leia `docs/plan.md` § Marcos, `docs/specs/M6-M7.md` § M7 e `docs/specs/M11.md` antes
+deste texto — aqui só se documenta o que já está feito.
 
 ## A cadeia
 
@@ -57,8 +58,56 @@ citam a palavra, não invocações. Nenhum script em `scripts/` chama `clang`/`c
 `ld` (o linker da Apple) não é um compilador C — não interpreta `.mc` nem `.c`, só liga objetos
 Mach-O já prontos. `scripts/link.sh` continua chamando `ld -arch arm64 -platform_version macos ...
 -lSystem` para transformar `mc1.o`/`mc2.o` em executáveis rodáveis; isso é permitido em M8 e
-permanece permitido depois (M11 é o marco que eventualmente escreve `MH_EXECUTE` direto e elimina
-até essa dependência — fora de escopo aqui).
+permanece permitido depois. **Desde o M11 ele deixou de ser necessário**: o backend `macho-exe`
+(`mc --exe`) escreve o `MH_EXECUTE` assinado direto — ver a seção seguinte.
+
+## M11 — a cadeia sem `ld`
+
+Do M11 em diante o compilador escreve o executável sozinho (`--exe`, apelido de
+`--backend=macho-exe`, ver `docs/surface.md` § Tier 2 e `docs/macho-notes.md` § M11). A cadeia
+inteira, do fonte ao compilador rodável, sem nenhum linker:
+
+```
+build/mc1 --exe src/mc.mc -o build/mc-exe       # o unico passo que ainda usa mc1 (que veio de ld)
+build/mc-exe src/mc.mc -o x.o                   # ... e daqui em diante nada mais usa ld
+build/mc-exe --exe src/mc.mc -o build/fix/mc-exe
+```
+
+Provas rodadas (saídas reais):
+
+```
+$ build/mc1 --exe src/mc.mc -o build/mc-exe && ls -la build/mc-exe
+-rwxr-xr-x  1 schivei  staff  210835 build/mc-exe
+
+$ build/mc-exe src/mc.mc -o tmp/x.o && cmp tmp/x.o build/mc2.o && echo identicos
+identicos                       # o compilador sem ld gera o MESMO .o que o compilador com ld
+
+$ build/mc-exe --exe src/mc.mc -o build/fix/mc-exe && cmp build/mc-exe build/fix/mc-exe
+                                # sem saida: ponto fixo do executavel, byte a byte
+
+$ scripts/test.sh build/mc-exe        # 32/32 (mc-exe compilando .o + ld)
+$ scripts/test-exe.sh build/mc-exe    # 32/32 (mc-exe compilando executaveis, ld em lugar nenhum)
+$ scripts/check-obj.sh build/mc1 build/mc-exe   # 32/32 objetos identicos
+```
+
+**O identificador da assinatura é o nome do arquivo de saída.** Por isso
+`build/mc-exe --exe src/mc.mc -o build/mc-exe2` **não** produz bytes idênticos a `build/mc-exe`: o
+identificador `mc-exe2` tem um caractere a mais que `mc-exe`, o que muda o tamanho do
+`CS_CodeDirectory` e, por tabela, o `datasize` do `LC_CODE_SIGNATURE`, o `filesize` do
+`__LINKEDIT`, o `LC_UUID` (que é hash do conteúdo) e os hashes de página. São exatamente 5 campos, e
+`cmp -l` confirma que nenhum outro byte muda. Com o mesmo *basename* em outro diretório
+(`-o build/fix/mc-exe`) o resultado é idêntico byte a byte — é essa a forma correta de testar o
+ponto fixo do executável, e é o que o texto acima faz. A alternativa (identificador fixo) foi
+descartada de propósito: `codesign -dvvv` mostrando `Identifier=mc-exe` é a mesma convenção do
+`codesign` da Apple.
+
+`scripts/test-exe.sh` (alvo `make test-exe`, incluído em `make check`) roda `tests/*.mc` inteiro por
+esse caminho: compila com `--exe`, confere `codesign --verify` e compara exit code e stdout com o
+cabeçalho de cada fonte — 32/32.
+
+**O `ld` continua sendo o caminho do bootstrap.** `scripts/bootstrap.sh` não mudou: o critério do
+ponto fixo do M7 é sobre `.o`, e o `.o` continua sendo o formato de saída padrão. O `--exe` é uma
+segunda saída, provada por `make test-exe` e pela cadeia acima, não uma substituição.
 
 ## Binários não são versionados
 

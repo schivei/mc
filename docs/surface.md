@@ -2,11 +2,13 @@
 
 Fonte: `docs/plan.md` § "Superfície de ensino" e
 `docs/specs/M1.md`/`M5.md`/`M5.5.md`/`M9.md`/`M10.md`.
-Estado neste marco (**M10 fechado**): `#token`, `#infix`/`#prefix`, `#rule`, `#section`, `#opcode`,
+Estado neste marco (**M11 fechado**): `#token`, `#infix`/`#prefix`, `#rule`, `#section`, `#opcode`,
 `emit()`/`reloc()` implementados e testados de verdade com `build/mc0` **e** com o compilador
 auto-hospedado `build/mc1` (o mecanismo existe nos dois lados: `stage0/parse.c` e `src/parse.mc`).
 O Tier 2 programático (`pass()`/`backend()`) também está **implementado**, mas só no compilador
-em `.mc` — o stage0 em C é a semente e não é ensinável por Tier 2. Ver a seção no fim.
+em `.mc` — o stage0 em C é a semente e não é ensinável por Tier 2. Ver a seção no fim, que também
+descreve os dois backends embutidos: `macho` (o `.o`, default) e `macho-exe` (o executável direto
+do M11, apelido `--exe`).
 
 ## Tier 1 — diretivas `#...`
 
@@ -397,7 +399,7 @@ Critério de aceite, rodado por `make check-surface`: para **todo** `tests/*.mc`
 ```
 build/mc1s --backend=arm64-surface X -o a.o
 build/mc1s                         X -o b.o
-cmp a.o b.o        # byte a byte identicos, 31/31
+cmp a.o b.o        # byte a byte identicos, 32/32
 ```
 
 `lib/pass_demo.mc` é o par do backend do lado da AST: um pass que varre `1..nnodes-1` e troca
@@ -405,11 +407,57 @@ cmp a.o b.o        # byte a byte identicos, 31/31
 O núcleo não faz isso — `fold` só dobra constante com constante — e `tests/061-pass.mc` mostra a
 diferença em `--dump-ast`.
 
+### Os dois backends embutidos: `macho` e `macho-exe`
+
+`src/main.mc` registra dois backends antes de chamar `user_init()`:
+
+| nome | escreve | apelido |
+|---|---|---|
+| `macho` (default) | `MH_OBJECT` — o `.o` que `scripts/link.sh` liga com `ld` | — |
+| `macho-exe` (M11) | `MH_EXECUTE` arm64 assinado ad-hoc, sem `ld` | `--exe` |
+
+```
+$ build/mc1 --exe tests/001-return42.mc -o tmp/t1 && tmp/t1; echo $?
+42
+$ build/mc1 --backend=macho-exe tests/001-return42.mc -o tmp/t1    # a mesma coisa
+$ build/mc1 --backend=xyz tests/001-return42.mc -o x.o
+backend desconhecido: xyz
+registrados: macho macho-exe
+```
+
+`macho-exe` mora em `src/backend_exe.mc` e é **parte do compilador**, não um módulo de usuário: ele
+é a resposta do M11, não uma demonstração de Tier 2. Mas é escrito exatamente como um backend da
+superfície seria — chama `gen_lower(root)` e `gen_encode_all()` (as duas metades públicas do gen) e
+depois só usa a API pública de `src/macho.mc` para ler seções, símbolos e relocações. O que ele
+acrescenta é o que o `ld` fazia: escolher endereços, resolver as quatro relocações, criar
+`__TEXT,__stubs` + `__DATA,__got` para os símbolos importados, emitir os bind/rebase opcodes do
+`dyld` e assinar ad-hoc (SHA-256 próprio, em `src/sha256.mc`). Os campos, com os valores conferidos,
+estão em `docs/macho-notes.md` § M11; a cadeia sem `ld`, em `docs/bootstrap.md`.
+
+Duas coisas que o `--exe` faz e o `.o` + `ld` não:
+
+- **`&nome` de um `extern` de dylib funciona.** No `.o` o `ld` recusa (um símbolo importado só tem
+  endereço via `__got` e o núcleo não emite `GOT_LOAD_PAGE21` — o limite conhecido do M10 em
+  `docs/core-language.md`). No `--exe` quem resolve é o próprio `mc`, e ele aponta o `adrp`/`add`
+  para o stub do símbolo, que é um endereço chamável.
+- **O binário sai executável (`0755`) e assinado**, pronto para rodar; não há passo de link nem de
+  `codesign`.
+
+Uma coisa que ele **não** faz: `#section` num segmento que não seja `__TEXT` ganha um segmento
+`rw-` próprio, e um ponteiro relocado (`R_UNSIGNED`) dentro de `__TEXT` é recusado com
+`ponteiro relocado em __TEXT: o segmento e r-x e o dyld nao o rebasa`.
+
+`scripts/test-exe.sh` (alvo `make test-exe`, dentro de `make check`) roda `tests/*.mc` inteiro por
+esse caminho — compila com `--exe`, verifica a assinatura com `codesign --verify` e compara exit
+code e stdout com o cabeçalho de cada fonte: **32/32**.
+
 ### O stage0 não é ensinável
 
 `pass()`/`backend()` só existem no compilador em `.mc`. O stage0 em C é a semente: o driver aceita
 `--backend=macho` (para que a linha de comando seja a mesma) e nada mais — `--backend=arm64-surface`
-com `build/mc0` é `opcao desconhecida`. Isso é deliberado: o Tier 2 custa **zero** linhas de
+com `build/mc0` é `opcao desconhecida`. **`--exe` também não existe no stage0**: o executável direto
+do M11 (`src/backend_exe.mc` + `src/sha256.mc`, 1035 linhas de `.mc`) não caberia no orçamento de
+3000 linhas de C, e não precisa caber — a semente só tem de produzir o `mc1`. Isso é deliberado: o Tier 2 custa **zero** linhas de
 mecanismo em C justamente porque o compilador que se ensina é o que está escrito na própria
 linguagem. O que o C precisou ganhar no M10 foi só o que a linguagem precisa para expressar um
 hook: `&funcao`, `callp` e a divisão do gen em duas metades.

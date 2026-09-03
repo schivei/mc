@@ -50,7 +50,7 @@
 #define REG_FRAME 32                  // base ficticia trocada por sp em fix_frame
 #define MAXDEPTH  64
 #define MAXLOCALS 256
-#define MAXFUNCS  512
+#define MAXFUNCS  1024
 #define MAXLOOPS  32
 #define MAXGLOBALS 256
 #define MAXSTRS    512

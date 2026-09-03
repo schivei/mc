@@ -5,7 +5,9 @@
 # lib/user_demo.mc, recompila o compilador com mc0 (build/mc1s), e para cada
 # tests/*.mc compara o objeto do backend `arm64-surface` (escrito em .mc, fora
 # do compilador) com o do backend `macho` embutido. Identidade byte a byte e o
-# criterio. O src/user.mc original e sempre devolvido, mesmo se algo falhar.
+# criterio. Depois liga lib/user_tokadd.mc (um user_init que so chama tok_add) e
+# confere que os ids das palavras do nucleo continuam de pe. O src/user.mc
+# original e sempre devolvido, mesmo se algo falhar.
 mc0="${1:-build/mc0}"
 
 if [ ! -x "$mc0" ]; then
@@ -81,5 +83,36 @@ for f in tests/*.mc; do
         fails=$((fails + 1))
     fi
 done
+
+# Ordem de inicializacao: um user_init que chama tok_add nao pode deslocar os
+# ids das palavras do nucleo (K_U8..K_EXTERN = 256..269). Ver lib/user_tokadd.mc.
+sed 's|user_default\.mc|user_tokadd.mc|' "$save" > "$user"
+if ! grep -q 'user_tokadd\.mc' "$user"; then
+    echo "FAIL: nao consegui ligar lib/user_tokadd.mc em $user"
+    exit 1
+fi
+if ! msg=$("$mc0" src/mc.mc -o build/mc1t.o 2>&1); then
+    echo "FAIL: compilacao de src/mc.mc com user_tokadd: $msg"
+    fails=$((fails + 1))
+elif ! msg=$(scripts/link.sh build/mc1t build/mc1t.o 2>&1); then
+    echo "FAIL: link de build/mc1t: $msg"
+    fails=$((fails + 1))
+elif ! msg=$(build/mc1t tests/001-return42.mc -o "$tmp/t.o" 2>&1); then
+    echo "FAIL: user_init com tok_add quebrou o nucleo: $msg"
+    fails=$((fails + 1))
+elif ! msg=$(scripts/link.sh "$tmp/t" "$tmp/t.o" 2>&1); then
+    echo "FAIL: link de tests/001 com user_tokadd: $msg"
+    fails=$((fails + 1))
+else
+    "$tmp/t"
+    rc=$?
+    if [ "$rc" != "42" ]; then
+        echo "FAIL: tests/001 com user_tokadd devolveu $rc, esperado 42"
+        fails=$((fails + 1))
+    else
+        echo "ok user_init com tok_add nao desloca os ids do nucleo (tests/001 = 42)"
+    fi
+fi
+cp "$save" "$user"
 
 [ "$fails" -eq 0 ]

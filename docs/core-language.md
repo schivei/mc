@@ -109,10 +109,23 @@ i64 main() {
 ```
 
 Testado em `tests/060-callp.mc` (tabela de `uptr` com `&add2`/`&mul2`, chamada de 7 argumentos,
-exit 42). **Limite conhecido:** `&nome` de um `extern` que mora numa dylib (`&write` da libSystem)
-gera o `.o` correto, mas o `ld` recusa o link — um símbolo importado só tem endereço via `__got`,
-e o núcleo ainda não emite relocação `GOT_LOAD_PAGE21` (é assunto do M11). Com um `extern`
-resolvido por outro `.o` do mesmo link, `&nome` funciona.
+exit 42). **Limite conhecido, só do caminho `.o` + `ld`:** `&nome` de um `extern` que mora numa
+dylib (`&write` da libSystem) gera o `.o` correto, mas o `ld` recusa o link — um símbolo importado
+só tem endereço via `__got`, e o núcleo não emite relocação `GOT_LOAD_PAGE21`:
+
+```
+$ build/mc1 amp.mc -o amp.o && scripts/link.sh amp amp.o     # uptr w = &write;
+ld: fixup error (kind=arm64_adrp_lo12) at '_main'+0xC from amp.o, target '_write' does not have address
+```
+
+Com um `extern` resolvido por outro `.o` do mesmo link, `&nome` funciona. E **pelo `--exe` (M11)
+funciona sempre**: quem resolve a relocação ali é o próprio `mc`, que aponta o `adrp`/`add` para o
+stub do símbolo em `__TEXT,__stubs` — um endereço chamável.
+
+```
+$ build/mc1 --exe amp.mc -o amp && ./amp                     # callp(&write, 1, "via &write\n", 11)
+via &write
+```
 
 ## Arrays
 

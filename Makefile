@@ -40,6 +40,11 @@ check-asm: build/mc0 build/mc1
 check-obj: build/mc0 build/mc1
 	scripts/check-obj.sh build/mc0 build/mc1
 
+# M11: a suite inteira pelo executavel direto (--exe), sem ld. So o compilador
+# em .mc tem esse backend, entao o alvo depende de build/mc1.
+test-exe: build/mc1
+	scripts/test-exe.sh build/mc1
+
 bootstrap: stage0
 	scripts/bootstrap.sh
 
@@ -48,7 +53,7 @@ bootstrap: stage0
 check-surface: build/mc0
 	scripts/check-surface.sh build/mc0
 
-check: budget test check-lex check-ast check-asm check-obj bootstrap check-surface
+check: budget test check-lex check-ast check-asm check-obj bootstrap check-surface test-exe
 
 budget:
 	scripts/loc-budget.sh $(BUDGET)
@@ -56,4 +61,4 @@ budget:
 clean:
 	rm -rf build
 
-.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface check budget clean
+.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe check budget clean

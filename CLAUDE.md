@@ -21,8 +21,11 @@ Agentes reportam fatos (comandos rodados + saída), nunca suposições.
 
 ## Comandos
 - `make stage0` → `build/mc0` · `make stage0-san` (sanitizers) · `make budget` · `make test`
+- `make mc1` → `build/mc1` · `make check` roda tudo · `make test-exe` roda a suíte por `--exe`.
 - `scripts/link.sh OUT IN.o` liga com `ld -lSystem` (ld é permitido; gcc/cc/clang só para o stage0).
-- Inspeção: `otool -hlv X.o`, `otool -r X.o`, `nm -m X.o`.
+  Desde o M11 ele é opcional: `build/mc1 --exe prog.mc -o prog` escreve o executável assinado direto.
+- Inspeção: `otool -hlv X.o`, `otool -r X.o`, `nm -m X.o`; do executável, `otool -l`,
+  `codesign -dvvv`, `codesign --verify --verbose=4`.
 
 ## Estado
 - M0 ✔ (`.o` manual, exit 42) · M0.5 ✔ (svc funciona sob dyld; estático é morto pelo kernel)
@@ -86,4 +89,34 @@ Agentes reportam fatos (comandos rodados + saída), nunca suposições.
   `make check` verde: `test` 32/32, `check-lex` 54/54, `check-ast` 54/54, `check-asm` 54/54,
   `check-obj` 32/32, `check-surface` 32/32, `bootstrap` com ponto fixo (`mc2.o == mc3.o`,
   191368 bytes) e golden regravado em `tests/golden/mc2.sha256`.
-- M11 é o próximo marco. Atualize esta seção ao fechar cada marco.
+- M11 ✔ (`docs/specs/M11.md`): **executável direto (`mc --exe`), sem `ld`**. O executável é um
+  backend em `.mc` — `src/backend_exe.mc` (858 linhas), registrado por padrão no driver como
+  `macho-exe`, com `--exe` de apelido. Ele reusa `gen_lower` + `gen_encode_all` (o mesmo encoder e
+  as mesmas seções/relocs do backend `macho`) e faz o que o `ld` fazia: layout de segmentos com
+  páginas de 16 KiB (`__PAGEZERO`/`__TEXT`/`__DATA`/`__LINKEDIT`, um `LC_SEGMENT_64` por segname
+  distinto), resolução própria de `BRANCH26`/`PAGE21`/`PAGEOFF12`/`UNSIGNED`, `__TEXT,__stubs` +
+  `__DATA,__got` por símbolo importado com **bind opcodes** (`LC_DYLD_INFO_ONLY`, sem lazy/weak/
+  export), **rebase** para todo `UNSIGNED` (PIE), as 13 load commands (`LC_MAIN`, `LC_LOAD_DYLINKER`,
+  `LC_LOAD_DYLIB libSystem`, `LC_UUID` derivado do SHA-256 do conteúdo, `LC_CODE_SIGNATURE`) e
+  **assinatura ad-hoc** (`CS_SuperBlob`/`CS_CodeDirectory` v0x20400, SHA-256 por página de 4 KiB,
+  `CS_ADHOC`, `execSeg*`, identificador = basename da saída). `src/sha256.mc` (177 linhas) é o
+  SHA-256 escrito na linguagem, conferido contra `shasum -a 256` em 7 vetores. Campos verificados um
+  a um contra a referência do `ld` (`-no_fixup_chains`) — ver `docs/macho-notes.md` § M11.
+  `--exe` **não existe no stage0**: o C é semente e continua só com `--backend=macho`.
+  Provas: `scripts/test-exe.sh` (alvo `make test-exe`, dentro de `make check`) roda toda a suíte por
+  `--exe` — **32/32**, com `codesign --verify` em cada binário; `codesign -dvvv` mostra
+  `flags=0x2(adhoc)`. Auto-hospedagem sem `ld`: `build/mc1 --exe src/mc.mc -o build/mc-exe`
+  (210835 bytes), `build/mc-exe src/mc.mc -o x.o` idêntico a `build/mc2.o`, e
+  `build/mc-exe --exe src/mc.mc -o build/fix/mc-exe` idêntico byte a byte a `build/mc-exe`
+  (o ponto fixo do executável só vale com o mesmo *basename*: o identificador da assinatura é o nome
+  do arquivo de saída, como no `codesign` — ver `docs/bootstrap.md` § M11).
+  Junto entraram duas correções da revisão do M10, ambas só em `src/`: `MAXFUNCS` subiu de 512 para
+  1024 (o C já era 1024; com os dois arquivos novos o `mc1 → mc2` teria morrido com `funcoes
+  demais`) e `user_init()` passou a ser chamado **depois** de `tok_init()`/`lex_init()` (antes dele,
+  um `user_init` com `tok_add` deslocava `K_U8..K_EXTERN` e quebrava o núcleo —
+  `lib/user_tokadd.mc` + o novo caso em `scripts/check-surface.sh` travam isso).
+  — stage0 **intocado**, 2843/3000 linhas; `make check` verde: `test` 32/32, `check-lex` 57/57,
+  `check-ast` 57/57, `check-asm` 57/57, `check-obj` 32/32, `check-surface` 32/32, `test-exe` 32/32,
+  `bootstrap` com ponto fixo (`mc2.o == mc3.o`, 225424 bytes) e golden regravado em
+  `tests/golden/mc2.sha256` (o `diff` de `--dump-asm` entre `mc1` e `mc2` sai vazio).
+- M12 é o próximo marco. Atualize esta seção ao fechar cada marco.

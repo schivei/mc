@@ -8,6 +8,8 @@
 //   ast.mc       nos em array plano na arena + dump
 //   parse.mc     descida recursiva + Pratt dirigido por tabela + dobra
 //   gen_arm64.mc buffer de instrucoes, encoders AArch64 e --dump-asm
+//   sha256.mc    SHA-256 puro, para a assinatura ad-hoc e o UUID do executavel
+//   backend_exe.mc backend `macho-exe`: MH_EXECUTE assinado, sem `ld` (M11)
 //   hooks.mc     Tier 2: tabelas de passes (pass) e de backends (backend)
 //   user.mc      ponto de extensao do usuario; por padrao lib/user_default.mc
 //   main.mc      CLI
@@ -22,6 +24,8 @@
 #include "ast.mc"
 #include "parse.mc"
 #include "gen_arm64.mc"
+#include "sha256.mc"
+#include "backend_exe.mc"
 #include "hooks.mc"
 #include "user.mc"
 #include "main.mc"
