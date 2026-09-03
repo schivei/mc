@@ -50,7 +50,13 @@
 #define N_ADDR     22
 #define N_INDEX    23
 #define N_PROTO    24
-#define N_KIND_MAX 25
+// M21.5: the payload of `#embed`. ONE node for the whole file instead of one
+// N_INT per byte: `name` is the address of the bytes (already in the arena, or
+// the compiler's own data when they came from the bundle) and `val` their
+// length. It only ever appears as the single element of an N_GLOBAL's
+// initializer list, and only glob_place reads it.
+#define N_BLOB     25
+#define N_KIND_MAX 26
 
 // ---- types ----
 #define TY_VOID 0
@@ -195,7 +201,7 @@ uptr kind_names[] = {
     "NONE", "INT", "STR", "IDENT", "UNARY", "BINARY", "CAST", "CALL",
     "RETURN", "BLOCK", "EXPRSTMT", "FUNC", "PARAM", "HOLE",
     "IF", "LOOP", "BREAK", "CONTINUE", "ASSIGN", "VAR", "GLOBAL",
-    "EXTERN", "ADDR", "INDEX", "PROTO" };
+    "EXTERN", "ADDR", "INDEX", "PROTO", "BLOB" };
 uptr type_names[] = { "void", "u8", "u16", "u32", "u64", "i64", "uptr" };
 
 uptr type_name(i64 t) {
@@ -236,7 +242,9 @@ void dump_node(i64 n, i64 ind) {
     if (nd_op(n))   { out_str(1, " op=");   out_str(1, tok_text(nd_op(n))); }
     if (nd_kind(n) == N_INT || nd_val(n)) { out_str(1, " val="); out_num(1, nd_val(n)); }
     if (nd_type(n)) { out_str(1, " type="); out_str(1, type_name(nd_type(n))); }
-    if (nd_name(n)) { out_str(1, " name="); out_str(1, nd_name(n)); }
+    // N_BLOB's `name` is raw bytes, not a string: the dump prints its length
+    // (already covered by val=) and nothing else.
+    if (nd_name(n) && nd_kind(n) != N_BLOB) { out_str(1, " name="); out_str(1, nd_name(n)); }
     out_str(1, "\n");
     dump_list(nd_a(n), ind + 1);
     dump_list(nd_b(n), ind + 1);

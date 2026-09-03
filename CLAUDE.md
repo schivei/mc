@@ -27,6 +27,13 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   runs `check-bundle` first and fails loudly if the checked-in bundle is stale.
 - `scripts/link.sh OUT IN.o` links with `ld -lSystem` (`ld` is allowed; gcc/cc/clang only for stage0).
   Since M11 it's optional: `build/mc1 --exe prog.mc -o prog` writes the signed executable directly.
+- `make check-docs` runs `scripts/check-docs.sh`: no undocumented public symbol/flag/TOML key/
+  directive, every fenced ` ```mc ` sample in `docs/` compiled (and run when it declares an
+  expectation), every relative link resolving.
+- `make site` → `build/mc1 build site` (compiles `site/gen/*.mc` into `build/mcsite`) then
+  `build/mcsite site`, which renders `docs/` into `site/public`. `make check-site` adds
+  `build/mcsite site --check` (internal links in mc, then `site/tools/checkhtml.py` and
+  `contrast.py` when `python3` is there). Both are in `make check`, last.
 - Inspection: `otool -hlv X.o`, `otool -r X.o`, `nm -m X.o`; for the executable, `otool -l`,
   `codesign -dvvv`, `codesign --verify --verbose=4`.
 
@@ -513,7 +520,8 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   same source. Deviation on record: `[compiler].core = "lang_core.mc"` (a copy of `src/core.mc`'s
   include list without `bundle_data.mc`/`bundle.mc`/`backend_elf.mc`), because `<mc/core>` plus a
   module of this size exhausted the 32 MiB arena — M23's growable arena removes that cause, but
-  the example was left as it was verified. Open gaps reported to the architect and kept in
+  the example was left as it was verified. (M21.5 removed the cost itself and DELETED both copies;
+  `mc.toml` has no `core` key any more.) Open gaps reported to the architect and kept in
   `examples/lang/README.md` § Limits: `arena exhausted` carries no position, `parse_block()`
   bypasses `syntax_stmt("{")`, `syntax_stmt` cannot own `return`/`break`/`continue`, there is no
   hook for a core-declared local, and `parse_call` hard-codes `TY_I64`.
@@ -601,8 +609,8 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   table (`src/backend_elf.mc`, `MAXELFSEC 128` gone) is allocated at exactly `2 * nsections + 4`
   slots, and `src/limits.mc` reaches the bundle through the lexer's `bopen_fn` pointer rather than
   calling `bundle_open`, so a taught compiler assembled without `src/bundle.mc` still links —
-  which is what `examples/lang/lang_core.mc` is (it gained `#include "../../src/limits.mc"`, its
-  only edit). **The numbers in the two entries above are each milestone's own; the merged tree's
+  which is what `examples/lang/lang_core.mc` was (it gained `#include "../../src/limits.mc"`, its
+  only edit; the file is gone since M21.5). **The numbers in the two entries above are each milestone's own; the merged tree's
   are these.**
   — `stage0/` untouched, 2846/3000; `src/*.mc` 13965 lines (3779 of them generated);
   836/2048 functions, 571/2048 strings and 259/512 globals in `src/mc.mc` against the C seed.
@@ -623,6 +631,144 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   with 5000 functions and 5000 string literals builds with no TOML change (`grew`, exit 3, then
   `ok`, exit 0) and exits 42; `mc limits examples/api` is exit 3 cold and exit 0 remembered;
   `tolerance = 1.5` is refused at `examples/api/mc.toml:46:13`.
+- M21.5 done (`docs/specs/M21.5.md`, `docs/surface.md` § Tier 3 + `#embed`, `docs/build.md` §
+  `[compiler]` / `mc/bundle_data` / limits): **the six follow-ups `examples/lang` exposed.**
+  1. **`#embed` costs one AST node.** The payload was one `N_INT` per byte; it is now a single
+     `N_BLOB` node (`src/ast.mc`, kind 25) whose `name` is the address and `val` the length, and
+     `glob_place` copies the bytes straight into the section (`src/gen_arm64.mc`, +2 lines). The
+     objects are byte for byte what they were (`tests/mc/070/071/073` compared against the
+     pre-change `build/mc-exe`). That is what makes the bundle embeddable: `bundle_emit` gained a
+     `mode` (`src/bundle.mc`) and the copy the BINARY regenerates, `mc/bundle_data`, is now
+     `#embed bundle_blob "bundle.bin"` + the index — **40 lines / 989 bytes** instead of 3910
+     lines / 445 898 bytes. `mc/bundle.bin` is a second synthetic index (`BUNDLE_BIN`) that serves
+     `bundle_blob` itself, with no inflate and no copy; `bundle_bin_size()` rounds it up to a
+     multiple of 8 so the `#embed` global has exactly the size `u64 bundle_blob[]` had, and the
+     two forms produce the SAME object (`check-standalone`: `<mc/core> + <user_default> ==
+     src/mc.mc, byte for byte`).
+     **Deviation, on record:** `src/bundle_data.mc` ON DISK keeps the `u64 ... = { ... }` form.
+     `dir_names[]` in the frozen `stage0/lex.c` has no `embed` (`build/mc0` on a file with
+     `#embed` answers `unknown directive`, exit 1) and `build/mc0 src/mc.mc` is the seed step of
+     `make mc1`, so the file stage0 parses cannot use the directive. For the same reason there is
+     no `src/bundle.bin` on disk: nothing would read it. `check-bundle` gained the shape guard —
+     `<mc/bundle_data>` has to be exactly one `BLOB` node plus the 132-value index — so a revert
+     to the array form fails loudly.
+  2. **`arena exhausted` names its caller.** `parse.mc`'s `next()` leaves the current token's file
+     and line in `ax_file`/`ax_line` (`src/arena.mc`), and `arena_die` prints reserve, estimate,
+     the request that did not fit and the position:
+     `mc: arena exhausted (12 MiB reserved, 23 MiB estimated, asked 9418352 bytes) while parsing
+     src/arena.mc:5 -- raise [limits].tolerance or HEAP_SIZE`. Verified by building a compiler
+     with `HEAP_SIZE (12 << 20)` and `mmap` forced to fail. `cannot reserve the arena` prints the
+     same line.
+  3. **`mc build --compiler-only`** (`src/driver.mc`): builds the taught compiler, prints its path,
+     stops. Exclusive with `--entry-only`; without `[compiler].modules` it is the same missing-key
+     error. `examples/lang/test.sh` uses it, then `build/mc-lang build DIR --entry-only`.
+  4. **`on_stmt(&f)`** (`src/hooks.mc`, table `T_ONSTMT`): `i64 f(i64 n)` called by `parse_stmt`
+     after EVERY statement node exists — core or taught — returning the node, a replacement, or 0
+     (an empty `N_BLOCK` takes its place). Order is fixed: the `syntax_stmt` handler builds the
+     node first, then the hooks in registration order. `parse_stmt` is now a wrapper over
+     `parse_stmt_core`, and with `nonstmt == 0` it does not even make the call.
+  5. **`parse_block()` dispatches through `syntax_stmt("{")`** when one is registered, so a
+     function body and a `#rule`'s `block $b` hole reach the module too; the guard against a
+     handler that consumes nothing moved into `stmt_syntax()`, shared with `parse_stmt`.
+  6. **Core-declared locals** are observable as the `N_VAR` node `on_stmt` receives; documented as
+     the intended way, no separate hook.
+  Demos: `lib/user_syntax_demo.mc` gained `sd_count` (`on_stmt`, rewrites nothing) with
+  `stmtcount`/`ifcount`, and `sd_block` (`syntax_stmt("{")`, the core's loop plus two lines) with
+  `blockdepth`. `scripts/check-surface.sh` gained four cases: `on_stmt-count`, `on_stmt-order` (the
+  hook sees the `N_IF` the `unless` handler built), `on_stmt-blockdepth` (nesting 3, only reachable
+  through `<prelude>`'s `while` rule body — 1 without the M21.5 dispatch) and the inertness proof
+  (`$demo --dump-ast` from `main` on is byte for byte `$mc1 --dump-ast`).
+  `examples/lang`: `lang_core.mc` and `lang_main.mc` DELETED, `[compiler].core` dropped so the core
+  comes from `<mc/core>`; the scope bookkeeping moved from three hand-written call sites into
+  `lg_on_stmt`; `[limits] tolerance = 1.0` so no table doubles mid-build. The taught compiler on
+  `<mc/core>`: **80 312 nodes / 21.7 MiB heap (reserve past the 32 MiB static arena) before,
+  58 216 nodes / 20.0 MiB inside it after** (`mc limits examples/lang`, grow 0 everywhere,
+  `ins` reports `tight`). `examples/lang/test.sh` green, 14 tests + main.lx.
+  — `stage0/` untouched, 2846/3000; `src/*.mc` 14291 lines (3910 of them generated).
+  `make check` green end to end (RC 0): `test` 32/32, `check-lex` 71/71, `check-ast` 71/71,
+  `check-bundle` (33 files, raw 409375 B -> LZ 185361 B, blob 185699 B; `<mc/bundle_data>` is one
+  `#embed` node plus the 132-value index; lz round trip 57 cases), `check-asm` 71/71,
+  `check-obj` 32/32, `bootstrap` at a fixed point (`mc2.o == mc3.o`, 533360 bytes; the
+  `--dump-asm` diff between `mc1` and `mc2` empty), `check-surface` 32/32 + every M21 and M21.5
+  case, `test-exe` 32/32, `check-mc` 6/6, `check-standalone` green, `check-toml` 10/10,
+  `check-build` 11/11, `check-limits` 16/16 under 90%, `test-linux` 32/32 on linux/arm64,
+  `check-examples` green, `check-lang` green. Golden rewritten ONCE, from
+  `94db4b12…f11918` to `06157cbe65858ce1f6353f15446112bfe51213dde2c9a5e8c9a3f428117731d5`, only
+  after the empty `--dump-asm` diff and `cmp build/mc2.o build/mc3.o`.
+- M26 done (`docs/specs/M26.md`): **the documentation set**. `docs/README.md` is the map;
+  `docs/guide/00..70` is the task-oriented half (getting started, one file, `mc build` +
+  `mc.toml`, teaching the compiler, emitting bytes, cross-compiling, the two examples, bootstrap
+  and determinism) and `docs/reference/` the exhaustive half (`language`, `directives`, `cli`,
+  `toml`, `hooks`, `objects`, `machine`, `diagnostics`, `bundle`) — 4590 lines written against
+  the real compiler. `scripts/check-docs.sh` (303 lines, `make check-docs`) enforces three
+  things, with every list EXTRACTED from `src/` at run time and never written down in the script:
+  coverage (112 public symbols, 14 CLI flags, 16 TOML keys, 10 directives), samples (all 44
+  fenced ` ```mc ` blocks compiled; 38 built with `--exe` and RUN with exit code and stdout
+  compared, 6 `expect-error` blocks that must fail with the quoted text, 1 through
+  `--backend=elf-obj`; a fence may name the compiler that must build it —
+  `taught=lib/mc_syntax_demo.mc`, `taught=examples/api`, `taught=examples/lang ext=lx`) and links
+  (110 relative links resolve). `reference/diagnostics.md` covers every message extracted from the
+  `die`/`die2`/`err_at*`/`err_node`/`expect`/`toml_err*` call sites. `reference/machine.md`
+  documents the M17/M24 contract and says plainly that no `machine*` function exists yet.
+- M27 done (`docs/specs/M27.md`): **`mcsite`, the static site generator written in mc**.
+  `site/gen/` is 3021 lines of `.mc` — `util.mc` (paths, sorted `opendir` listings, `mkdir -p`,
+  escaping), `hl.mc` (fenced code; ` ```mc ` through the BUNDLED lexer, `#include <mc/lex>`, so a
+  word the surface taught comes out `tok-taught`), `md.mc` (the Markdown subset), `tmpl.mc`
+  (`{{name}}` in one pass + `<!--if name-->`), `site.mc` (`site.toml`, sections, nav, outline,
+  pager, `search.json`, `sitemap.xml`, static copy), `check.mc` (`--check`) and `main.mc`.
+  `mc build site` compiles it into `build/mcsite` (`site/mc.toml`, no `[compiler]`: mcsite
+  teaches the compiler nothing, it USES it); `build/mcsite site` renders `docs/` into
+  `site/public`. Deterministic: no clock anywhere (the footer year is `[site].year`), `public/`
+  rebuilt from scratch, two runs byte-identical (`diff -r` empty). With M26 in the tree: **60
+  pages, 5 sections, 40 fences highlighted (4 kept plain), 0 link problems**, `checkhtml.py` 60
+  files 0 problems, `contrast.py` 50 pairs 0 below the minimum. `site/preview/*.html` deleted
+  (generated artefact; `site/tools/preview.py` still writes it on demand);
+  `.github/workflows/site.yml` runs `make mc1` → `mc1 build site` → `mcsite site --check`.
+- Post-M27 batch (review): five confirmed findings fixed, four of them in `site/gen/`.
+  1. **A link's scheme is checked, not its `://`.** `sg_resolve_link` (`site.mc`), the three
+     inline forms in `md.mc` and `ck_link` (`check.mc`) all used `u_find(href, "://") >= 0` to
+     mean "external, leave it alone" — so `[x](javascript:alert(1))` shipped as a live `<a>` and
+     `javascript://%0aalert(1)//`, which contains that substring, was not even reported by
+     `mcsite --check`. `u_scheme()` (`util.mc`, +45 lines) parses the RFC 3986 scheme (skipping
+     the control bytes a browser strips) and answers `U_SCHEME_NONE/ABS/BAD`; only `http`,
+     `https` and `mailto` are `ABS`. A refused link, image or autolink is **not a link**: its
+     source goes out as escaped text with the page named on stderr, and `ck_link` reports
+     `refused link scheme` for anything a template or `site.toml` writes.
+  2. **`arena exhausted` no longer claims to be parsing when it is not.** `ax_file`/`ax_line`
+     (M21.5) were set by `next()` and never cleared, so a failure in a pass, in `gen_lower` or in
+     the object writer printed `while parsing FILE:LINE` with the EOF token's line. `parse_unit()`
+     clears both on its way out (`src/parse.mc`, +2 lines plus a comment); parse-time failures are
+     unchanged. Proved by raising `arena_die` from the top of `gen_lower` (message loses the
+     bogus `sample.mc:10`) and from `parse_function` (message keeps `sample.mc:3`).
+  3. **Nesting past `MD_MAXDEPTH` degrades instead of vanishing.** `md_quote`/`md_item` recursed
+     only under the guard and wrote an empty `<blockquote>`/`<li>` past it — ten levels of `>`
+     lost the text of levels 9 and 10 with nothing on stderr and nothing in `--check`. `md_too_deep`
+     writes the rest escaped in a `<p>` and names the page.
+  4. **An unmatched backtick run is literal in full.** `md_inline` emitted one `` ` `` and
+     advanced by 1 on a failed `md_code_close`, so a stray ``` ``` ``` run was retried three times
+     until its last backtick paired with an unrelated single one later in the line. It now emits
+     all `k` and advances by `k`, which is what `md_plain_into`, `md_close_br` and `md_emph_close`
+     already did.
+  5. **`check-docs.sh` covers `on_*`.** The prefix allowlist came verbatim from the M26 spec and
+     predates M21.5, so `on_stmt`'s whole reference entry could be deleted with the gate still
+     printing `ok coverage: 112`. With `on_` added it fails (`FAIL undocumented public symbols:
+     on_stmt`) and the real tree reports **113**. `docs/specs/M26.md` records why the list grew.
+  Docs: `site/README.md` § The Markdown subset (two rules became four),
+  `docs/reference/diagnostics.md` (`while parsing` appears only while parsing), `docs/specs/M26.md`.
+  — `stage0/` untouched, 2846/3000. `make bundle` re-run (`src/parse.mc` is `mc/parse` in the
+  bundle): 33 files, raw 409828 B -> LZ 185629 B, blob 185967 B. `make check` green end to end
+  (RC 0): `test` 32/32, `check-lex` 71/71, `check-ast` 71/71, `check-bundle` (lz round trip 57
+  cases), `check-asm` 71/71, `check-obj` 32/32, `bootstrap` at a fixed point (`mc2.o == mc3.o`,
+  533680 bytes; the `--dump-asm` diff between `mc1` and `mc2` empty), `check-surface` 32/32,
+  `test-exe` 32/32, `check-mc`, `check-standalone`, `check-toml`, `check-build`, `check-limits`,
+  `test-linux` 32/32 on linux/arm64, `check-examples`, `check-lang`, `check-docs` (113 symbols,
+  14 flags, 16 TOML keys, 10 directives, 44 samples, 110 links), `site` 61 pages / 5 sections /
+  40 fences, `check-site` 0 link problems + `checkhtml.py` 61 files 0 problems + `contrast.py` 50
+  pairs 0 below the minimum. Two consecutive renders of `site/public` are byte-identical
+  (`diff -r` empty) and the real `docs/` tree raises no refused-scheme and no too-deep warning.
+  Golden rewritten ONCE, from `06157cbe…7731d5` to
+  `8c848b105b838d049290643a320348c14988404fe058014c8ec09851e8ee2b06`, only after the empty
+  `--dump-asm` diff and `cmp build/mc2.o build/mc3.o`.
 - Next: M17 (`docs/specs/M17.md` — machine-interface split and x86-64); M13 stays in
   the backlog (`docs/specs/M13.md`: sizing a program's memory at compile time — the fixed 4 MiB
   arena in `examples/api/lib/rt.mc` is one more motivating case).
@@ -631,4 +777,4 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   output, identifiers, comments, and docs (`docs/*.md`, `docs/specs/*.md`, `CLAUDE.md`,
   `.claude/agents/*.md` re-synced to match `scripts/i18n-map.tsv`/`scripts/i18n-idents.tsv`).
   Language keywords were already English and untouched.
-- CI (2026-09-03): `.github/workflows/` ci/tag/release/site; first run green (`make check` on macos-15 in 41 s, Linux arm64 suite native on ubuntu-24.04-arm in 28 s); site live at https://minicompiler.dev (preview until M27). See `docs/ci.md`.
+- CI (2026-09-03): `.github/workflows/` ci/tag/release/site; first run green (`make check` on macos-15 in 41 s, Linux arm64 suite native on ubuntu-24.04-arm in 28 s); site live at https://minicompiler.dev (rendered by `mcsite` since M27). See `docs/ci.md`.

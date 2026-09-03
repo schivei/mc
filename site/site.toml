@@ -1,0 +1,75 @@
+# site.toml - everything mcsite (site/gen) needs to know about this site.
+#
+#   build/mc1 build site      # builds build/mcsite from site/gen/main.mc
+#   build/mcsite site         # renders docs/ into site/public
+#   build/mcsite site --check # the same, then validates it
+#
+# Every path here is relative to THIS FILE's directory, never to the working
+# directory - the same rule mc.toml follows in `mc build` (docs/build.md).
+
+[site]
+title    = "mc"
+tagline  = "a compiler that compiles itself"
+
+# The home page has no prose of its own, so this is its <meta name=description>
+# and og:description; every other page uses its own first paragraph.
+description = "mc is a small compiler for a schoolbook-C language, written in itself, whose syntax and backends are taught from ordinary source code."
+
+# The URL prefix of every asset and internal link, always ending in '/'. "/" for
+# a site at the domain root (this one, https://minicompiler.dev), "/mc/" under a
+# GitHub Pages project path.
+base_url = "/"
+origin   = "https://minicompiler.dev"
+
+# <title> is composed by the generator: "Getting started - mc".
+title_separator = " - "
+
+# The footer's year is data, not the system clock: a build must not depend on
+# the day it runs (docs/determinism.md, rule 4).
+year = "2026"
+
+# Prefix of "Edit this page"; the page's path in the repository is appended.
+edit_url = "https://github.com/schivei/mc/blob/main/"
+
+# search.json plus the header form and its inline script.
+search = true
+
+docs      = "../docs"
+out       = "public"
+templates = "templates"
+static    = "static"
+repo      = ".."
+
+# The sections, in the order they appear in the sidebar and in the reading order
+# the pager follows. A section whose directory does not exist yet still gets its
+# index page, so the links in the header never land on the 404 page.
+nav = ["guide", "reference", "examples", "internals", "specs"]
+
+[section.guide]
+title = "Guide"
+dir   = "guide"
+url   = "guide/"
+
+[section.reference]
+title = "Reference"
+dir   = "reference"
+url   = "reference/"
+
+[section.examples]
+title = "Examples"
+dir   = "examples"
+url   = "examples/"
+
+# The documents at the root of docs/: the deep ones, written before the guide
+# existed. docs/README.md becomes this section's index page when it is there.
+[section.internals]
+title = "Internals"
+dir   = "."
+url   = "internals/"
+order = ["plan", "core-language", "surface", "build", "bootstrap", "determinism",
+         "macho-notes", "ci"]
+
+[section.specs]
+title = "Milestone specs"
+dir   = "specs"
+url   = "specs/"

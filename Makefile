@@ -138,7 +138,27 @@ check-examples: build/mc1
 check-lang: build/mc1
 	sh examples/lang/test.sh
 
-check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-limits test-linux check-examples check-lang
+# M26: docs/guide + docs/reference against the real compiler -- no undocumented
+# public symbol, CLI flag, TOML key or directive; every fenced ```mc sample
+# compiled (and run when it declares an expectation); every relative link
+# resolving. Runs after check-examples/check-lang because some samples are built
+# by the taught compilers of examples/api and examples/lang.
+check-docs: build/mc1
+	scripts/check-docs.sh build/mc1
+
+# M27: the documentation site. `mc build site` compiles site/gen/*.mc into
+# build/mcsite; running it renders docs/ into site/public.
+site: build/mc1
+	build/mc1 build site
+	build/mcsite site
+
+# M27: the site plus its own gate -- every internal link resolved in mc, then
+# site/tools/checkhtml.py and contrast.py when python3 is present (skipped, not
+# failed, when it is not).
+check-site: site
+	build/mcsite site --check
+
+check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-limits test-linux check-examples check-lang check-docs site check-site
 
 budget:
 	scripts/loc-budget.sh $(BUDGET)
@@ -146,4 +166,4 @@ budget:
 clean:
 	rm -rf build
 
-.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-limits sysroot-linux test-linux check-examples check-lang check budget clean
+.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-limits sysroot-linux test-linux check-examples check-lang check-docs site check-site check budget clean

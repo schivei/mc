@@ -172,7 +172,10 @@ i64 main(i64 argc, uptr argv) {
 
     u8 b[BUF_SIZE];
     buf_init(b);
-    bundle_emit(b, buf_p(blob), buf_len(blob), bl_idx, bl_count);
+    // mode 0: the `u64 bundle_blob[] = { ... }` form. The file on disk has to
+    // stay parseable by the frozen stage0, which has no `#embed` (see the note
+    // in src/bundle.mc); the binary regenerates `mc/bundle_data` in mode 1.
+    bundle_emit(b, buf_p(blob), buf_len(blob), bl_idx, bl_count, 0);
     write_file(out, b);
 
     out_str(1, "bundle: ");

@@ -28,6 +28,12 @@
 // C's forward declarations (parse_expr, parse_unary, parse_block) are not
 // needed: the top of the .mc registers every signature before the bodies.
 //
+// M21.5 (Tier 3): parse_stmt is a thin wrapper -- the grammar is parse_stmt_core
+// and every node it produces goes through hooks.mc's run_on_stmt before it
+// reaches the caller. And parse_block consults syntax_stmt("{"), so the blocks
+// nobody typed as a statement (a function body, a `#rule` block hole) reach a
+// module that tracks scopes. Both are inert with nothing registered.
+//
 // M12 (Tier 3): parse_top and parse_stmt first consult hooks.mc's
 // `syntax`/`syntax_stmt` tables and call the handler with callp; type_of_token
 // falls back to `type_alias` aliases; `#dylib` registers the dylib for the
@@ -184,7 +190,14 @@ i64  xp_ord(i64 i)              { return ld64(extpat_ord + i * 8); }
 void set_xp_ord(i64 i, i64 v)   { st64(extpat_ord + i * 8, v); }
 
 // ---- lookahead ----
-void next() { lex_next(cur); }
+// M21.5: the two stores are what gives `arena exhausted` a position. The
+// parser's own errors go through err_at with the node's or the token's file and
+// line; xalloc cannot, so it reads these.
+void next() {
+    lex_next(cur);
+    ax_file = tok_file(cur);
+    ax_line = tok_line(cur);
+}
 
 void expect(i64 id, uptr msg) {
     if (tok_id(cur) != id) err_at(tok_file(cur), tok_line(cur), msg);
@@ -1038,26 +1051,48 @@ i64 parse_var(i64 line, uptr fl, i64 ty) {
     return n;
 }
 
+// Tier 3: runs the syntax_stmt handler at index si and returns its node.
+// M21.5: extracted from parse_stmt because parse_block calls it too -- a module
+// that registers `{` now also sees the blocks parse_function and a `#rule`
+// block hole parse, which is what makes scope tracking complete.
+i64 stmt_syntax(i64 si) {
+    i64 line = tok_line(cur);
+    uptr fl = tok_file(cur);
+    uptr cp0 = cp;                               // lexer cursor before the handler
+    uptr t0 = tok_start(cur);                    // ... and the token it received
+    i64 sn = callp(syntax_stmt_fn_at(si));       // the handler eats the word too
+    // a handler that did not advance would return the parser to the same token and
+    // would be called again, forever; here that dies with a name and position
+    // instead of hanging (top level) or exhausting the arena (statement). The two
+    // conditions are needed together: `cp` stops at the end of the file (the word
+    // could have been the last token) and the current token becomes T_EOF, with a different start.
+    if (cp == cp0 && tok_start(cur) == t0)
+        err_at2(fl, line, "syntax_stmt handler consumed no tokens", cur_name());
+    // 0 = the handler produced no statement; an empty block takes its place
+    // without breaking the sibling list of whoever called it
+    if (sn == 0) sn = node_new(N_BLOCK, line, fl);
+    return sn;
+}
+
+// M21.5: parse_stmt is now the wrapper that runs the on_stmt hooks over what
+// the grammar produced; parse_stmt_core is the grammar itself, unchanged. With
+// nothing registered (`nonstmt == 0`) not even a call happens, which is what
+// keeps the untaught compiler byte for byte what it was.
 i64 parse_stmt() {
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
+    i64 n = parse_stmt_core();
+    if (nonstmt == 0) return n;
+    n = run_on_stmt(n);
+    if (n == 0) n = node_new(N_BLOCK, line, fl); // a hook may drop the statement
+    return n;
+}
+
+i64 parse_stmt_core() {
+    i64 line = tok_line(cur);
+    uptr fl = tok_file(cur);
     i64 si = syntax_stmt_find(tok_id(cur));      // Tier 3: taught statement
-    if (si >= 0) {
-        uptr cp0 = cp;                           // lexer cursor before the handler
-        uptr t0 = tok_start(cur);                // ... and the token it received
-        i64 sn = callp(syntax_stmt_fn_at(si));   // the handler eats the word too
-        // a handler that did not advance would return the parser to the same token and
-        // would be called again, forever; here that dies with a name and position
-        // instead of hanging (top level) or exhausting the arena (statement). The two
-        // conditions are needed together: `cp` stops at the end of the file (the word
-        // could have been the last token) and the current token becomes T_EOF, with a different start.
-        if (cp == cp0 && tok_start(cur) == t0)
-            err_at2(fl, line, "syntax_stmt handler consumed no tokens", cur_name());
-        // 0 = the handler produced no statement; an empty block takes its place
-        // without breaking the sibling list of whoever called it
-        if (sn == 0) sn = node_new(N_BLOCK, line, fl);
-        return sn;
-    }
+    if (si >= 0) return stmt_syntax(si);
     i64 ri = rule_find(tok_id(cur), 0);          // does the current token open a rule?
     if (ri >= 0) return rule_expand(ri, 0);
     if (tok_id(cur) == T_HOLE) {                 // loose `$init`/`$b` in the template
@@ -1144,6 +1179,12 @@ i64 parse_stmt() {
 }
 
 i64 parse_block() {
+    // M21.5: a module that registered `{` owns every block, not just the ones
+    // that reach the statement position -- parse_function's body and a `#rule`
+    // `block` hole come through here. Such a handler must consume the `{`
+    // itself and must NOT call parse_block, or it would call itself forever.
+    i64 sb = syntax_stmt_find(K_LBRACE);
+    if (sb >= 0) return stmt_syntax(sb);
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
     expect(K_LBRACE, "expected {");
@@ -1437,10 +1478,13 @@ void do_opcode(i64 line, uptr fl) {
 //     lz_inflate(name, name_size, buf, name_raw);
 //
 // The path resolves exactly like `#include "x"` (includer's directory, then
-// [include].paths). The bytes become a normal global array initializer: one
-// N_INT node per byte, which is what glob_place already knows how to write.
-// The 16 MiB ceiling is the declared limit; well before it the arena is what
-// runs out, since each byte costs one node.
+// [include].paths). The bytes become the global's initializer as ONE N_BLOB
+// node (M21.5): `name` is the address of the bytes and `val` their length, and
+// glob_place copies them into the section. Until M21.5 this was one N_INT node
+// per byte, which cost 104 bytes of arena per byte of payload and is why
+// `src/bundle_data.mc` had to spell the bundle out as `u64 ... = { ... }`
+// instead of embedding it; a 179 KB blob is now one node instead of 179 000.
+// The 16 MiB ceiling is the declared limit and is now the only one.
 #define EMBED_MAX (16 << 20)
 
 // name + a slice of `sfx`. Two suffixes out of one string literal: the frozen
@@ -1478,18 +1522,9 @@ i64 do_embed(i64 line, uptr fl) {
         len = lz_deflate(data, raw, d);
         data = d;
     }
-    i64 head = 0;
-    i64 tail = 0;
-    i64 k = 0;
-    loop {
-        if (k >= len) break;
-        i64 e = node_new(N_INT, line, fl);
-        set_nd_val(e, ld8(data + k));
-        set_nd_type(e, TY_I64);
-        if (tail) set_nd_next(tail, e); else head = e;
-        tail = e;
-        k = k + 1;
-    }
+    i64 head = node_new(N_BLOB, line, fl);
+    set_nd_name(head, data);
+    set_nd_val(head, len);
     i64 g = node_new(N_GLOBAL, line, fl);
     set_nd_name(g, name);
     set_nd_type(g, TY_U8);
@@ -1912,5 +1947,11 @@ i64 parse_unit() {
         if (tok_id(cur) == K_EXTERN) top_add(parse_extern());
         else                         top_add(parse_top());
     }
+    // Parsing is over: whatever runs next -- passes, gen_lower, a backend --
+    // is not the parser, and the last token read (the EOF one) is not where it
+    // is. Clearing the two takes arena_die back to its no-position branch
+    // instead of blaming a line the failure has nothing to do with.
+    ax_file = 0;
+    ax_line = 0;
     return unit_head;
 }

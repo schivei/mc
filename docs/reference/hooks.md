@@ -1,0 +1,450 @@
+# hooks.md — the parser and hook API
+
+Everything a module may call to teach the compiler, with its exact signature, when the compiler
+calls it, what it returns, and what it refuses. This is the API of Tier 2 (passes and backends)
+and Tier 3 (syntax taught by code).
+
+**These hooks exist only in the self-hosted compiler.** The C seed is frozen: it implements Tier 1
+(`#token`, `#infix`, `#rule`, `#section`, `#opcode`) and nothing here. That costs zero lines of C,
+because the compiler being taught is the one written in the language itself.
+
+**A taught compiler is a file, not an edit to `src/`.** `src/core.mc` is the whole compiler minus
+exactly one function, `void user_init()`; your module supplies it:
+
+```c
+// my-compiler.mc
+#include <mc/core>
+#include "my_syntax.mc"
+
+void user_init() {
+    syntax_stmt("unless", &my_unless);
+    type_alias("bool", TY_U8);
+}
+```
+
+```
+$ mc --exe my-compiler.mc -o my-mc
+$ ./my-mc --exe program.mc -o program
+```
+
+`mc build` automates exactly this through `[compiler]` in `mc.toml` ([toml.md](toml.md)).
+
+---
+
+## 1. When each hook runs
+
+```
+main()
+  ├── backend("macho" | "macho-exe" | "elf-obj", …)     the three built-ins
+  ├── lim_plan()  tok_init()  lex_init(source)
+  ├── user_init()                     <-- every registration below happens here
+  ├── parse_unit()                    <-- syntax / syntax_stmt / syntax_expr /
+  │                                       syntax_infix / type_alias / #rule,
+  │                                       and on_stmt on every statement node
+  ├── run_passes()                    <-- pass(&f), in registration order
+  ├── fold()
+  └── callp(backend_fn_at(i), …)      <-- backend(&f)
+```
+
+`user_init()` is called **after** `tok_init()` and `lex_init()` and **before** the first token is
+read. Both halves matter: the ids `K_U8..K_EXTERN` are fixed at 256..269, so a `tok_add` before
+`tok_init` would shift the whole core table; and because the lexer is incremental, a registration
+made here still applies to the entire source.
+
+Registration tables are linear and walked in **registration order**; lookups scan back to front,
+so the last registration of a word wins. Nothing is hashed and nothing is sorted — rule 1 of
+`docs/determinism.md`.
+
+---
+
+## 2. Tier 2 — passes and backends
+
+### `void pass(uptr fn)`
+
+Registers an AST pass. `fn` is `&f` where `f` has the shape
+
+```c
+i64 f(i64 root)          // returns the root: the same one, or a different one
+```
+
+Passes run right after `parse_unit()`, in registration order, each one receiving what the
+previous returned — and **before** `fold()` and before `--dump-ast`, so a pass sees the tree in
+the source's own shape and constant folding cleans up whatever it produces.
+
+```c
+// lib/pass_demo.mc: rewrite `x * 1` into `x`, in place
+i64 pass_mul1(i64 root) {
+    i64 n = 1;
+    while (n < nnodes) {
+        if (nd_kind(n) == N_BINARY && nd_op(n) == K_MUL
+            && nd_kind(nd_b(n)) == N_INT && nd_val(nd_b(n)) == 1) {
+            i64 keep = nd_next(n);           // the sibling list is not ours to move
+            node_assign(n, nd_a(n));
+            set_nd_next(n, keep);
+        }
+        n = n + 1;
+    }
+    return root;
+}
+```
+
+### `void backend(uptr name, uptr fn)`
+
+Registers an object writer under `--backend=NAME`. `fn` is `&f` where
+
+```c
+void f(i64 root, uptr out)     // root = the folded unit, out = the output path
+```
+
+The last registration of a name wins, as in the `#rule` table. Three are always registered before
+`user_init()` runs: `macho` (the default `.o`), `macho-exe` (alias `--exe`) and `elf-obj`. What a
+backend has to work with is [objects.md](objects.md).
+
+### `i64 backend_find(uptr name)`
+
+Index of the backend called `name`, or `-1`. Searches back to front, so the newest registration
+answers.
+
+### `void backend_die(uptr name)`
+
+Prints `unknown backend: <name>` followed by `registered:` and every registered name, then exits
+1. This is what the driver calls when `--backend=` names something that is not there.
+
+### `uptr backend_name_at(i64 i)` · `uptr backend_fn_at(i64 i)` · `uptr pass_fn_at(i64 i)`
+
+Read one row of the registration tables: the name and the function pointer of backend `i`, and
+the function pointer of pass `i`. `backend_fn_at` is what the driver hands to `callp` to run the
+chosen backend; the other two exist so a module can inspect what is registered.
+
+### `void backend_macho(i64 unit, uptr out)` · `void backend_exe(i64 root, uptr out)` · `void backend_elf(i64 root, uptr out)`
+
+The three built-in backends themselves, callable by name if a module wants to wrap or delegate to
+one. `backend_macho` is literally `gen_lower` + `gen_encode_all` + `macho_write`; `backend_exe`
+adds what `ld` used to do (segment layout, relocation resolution, stubs, bind opcodes, an ad-hoc
+signature); `backend_elf` writes an ELF64 `ET_REL` for `EM_AARCH64`.
+
+---
+
+## 3. Tier 3 — the five word registrations, and `on_stmt`
+
+Each one claims a **word** in the lexer and a **grammar position**. All five refuse a core
+keyword (`cannot redefine core keyword`), and all five reserve the word for the *whole program*,
+not just their own position: whoever registers `log` removes `log` from the source's identifier
+vocabulary, and the parser says so plainly —
+`name reserved by a syntax/type_alias registration: log`.
+
+| registration | grammar position | handler signature | delivers via |
+|---|---|---|---|
+| `syntax(word, &f)` | top-level declaration | `void f()` | `top_add(n)` |
+| `syntax_stmt(word, &f)` | statement | `i64 f()` | the returned node |
+| `syntax_expr(word, &f)` | expression (primary) | `i64 f()` | the returned node |
+| `syntax_infix(word, prec, &f)` | binary operator | `i64 f(i64 left)` | the returned node |
+| `type_alias(name, TY_*)` | a type word | — | — |
+
+In every case the parse is stopped **on the registered word**; consuming it is the handler's job.
+
+`on_stmt(&f)` (M21.5) is the sixth registration and the odd one out: it claims no word, so none of
+the paragraph above applies to it — it observes every statement node after the fact. It has its own
+section below.
+
+### `void syntax(uptr word, uptr fn)`
+
+`word` opens a top-level declaration. The handler produces zero, one or many declarations and
+hands each to `top_add`; `parse_top` then returns 0. A handler that consumes no token is
+`syntax handler consumed no tokens` — the guard that stops an infinite loop.
+
+```c
+// enum Name { A, B, C }  ->  #define A 0, #define B 1, ... and an alias of i64
+void sd_enum() {
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_next();                                    // the `enum` word
+    uptr name = p_ident();
+    p_expect(K_LBRACE, "expected { in enum");
+    i64 v = 0;
+    loop {
+        if (p_id() == K_RBRACE) break;
+        def_add(p_ident(), v, line, fl);
+        v = v + 1;
+        if (!p_accept(K_COMMA)) break;
+    }
+    p_expect(K_RBRACE, "expected } in enum");
+    type_alias(name, TY_I64);
+}
+```
+
+### `void syntax_stmt(uptr word, uptr fn)`
+
+`word` opens a statement. The handler returns the statement node's index; returning 0 makes the
+parser put an empty `N_BLOCK` there instead, so the sibling list of whoever called it is not
+broken. Consuming nothing is `syntax_stmt handler consumed no tokens`.
+
+`K_LBRACE` is not a core keyword, so `syntax_stmt("{")` is legal and lets a module own **every**
+block — which is how `examples/lang` runs a scope exit at every closing brace. Since M21.5
+`parse_block()` consults `syntax_stmt_find(K_LBRACE)` too, so a function body and a `#rule`'s
+`block $b` hole reach the handler as well, not only the blocks that arrive in statement position.
+The handler must therefore **not** call `parse_block()` itself — that is infinite recursion; it
+reads the braces with `p_expect(K_LBRACE, …)` / `parse_stmt()` in a loop, as `examples/lang` does.
+
+```c
+// unless (cond) block  ->  if (!cond) block
+i64 sd_unless() {
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_next();                                    // the `unless` word
+    p_expect(K_LPAR, "expected ( after unless");
+    i64 c = parse_expr(0);
+    p_expect(K_RPAR, "expected ) after unless condition");
+    i64 b = parse_block();
+    i64 neg = node_new(N_UNARY, line, fl);
+    set_nd_op(neg, K_BANG);
+    set_nd_a(neg, c);
+    i64 n = node_new(N_IF, line, fl);
+    set_nd_a(n, neg);
+    set_nd_b(n, b);
+    return n;
+}
+```
+
+### `void syntax_expr(uptr word, uptr fn)`
+
+`word` opens an **expression**. `parse_primary` consults this table first. This is the position
+`#prefix` cannot reach: a `#prefix` template parses exactly one operand with `parse_unary` into a
+fixed tree, so it can read neither a type (`bits i64`) nor an argument list
+(`pipe(x, f, g)`). Two guards apply: `syntax_expr handler consumed no tokens`, and
+`syntax_expr handler produced no expression` when it returns 0 — an expression position has no
+empty node to fall back on.
+
+### `void syntax_infix(uptr word, i64 prec, uptr fn)`
+
+Teaches a **binary operator**. There is no new table: the `#infix` entry gains a handler column,
+which is what puts a taught operator and a `#infix` one into one comparable precedence order.
+`prec` must be 1..100 (`precedence out of 1..100`).
+
+The handler receives the left side **already parsed** and the operator **already consumed**, so it
+owns everything to the right: a name, a type, an argument list, or an `=` it decides to read
+itself — the last one works precisely because `=` is not in the core's infix table. Returning 0 is
+`syntax_infix handler produced no expression`.
+
+Teaching the same token twice is `operator already taught` — a second registration is a mistake,
+not an override. A `#infix` on the same token afterwards is *not* an error: it goes through
+`infix_set`, which clears the handler column, and the template wins.
+
+### `void type_alias(uptr name, i64 base)`
+
+Makes `name` a valid type word resolving to a core type. `base` is one of `TY_VOID`, `TY_U8`,
+`TY_U16`, `TY_U32`, `TY_U64`, `TY_I64`, `TY_UPTR`; anything else is
+`type_alias with invalid type`. The alias applies everywhere `type_of_token` is consulted:
+declarations, parameters, `extern`, casts and `p_type()`.
+
+Prefer capitalised names (`Todo`, `Request`) and words a source would not use as an identifier —
+the registration takes the word away from the whole program.
+
+### The lookup side
+
+| function | returns |
+|---|---|
+| `i64 syntax_find(i64 tok)` | index of the `syntax` registration for token `tok`, or -1 |
+| `i64 syntax_stmt_find(i64 tok)` | the same for `syntax_stmt` |
+| `i64 syntax_expr_find(i64 tok)` | the same for `syntax_expr` |
+| `uptr syntax_fn_at(i64 i)` | the handler pointer of `syntax` row `i` |
+| `uptr syntax_stmt_fn_at(i64 i)` | the handler pointer of `syntax_stmt` row `i` |
+| `uptr syntax_expr_fn_at(i64 i)` | the handler pointer of `syntax_expr` row `i` |
+
+All three `*_find` scan back to front, so the newest registration wins. The parser uses them; a
+module can too, for instance to check whether a word is already claimed before claiming it.
+
+### `void on_stmt(uptr fn)` — every statement, core or taught
+
+The one registration that is **not** keyed by a word: it reserves nothing, teaches nothing, and
+sees everything. `parse_stmt` calls each registered hook, in registration order, with the index of
+the statement node it has just produced — the core's `i64 x = …;`, `return`, `break`, `continue`,
+`if`, an assignment, an expression statement, and a taught statement too.
+
+```c
+i64 my_count(i64 n) {
+    nstmt = nstmt + 1;
+    return n;                       // the same node: rewrites nothing
+}
+void user_init() { on_stmt(&my_count); }
+```
+
+The handler returns **the same node**, **a replacement**, or **0 to drop it** — in which case the
+parser puts an empty `N_BLOCK` there, exactly as it does for a `syntax_stmt` handler that returns
+0, so the sibling list of whoever called it never breaks. A 0 short-circuits: a dropped statement
+is not offered to the hooks registered behind it.
+
+**Order is fixed**: the taught `syntax_stmt` handler for the word runs *first* and builds the node,
+then every `on_stmt` hook runs over the result, in registration order. A module can teach `unless`
+and observe it in the same compiler without the two racing — the node the hook sees is the `N_IF`
+the handler built, not the word.
+
+What it is for: wrapping, rewriting or merely watching the **core** statements without re-teaching
+them — scope tracking, instrumentation, ownership and borrow rules, coverage. A core-declared
+local (`i64 n = 0;`) is observable here as the `N_VAR` node; there is no separate hook for it.
+
+With nothing registered the parser does not even make the call (`nonstmt == 0`), which is what
+keeps an untaught compiler byte for byte what it was — `scripts/check-surface.sh` proves exactly
+that (`on_stmt + syntax_stmt("{") leave the AST byte for byte unchanged`).
+
+`uptr onstmt_fn_at(i64 i)` is the lookup side: the handler pointer of row `i`.
+
+---
+
+## 4. The parser's public API
+
+Fixed names, in `src/parse.mc` (and three in `src/lex.mc`). A module that teaches syntax depends
+on these, on `node_new`/`nd_*`/`set_nd_*` from `src/ast.mc`, and on the registrations above —
+nothing else.
+
+### Reading the current token
+
+| function | returns |
+|---|---|
+| `i64 p_id()` | the current token's id: a class `T_*` or a lexeme `K_*` |
+| `i64 p_val()` | its value — meaningful for `T_INT`, `T_CHAR`, `T_DIR`, `T_HOLE` |
+| `uptr p_name()` | its lexeme, copied into the arena as a NUL-terminated string |
+| `i64 p_line()` | its line |
+| `uptr p_file()` | the file it came from, as `err_at` would print it |
+| `uptr p_start()` | where it starts in the source buffer being lexed |
+| `i64 p_depth()` | how many sources the lexer has pushed — used to notice that a pushed source has been exhausted |
+
+### Advancing
+
+| function | effect |
+|---|---|
+| `void p_next()` | advance one token |
+| `i64 p_accept(i64 id)` | consume the token if its id is `id`; returns 1 if it did, 0 if not |
+| `void p_expect(i64 id, uptr msg)` | require the token; otherwise `err_at` with `msg` at its position |
+| `uptr p_ident()` | require a `T_IDENT` that is not a `#define` name, return it and advance (`name expected`) |
+| `i64 p_type()` | require a type word — core or alias — return the `TY_*` and advance (`type expected`) |
+
+### Descending into the grammar
+
+These four are the parser's own entry points, under stable names:
+
+| function | reads |
+|---|---|
+| `i64 parse_expr(i64 minprec)` | an expression. Pass `0` for a full expression |
+| `i64 parse_stmt()` | one statement |
+| `i64 parse_block()` | a `{ … }` block — routed through the `syntax_stmt("{")` handler when one is registered (M21.5), so a handler for `{` must never call it |
+| `i64 parse_params()` | a parameter list including the parentheses, returning the `N_PARAM` list |
+
+### Building declarations
+
+| function | effect |
+|---|---|
+| `i64 parse_function(i64 ty, uptr name, i64 params)` | reads the body block and returns the assembled `N_FUNC`. The parameter list is passed in **already built**, which is how a `class` handler prepends `self` to every method |
+| `void top_add(i64 n)` | append an `N_FUNC`/`N_GLOBAL`/`N_EXTERN`/`N_PROTO` — or a list of them — to the unit, in order, tagged with the `#section` in effect. The only way out for a `syntax` handler |
+| `void def_add(uptr name, i64 val, i64 line, uptr fl)` | register a `#define`; refuses a repeated name |
+| `i64 param_new(i64 ty, uptr name)` | a standalone `N_PARAM`, to prepend to a list |
+| `i64 list_append(i64 head, i64 n)` | append `n` to the end of the `nd_next` list and return the head |
+| `uptr p_cat(uptr name, uptr sfx, i64 off, i64 len)` | `name` followed by `len` bytes of `sfx` starting at `off`, fresh in the arena. Two suffixes out of one literal — how the compiler builds `NAME_size` and `NAME_raw` from a single `"_size_raw"` |
+
+### Record and replay
+
+The four functions that let a module read a region now and parse it later — what a generic
+instantiation needs.
+
+| function | effect |
+|---|---|
+| `uptr p_skip_balanced(i64 open, i64 close, uptr plen)` | with the parse sitting on the opening token, record the whole delimited region **without parsing it**: returns the source bytes, delimiters included, writes the length through `plen`, and leaves the parser just past the closing token |
+| `void p_push_source(uptr name, uptr text, i64 len)` | parse a second source with `#include`'s exact semantics: the lexer pops on its own at the end, and `name` is what `err_at` prints for everything inside |
+| `void p_resplit_punct(i64 n)` | the current punctuation token, of length > `n`, becomes the punctuation formed by its first `n` bytes; the cursor rewinds to just after them |
+
+`p_skip_balanced` counts depth over **real tokens**, which is what makes a `}` inside a string or
+a comment harmless — a byte scan could not do that. An unterminated region is reported at the
+**opening** token (`unterminated region`), because that is the position that tells the reader
+which region never closed. A span is a slice of one buffer, so a region whose file ran out in the
+middle is refused (`region crosses a file boundary`) rather than returning a bogus byte range.
+The span lives in the arena for the whole compilation, so a module may keep it and push it back
+as many times as it likes.
+
+`p_push_source` has one contract worth memorising: the push does **not** touch the pending
+lookahead token, so the `p_next()` after it discards the lookahead and reads the first token of
+the pushed source. A handler must therefore sit on the **last** token of its own construct when
+it pushes — exactly what `#include` does.
+
+Error attribution then costs nothing: `err_at` prints `lex_file()`, so a module that pushes under
+the name `Pair__i64__3 instantiated from prog.mc:15` gets that in front of every error inside the
+instantiation, without the core knowing what an instantiation is.
+
+`p_resplit_punct` is the one longest-match decision a parser can undo. It is guarded by "the token
+was just lexed from the source being read", never a string and never a substituted identifier
+(`p_resplit_punct expects a longer punctuation token`,
+`p_resplit_punct: unknown punctuation`). Its use is `Holder<Bag<Num, 2>>` closing on a `>>`.
+
+### Hygienic substitution
+
+Applied by the lexer in the **identifier branch only**, by exact lexeme, to the source the next
+`p_push_source` will push. Pending entries sit in the slot the next frame will occupy, so the push
+binds them by construction, and `lex_pop` clears the slot it vacates — nested frames are
+independent.
+
+| function | effect |
+|---|---|
+| `void p_subst_reset()` | drop the substitutions pending for the next push |
+| `void p_subst_name(uptr from, uptr to)` | the identifier `from` becomes the name `to`, resolved through the token table (so `T` may become the keyword `i64`) |
+| `void p_subst_int(uptr from, i64 v)` | the identifier `from` becomes a `T_INT` token with value `v`, so a substituted bound folds like any constant |
+
+Too many entries for one frame is `too many substitutions`.
+
+---
+
+## 5. A worked example
+
+`lib/user_syntax_demo.mc` is the reference module: it teaches nine things with all five
+registrations and every record/replay function, and it is deliberately *not* a class system, so
+that the generality of the mechanism is demonstrated rather than asserted.
+
+| taught | mechanism |
+|---|---|
+| `unless (c) { … }` | `syntax_stmt` |
+| `enum Name { A, B }` | `syntax` + `def_add` + `type_alias` |
+| `bool` | `type_alias(…, TY_U8)` |
+| `bits u32` | `syntax_expr` — a **type** in expression position |
+| `pipe(x, f, g)` | `syntax_expr` — a variable-length argument list |
+| `a .+ b` | `syntax_infix` — saturating add |
+| `p ~> len`, `p ~> len = 3`, `p ~> at(i)` | `syntax_infix` reading a name, an `=`, or a call |
+| `tmpl slot<T, N> { … }` | `p_skip_balanced` + `p_start` |
+| `make slot<i64, 3>;` | `p_push_source` + `p_subst_name`/`p_subst_int` + `p_depth` |
+
+`lib/mc_syntax_demo.mc` is the compiler that wires it in — two `#include`s and nothing else. The
+program below is compiled by *that* compiler; the default `mc` rejects its very first line with
+`type expected at top level`, because `enum` there is just an identifier.
+
+```mc taught=lib/mc_syntax_demo.mc
+// expect-exit: 42
+enum Color { GREEN, YELLOW, RED }
+
+i64 dbl(i64 x) { return x * 2; }
+i64 inc(i64 x) { return x + 1; }
+
+u64 box[4];
+
+i64 flag(bool b) {                 // `bool` is an alias of u8
+    unless (b == 0) {              // taught statement
+        return 2;
+    }
+    return 0;
+}
+
+i64 main() {
+    Color c = YELLOW;              // the enum's alias of i64
+    i64 n = c + flag(1);           // 1 + 2 = 3
+    uptr p = box;
+    p ~> len = 3;                  // the infix handler read the `=` itself
+    n = n + p ~> len;              // 6
+    n = n + pipe(2, dbl, inc);     // inc(dbl(2)) = 5 -> 11
+    n = n + (90 .+ 30) - 100;      // saturating add stops at 100 -> 11
+    return n + bits u32 - 1;       // 32 - 1 = 31 -> 42
+}
+```
+
+Two more registrations in that module, `nop` and `nil`, are broken on purpose: they exist only so
+that `tests/err/064-expr-noadvance.mc` and `tests/err/065-expr-nonode.mc` can prove the two
+`syntax_expr` guards fire.
+
+`scripts/check-surface.sh` runs every case, plus the one that matters most: with nothing
+registered, every object and every `--dump-ast` is byte-identical to what the frozen C seed
+produces. The mechanism is **inert by construction**.

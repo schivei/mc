@@ -1,0 +1,19 @@
+# mc.toml - mcsite built by `mc build`, with no make and no ld:
+#
+#   build/mc1 build site        # from the repository root
+#   build/mc1 build             # from inside site/
+#
+# One step: site/gen/main.mc compiled by the running compiler into a signed
+# executable (the built-in macho-exe backend, M11). There is no [compiler]
+# section because mcsite teaches the compiler nothing - it USES the compiler's
+# own lexer, through `#include <mc/lex>` from the bundle inside the binary.
+
+[project]
+name  = "mcsite"
+entry = "gen/main.mc"
+out   = "../build/mcsite"
+kind  = "exe"
+
+[target]
+os   = "macos"
+arch = "aarch64"

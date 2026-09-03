@@ -545,7 +545,9 @@ i64 glob_place(i64 g, i64 sec, i64 size, i64 width) {
     i64 e = nd_a(g);
     loop {
         if (e == 0) break;
-        if (nd_kind(e) == N_STR) {               // pointer to l_strN: 8 zeros + R_UNSIGNED
+        if (nd_kind(e) == N_BLOB) {              // M21.5: #embed's payload, copied whole
+            buf_put(b, nd_name(e), nd_val(e));
+        } else if (nd_kind(e) == N_STR) {        // pointer to l_strN: 8 zeros + R_UNSIGNED
             reloc_add(sec, buf_len(b), str_sym(nd_name(e), nd_val(e)), R_UNSIGNED, 0, 3);
             buf_u64(b, 0);
         } else {

@@ -34,8 +34,8 @@
 // each field is a `#define` offset, so a single store covers all of them; the
 // named GETTERS below are what carries the documentation. Sixty-five one-line
 // setters is what this file had first, and the compiler's arena is tight enough
-// that they were worth collapsing into these two -- lang_main.mc's header has
-// the measurement.
+// that they were worth collapsing into these two (README.md § The compiler is
+// `<mc/core>` plus one module has the arena numbers).
 void lg_put(uptr rec, i64 field, i64 v)   { st64(rec + field, v); }
 void lg_puta(uptr arr, i64 i, i64 v)      { st64(arr + i * 8, v); }
 

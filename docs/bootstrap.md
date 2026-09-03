@@ -240,7 +240,7 @@ from the blob**, is byte for byte the `src/` tree the compiler was built from.
 ok <sys> + <prelude>: hello runs, exit 42
 ok <mc/core> + <user_syntax_demo>: taught compiler built and signed
 ok the taught compiler compiles <syntax_demo_test> (exit 42)
-ok the copied compiler rejects the same source (syntax_demo_test:7: type expected at top level)
+ok the copied compiler rejects the same source (syntax_demo_test:10: type expected at top level)
 ok <mc/core> + <user_default> == src/mc.mc, byte for byte
 ok unknown name: bad.mc:1: unknown bundled include: no/such/module
 standalone: the binary alone is the toolchain

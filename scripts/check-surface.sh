@@ -16,6 +16,11 @@
 # also with --exe; the program has to exit 42, and the default compiler has to
 # refuse the same source.
 #
+# M21.5: and `on_stmt` (a counter over every statement, core or taught) and
+# `syntax_stmt("{")` reaching the blocks parse_function and a `#rule` block hole
+# parse. Both have to be inert: the AST from `main` on is what the default
+# compiler prints.
+#
 # M21: the same taught compiler now also carries `bits`/`pipe` (syntax_expr),
 # `.+`/`~>` (syntax_infix) and `tmpl`/`make` (p_skip_balanced + p_push_source +
 # p_subst_* + p_resplit_punct). One case per hook, the four tests/err/ cases with
@@ -201,6 +206,41 @@ i64 main() { return t__i64__3() * 4 - 2; }'
 hook_case p_subst_hygiene 42 'tmpl t<T, N> { i64 T_tag = N; uptr k = "T is T"; return T_tag + ld8(k); }
 make t<i64, 2>;
 i64 main() { return t__i64__2() - 44; }'
+
+# ---- M21.5: on_stmt and the block dispatch ----
+# The counts are RELATIVE (stmtcount - base) on purpose: the module pushes its
+# own runtime as a second source at user_init, so the absolute count depends on
+# that source and would break the test for an unrelated reason.
+#
+# on_stmt: four statements between the two reads -- the `i64 base = ...` itself,
+# two declarations and one assignment.
+hook_case on_stmt-count 42 'i64 main() { i64 base = stmtcount; i64 a = 1; i64 b = 2; a = a + b;
+                             return stmtcount - base + 38; }'
+# ordering: `unless` is a TAUGHT statement, and the node the hook counted is the
+# N_IF its syntax_stmt handler built -- the handler runs first, the hook second.
+hook_case on_stmt-order 42 'i64 main() { i64 base = ifcount; i64 a = 1; unless (a > 5) { a = 42; }
+                             return ifcount - base + a - 1; }'
+# parse_block through syntax_stmt("{"): the two `while` bodies are `block $b`
+# holes of a `#rule` in <prelude>, and nesting 3 is only reachable if those
+# holes come through the module. Without the M21.5 dispatch the answer is 1.
+hook_case on_stmt-blockdepth 42 '#include <prelude>
+i64 main() { i64 i = 0; while (i < 3) { while (i < 2) { i = i + 1; } i = i + 1; }
+             return blockdepth + i + 36; }'
+
+# ...and it rewrites NOTHING: the module's runtime is one leading declaration,
+# so from `main` on the taught compiler's --dump-ast has to be what the default
+# compiler prints for the same file. This covers on_stmt returning its node
+# unchanged AND sd_block building the same N_BLOCK the core would have.
+printf 'i64 main() { i64 a = 1; if (a) { a = 2; } return a; }\n' > "$tmp/inert-stmt.mc"
+"$mc1"  --dump-ast "$tmp/inert-stmt.mc" > "$tmp/inert-stmt.a" 2>&1
+"$demo" --dump-ast "$tmp/inert-stmt.mc" 2>&1 | sed -n '/^FUNC type=i64 name=main/,$p' > "$tmp/inert-stmt.b"
+if cmp -s "$tmp/inert-stmt.a" "$tmp/inert-stmt.b"; then
+    echo "ok on_stmt + syntax_stmt(\"{\") leave the AST byte for byte unchanged"
+else
+    echo "FAIL on_stmt/block dispatch changed the AST"
+    diff -u "$tmp/inert-stmt.a" "$tmp/inert-stmt.b" | sed -n '1,20p'
+    fails=$((fails + 1))
+fi
 
 # p_start/p_depth: the module drives top_add(parse_top()) until the pushed
 # source is exhausted, so a `make` inside a unit produces a real declaration

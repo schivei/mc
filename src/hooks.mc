@@ -16,6 +16,11 @@
 // type. All three register the word in the lexer (`tok_add`), like `#rule` does
 // with the dispatch literal, and all three refuse a core keyword.
 //
+// M21.5: `on_stmt(&f)` is the fourth kind of registration and the only one that
+// is not keyed by a word: f sees every statement the parser produces, core or
+// taught. `syntax_stmt("{", &f)` now also catches the blocks parse_function and
+// a `#rule` block hole parse, so a module that tracks scopes sees all of them.
+//
 // M21: two more grammar positions, same shape. `syntax_expr(word, &f)` says the
 // word opens an EXPRESSION (`parse_primary` consults it first) and
 // `syntax_infix(word, prec, &f)` teaches a binary operator — that one keeps no
@@ -83,6 +88,49 @@ void backend_die(uptr name) {
     }
     out_str(2, "\n");
     _exit(1);
+}
+
+// ---- M21.5: on_stmt, the statement hook ----
+// `on_stmt(&f)` registers `i64 f(i64 n)`, called by parse_stmt after EVERY
+// statement node is produced -- core or taught -- with the node's index. The
+// handler returns the same node, a replacement, or 0 to drop it (parse_stmt
+// then puts an empty N_BLOCK in its place, the same convention a syntax_stmt
+// handler that returns 0 already had: a statement position always has a node).
+//
+// Order, and it is fixed: the taught `syntax_stmt` handler for the word runs
+// FIRST and builds the node, then every on_stmt hook runs over the result, in
+// registration order. So a module can teach `unless` and observe it in the same
+// compiler without the two racing.
+//
+// Why it exists: wrapping, rewriting or merely watching the CORE statements
+// (`return`, `break`, `continue`, `i64 x = ...`) is otherwise impossible
+// without re-teaching them -- scope tracking, instrumentation, ownership rules
+// and coverage all had to walk the tree afterwards instead. A core-declared
+// local is observable here as the N_VAR node, which is the intended way (there
+// is no separate hook for it).
+uptr onstmt_fn;
+i64  onstmtcap = 0;
+i64  nonstmt = 0;
+
+uptr onstmt_fn_at(i64 i) { return ld64(onstmt_fn + i * 8); }
+
+void on_stmt(uptr fn) {
+    onstmt_fn = grow(T_ONSTMT, onstmt_fn, nonstmt, &onstmtcap, 8);
+    st64(onstmt_fn + nonstmt * 8, fn);
+    nonstmt = nonstmt + 1;
+}
+
+// n through every hook, in registration order; 0 short-circuits (a dropped
+// statement is not offered to the hooks behind it)
+i64 run_on_stmt(i64 n) {
+    i64 i = 0;
+    loop {
+        if (i >= nonstmt) break;
+        if (n == 0) break;
+        n = callp(onstmt_fn_at(i), n);
+        i = i + 1;
+    }
+    return n;
 }
 
 // applies the registered passes, in order: root = f(root)

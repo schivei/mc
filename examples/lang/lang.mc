@@ -9,6 +9,7 @@
 //
 //   class / interface / namespace / import / using / fn   syntax        (M12)
 //   {  while  for  <every class and interface name>       syntax_stmt   (M12)
+//   every statement, for the reference counting            on_stmt       (M21.5)
 //   new  ref  <every generic function name>               syntax_expr   (M21)
 //   .  [                                                  syntax_infix  (M21)
 //   str  bool  <every class and interface name>           type_alias    (M12)
@@ -53,9 +54,16 @@ void user_init() {
     syntax("fn",        &lg_fn);
     lg_tok_fn = word_id("fn", 2);
 
+    // M21.5: every statement the parser produces, wherever it produced it. The
+    // memory model hangs off this instead of the three hand-written calls
+    // lg_block, lg_while and lg_for used to make.
+    on_stmt(&lg_on_stmt);
+
     // K_LBRACE is 272, outside the core keywords word_add refuses, so the
-    // module owns every statement-position block -- which is what makes the
-    // release of a reference happen per scope instead of per function.
+    // module owns every block -- which is what makes the release of a reference
+    // happen per scope instead of per function. Since M21.5 that includes the
+    // blocks nobody wrote in a statement position: a function body and the
+    // `block $b` hole of a `#rule` come through parse_block, which dispatches here.
     syntax_stmt("{",     &lg_block);
     syntax_stmt("while", &lg_while);
     syntax_stmt("for",   &lg_for);

@@ -245,35 +245,33 @@ Known, deliberate, and none of them is a core limitation:
 - **At most 8 parameters**, `self` and the vtable pointer included: a virtual
   method takes at most 6 arguments besides `self`.
 
-## Why the compiler is assembled from `lang_core.mc`
+## The compiler is `<mc/core>` plus one module
 
-`mc.toml` sets `[compiler].core = "lang_core.mc"` instead of taking the core
-from the binary's own bundle. That is a workaround for a **core limit**, not a
-preference:
+`mc.toml` has no `[compiler].core`: the core comes from the binary's own bundle,
+`#include <mc/core>`. This directory therefore contains no path into `src/` at
+all — the whole language is `lang.mc` and its five files.
 
-`src/bundle_data.mc` is `u64 bundle_blob[] = { ... }` with about 48 000
-elements, and `mc` turns every element into one 104-byte AST node. That array
-alone is most of what fits in `mc`'s 32 MiB arena (`HEAP_SIZE` in
-`src/arena.mc`), and going over it aborts with `mc: arena exhausted` and no
-position at all. Measured on this checkout, with a twenty-statement function as
-the unit:
+It was not always so. Until M21.5 the example shipped `lang_core.mc` (a copy of
+`src/core.mc`'s module list, minus the bundle and the ELF backend) and
+`lang_main.mc` (a copy of the CLI), because `<mc/core>` carried
+`src/bundle_data.mc` as `u64 bundle_blob[] = { ... }` with about 22 000
+elements, and `mc` turned every element into one 104-byte AST node. Those 2.3 MB
+of arena, next to a module this size, were what did not fit in the 32 MiB arena
+(`HEAP_SIZE` in `src/arena.mc`).
 
-| compiling | units that still fit |
-|---|---|
-| `#include <mc/core>` | 44 |
-| the same, with the bundle blob stubbed out | 189 |
-| `lang_core.mc` (no bundle, no ELF backend) | 240 |
-| what `examples/lang`'s module needs of that | 219 |
+M21.5 removed the cause: the copy of the bundle that the binary regenerates
+carries the blob as `#embed bundle_blob "bundle.bin"`, which is ONE AST node
+instead of 22 000 (`docs/build.md` § The bundle). Measured on this checkout,
+`mc limits examples/lang` for the taught compiler:
 
-`lang_core.mc` is `src/core.mc`'s list with `bundle_data.mc`, `bundle.mc` and
-`backend_elf.mc` dropped and `src/main.mc` replaced by `lang_main.mc`, which is
-the same CLI minus the two backends that went away. The taught compiler
-therefore has no `#include <name>` and no `elf-obj`; every source here uses
-`#include "relative/path"` and targets macOS/arm64. Everything else — `mc
-build`, `--exe`, `--dump-*`, `#dylib`, Tier 1/2/3 — is the same code as `src/`.
+| | nodes | heap used |
+|---|---|---|
+| `<mc/core>` before M21.5 | 80 312 | 21.7 MiB, reserve past 32 MiB (64 MiB) |
+| `<mc/core>` after M21.5 | 58 216 | 20.0 MiB of the 32 MiB static arena |
 
-The list being duplicated is the price: a module added to `src/core.mc` has to
-be added here too.
+`[limits] tolerance = 1.0` in `mc.toml` is what keeps the `nodes` and `ins`
+tables from doubling mid-build; the reserve still fits inside the static arena,
+so nothing is mapped and the numbers above are what `mc limits` prints.
 
 ---
 
@@ -281,17 +279,15 @@ be added here too.
 
 | file | lines | what it is |
 |---|---|---|
-| `lang.mc` | 69 | the module: the includes and `user_init`, where every hook is registered |
+| `lang.mc` | 77 | the module: the includes and `user_init`, where every hook is registered |
 | `lang_tab.mc` | 297 | every table, as flat records with named getters |
 | `lang_util.mc` | 374 | names, node builders, the linear lookups |
 | `lang_type.mc` | 318 | reading a type, resolving a name, record/replay of a generic, `where` |
 | `lang_class.mc` | 667 | `class`, `interface`, `namespace`, `import`, `using`, and the code a class generates |
-| `lang_stmt.mc` | 657 | `fn`, the block, `while`/`for`, reference counting, `ref` rewriting |
-| `lang_expr.mc` | 289 | `.`, `[`, `new`, `ref`, qualified names, generic calls |
-| `lang_core.mc` | 28 | the compiler's module list (see above) |
-| `lang_main.mc` | 111 | the compiler's CLI (see above) |
+| `lang_stmt.mc` | 671 | `fn`, the block, `while`/`for`, reference counting, `ref` rewriting |
+| `lang_expr.mc` | 294 | `.`, `[`, `new`, `ref`, qualified names, generic calls |
 | `lib/rt.mc` | 204 | the runtime: arena, free lists, reference counting, printing |
 | `lib/prelude.lx` | 30 | what every `.lx` includes: the runtime plus `+=`/`-=`/`++`/`--` |
 | `main.lx`, `geo.lx` | 65 + 26 | the spec's sample, extended with a namespace in a second file |
-| `tests/*.lx` | 12 tests | one per feature, with `expect-stdout`/`expect-exit`/`expect-error` headers |
-| `test.sh` | 148 | builds with `mc build`, runs the suite, checks determinism, `--dump-asm` and `--dump-rules` |
+| `tests/*.lx` | 14 tests | one per feature, with `expect-stdout`/`expect-exit`/`expect-error` headers |
+| `test.sh` | 151 | builds with `mc build --compiler-only`, runs the suite, checks determinism, `--dump-asm` and `--dump-rules` |

@@ -7,11 +7,12 @@
 #
 # Three steps:
 #
-#   1. `mc build` reads mc.toml, assembles the taught compiler (build/mc-lang)
-#      out of lang_core.mc + lang.mc, and uses it to compile main.lx into a
-#      signed executable (build/lang-demo). There is no `--compiler-only` flag
-#      in this checkout, so the compiler is built by the same `mc build` that
-#      compiles the entry -- see the report's core gaps.
+#   1. `mc build --compiler-only` reads mc.toml and assembles the taught
+#      compiler (build/mc-lang) out of `<mc/core>` + lang.mc, printing its path;
+#      then that binary compiles main.lx into a signed executable
+#      (build/lang-demo) with `build --entry-only`. Those two halves are exactly
+#      what a plain `mc build` runs, spelled out -- M21.5 added --compiler-only
+#      so a test script can stop after the compiler.
 #   2. every tests/NN-*.lx is compiled by that binary with --exe and run; the
 #      headers say what it must print and what it must exit with. A test whose
 #      header carries `expect-error` is compiled and its stderr compared instead.
@@ -40,13 +41,15 @@ fail() {
     fails=$((fails + 1))
 }
 
-echo "== building the taught compiler and main.lx (mc build) =="
+echo "== building the taught compiler (mc build --compiler-only) =="
 if [ ! -x "$mc" ]; then
     make -C "$root" mc1 || { echo "FAIL: make mc1"; exit 1; }
 fi
-"$mc" build "$dir" || { echo "FAIL: mc build"; exit 1; }
+"$mc" build "$dir" --compiler-only || { echo "FAIL: mc build --compiler-only"; exit 1; }
 [ -x "$mclang" ] || { echo "FAIL: mc build did not produce $mclang"; exit 1; }
-[ -x "$demo" ]   || { echo "FAIL: mc build did not produce $demo"; exit 1; }
+echo "== main.lx, compiled by that compiler (build --entry-only) =="
+"$mclang" build "$dir" --entry-only || { echo "FAIL: mc-lang build --entry-only"; exit 1; }
+[ -x "$demo" ]   || { echo "FAIL: mc-lang did not produce $demo"; exit 1; }
 echo "  ok    $mclang ($(wc -c < "$mclang" | tr -d ' ') bytes)"
 echo "  ok    $demo ($(wc -c < "$demo" | tr -d ' ') bytes)"
 

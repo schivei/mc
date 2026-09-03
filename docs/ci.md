@@ -10,7 +10,7 @@ what `make check` proves has to happen on a Linux machine. Everything below foll
 | `ci.yml` | push to `main`, pull requests | `macos-15` + `ubuntu-24.04-arm` | `make check`, then the Linux suite in two halves |
 | `tag.yml` | manual | `ubuntu-24.04` | validates `X.Y.Z` against the `VERSION` file, pushes the annotated tag `vX.Y.Z` and starts `release.yml` |
 | `release.yml` | tag `v*`, or manual | `macos-15` | builds `mc`, verifies it, packages it, publishes the GitHub Release |
-| `site.yml` | push to `main` touching `site/**` or `docs/**`, or manual | `macos-15` + `ubuntu-24.04` | builds the documentation site and deploys it to GitHub Pages (<https://minicompiler.dev>) |
+| `site.yml` | push to `main` touching `site/**` or `docs/**`, or manual | `macos-15` + `ubuntu-24.04` | renders `docs/` with `mcsite` and deploys it to GitHub Pages (<https://minicompiler.dev>) |
 
 All four set `concurrency` groups and per-job `timeout-minutes`, and each declares the narrowest
 `permissions` it needs.
@@ -23,9 +23,14 @@ All four set `concurrency` groups and per-job `timeout-minutes`, and each declar
 
 Runs `make check` unchanged: `budget`, `test`, `check-lex`, `check-ast`, `check-bundle`,
 `check-asm`, `check-obj`, `bootstrap` (the fixed point plus the golden SHA-256), `check-surface`,
-`test-exe`, `check-mc`, `check-standalone`, `check-toml`, `check-build`, `test-linux`,
-`check-examples`. No environment variable is passed and the `Makefile` is not touched: the
-`test-linux` target already guards itself.
+`test-exe`, `check-mc`, `check-standalone`, `check-toml`, `check-build`, `check-limits`,
+`test-linux`, `check-examples`, `check-lang`, `check-docs`, `site` and `check-site`. No
+environment variable is passed and the `Makefile` is not touched: the `test-linux` target already
+guards itself, and `check-site` skips `checkhtml.py`/`contrast.py` when `python3` is absent
+(the link check still runs).
+
+`site.yml` therefore duplicates only the last two: the deploy job needs the rendered tree as an
+artifact, not merely the proof that it renders.
 
 ```make
 test-linux: build/mc1
@@ -181,27 +186,25 @@ an install snippet and the checksums, and calls `gh release create --verify-tag`
 
 Runs on a push to `main` that touches `site/**` or `docs/**`, and on demand.
 
-- If `site/gen` exists — that is M27, the `mcsite` generator written in mc — it runs
-  `make mc1 && build/mc1 build site` and deploys `site/public`.
-- Until then it deploys the placeholder: `site/preview/*.html` plus `site/static`, copied into a
-  `public/` directory (`preview/` kept as a subdirectory, because the preview's own navigation
-  links to `/preview/...`), with `index.html` and `404.html` also at the root where Pages looks for
-  them.
+Three commands, on `macos-15` because building the site needs `mc`:
 
-The preview pages were written with `base_url = "/"`, which is wrong for anything but a site at a
-domain root. The workflow rebases them with one substitution — `="/` becomes `="<base_url>/` —
-which is complete and safe here: the only root-absolute references in those files are `href=` and
-`content=` attributes, there are no protocol-relative URLs and the stylesheet has no `url(...)`.
-The base comes from `actions/configure-pages`, so it is right for a project page, a user page and
-a custom domain alike. This repository serves the site from the custom domain
-**<https://minicompiler.dev>**, so the base is `https://minicompiler.dev` and the substitution is
-close to a no-op; it stays because it is what makes the workflow correct under any of the three.
-With Actions as the Pages source the custom domain lives in the repository settings, so no `CNAME`
-file has to be part of the artifact.
+```sh
+make mc1                     # the compiler
+build/mc1 build site         # site/mc.toml -> build/mcsite (the generator, written in mc)
+build/mcsite site --check    # docs/ -> site/public, then validate it
+```
 
-`site/tools/checkhtml.py` runs before the rebasing (it resolves `/static/...` against the working
-tree). Note that the preview's top navigation points at `/guide/`, `/reference/` and `/examples/`,
-which do not exist until M27 — they land on the deployed `404.html`.
+`site/public` is then copied to `public/` and uploaded as the Pages artifact. `--check` is what
+fails the job: it validates every internal link and every fragment, and it spawns
+`site/tools/checkhtml.py` (structure, landmarks, ids, accessible names, `/static/...` on disk) and
+`site/tools/contrast.py` (WCAG ratios read out of `site.css`) — which is why no separate HTML-check
+step exists any more.
+
+The URL prefix is **data, not a workflow substitution**: `[site] base_url` in `site/site.toml` is
+`/` and `[site] origin` is `https://minicompiler.dev`, which is the custom domain this repository
+serves from. A fork publishing under a GitHub Pages project path changes those two lines instead of
+patching the HTML. With Actions as the Pages source the custom domain lives in the repository
+settings, so no `CNAME` file has to be part of the artifact.
 
 Deployment uses `actions/configure-pages`, `actions/upload-pages-artifact` and
 `actions/deploy-pages`, with `permissions: pages: write, id-token: write` and

@@ -70,20 +70,21 @@ extern uptr mmap(uptr addr, i64 len, i64 prot, i64 flags, i64 fd, i64 off);
 #define T_XSEGS    25
 #define T_UNDEF    26
 #define T_PASSES   27
-#define T_BACKENDS 28
-#define T_SYNTAX   29
-#define T_ALIAS    30
-#define T_TOMLENT  31
-#define T_TOMLAOT  32
-#define T_HEAP     33
-#define T_COUNT    34
+#define T_ONSTMT   28
+#define T_BACKENDS 29
+#define T_SYNTAX   30
+#define T_ALIAS    31
+#define T_TOMLENT  32
+#define T_TOMLAOT  33
+#define T_HEAP     34
+#define T_COUNT    35
 
 uptr lim_names[] = {
     "tokens", "includes", "opens", "incpath", "nodes", "defines", "infix",
     "prefix", "opcodes", "sections", "dylibs", "extlib", "extpat", "rules",
     "funcs", "lowered", "globals", "strings", "locals", "loops", "prel",
     "ins", "symbols", "msecs", "xsecs", "xsegs", "undef", "passes",
-    "backends", "syntax", "alias", "tomlent", "tomlaot", "heap"
+    "on_stmt", "backends", "syntax", "alias", "tomlent", "tomlaot", "heap"
 };
 
 // cold-start capacity: what a table gets when the pre-scan said nothing about
@@ -93,7 +94,7 @@ i64 lim_seeds[] = {
     32, 32, 16, 8, 32, 16, 32,
     64, 64, 32, 64, 128, 16, 64,
     256, 64, 16, 32, 8, 64, 8,
-    8, 16, 16, 128, 8, 0
+    8, 8, 16, 16, 128, 8, 0
 };
 
 i64 lim_est[T_COUNT];                 // estimate, in elements
@@ -137,9 +138,42 @@ i64  hsize = HEAP_SIZE;               // its size
 i64  heap_res = HEAP_SIZE;            // bytes reserved across every chunk
 i64  heap_used = 0;                   // bytes handed out
 
+// M21.5: where the parser was when the arena ran out. xalloc has no position of
+// its own -- it is called from everywhere -- so parse.mc's next() leaves the
+// current token's file and line here, two stores per token, and parse_unit()
+// clears them again on its way out. 0 = nothing is being parsed (the pre-scan,
+// or a failure in the passes, the codegen or the object writer), and the
+// message then simply has no position rather than an unrelated one.
+uptr ax_file = 0;
+i64  ax_line = 0;
+
 uptr arena_base() {
     if (hbase) return hbase;
     return heap;
+}
+
+// M21.5: `arena exhausted` used to be four words with no position, no sizes and
+// no hint. It is the one error a taught compiler hits by growing, so it says
+// what was asked, what is already reserved, what the plan had estimated, where
+// the parser was, and what to change. `n` is the request that did not fit.
+void arena_die(uptr what, i64 n) {
+    out_str(2, "mc: ");
+    out_str(2, what);
+    out_str(2, " (");
+    out_num(2, heap_res >> 20);
+    out_str(2, " MiB reserved, ");
+    out_num(2, lim_est_at(T_HEAP) >> 20);
+    out_str(2, " MiB estimated, asked ");
+    out_num(2, n);
+    out_str(2, " bytes)");
+    if (ax_file != 0) {
+        out_str(2, " while parsing ");
+        out_str(2, ax_file);
+        out_str(2, ":");
+        out_num(2, ax_line);
+    }
+    out_str(2, " -- raise [limits].tolerance or HEAP_SIZE\n");
+    _exit(1);
 }
 
 // maps a chunk of exactly n bytes (rounded up to 64 KiB) and makes it current;
@@ -170,13 +204,13 @@ i64 arena_chunk(i64 n) {
 void arena_reserve(i64 n) {
     if (n <= hsize - hp) return;
     if (arena_map(n)) return;
-    die("cannot reserve the arena");
+    arena_die("cannot reserve the arena", n);
 }
 
 uptr xalloc(i64 n) {
     n = (n + 15) & ~15;
     if (hp + n > hsize) {
-        if (!arena_chunk(n)) die("arena exhausted");
+        if (!arena_chunk(n)) arena_die("arena exhausted", n);
         set_lim_grew(T_HEAP, lim_grew_at(T_HEAP) + 1);
     }
     uptr p = arena_base() + hp;

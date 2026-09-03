@@ -2,12 +2,12 @@
 
 Source: `docs/plan.md` § "Teaching surface" and
 `docs/specs/M1.md`/`M5.md`/`M5.5.md`/`M9.md`/`M10.md`/`M16.md`/`M21.md`.
-State at this milestone (**M16 and M21 closed**): `#token`, `#infix`/`#prefix`, `#rule`, `#section`,
+State at this milestone (**M16, M21, M21.5, M22 and M23 closed**): `#token`, `#infix`/`#prefix`, `#rule`, `#section`,
 `#opcode`, `emit()`/`reloc()` implemented and actually tested with `build/mc0` **and** with the
 self-hosted compiler `build/mc1` (the mechanism exists on both sides: `stage0/parse.c` and
 `src/parse.mc`). Programmatic Tier 2 (`pass()`/`backend()`) is also **implemented**, but only in
 the `.mc` compiler — the C stage0 is the seed and isn't teachable via Tier 2. Tier 3
-(`syntax`/`syntax_stmt`/`syntax_expr`/`syntax_infix`, `type_alias`, `#dylib`, and M21's record and
+(`syntax`/`syntax_stmt`/`syntax_expr`/`syntax_infix`, `type_alias`, `on_stmt`, `#dylib`, and M21's record and
 replay: `p_skip_balanced`/`p_push_source`/`p_subst_*`/`p_resplit_punct`) is likewise implemented,
 `.mc`-only, and proven end to end by `examples/api` and by `lib/user_syntax_demo.mc`. See the
 section at the end, which also describes the three built-in backends: `macho` (the `.o`, default),
@@ -229,7 +229,7 @@ frozen `stage0/lex.c` produces, so `scripts/check-lex.sh` keeps comparing the tw
 every source in the repository.
 
 An unknown name is an error and lists nothing else (`unknown bundled include: <name>`); a bundled
-file appears in diagnostics under its bundled name (`syntax_demo_test:7: ...`); and a relative
+file appears in diagnostics under its bundled name (`syntax_demo_test:10: ...`); and a relative
 `#include "x"` written *inside* a bundled file is resolved by name in the bundle, which is how
 `src/core.mc`'s own `#include "arena.mc"` works identically from `src/` and from `<mc/core>`.
 Full description, the manifest and the format: `docs/build.md` § M15.
@@ -252,6 +252,14 @@ i64 main() { return lz_inflate(packed, packed_size, out, packed_raw); }
 ```
 
 Ceiling 16 MiB; an empty file is an error. `docs/build.md` § M15 — `#embed`.
+
+**Cost: one AST node (M21.5).** The payload used to become one `N_INT` node per byte — 104 bytes
+of arena for every byte of file, which put a hard practical ceiling well under the declared 16 MiB
+and is why `src/bundle_data.mc` spells the bundle out as `u64 ... = { ... }` instead of embedding
+it. Since M21.5 the initializer is a single `N_BLOB` node holding the address and the length, and
+`glob_place` copies the bytes straight into the section. The object is byte for byte what it was;
+`--dump-ast` shows `BLOB val=<bytes>` where thousands of `INT` lines used to be. This is what lets
+the bundle carry itself as `#embed` (`docs/build.md` § `mc/bundle_data`).
 
 ### `lib/prelude.mc` — the surface library
 `while`, `for`, `+=`, `-=`, `++`, `--`: six `#rule`s and four `#token`s, 36 lines, entering only
@@ -559,7 +567,7 @@ compiler being taught is the one written in the language itself. What C needed t
 only what the language needs to express a hook: `&function`, `callp`, and splitting the gen into
 two halves.
 
-## Tier 3 — syntax taught by code (`syntax` / `syntax_stmt` / `syntax_expr` / `syntax_infix` / `type_alias` / `#dylib`) — implemented (M12, completed in M21)
+## Tier 3 — syntax taught by code (`syntax` / `syntax_stmt` / `syntax_expr` / `syntax_infix` / `type_alias` / `on_stmt` / `#dylib`) — implemented (M12, completed in M21, extended in M21.5)
 
 Tier 1's `#rule stmt:` is a hygienic macro: it matches a **fixed** token sequence in **statement**
 position and returns an already-parsed template. That's enough for `while`, `for`, `+=`. It's not
@@ -569,7 +577,7 @@ things a template can't express. Tier 3 is the answer, and it's the same idea as
 user writes a `.mc` module that runs inside the compiler**, this time during *parsing*, using the
 parser's public API.
 
-### The five registrations
+### The six registrations
 
 | registration | what you write | when it runs |
 |---|---|---|
@@ -578,9 +586,10 @@ parser's public API.
 | `syntax_expr("bits", &f)` | `i64 f()` — returns the expression node's index | `parse_primary`, before `T_INT`/`T_STR`/`T_IDENT` (M21) |
 | `syntax_infix(".+", 9, &f)` | `i64 f(i64 left)` — returns the expression node's index | `parse_expr`'s Pratt loop, at the entry's precedence (M21) |
 | `type_alias("bool", TY_U8)` | — | `type_of_token`, after the core's own words |
+| `on_stmt(&f)` | `i64 f(i64 n)` — returns the node, a replacement, or 0 | `parse_stmt`, after **every** statement node exists (M21.5) |
 
-All five register the word in the lexer (`tok_add`), the same as `#rule` does with its dispatch
-literal, and all five **refuse a core keyword** (`K_U8`..`K_EXTERN`):
+The first five register the word in the lexer (`tok_add`), the same as `#rule` does with its
+dispatch literal, and all five **refuse a core keyword** (`K_U8`..`K_EXTERN`):
 
 ```
 $ build/mc1 --exe my_compiler.mc -o my-mc && ./my-mc x.mc -o x.o
@@ -603,9 +612,63 @@ $ ./my-mc --exe prog.mc -o prog
 prog.mc:1: syntax handler consumed no tokens: bad2
 ```
 
+### `on_stmt(&f)` — every statement, core or taught — implemented (M21.5)
+
+`on_stmt` is the one registration that is **not** keyed by a word: it reserves nothing, teaches
+nothing, and sees everything. `parse_stmt` calls each registered hook, in registration order, with
+the index of the statement node it has just produced — the core's `i64 x = ...;`, `return`,
+`break`, `continue`, `if`, an assignment, an expression statement, and a taught statement too.
+
+```c
+i64 my_count(i64 n) {
+    nstmt = nstmt + 1;
+    return n;                       // the same node: rewrites nothing
+}
+void user_init() { on_stmt(&my_count); }
+```
+
+The handler returns **the same node**, **a replacement**, or **0 to drop it** — in which case the
+parser puts an empty `N_BLOCK` there, exactly as it does for a `syntax_stmt` handler that returns
+0, so the sibling list of whoever called it never breaks.
+
+**Order is fixed**: the `syntax_stmt` handler for the word runs *first* and builds the node, then
+every `on_stmt` hook runs over the result, in registration order. So a module can teach `unless`
+and observe it in the same compiler without the two racing; the node the hook sees is the `N_IF`
+the handler built, not the word.
+
+What it is for: wrapping, rewriting or merely watching the **core** statements without re-teaching
+them. Scope tracking, instrumentation, ownership and borrow rules, coverage — all of them used to
+mean walking the tree afterwards, from inside whatever block handler the module happened to own.
+A **core-declared local** (`i64 n = 0;`) is observable here as the `N_VAR` node: that is the
+intended way to see it, and there is no separate hook for it.
+
+With nothing registered the parser does not even make the call (`nonstmt == 0`), which is what
+keeps an untaught compiler byte for byte what it was — `scripts/check-surface.sh`'s inertness
+check still compares against the frozen seed.
+
+### `parse_block()` dispatches through `syntax_stmt("{")` — implemented (M21.5)
+
+`{` is a token like any other, so `syntax_stmt("{", &f)` has always been legal (`K_LBRACE` is 272,
+outside the `K_U8..K_EXTERN` range `word_add` refuses) and is how `examples/lang` makes a reference
+release happen per scope instead of per function. Until M21.5 it only caught the blocks that
+reached the **statement position**. A function body goes through `parse_function` → `parse_block`,
+and a `#rule`'s `block $b` hole goes through `parse_block` too, so both were invisible: a scope
+opened inside `while (c) { ... }` — a `#rule` in `lib/prelude.mc` — never reached the module.
+
+`parse_block` now consults `syntax_stmt_find(K_LBRACE)` first and calls the handler when there is
+one. Two consequences for whoever registers `{`:
+
+- the handler **consumes the `{` itself**, like every other `syntax_stmt` handler;
+- the handler must **not** call `parse_block()` — that is now a call to itself. It writes the loop
+  (`parse_stmt()` until `K_RBRACE`) directly; `lib/user_syntax_demo.mc`'s `sd_block` is the core's
+  own loop with two lines of bookkeeping added, and is 20 lines.
+
+With nothing registered `syntax_stmt_find` answers -1 and `parse_block` is what it was.
+
 ### Registration reserves the word for the whole program
 
-All five registrations are global and permanent: from `word_add` on, the word stops lexing as
+All five word registrations are global and permanent (`on_stmt` registers no word and reserves
+nothing): from `word_add` on, the word stops lexing as
 `T_IDENT` **anywhere**, not just at the handler's grammatical position. Whoever registers
 `syntax_stmt("log", &f)` removes `log` from the identifier vocabulary of the compiled source —
 `i64 log(i64 x)`, `i64 sum(i64 log, i64 b)`, and `i64 log = 1;` all become errors, even without
@@ -672,7 +735,9 @@ void p_resplit_punct(n)           the current punctuation becomes its first n by
 manages to prepend `self` to every method before reading its body. `top_add` is the only way out
 for a `syntax` handler: it produces zero, one, or many declarations, and `parse_top` returns 0.
 A `syntax_stmt` handler returns the node directly; if it returns 0, the parser puts an empty
-`N_BLOCK` there instead, so as not to break the sibling list of whoever called it.
+`N_BLOCK` there instead, so as not to break the sibling list of whoever called it. Since M21.5,
+`parse_stmt` then hands that node to every `on_stmt` hook (see above), and `parse_block` routes
+through the `{` handler when one is registered.
 
 ### A taught compiler is one file, not an edit to `src/`
 
@@ -755,6 +820,8 @@ void user_init() {
     syntax("enum", &sd_enum);                    // top-level position
     syntax_stmt("unless", &sd_unless);           // statement position
     type_alias("bool", TY_U8);                   // new type, no new syntax
+    on_stmt(&sd_count);                          // M21.5: every statement
+    syntax_stmt("{", &sd_block);                 // M21.5: every block
     // ... and M21's six, below
 }
 ```

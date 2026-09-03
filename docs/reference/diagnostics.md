@@ -1,0 +1,334 @@
+# diagnostics.md — every message the compiler emits
+
+Every diagnostic `mc` can print, with what causes it and what to do about it. The list is
+extracted from the `die`/`die2`/`err_at`/`err_at2`/`err_node`/`expect`/`toml_err*` call sites in
+`src/*.mc`; nothing here is invented, and `scripts/check-docs.sh` compiles a sample for the ones
+marked with an example.
+
+Every diagnostic exits **1**. There are no warnings: the compiler either produces the artifact or
+says why it did not.
+
+## The four shapes
+
+| shape | who | example |
+|---|---|---|
+| `mc: MESSAGE` | `die` — no position available | `mc: arena exhausted` |
+| `mc: MESSAGE: DETAIL` | `die2` | `mc: cannot open: sys.mc` |
+| `FILE:LINE: MESSAGE` | `err_at` / `err_node` — the position of the token or node at fault | `prog.mc:7: type expected` |
+| `FILE:LINE: MESSAGE: DETAIL` | `err_at2` | `prog.mc:3: the rule expected: )` |
+| `FILE:LINE:COL: MESSAGE[: KEY]` | `toml_err*` | `mc.toml:6:6: only macos and linux (see docs/build.md): target.os` |
+
+`FILE` is whatever the token's source is called: a real path, or a **bundled name** when the code
+came from inside the binary (`syntax_demo_test:10: type expected at top level`). A missing file is
+printed as `?`.
+
+```mc
+// expect-error: type expected at top level
+notatype main() { return 0; }
+```
+
+---
+
+## 1. Lexer
+
+| message | cause | fix |
+|---|---|---|
+| `unexpected character` | a byte that starts no token and no lexeme in the table | remove it; if it is meant to be an operator, register it with `#token` first |
+| `unterminated comment` | a `/*` with no `*/` before end of file | close it — block comments do not nest |
+| `unterminated string` | a `"` with no closing `"` on the same source | close it, or split with two literals |
+| `unterminated char literal` | a `'` with no closing `'` | close it |
+| `unterminated literal` | a literal that ends at end of file | the file is truncated |
+| `unterminated escape` | a `\` at the very end of a literal | complete the escape |
+| `unknown escape` | an escape that is not `\n \t \r \0 \\ \' \"` | use one of those, or write the byte with a char literal and `st8` |
+| `\0 not allowed in string` | an explicit NUL inside a string literal | `__cstring` is `S_CSTRING_LITERALS` and the linker merges literals at the first NUL, so `"a\0b"` and `"a"` would share an address. Build the bytes into a `u8` array instead |
+| `invalid hexadecimal` | `0x` with no hex digit after it | write at least one digit |
+| `empty lexeme` | `#token ""` | give the lexeme at least one byte |
+| `unknown directive` | a `#name` that is not one of the ten | check the spelling; the list is in [directives.md](directives.md). `#include <name>` and `#embed` do not exist in the C seed |
+| `invalid hole` | a `$` that is not followed by a hole name | `$name` and `$$name` are only meaningful inside a `#rule` template |
+| `unknown bundled include` | `#include <name>` with a name the bundle does not carry | the catalogue is [bundle.md](bundle.md). There is no filesystem fallback for `<...>` |
+| `path with too many segments` | a path with more than 64 components after normalisation | shorten it, or add an `[include].paths` root and include by a short name |
+| `too many substitutions` | more than 16 `p_subst_*` entries pending for one pushed source | a module bug: batch fewer substitutions per push |
+
+## 2. Directives
+
+| message | cause | fix |
+|---|---|---|
+| `#include expects a string` | `#include` without `"path"` or `<name>` | quote the path. In the C seed, `<name>` itself produces this message |
+| `unterminated #include <name>` | a `<` with no `>` before end of file | close the bracket |
+| `directive expects a string` | `#token`/`#infix`/`#prefix` given something that is not a string | quote the lexeme |
+| `directive not yet supported` | a directive the parser recognises but does not handle | none: this is reachable only from a partially added directive |
+| `#define expects a name` | `#define` followed by something that is not an identifier | give it a name |
+| `#define expects a constant expression` | the value does not fold to a constant | `#define` is a folded constant, not a textual macro; it cannot mention a variable |
+| `duplicate #define` | the same name defined twice | rename one, or delete the second |
+| `name already defined by #define` | a local, parameter, global or function declared with a name a `#define` owns | rename either, in whichever order they appear |
+| `#token expects a string` | `#token` without a quoted lexeme | quote it |
+| `#infix expects the precedence` | `#infix "op"` with no integer after the lexeme | add a precedence, 1..100 |
+| `#infix expects left or right` | the associativity word missing or misspelled | write `left` or `right` |
+| `precedence out of 1..100` | the precedence is outside the range (from `#infix` or `syntax_infix`) | pick a value in 1..100; the core uses 1..10 |
+| `#dylib expects a string` | `#dylib` without a quoted path | quote the path, or write `#dylib ""` to return to libSystem |
+| `#embed expects NAME "path" [lz]` | the name or the quoted path is missing | write `#embed name "file"`, optionally followed by `lz` |
+| `#embed file is empty or over 16 MiB` | the file is 0 bytes or exceeds the declared ceiling | every byte costs an AST node, so the arena is the real bound long before 16 MiB |
+| `#section expects the section name` | `#section` with a segment but no section name | give both, or write `#section` alone to return to the defaults |
+| `#section expects constant flags` | the flags argument does not fold | use a literal or a `#define` |
+| `#section expects constant alignment` | the alignment argument does not fold | same |
+| `section flags out of 32 bits` | the flags value does not fit in `u32` | it is the Mach-O flags word: `0x80000400`, `1`, `0`, … |
+| `alignment out of 0..15` | the alignment is not a log2 in 0..15 | write `3` for 8 bytes, `4` for 16 |
+| `#opcode expects a name` | `#opcode` not followed by an identifier | name the instruction |
+| `expected ( in #opcode` | no parameter list | write `name(a, b)` even when empty: `name()` |
+| `parameter name expected in #opcode` | a non-identifier in the parameter list | parameters are plain names |
+| `at most 8 parameters in #opcode` | more than 8 parameters | split the encoding into two opcodes |
+| `expected ) in #opcode` | the parameter list is not closed | close it |
+| `duplicate #opcode` | two `#opcode`s with the same name | rename one |
+
+## 3. `#rule`
+
+| message | cause | fix |
+|---|---|---|
+| `#rule expects category stmt` | no category word after `#rule` | write `#rule stmt:` |
+| `#rule expr: reserved, not yet supported` | the category `expr` | reserved. Use `#infix`/`#prefix`, or `syntax_expr` from a module |
+| `#rule only knows category stmt` | any other category | only `stmt` exists |
+| `expected : after the #rule category` | the colon is missing | write `#rule stmt: …` |
+| `empty #rule pattern` | nothing between the colon and `=>` | a pattern needs at least one item |
+| `the #rule pattern must open with a literal token` | the first item is `expr`/`stmt`/`block` | dispatch is by the opening token. Only a leading `ident $x` may precede the literal |
+| `cannot redefine core keyword` | the dispatch literal is a type word or a control word | `if`, `loop`, `return`, `i64`, … are refused because a rule opened by them would hijack the core's parser. Punctuation and new `#token`s are free |
+| `expected $name in the pattern` | an `nt` with no `$name` after it | write `expr $c`, `block $b`, `ident $x` |
+| `duplicate hole in #rule` | the same `$name` twice in one pattern | rename one |
+| `too many holes in #rule` | more holes than one rule may carry | split the rule |
+| `too many name holes in #rule` | more `ident $x`/`$$t` names than one rule may carry | split the rule |
+| `too many items in the #rule pattern` | the pattern is longer than one rule record allows | split the rule |
+| ``nt `type` is out of scope for M9`` | `type $t` in a pattern | not implemented; it is what a real `struct` would need. Use `#define` offsets and accessors |
+| `#rule without =>` | the arrow is missing | `PATTERN => TEMPLATE` |
+| `hole $name has no rule binding it` | a `$name` in the template that the pattern never bound | check the spelling, or add the item to the pattern |
+| `hole out of range in template` | an expansion referenced a hole index the rule does not have | an internal inconsistency; reduce the rule and re-add items |
+| `$$name only works in a #rule template` | a gensym outside a template | `$$t` is only meaningful on the right of `=>` |
+| `the rule expected` | the matched rule wanted a literal that is not there — the detail is the lexeme | once a rule is chosen there is no backtracking; write what the pattern says |
+| `the rule expected a name` | the rule wanted an `ident $x` and got something else | supply a plain identifier |
+| `the rule expected a name on the left` | a compound rule (`ident $x += …`) whose left side is not a plain name | `a.b += 1` cannot match; assign explicitly |
+| `too many nested rules` | more than 64 levels of rule-inside-rule at definition time | flatten the templates |
+
+## 4. Parser — expressions and statements
+
+| message | cause | fix |
+|---|---|---|
+| `expression expected` | a primary was required and none was there | often the real cause is a missing `#token`: without it a compound operator is lexed as two tokens and the Pratt loop stops far from the mistake |
+| `expected ) after expression` | an unbalanced `(` in an expression | close it |
+| `expected ) in cast` | `(type` without the closing `)` | write `(u32) x` |
+| `cast to void` | `(void) x` | there is no value of type `void`; drop the cast |
+| `expected ) in call` | an argument list is not closed | close it |
+| `call by name only` | calling something that is not a plain name | for an indirect call use `callp(p, …)` |
+| `& expects a name` | `&` applied to an expression | `&` takes a local, a global or a function |
+| `name expected` | `p_ident()` required an identifier | supply a name |
+| `name expected here` / `variable name expected` / `parameter name expected` / `name expected at top level` | a declaration name is missing | supply it. If the token is a taught word, the message is the next one instead |
+| `name reserved by a syntax/type_alias registration` | the name is a word some Tier 3 registration claimed — the detail is the word | a registration reserves the word for the whole program. Rename the identifier, or choose a different word in the module |
+| `type expected` | `p_type()` required a type word | one of the seven core types, or a `type_alias` |
+| `type expected at top level` | a top-level declaration that starts with neither a type nor a taught word | this is what the default compiler says about a source written for a taught one |
+| `type expected in parameter` | a parameter with no type | write `i64 x`, never a bare `x` |
+| `type expected in extern` | `extern` with no return type | `extern i64 name(...)` |
+| `name expected in extern` | `extern` with a type but no name | add the name |
+| `parameter of type void` | a parameter declared `void` | drop it |
+| `local of type void` | a local declared `void` | there is no value of that type |
+| `global of type void` | a global declared `void` | same |
+| `at most 8 parameters` | more than 8 parameters | the ABI limit: pass a pointer to a struct-like block instead |
+| `expected ( in the parameter list` / `expected ) in the parameter list` | the parentheses of a declaration | close them |
+| `expected ( after if` / `expected ) after condition` | `if` without its parenthesised condition | write `if (c) …` |
+| `expected {` | a block was required | `loop`, a function body and a `block $b` hole all need braces |
+| `unterminated block` | a `{` with no `}` before end of file | close it |
+| `expected ; after declaration` | a local declaration without its semicolon | add it |
+| `expected ; after assignment` | an assignment statement without its semicolon | add it |
+| `expected ; after expression` | an expression statement without its semicolon | add it |
+| `expected ; after return` | `return` without its semicolon | add it |
+| `expected ; after break` | `break` or `break N` without its semicolon | add it |
+| `expected ; after continue` | `continue` without its semicolon | add it |
+| `expected ; after extern` | an `extern` declaration without its semicolon | add it |
+| `expected ; after the global` | a global declaration without its semicolon | add it |
+| `left side of assignment must be a name` | assigning to something that is not a plain name | use `st8`/`st64` for memory, or a taught `syntax_infix` for members |
+| `break expects a positive level` | `break 0;` or a negative level | `break;` is `break 1;` |
+| `expected ] in the array size` | an array declaration's bracket | close it |
+| `array size must be a positive constant` | `N` in `type x[N]` does not fold to a positive integer | use a literal or a `#define` |
+| `expected { in the array initializer` / `expected } in the array initializer` | the braces of `= { … }` | close them |
+| `empty array initializer` | `= { }` | give at least one element, or drop the initializer |
+| `initializer must be constant` | an element that does not fold | initializers are constants |
+| `initializer with too many elements` | more elements than the declared `N` | raise `N`, or write `type x[] = { … }` and let it be inferred |
+| `a string only initializes uptr` | a string element in an array that is not `uptr` | a string element becomes a relocated pointer; the element type must be `uptr` |
+| `global initializer must be constant` | a global's scalar initializer does not fold | same rule |
+| `global array too large` | the declared array exceeds the addressable size | reduce it |
+| `division by zero` | `x / 0` or `x % 0` with both sides constant | folding happens at compile time |
+| `operator without constant folding` | an operator used where a constant is required and the folder has no rule for it | use a simpler constant expression |
+
+## 5. Tier 3 handler contract
+
+| message | cause | fix |
+|---|---|---|
+| `syntax handler consumed no tokens` | a `syntax` handler returned without calling `p_next` | the handler must consume at least the word it was registered for; the guard exists to stop an infinite loop |
+| `syntax_stmt handler consumed no tokens` | the same at the statement position | same |
+| `syntax_expr handler consumed no tokens` | the same at the expression position | same |
+| `syntax_expr handler produced no expression` | the handler returned 0 | an expression position has no empty node to fall back on; return a node |
+| `syntax_infix handler produced no expression` | the same for an operator handler | return the resulting node |
+| `operator already taught` | a second `syntax_infix` on the same token | a second registration is a mistake, not an override. A later `#infix` on the token *is* allowed: it clears the handler and the template wins |
+| `cannot redefine core keyword` | `syntax`/`syntax_stmt`/`syntax_expr`/`syntax_infix`/`type_alias` on a core word | choose another word |
+| `type_alias with invalid type` | the base is not one of `TY_VOID..TY_UPTR` | use a core type constant |
+| `p_skip_balanced expects the opening token` | the parse was not sitting on the opening token | position the handler on the `{`/`<`/`(` before calling |
+| `unterminated region` | `p_skip_balanced` reached end of file — reported at the **opening** token | close the region; the position points at what never closed |
+| `region crosses a file boundary` | the region began in one source and ended in another | a span is a slice of one buffer; keep a recorded region inside one file |
+| `p_resplit_punct expects a longer punctuation token` | the current token is not a punctuation token longer than `n`, freshly lexed from the source | it works only on a token just read from the source being lexed — never a string, never a substituted identifier |
+| `p_resplit_punct: unknown punctuation` | the first `n` bytes are not a registered lexeme | split at a boundary that is a real token, as `>>` → `>` |
+
+## 6. Codegen
+
+| message | cause | fix |
+|---|---|---|
+| `unknown name` | an identifier that is no local, global, function or `extern` | declare it, or check the spelling. Codegen looks for a local, then a global, then a signature |
+| `call to unknown function` | a call to a name with no signature | declare a prototype or an `extern` before the call |
+| `wrong number of arguments` | the call's arity does not match the declaration | fix one of the two |
+| `wrong arity in intrinsic` | `ld*`, `st*`, `emit`, `reloc` with the wrong count | `ld*` takes 1, `st*` takes 2 |
+| `callp expects 1 to 8 arguments` | `callp()` empty, or with more than 7 arguments after the pointer | the pointer counts towards the eight |
+| `function declared twice` | two definitions of one name | delete one |
+| `declaration does not match prototype` | the definition's return type or arity differs from the prototype | make them agree |
+| `prototype with no definition` | a prototype nobody defines and no `extern` | define it, or declare it `extern` |
+| `global name declared twice` | two globals with one name | rename one |
+| `value of type void` | a `void` call used where a value is needed | `void` produces no value |
+| `assignment to array` | assigning to an array name | an array name is an address; write through `st*` |
+| `break out of range` | `break N;` with N greater than the enclosing loop depth | count the loops again |
+| `continue outside loop` | `continue;` with no enclosing `loop` | remove it, or add the loop |
+| `expression too deep` | more than 64 levels of expression nesting | split into statements |
+| `frame too large` | locals + spill area exceed 4095 bytes | `sub sp, sp, #imm` carries only 12 bits; move data into a global |
+| `local array too large` | one local array exceeds 4095 bytes | make it a global |
+| `unary operator with no codegen` / `binary operator with no codegen` / `expression with no codegen` / `statement with no codegen` | a node kind the generator has no rule for | reachable when a module builds a node the core does not lower; check the node kind the handler produced |
+| `instruction with no encoder` / `instruction with no dump` | an `I_*` opcode the encoder or the dumper does not handle | the same, one layer down: a backend produced an instruction the core cannot encode |
+| `add/sub immediate out of 12 bits` / `cmp immediate out of 12 bits` | a folded immediate does not fit the instruction | materialise it into a variable first |
+| `immediate and mask not supported` | an `and` with an immediate the bitmask encoding cannot express | put the mask in a variable |
+| `memory offset out of range` | a frame offset outside the scaled `ldr`/`str` range | the frame is too large or too fragmented; reduce the locals |
+| `branch too far` | a branch beyond the 19-bit range the encoder checks uniformly (±1 MiB) | split the function |
+| `function in a zerofill section` | a function defined while a `#section … 1` (`S_ZEROFILL`) is in effect | zerofill sections have no file bytes; switch sections before the function |
+| `global with initializer in a zerofill section` | an initialised global in a zerofill section | same: an initialiser needs file bytes |
+
+## 7. `emit()`, `reloc()` and `#opcode`
+
+| message | cause | fix |
+|---|---|---|
+| `emit expects an argument` / `emit expects a constant` | `emit()` empty, or with a non-constant | it writes one folded 32-bit word |
+| `emitted word does not fit in 32 bits` | the folded word exceeds `0xffffffff` | mask it |
+| `#opcode argument not constant` | an argument of a `#opcode` call does not fold | `#opcode` is an encoder, not a function: everything must be known at compile time |
+| `wrong number of arguments in #opcode` | the call's arity does not match the declaration | fix one of the two |
+| `reloc expects two arguments` | `reloc()` with a different count | `reloc(TYPE, "symbol")` |
+| `relocation type must be constant` | the first argument does not fold | use `BRANCH26`, `PAGE21`, `PAGEOFF12` or `UNSIGNED` |
+| `reloc expects the symbol in quotes` | the second argument is not a string | quote the symbol name, with its leading `_` |
+| `unknown relocation type` | a value that is not one of the four | see [objects.md](objects.md) |
+| `two relocations for the same word` | two `reloc()` calls with no `emit()` between them | one relocation per word |
+| `reloc without an immediately following emit` | a `reloc()` with no word after it before the next label or the end of the function | put the `emit()`/`#opcode` call right after it |
+| `reloc UNSIGNED requires 8 bytes: use a global array initializer` | `reloc(UNSIGNED, …)` before a 4-byte word | it is an 8-byte relocation and would overrun the next instruction. Write the address as a global array initializer instead |
+
+## 8. Object writers
+
+| message | cause | fix |
+|---|---|---|
+| `duplicate symbol` | two definitions of one symbol name | rename one; the detail is the symbol |
+| `no _main: cannot generate an executable` | `--exe` on a unit with no `main` | add `i64 main()`, or produce an object instead |
+| `UNSIGNED that does not occupy 8 bytes` | an `UNSIGNED` relocation of the wrong length reached a backend | the same cause as the `reloc UNSIGNED` message, seen at write time |
+| `relocation not supported in the direct executable` | a relocation kind `macho-exe` cannot resolve itself | use the `.o` + `ld` path for that construct |
+| `relocation not supported in the ELF object` | a relocation kind the ELF writer has no mapping for | same, for Linux targets |
+| `relocated pointer in __TEXT: the segment is r-x and dyld will not rebase it` | a global with a relocated pointer placed in a `__TEXT` section | put the data in `__DATA` |
+| `pageoff12 misaligned for the access width` | a `PAGEOFF12` target not aligned for the load/store width it patches | the address must be aligned to the access width |
+| `misaligned bl target` / `bl too far` | a call target not 4-byte aligned, or beyond ±128 MiB | the program is too large for one `__text`; split it |
+| `too many segments for the rebase opcode` / `too many segments for the bind opcode` | more distinct segments than a `dyld` opcode can index | reduce the number of distinct `#section` segment names |
+| `too many dylibs for the bind opcode` | more `#dylib`/`[libs]` entries than the ordinal encoding allows | link fewer libraries, or use `[linker]` |
+
+## 9. Command line and driver
+
+| message | cause | fix |
+|---|---|---|
+| `unknown option` | a flag starting with `-` that is not recognised | the list is [cli.md](cli.md). `--exe` and `--backend=` other than `macho` do not exist in the C seed |
+| `-o requires an argument` | `-o` at the end of the command line | give it a path |
+| `duplicate entry` | two source files on one command line | `mc` compiles one file at a time; use `mc build` for a project |
+| `--config requires an argument` | `--config` at the end of the command line | give it a path |
+| `duplicate directory` | two directories after `mc build` / `mc limits` | pass one |
+| `--entry-only and --compiler-only are exclusive` | both halves of a taught build asked for at once | `--compiler-only` builds the compiler and stops; `--entry-only` compiles the entry with the running binary. Pick one |
+| `unknown backend: NAME` (then `registered: …`) | `--backend=` naming something not registered | the message lists what exists |
+| `cannot run` | `posix_spawnp` could not start the linker or the taught compiler | check the `cmd` in `[linker]`, and that a relative compiler path starts with `./` |
+| `waitpid failed` | the spawned process could not be waited for | a system-level failure |
+| `posix_spawn_file_actions_init failed` | the spawn could not be set up | same |
+| `xcrun --show-sdk-path failed` | `{sdk}` was used and `xcrun` failed | install the command line tools, or write the SDK path literally |
+| `too many arguments in [linker].args` | more than 64 arguments after `{libs}` expansion | shorten the list |
+
+## 10. `mc.toml`
+
+All of these carry `file:line:col`.
+
+| message | cause | fix |
+|---|---|---|
+| `key expected` | a line that starts with neither a key nor `[` | check for a stray character |
+| `expected = after the key` | a key with no `=` | add it |
+| `value expected` | nothing, or something unrecognised, after `=` | strings need quotes: `entry = main.mc` is this error, and the column points at the bare word |
+| `unexpected text after the value` | trailing content on the line | one key per line; comments start with `#` |
+| `unterminated string` | a string with no closing quote | close it |
+| `unknown escape` | an escape other than `\" \\ \n \t \r` | use one of those |
+| `expected ] in the table header` | `[table` with no `]` (or `[[table]` for an array of tables) | close the header |
+| `quoted key must not contain .` | a quoted key containing `.` | the table is flat and paths join with `.`, so `"b.c"` under `[a]` and `c` under `[a.b]` would collide. Rename, or use a real sub-table |
+| `unterminated array` | a `[` value with no `]` | close it; arrays may span lines and allow a trailing comma |
+| `expected , or ] in the array` | two values with no comma | add it |
+| `digit expected after .` | a float ending in `.` | write `0.25`, never `0.` |
+| `float with more than 4 fraction digits` | more precision than basis points can hold | the only float key is `[limits].tolerance`, kept as basis points: at most four digits |
+
+Driver-level key errors, reported at the key's position when it exists and at the file when it
+does not:
+
+| message | key | fix |
+|---|---|---|
+| `missing key` | `project.entry`, `project.out`, `compiler.modules`, `compiler.out`, `sysroot.path` | add it. `compiler.out` is only required when there is no `project.name` to default from; `sysroot.path` only when `{sysroot}` is actually used |
+| `must be exe or obj` | `project.kind` | those are the two values |
+| `only macos and linux (see docs/build.md)` | `target.os` | those are the two values |
+| `only aarch64 (see docs/build.md)` | `target.arch` | the only architecture today |
+| `linux requires [linker]: there is no direct executable` | `target.os` | add a `[linker]` section: there is no `--exe` equivalent for ELF |
+| `must be a relative path` | `compiler.out` | the generated compiler source lives next to it and includes by relative path |
+| `must not contain ..` | `compiler.out` | same reason; the `..` check runs on the string as written |
+| `library not declared in [libs]` | an `[externs]` value | the value must name a `[libs]` key |
+| `tolerance must be between 0 and 1` | `limits.tolerance` | a float in `[0, 1]`, at most four fraction digits |
+
+## 11. Runtime and I/O
+
+| message | cause | fix |
+|---|---|---|
+| `mc: cannot open: PATH` | a source, include or config that cannot be read | check the path. For `#include "x"` the search is the includer's directory, then each `[include].paths` root |
+| `mc: cannot create: PATH` | the output could not be created | check the directory and its permissions; `mc build` creates parent directories, the single-file CLI does not |
+| `mc: read error: PATH` | a short or failed read | the file changed under the compiler, or the medium failed |
+| `mc: arena exhausted (R MiB reserved, E MiB estimated, asked N bytes) while parsing FILE:LINE -- raise [limits].tolerance or HEAP_SIZE` | the compiler's arena could not grow | the arena starts at a static 32 MiB and grows by `mmap`; this means the kernel refused. The numbers say what was already reserved, what the plan had estimated and what did not fit; `while parsing` is where the parser was, and appears only while it is parsing: the pre-scan, the passes, the codegen and the object writer report no position rather than the last line the lexer happened to reach. Raise `[limits].tolerance` so the estimate reserves more up front, or split the translation unit |
+| `mc: cannot reserve the arena (…) -- raise [limits].tolerance or HEAP_SIZE` | the initial reservation failed | same message, same numbers, at the first `mmap` |
+
+---
+
+## Reproducing them
+
+Each of these is a real, compiled sample:
+
+```mc
+// expect-error: cannot redefine core keyword
+#rule stmt: if ( expr $c ) block $b => loop { $b }
+i64 main() { return 0; }
+```
+
+```mc
+// expect-error: reloc UNSIGNED requires 8 bytes
+i64 main() {
+    reloc(UNSIGNED, "_main");
+    emit(0x00000000);
+}
+```
+
+```mc
+// expect-error: name already defined by #define
+#define LIMIT 10
+i64 LIMIT = 5;
+i64 main() { return 0; }
+```
+
+```mc
+// expect-error: \0 not allowed in string
+#include <sys>
+i64 main() { write(1, "a\0b", 3); return 0; }
+```
+
+```mc
+// expect-error: at most 8 parameters
+i64 f(i64 a, i64 b, i64 c, i64 d, i64 e, i64 g, i64 h, i64 i, i64 j) { return a; }
+i64 main() { return 0; }
+```

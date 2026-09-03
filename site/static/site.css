@@ -193,6 +193,60 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--s7) 0; }
 .header-nav a:hover,
 .header-nav a[aria-current] { color: var(--accent); text-decoration: underline; }
 
+/* Search ({{search}} in base.html). The form is written with the `hidden`
+   attribute and its script removes it, so a reader without JavaScript never
+   sees an input that cannot search. The results hang off the header, which is
+   the sticky element, and the whole thing disappears when search is off in
+   site.toml — the placeholder is then empty and none of this matches. */
+.site-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  font-size: var(--fs-ui);
+}
+.site-search input {
+  width: 12ch;
+  padding: var(--s1) var(--s3);
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  transition: width 120ms ease;
+}
+.site-search input::placeholder { color: var(--text-muted); }
+.site-search input:focus { width: 22ch; }
+
+.search-results {
+  position: absolute;
+  top: calc(100% + var(--s2));
+  inset-inline-end: 0;
+  z-index: 60;
+  width: min(30rem, 82vw);
+  max-height: 60vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--s2);
+  list-style: none;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+.search-results li { margin: 0; }
+.search-results a {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: var(--s2) var(--s3);
+  border-radius: var(--radius);
+  color: var(--text);
+  text-decoration: none;
+}
+.search-results a:hover { background: var(--bg-elev); color: var(--accent); }
+.search-section { flex: none; color: var(--text-muted); font-size: var(--fs-small); }
+
 /* CSS-only sidebar toggle: the checkbox lives at the top of <body> so that it
    is a sibling of .layout; above 900px both it and its label are display:none,
    which also removes the phantom tab stop. */
@@ -658,8 +712,12 @@ pre.code:hover .code-copy,
 
 @media (max-width: 699px) {
   /* the header must stay one line: when the sidebar toggle is present the same
-     sections are reachable inside it, so the header links stand down */
+     sections are reachable inside it, so the header links stand down. Search
+     stays: it is the one thing the sidebar does not offer. */
   .nav-button ~ .header-nav { display: none; }
+  .site-search { margin-inline-start: auto; }
+  .site-search input { width: 9ch; }
+  .site-search input:focus { width: 14ch; }
 }
 
 @media (max-width: 899px) {
@@ -683,7 +741,8 @@ pre.code:hover .code-copy,
 }
 
 @media print {
-  .site-header, .site-nav, .outline, .pager, .code-copy, .skip-link { display: none; }
+  .site-header, .site-nav, .outline, .pager, .code-copy, .skip-link,
+  .site-search { display: none; }
   .layout { display: block; padding: 0; }
   .content { max-width: none; }
   body { background: #fff; color: #000; }

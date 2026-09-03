@@ -1,7 +1,8 @@
 // driver.mc — `mc build`: the project driver (M14, docs/specs/M14.md,
 // docs/build.md).
 //
-//   mc build [DIR] [--config FILE] [--entry-only] [--limits] [--fix-limits]
+//   mc build [DIR] [--config FILE] [--entry-only] [--compiler-only]
+//            [--limits] [--fix-limits]
 //   mc limits [DIR|FILE.mc]
 //
 // DIR defaults to `.` and the config to `DIR/mc.toml`. Every path in the file is
@@ -18,6 +19,12 @@
 //                      -- that is the taught compiler -- and then SPAWN it as
 //                      `<compiler> build DIR --config FILE --entry-only` so the
 //                      entry is compiled by the compiler that just came out.
+//
+// M21.5: `--compiler-only` is the first half alone. It builds the taught
+// compiler, prints its path on stdout and stops -- no spawn, no entry. It is
+// the flag a `test.sh` wants (it drives the taught compiler over its own test
+// suite and never needs [project].entry) and the one the editor server needs.
+// Without [compiler].modules it is an error, not a silent full build.
 //
 // M16: `[target].os` also takes "linux". That swaps the object backend for
 // `elf-obj` (src/backend_elf.mc) and REQUIRES `[linker]` — there is no direct
@@ -403,11 +410,20 @@ void drv_entry(uptr entry, uptr out, uptr kind) {
 // TWO compilations each report their own tables, the compiler's first: the
 // parent's is in this process, the entry's in the child, which gets the same
 // flag. The worst of the two verdicts is what comes back.
-i64 drv_teach(uptr cout, uptr dir) {
+i64 drv_teach(uptr cout, uptr dir, i64 compiler_only) {
     uptr gen = drv_gen_compiler(cout);
     drv_step("compiler", tm_cat(cout, ".mc"), cout);
     drv_compile(gen, drv_path(cout), "macho-exe", 0, tm_cat(cout, ".mc"));
     i64 rc = drv_finish(tm_cat(cout, ".mc"));
+    // M21.5: --compiler-only stops here and prints the path of the binary it
+    // just wrote. A test.sh that runs the taught compiler itself, and the LSP,
+    // need the compiler and not the entry; without the flag they had to build
+    // the entry too, just to throw it away.
+    if (compiler_only) {
+        out_str(1, drv_path(cout));
+        out_str(1, "\n");
+        return rc;
+    }
     uptr comp = drv_runnable(drv_path(cout));
     u8 av[8 * 8];
     st64(av + 0,  comp);
@@ -439,12 +455,12 @@ i64 drv_finish(uptr what) {
 
 // ---- CLI ----
 void drv_usage() {
-    out_str(2, "usage: mc build [DIR] [--config FILE] [--limits|--fix-limits]\n");
+    out_str(2, "usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits]\n");
     out_str(2, "       mc limits [DIR|FILE.mc]\n");
 }
 
 // everything after the flags: one shape for `mc build` and for `mc limits`
-i64 drv_run(uptr dir, uptr cfg, i64 entry_only) {
+i64 drv_run(uptr dir, uptr cfg, i64 entry_only, i64 compiler_only) {
     if (dir == 0) dir = ".";
     if (cfg == 0) cfg = path_norm(tm_cat(dir, "/mc.toml"));
     cfg_file = cfg;
@@ -477,8 +493,9 @@ i64 drv_run(uptr dir, uptr cfg, i64 entry_only) {
             if (name == 0) toml_err_key("compiler.out", "missing key");
             cout = tm_cat("build/mc-", name);
         }
-        return drv_teach(cout, dir);
+        return drv_teach(cout, dir, compiler_only);
     }
+    if (compiler_only) toml_err_key("compiler.modules", "missing key");
     drv_entry(entry, out, kind);
     return drv_finish(entry);
 }
@@ -487,6 +504,7 @@ i64 drv_build(i64 argc, uptr argv) {
     uptr dir = 0;
     uptr cfg = 0;
     i64 entry_only = 0;
+    i64 compiler_only = 0;
     i64 i = 2;                                 // argv[1] is "build"
     while (i < argc) {
         uptr a = ld64(argv + i * 8);
@@ -495,15 +513,17 @@ i64 drv_build(i64 argc, uptr argv) {
             i = i + 1;
             cfg = ld64(argv + i * 8);
         }
-        else if (str_eq(a, "--entry-only"))  entry_only = 1;
-        else if (str_eq(a, "--limits"))      drv_lim_mode = 1;
-        else if (str_eq(a, "--fix-limits"))  drv_lim_mode = 2;
-        else if (ld8(a) == '-')             { drv_usage(); return 1; }
-        else if (dir == 0)                  dir = a;
-        else                                die2("duplicate directory", a);
+        else if (str_eq(a, "--entry-only"))    entry_only = 1;
+        else if (str_eq(a, "--compiler-only")) compiler_only = 1;
+        else if (str_eq(a, "--limits"))        drv_lim_mode = 1;
+        else if (str_eq(a, "--fix-limits"))    drv_lim_mode = 2;
+        else if (ld8(a) == '-')               { drv_usage(); return 1; }
+        else if (dir == 0)                    dir = a;
+        else                                  die2("duplicate directory", a);
         i = i + 1;
     }
-    return drv_run(dir, cfg, entry_only);
+    if (entry_only && compiler_only) die("--entry-only and --compiler-only are exclusive");
+    return drv_run(dir, cfg, entry_only, compiler_only);
 }
 
 // 1 if the path ends in `.mc`: `mc limits` takes either a project directory or
@@ -538,5 +558,5 @@ i64 drv_limits(i64 argc, uptr argv) {
         lim_report(path);
         return lim_exit_code();
     }
-    return drv_run(path, cfg, 0);
+    return drv_run(path, cfg, 0, 0);
 }

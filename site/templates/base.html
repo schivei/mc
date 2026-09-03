@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{page_title}}</title>
-<meta name="description" content="mc is a small compiler for a schoolbook-C language, written in itself, whose syntax and backends are taught from ordinary source code.">
+<meta name="description" content="{{page_description}}">
 <link rel="canonical" href="{{page_url}}">
 <link rel="icon" href="{{base_url}}static/favicon.svg" type="image/svg+xml">
 <link rel="alternate icon" href="{{base_url}}static/icon-32.png" sizes="32x32" type="image/png">
@@ -13,6 +13,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="{{site_title}}">
 <meta property="og:title" content="{{page_title}}">
+<meta property="og:description" content="{{page_description}}">
 <meta property="og:url" content="{{page_url}}">
 <meta property="og:image" content="{{base_url}}static/social.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -51,6 +52,10 @@
     <a href="{{base_url}}reference/">Reference</a>
     <a href="{{base_url}}examples/">Examples</a>
   </nav>
+  <!-- The search form and the script that fills it. Empty when search is off in
+       site.toml; the form itself is hidden until the script reveals it, so a
+       reader without JavaScript is never given a box that cannot search. -->
+  {{search}}
 </header>
 
 {{content}}

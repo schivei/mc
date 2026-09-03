@@ -446,6 +446,21 @@ void lg_note_var(i64 s) {
     lg_local_add(nd_name(s), -1, -1, 0);
 }
 
+// M21.5: the statement hook. Every statement the parser produces -- core or
+// taught, at any depth -- arrives here at the moment it is produced, which is
+// exactly where the memory model wants it. Registered by user_init in lang.mc.
+// Before the hook, lg_block, lg_while and lg_for each had to call these two by
+// hand on whatever they had just parsed, and a statement produced anywhere the
+// module did not own was reached only indirectly, by lg_lower's own recursion.
+// It rewrites nothing: the node it was given is the node it returns.
+i64 lg_on_stmt(i64 n) {
+    if (lg_in_fn) {
+        lg_lower(n);
+        lg_note_var(n);
+    }
+    return n;
+}
+
 // ---- the block ----
 
 i64 lg_block() {
@@ -457,11 +472,7 @@ i64 lg_block() {
     loop {
         if (p_id() == K_RBRACE) break;
         if (p_id() == T_EOF) err_at(fl, line, "unterminated block");
-        i64 s = parse_stmt();
-        if (lg_in_fn) {
-            lg_lower(s);
-            lg_note_var(s);
-        }
+        i64 s = parse_stmt();                    // lg_on_stmt already lowered it
         head = list_append(head, s);
     }
     p_next();                                    // }
@@ -477,9 +488,11 @@ i64 lg_block() {
 }
 
 // ---- while / for ----
-// The module owns them so that the body goes through lg_block (a `#rule`'s
-// `block` hole calls the core's parse_block and would skip it) and so that a
-// `break` knows how many scopes it is leaving.
+// The module owns them so that a `break` knows how many scopes it is leaving:
+// lg_lp records lg_nlv at the head of each loop, and lg_lower_jump reads it.
+// (Until M21.5 there was a second reason -- a `#rule`'s `block` hole called the
+// core's parse_block directly and skipped lg_block. parse_block now dispatches
+// through syntax_stmt("{"), so that one is gone.)
 
 i64 lg_while() {
     i64 line = p_line();
@@ -491,8 +504,7 @@ i64 lg_while() {
     if (lg_nlp == LG_MAXLOOP) err_at(fl, line, "loops nested too deep");
     lg_puta(lg_lp, lg_nlp, lg_nlv);
     lg_nlp = lg_nlp + 1;
-    i64 body = parse_stmt();
-    if (lg_in_fn) lg_lower(body);
+    i64 body = parse_stmt();                     // lg_on_stmt lowered it in place
     lg_nlp = lg_nlp - 1;
     i64 neg = node_new(N_UNARY, line, fl);
     set_nd_op(neg, K_BANG);
@@ -543,10 +555,6 @@ i64 lg_for() {
     p_expect(K_LPAR, "expected ( after for");
     i64 mark = lg_nlv;
     i64 init = parse_stmt();                     // consumes its own `;`
-    if (lg_in_fn) {
-        lg_lower(init);
-        lg_note_var(init);
-    }
     i64 cond = parse_expr(0);
     p_expect(K_SEMI, "expected ; in the for header");
     i64 step = lg_step();
@@ -554,8 +562,7 @@ i64 lg_for() {
     if (lg_nlp == LG_MAXLOOP) err_at(fl, line, "loops nested too deep");
     lg_puta(lg_lp, lg_nlp, lg_nlv);
     lg_nlp = lg_nlp + 1;
-    i64 body = parse_stmt();
-    if (lg_in_fn) lg_lower(body);
+    i64 body = parse_stmt();                     // lg_on_stmt lowered it in place
     lg_nlp = lg_nlp - 1;
     i64 neg = node_new(N_UNARY, line, fl);
     set_nd_op(neg, K_BANG);

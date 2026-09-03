@@ -1,6 +1,6 @@
 # Site — builds the documentation website and deploys it to GitHub Pages.
-# Until M27 lands (`mcsite`, the generator written in mc), what gets deployed is
-# the hand-filled preview under site/preview plus site/static. See docs/ci.md.
+# Since M27 the site is rendered by `mcsite`, the generator written in mc
+# (site/gen, built by `mc build site`). See docs/ci.md.
 name: Site
 
 on:
@@ -37,63 +37,23 @@ jobs:
         id: pages
         uses: actions/configure-pages@v5
 
-      # M27: site/gen/*.mc is the generator. While it does not exist, the step
-      # below publishes the preview instead, so the URL is never empty.
+      # M27: site/gen/*.mc is the generator. `mc build site` compiles it into
+      # build/mcsite (site/mc.toml); running it renders docs/ into site/public.
+      # --check validates every internal link and runs site/tools/checkhtml.py
+      # and site/tools/contrast.py, which is why nothing else here checks HTML.
       - name: Build with mcsite
-        id: mcsite
         run: |
           set -eu
-          if [ -d site/gen ]; then
-            make mc1
-            build/mc1 build site
-            echo "built=yes" >> "$GITHUB_OUTPUT"
-          else
-            echo "site/gen does not exist yet (M27); publishing site/preview"
-            echo "built=no" >> "$GITHUB_OUTPUT"
-          fi
+          make mc1
+          build/mc1 build site
+          build/mcsite site --check
 
       - name: Assemble public/ from the generated site
-        if: steps.mcsite.outputs.built == 'yes'
         run: |
           set -eu
           rm -rf public
           cp -R site/public public
           ls -R public | head -50
-
-      # The placeholder. site/preview's pages are written with base_url = "/",
-      # and their internal links are the only root-absolute references in them
-      # (checked: no protocol-relative URLs, no url() in the CSS), so rebasing
-      # is a single substitution of `="/` with the Pages URL. index.html and
-      # 404.html are also copied to the root, where GitHub Pages looks for them.
-      - name: Assemble public/ from the preview
-        if: steps.mcsite.outputs.built != 'yes'
-        env:
-          PAGES_BASE: ${{ steps.pages.outputs.base_url }}
-        run: |
-          set -eu
-          base="${PAGES_BASE%/}"
-          rm -rf public
-          mkdir -p public/preview public/static
-          cp site/preview/*.html public/preview/
-          cp -R site/static/. public/static/
-          cp site/preview/index.html public/index.html
-          cp site/preview/404.html public/404.html
-          for f in public/index.html public/404.html public/preview/*.html; do
-            sed "s|=\"/|=\"$base/|g" "$f" > "$f.tmp"
-            mv "$f.tmp" "$f"
-          done
-          echo "rebased on $base/"
-          grep -o 'href="[^"]*site.css"' public/index.html | head -1
-
-      # site/tools/checkhtml.py: tag balance, one h1, landmarks, unique ids,
-      # accessible names, alt text, fragment targets. It is run on the sources,
-      # before the rebasing, because it also resolves /static/... on disk.
-      - name: Check the HTML
-        run: |
-          set -eu
-          if [ -d site/preview ]; then
-            python3 site/tools/checkhtml.py
-          fi
 
       - name: Upload the Pages artifact
         uses: actions/upload-pages-artifact@v3

@@ -15,6 +15,8 @@
 //   a .+ b                       saturating add at 100           (syntax_infix)
 //   p ~> len   p ~> len = 3      a NAME on the right, and `=`    (syntax_infix)
 //   p ~> at(i)                   a call on the right             (syntax_infix)
+//   stmtcount / ifcount          a counter fed by EVERY statement  (on_stmt)
+//   blockdepth                   the deepest scope seen so far   (syntax_stmt "{")
 //   tmpl slot<T, N> { ... }      a body recorded, not parsed     (p_skip_balanced)
 //   make slot<i64, 3>;           the body re-parsed once per     (p_push_source
 //                                argument tuple                   + p_subst_*)
@@ -134,6 +136,76 @@ i64 sd_pipe() {
 // The core refuses both, by name and with a position (tests/err/064, /065).
 i64 sd_nop() { return 0; }
 i64 sd_nil() { p_next(); return 0; }
+
+// ---- M21.5: on_stmt, a counter that rewrites nothing ----
+// The hook receives EVERY statement the parser produces -- the core's
+// `i64 a = 1;` and `return`, and the taught `unless` too, as the N_IF its own
+// handler built. It returns the node it was given, so the AST is exactly what
+// it would have been without the registration; only the two counters move.
+// `stmtcount` and `ifcount` read them back at the point the expression is
+// parsed, which is what makes them observable from a test program.
+i64 sd_nstmt = 0;
+i64 sd_nif   = 0;
+
+i64 sd_count(i64 n) {
+    sd_nstmt = sd_nstmt + 1;
+    if (nd_kind(n) == N_IF) sd_nif = sd_nif + 1;
+    return n;                                    // rewrites nothing
+}
+
+i64 sd_stmtcount() {
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_next();                                    // the `stmtcount` word
+    return sd_int(sd_nstmt, line, fl);
+}
+
+i64 sd_ifcount() {
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_next();                                    // the `ifcount` word
+    return sd_int(sd_nif, line, fl);
+}
+
+// ---- M21.5: scope tracking through syntax_stmt("{") ----
+// The handler is the core's parse_block, line for line, plus two lines of
+// bookkeeping: the AST it returns is identical, and `blockdepth` is the deepest
+// nesting the module has seen. What it proves is WHICH blocks reach it -- since
+// M21.5 parse_block itself dispatches here, so a function body and the
+// `block $b` hole of a `#rule` (lib/prelude.mc's `while`) come through too.
+// Before that, a module could only see the blocks somebody typed where a
+// statement was expected, and a scope opened inside a rule body was invisible.
+i64 sd_depth    = 0;
+i64 sd_maxdepth = 0;
+
+i64 sd_block() {
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_next();                                    // {
+    sd_depth = sd_depth + 1;
+    if (sd_depth > sd_maxdepth) sd_maxdepth = sd_depth;
+    i64 head = 0;
+    i64 tail = 0;
+    loop {
+        if (p_id() == K_RBRACE) break;
+        if (p_id() == T_EOF) err_at(fl, line, "unterminated block");
+        i64 st = parse_stmt();
+        if (tail) set_nd_next(tail, st); else head = st;
+        tail = st;
+    }
+    p_next();                                    // }
+    sd_depth = sd_depth - 1;
+    i64 b = node_new(N_BLOCK, line, fl);
+    set_nd_a(b, head);
+    return b;
+}
+
+i64 sd_blockdepth() {
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_next();                                    // the `blockdepth` word
+    return sd_int(sd_maxdepth, line, fl);
+}
 
 // ---- M21: `a .+ b`, saturating add (syntax_infix) ----
 // It lowers to a call to sd_sat100, which is not part of the compiled program:
@@ -383,6 +455,11 @@ void user_init() {
     syntax_infix("~>", 12, &sd_arrow);
     syntax("tmpl", &sd_tmpl);                    // M21: record
     syntax("make", &sd_make);                    // M21: replay
+    on_stmt(&sd_count);                          // M21.5: every statement
+    syntax_stmt("{", &sd_block);                 // M21.5: every block
+    syntax_expr("stmtcount",  &sd_stmtcount);    // the two counters, readable
+    syntax_expr("ifcount",    &sd_ifcount);
+    syntax_expr("blockdepth", &sd_blockdepth);
     // the operator's runtime, as a second source: the same mechanism an
     // instantiation uses, at the simplest point there is — before the first
     // token of the real file has been read, so no lookahead is at stake
