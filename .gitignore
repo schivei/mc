@@ -3,3 +3,4 @@ build/
 *.dSYM
 tmp/
 site/public/
+.DS_Store
