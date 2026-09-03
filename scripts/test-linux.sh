@@ -1,9 +1,13 @@
 #!/bin/sh
-# test-linux.sh [MC] — the whole suite cross-compiled to linux/aarch64 and run
-# for real (M16, docs/build.md § Linux targets).
+# test-linux.sh — the whole suite cross-compiled to linux/aarch64 and run for
+# real (M16, docs/build.md § Linux targets).
 #
-# For each tests/*.mc the script writes a Linux mc.toml in a temporary directory
-# (absolute paths, so the config's directory does not matter), runs
+#   test-linux.sh [MC]                       cross-compile, link and run (default)
+#   test-linux.sh --build-only OUTDIR [MC]   cross-compile only, write OUTDIR
+#   test-linux.sh --run-only OUTDIR          link OUTDIR's objects and run them
+#
+# For each tests/*.mc the default mode writes a Linux mc.toml in a temporary
+# directory (absolute paths, so the config's directory does not matter), runs
 # `mc build --config` on it -- which compiles with the `elf-obj` backend and
 # hands the object to `ld.lld` against the musl sysroot -- and then executes the
 # binary inside `docker run --platform linux/arm64 alpine:3`, comparing exit
@@ -20,28 +24,70 @@
 # The last case is the one with no libc at all: tests/linux/070-nolibc.mc uses
 # `#include <sys_linux>` (raw `svc #0` syscalls plus a hand-written _start) and
 # is linked with `-nostdlib -e _start`.
+#
+# The split modes (docs/ci.md) exist because the two halves need different
+# machines: only macOS has `mc`, only a linux/arm64 machine can run the result
+# without emulation.
+#
+#   --build-only OUTDIR   needs `mc` and nothing else -- no ld.lld, no Docker,
+#                         no sysroot. Writes OUTDIR/<name>.o (kind = "obj", so
+#                         the driver stops at the ELF object), OUTDIR/<name>.expect
+#                         with the header values, OUTDIR/manifest (one
+#                         "<name> <linkmode>" line per object, in test order) and
+#                         OUTDIR/skipped.
+#   --run-only OUTDIR     needs ld.lld and the sysroot, not `mc`. Links each
+#                         object and runs it: natively on a linux/arm64 host,
+#                         otherwise in the same Docker container the default
+#                         mode uses. The repository still has to be checked out,
+#                         and the working directory still has to be its root.
+#
+# MC_SYSROOT overrides the sysroot directory (default build/sysroot/linux-aarch64)
+# for the modes that link.
+mode="full"
+split=""
+case "$1" in
+    --build-only)
+        [ -n "$2" ] || { echo "FAIL: $1 needs a directory" >&2; exit 1; }
+        mode="build"; split="$2"; shift 2
+        ;;
+    --run-only)
+        [ -n "$2" ] || { echo "FAIL: $1 needs a directory" >&2; exit 1; }
+        mode="run"; split="$2"; shift 2
+        ;;
+esac
 mc="${1:-build/mc1}"
 img="alpine:3"
-sysroot="build/sysroot/linux-aarch64"
+sysroot="${MC_SYSROOT:-build/sysroot/linux-aarch64}"
 outdir="build/tests-linux"
 
-if [ ! -x "$mc" ]; then
+if [ "$mode" != "run" ] && [ ! -x "$mc" ]; then
     echo "FAIL: compiler '$mc' not found or not executable"
     exit 1
 fi
-if ! command -v ld.lld >/dev/null 2>&1; then
-    echo "FAIL: ld.lld not in PATH (brew install lld)"
-    exit 1
+
+# a linux/arm64 host runs the binaries itself; anything else goes through Docker
+native=0
+if [ "$(uname -s)" = "Linux" ]; then
+    case "$(uname -m)" in aarch64|arm64) native=1 ;; esac
 fi
-if ! docker info >/dev/null 2>&1; then
-    echo "FAIL: docker is not running"
-    exit 1
-fi
-# the same four files sysroot-linux.sh itself checks for: libc.a alone is not
-# enough, a missing crt object only shows up later as an ld.lld error per test
-if [ ! -f "$sysroot/libc.a" ] || [ ! -f "$sysroot/crt1.o" ] \
-   || [ ! -f "$sysroot/crti.o" ] || [ ! -f "$sysroot/crtn.o" ]; then
-    scripts/sysroot-linux.sh "$sysroot" || exit 1
+
+if [ "$mode" != "build" ]; then
+    if ! command -v ld.lld >/dev/null 2>&1; then
+        echo "FAIL: ld.lld not in PATH (brew install lld)"
+        exit 1
+    fi
+    if [ "$mode" = "full" ] || [ "$native" = "0" ]; then
+        if ! docker info >/dev/null 2>&1; then
+            echo "FAIL: docker is not running"
+            exit 1
+        fi
+    fi
+    # the same four files sysroot-linux.sh itself checks for: libc.a alone is not
+    # enough, a missing crt object only shows up later as an ld.lld error per test
+    if [ ! -f "$sysroot/libc.a" ] || [ ! -f "$sysroot/crt1.o" ] \
+       || [ ! -f "$sysroot/crti.o" ] || [ ! -f "$sysroot/crtn.o" ]; then
+        scripts/sysroot-linux.sh "$sysroot" || exit 1
+    fi
 fi
 
 root=$(pwd)
@@ -50,6 +96,16 @@ mkdir -p "$tmp" "$outdir"
 fails=0
 total=0
 skipped=""
+
+if [ -n "$split" ]; then
+    if [ "$mode" = "build" ]; then
+        mkdir -p "$split" || exit 1
+    elif [ ! -f "$split/manifest" ]; then
+        echo "FAIL: '$split/manifest' not found (run --build-only first)"
+        exit 1
+    fi
+    split=$(cd "$split" && pwd) || exit 1
+fi
 
 # writes $tmp/mc.toml for one test. $1 = entry, $2 = out, $3 = the [linker] args
 gen_toml() {
@@ -71,6 +127,28 @@ gen_toml() {
     } > "$tmp/mc.toml"
 }
 
+# the same file for --build-only: kind = "obj" stops the driver at the ELF
+# object, so no sysroot and no linker are involved at all
+gen_toml_obj() {
+    {
+        echo '[project]'
+        echo "entry = \"$1\""
+        echo "out   = \"$2\""
+        echo 'kind  = "obj"'
+        echo
+        echo '[target]'
+        echo 'os   = "linux"'
+        echo 'arch = "aarch64"'
+    } > "$tmp/mc.toml"
+}
+
+# reads the test's headers into want_exit / want_out / has_out
+read_expect() {
+    want_exit=$(sed -n 's|^// expect-exit: *||p' "$1" | head -1)
+    want_out=$(sed -n 's|^// expect-stdout: *||p' "$1" | head -1)
+    has_out=$(grep -c '^// expect-stdout:' "$1")
+}
+
 MUSL_ARGS='"-o", "{out}", "{sysroot}/crt1.o", "{sysroot}/crti.o", "{obj}", "{libs}", "{sysroot}/libc.a", "{sysroot}/crtn.o"'
 NOLIBC_ARGS='"-nostdlib", "-e", "_start", "-o", "{out}", "{obj}"'
 
@@ -78,9 +156,7 @@ NOLIBC_ARGS='"-nostdlib", "-e", "_start", "-o", "{out}", "{obj}"'
 run_one() {
     f="$1"; name="$2"; largs="$3"
     total=$((total + 1))
-    want_exit=$(sed -n 's|^// expect-exit: *||p' "$f" | head -1)
-    want_out=$(sed -n 's|^// expect-stdout: *||p' "$f" | head -1)
-    has_out=$(grep -c '^// expect-stdout:' "$f")
+    read_expect "$f"
     if [ -z "$want_exit" ]; then
         echo "FAIL $name (no expect-exit header)"; fails=$((fails + 1)); return
     fi
@@ -110,23 +186,125 @@ run_one() {
     echo "ok $name"
 }
 
-for f in tests/*.mc; do
-    [ -f "$f" ] || continue
-    name=$(basename "$f" .mc)
-    why=$(sed -n 's|^// skip-linux: *||p' "$f" | head -1)
-    if [ -n "$why" ]; then
-        skipped="$skipped
-  $name — $why"
-        continue
+# --build-only: the object plus everything the other half needs to judge it.
+# $1 = source, $2 = name, $3 = link mode recorded in the manifest
+build_one() {
+    f="$1"; name="$2"; lmode="$3"
+    total=$((total + 1))
+    read_expect "$f"
+    if [ -z "$want_exit" ]; then
+        echo "FAIL $name (no expect-exit header)"; fails=$((fails + 1)); return
     fi
-    run_one "$f" "$name" "$MUSL_ARGS"
-done
 
-# the no-libc case: no crt objects, no libc.a, entry point _start
-run_one tests/linux/070-nolibc.mc 070-nolibc "$NOLIBC_ARGS"
+    rm -f "$split/$name.o" "$split/$name.expect"
+    gen_toml_obj "$root/$f" "$split/$name.o"
+    if ! msg=$("$mc" build "$tmp" --config "$tmp/mc.toml" 2>&1); then
+        echo "FAIL $name (build: $msg)"; fails=$((fails + 1)); return
+    fi
+
+    echo "exit: $want_exit" > "$split/$name.expect"
+    if [ "$has_out" != "0" ]; then
+        echo "stdout: $want_out" >> "$split/$name.expect"
+    fi
+    echo "$name $lmode" >> "$split/manifest"
+    echo "built $name"
+}
+
+# --run-only: link one object and run it. $1 = name, $2 = link mode
+link_run_one() {
+    name="$1"; lmode="$2"
+    total=$((total + 1))
+    if [ ! -f "$split/$name.o" ] || [ ! -f "$split/$name.expect" ]; then
+        echo "FAIL $name (missing $name.o or $name.expect in $split)"
+        fails=$((fails + 1)); return
+    fi
+    want_exit=$(sed -n 's|^exit: *||p' "$split/$name.expect" | head -1)
+    want_out=$(sed -n 's|^stdout: *||p' "$split/$name.expect" | head -1)
+    has_out=$(grep -c '^stdout:' "$split/$name.expect")
+    if [ -z "$want_exit" ]; then
+        echo "FAIL $name (no exit line in $name.expect)"; fails=$((fails + 1)); return
+    fi
+
+    rm -f "$split/$name"
+    if [ "$lmode" = "nolibc" ]; then
+        set -- -nostdlib -e _start -o "$split/$name" "$split/$name.o"
+    else
+        set -- -o "$split/$name" "$sysroot/crt1.o" "$sysroot/crti.o" \
+               "$split/$name.o" "$sysroot/libc.a" "$sysroot/crtn.o"
+    fi
+    if ! msg=$(ld.lld "$@" 2>&1); then
+        echo "FAIL $name (link: $msg)"; fails=$((fails + 1)); return
+    fi
+
+    # same reasoning as run_one: an exec-level failure must not read like the
+    # program returning the wrong code
+    if [ "$native" = "1" ]; then
+        got_out=$("$split/$name" 2>"$tmp/err")
+    else
+        got_out=$(docker run --rm --platform linux/arm64 -v "$root":/w -v "$split":/out \
+                  -w /w "$img" "/out/$name" 2>"$tmp/err")
+    fi
+    got_exit=$?
+    if [ "$got_exit" != "$want_exit" ]; then
+        echo "FAIL $name (exit $got_exit, expected $want_exit)"
+        err=$(cat "$tmp/err")
+        [ -n "$err" ] && echo "     stderr: $err"
+        fails=$((fails + 1)); return
+    fi
+    if [ "$has_out" != "0" ] && [ "$got_out" != "$want_out" ]; then
+        echo "FAIL $name (stdout '$got_out', expected '$want_out')"; fails=$((fails + 1)); return
+    fi
+    echo "ok $name"
+}
+
+if [ "$mode" = "run" ]; then
+    while read -r name lmode; do
+        [ -n "$name" ] || continue
+        link_run_one "$name" "$lmode"
+    done < "$split/manifest"
+    if [ -f "$split/skipped" ]; then
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            skipped="$skipped
+  $line"
+        done < "$split/skipped"
+    fi
+else
+    if [ "$mode" = "build" ]; then
+        : > "$split/manifest"
+        : > "$split/skipped"
+    fi
+    for f in tests/*.mc; do
+        [ -f "$f" ] || continue
+        name=$(basename "$f" .mc)
+        why=$(sed -n 's|^// skip-linux: *||p' "$f" | head -1)
+        if [ -n "$why" ]; then
+            skipped="$skipped
+  $name — $why"
+            [ "$mode" = "build" ] && echo "$name — $why" >> "$split/skipped"
+            continue
+        fi
+        if [ "$mode" = "build" ]; then
+            build_one "$f" "$name" musl
+        else
+            run_one "$f" "$name" "$MUSL_ARGS"
+        fi
+    done
+
+    # the no-libc case: no crt objects, no libc.a, entry point _start
+    if [ "$mode" = "build" ]; then
+        build_one tests/linux/070-nolibc.mc 070-nolibc nolibc
+    else
+        run_one tests/linux/070-nolibc.mc 070-nolibc "$NOLIBC_ARGS"
+    fi
+fi
 
 rm -rf "$tmp"
-echo "$((total - fails))/$total tests passed on linux/arm64"
+if [ "$mode" = "build" ]; then
+    echo "$((total - fails))/$total objects cross-compiled for linux/arm64 in $split"
+else
+    echo "$((total - fails))/$total tests passed on linux/arm64"
+fi
 if [ -n "$skipped" ]; then
     echo "skipped (macOS only):$skipped"
 fi

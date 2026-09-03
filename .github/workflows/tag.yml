@@ -1,0 +1,118 @@
+# Tag — creates the annotated tag a release is cut from. Run by hand from the
+# Actions tab after the VERSION bump has been merged into main. See docs/ci.md.
+name: Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to tag, X.Y.Z (must equal the VERSION file at HEAD)"
+        required: true
+        type: string
+      notes:
+        description: "Release notes; they become the tag's annotation and the release body"
+        required: false
+        type: string
+
+permissions:
+  # contents: write pushes the tag; actions: write starts release.yml.
+  contents: write
+  actions: write
+
+concurrency:
+  group: tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Create and push vX.Y.Z
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          # Full history and tags: the tag must not already exist, and the
+          # annotation is written against this commit.
+          fetch-depth: 0
+
+      # The input is read from the environment, never interpolated into the
+      # script: a workflow input is untrusted text.
+      - name: Validate the version and match it against VERSION
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -eu
+          v="$VERSION_INPUT"
+          if ! printf '%s' "$v" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$v' is not a semantic version (X.Y.Z, optionally X.Y.Z-suffix)"
+            exit 1
+          fi
+          if [ ! -f VERSION ]; then
+            echo "::error::there is no VERSION file at this commit"
+            exit 1
+          fi
+          file=$(tr -d ' \t\r\n' < VERSION)
+          if [ "$v" != "$file" ]; then
+            echo "::error::the VERSION file says '$file', the workflow was asked for '$v'."
+            echo "::error::Edit VERSION, merge it into main, and run this workflow again."
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then
+            echo "::error::the tag v$v already exists"
+            exit 1
+          fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+
+      - name: Create and push the annotated tag
+        env:
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # The annotation is the release body, so the subject line matters.
+          {
+            echo "mc v$VERSION"
+            if [ -n "${NOTES:-}" ]; then
+              echo
+              printf '%s\n' "$NOTES"
+            fi
+          } > "$RUNNER_TEMP/annotation.txt"
+          git tag -a "v$VERSION" -F "$RUNNER_TEMP/annotation.txt"
+          git push origin "refs/tags/v$VERSION"
+          echo "pushed refs/tags/v$VERSION"
+
+      # A tag PUSHED with GITHUB_TOKEN does not start release.yml -- GitHub's
+      # guard against recursive runs. `workflow_dispatch` and
+      # `repository_dispatch` are the two documented exceptions to that guard,
+      # so dispatching the release explicitly works with the same token. The
+      # dispatch targets the tag's own ref, so the release is built from the
+      # workflow definition that was tagged.
+      - name: Start release.yml for the new tag
+        id: dispatch
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          gh workflow run release.yml --ref "v$VERSION" -f tag="v$VERSION"
+          echo "dispatched release.yml for v$VERSION"
+
+      - name: Summary
+        run: |
+          set -eu
+          {
+            echo "### Tagged \`v$VERSION\`"
+            echo
+            if [ "$DISPATCH" = success ]; then
+              echo "**release.yml was started** for \`v$VERSION\`. Watch it under Actions -> Release."
+            else
+              echo "The tag is pushed, but **starting release.yml failed** (see the step above)."
+              echo "Start it by hand: Actions -> Release -> Run workflow -> tag \`v$VERSION\`."
+              echo
+              echo "The usual cause is Actions permissions: the workflow needs \`actions: write\`."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          DISPATCH: ${{ steps.dispatch.outcome }}

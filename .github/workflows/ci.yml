@@ -1,0 +1,141 @@
+# CI — the repository's own `make check`, plus the half of the Linux suite that
+# needs a Linux machine. See docs/ci.md for the design and the settings the
+# repository owner has to enable.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# One run per branch or pull request; a new push cancels the previous run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Everything the project can prove on its own machine. `mc` only builds and
+  # runs on macOS arm64 today (docs/plan.md § Phase 2), so this is the job that
+  # compiles anything.
+  check:
+    name: make check (macOS arm64)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      # Nothing is installed on this runner. `make check` runs `test-linux`,
+      # which the Makefile already guards: with no ld.lld it prints
+      # "SKIPPED (ld.lld not in PATH)", with no Docker "SKIPPED (docker is not
+      # running)". GitHub's macOS runners have neither, so it skips and the
+      # build stays green; the Linux suite runs for real in the job below, and
+      # the half that happens here -- cross-compiling to ELF -- needs no linker.
+      - name: Toolchain facts
+        run: |
+          sw_vers
+          uname -m
+          clang --version | head -1
+          ld -v 2>&1 | head -1 || true
+          if docker info >/dev/null 2>&1; then
+            echo "docker: running"
+          else
+            echo "docker: absent -- make check's test-linux target self-skips"
+          fi
+
+      # budget, test, check-lex, check-ast, check-bundle, check-asm, check-obj,
+      # bootstrap (fixed point + golden), check-surface, test-exe, check-mc,
+      # check-standalone, check-toml, check-build, test-linux (skipped here),
+      # check-examples.
+      - name: make check
+        run: make check
+
+      # The half of the Linux suite that runs here: cross-compile every test to
+      # an ELF64 object with the `elf-obj` backend. No ld.lld, no Docker and no
+      # sysroot are involved -- the linking and the running happen on the
+      # linux-arm64 job below, which is where a linux/arm64 CPU is.
+      - name: Cross-compile the suite for linux/arm64
+        run: scripts/test-linux.sh --build-only build/linux-objs build/mc1
+
+      - name: Upload the self-hosted compiler
+        uses: actions/upload-artifact@v4
+        with:
+          name: mc-macos-arm64
+          path: build/mc-exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the cross-built linux/arm64 objects
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64-objects
+          path: build/linux-objs
+          if-no-files-found: error
+          retention-days: 7
+
+  # The other half: link the objects against musl and run them on a real
+  # linux/arm64 CPU. Nothing here compiles mc code, so no macOS toolchain and no
+  # `mc` binary are needed.
+  linux-arm64:
+    name: Link and run the suite (linux/arm64)
+    runs-on: ubuntu-24.04-arm
+    needs: check
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        # The tests are run from the repository root: 025-linecount opens its
+        # own source by a relative path.
+        uses: actions/checkout@v4
+
+      - name: Download the cross-built objects
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-arm64-objects
+          path: build/linux-objs
+
+      - name: Install ld.lld
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lld
+          if ! command -v ld.lld >/dev/null 2>&1; then
+            # Debian ships ld.lld under the versioned llvm prefix on some
+            # releases; either shape is fine, it just has to be on PATH.
+            for cand in /usr/bin/ld.lld-* /usr/lib/llvm-*/bin/ld.lld; do
+              if [ -x "$cand" ]; then
+                sudo ln -sf "$cand" /usr/local/bin/ld.lld
+                break
+              fi
+            done
+          fi
+          ld.lld --version
+
+      # The sysroot is four files (crt1.o crti.o crtn.o libc.a) copied out of an
+      # Alpine container. Cached, and the script is itself a cache: with the four
+      # files present it does nothing.
+      - name: Cache the musl sysroot
+        uses: actions/cache@v4
+        with:
+          path: build/sysroot/linux-aarch64
+          key: musl-sysroot-aarch64-${{ hashFiles('scripts/sysroot-linux.sh') }}
+
+      - name: Populate the musl sysroot
+        run: |
+          if scripts/sysroot-linux.sh build/sysroot/linux-aarch64; then
+            exit 0
+          fi
+          # Fallback when Docker is unavailable on the runner: Debian's own
+          # aarch64 musl development files are the same four objects.
+          echo "sysroot: falling back to apt musl-dev"
+          sudo apt-get install -y --no-install-recommends musl-dev musl-tools
+          mkdir -p build/sysroot/linux-aarch64
+          cp /usr/lib/aarch64-linux-musl/crt1.o \
+             /usr/lib/aarch64-linux-musl/crti.o \
+             /usr/lib/aarch64-linux-musl/crtn.o \
+             /usr/lib/aarch64-linux-musl/libc.a \
+             build/sysroot/linux-aarch64/
+
+      - name: Link with ld.lld and run natively
+        run: scripts/test-linux.sh --run-only build/linux-objs
