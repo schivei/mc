@@ -22,10 +22,10 @@ static int nlabels;
 #define REG_FRAME 32              /* fictitious base swapped for sp in fix_frame */
 #define MAXDEPTH  64
 #define MAXLOCALS 256
-#define MAXFUNCS 1024
+#define MAXFUNCS 2048
 #define MAXLOOPS  32
-#define MAXGLOBALS 256
-#define MAXSTRS    512
+#define MAXGLOBALS 512
+#define MAXSTRS    2048
 #define MAXPREL   512             /* reloc() relocations for the whole module */
 
 /* ---- current function state ---- */

@@ -42,7 +42,7 @@
 // 512, not 256: the transliteration to .mc spends ~104 #defines just on the
 // offsets of the flat layouts (in C they are struct fields, zero cost), and
 // src/mc.mc reaches 319 constants. stage0/parse.c has the same value.
-#define MAXDEFS   512
+#define MAXDEFS   2048
 #define MAXOPCS   64
 #define MAXDYLIBS 8                   // #dylib: ordinal = index + 2 (libSystem is 1)
 #define MAXEXTLIB 256                 // externs with an annotated dylib, by name

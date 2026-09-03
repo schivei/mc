@@ -15,7 +15,7 @@
 // err_at(file, line, msg) is the same as arena.mc/stage0: the file comes from
 // lex_file() (top of the #include stack) or from the token itself, as in stage0.
 
-#define MAXTOK  512
+#define MAXTOK  2048
 #define MAXOPEN 16                    // maximum #include depth
 #define MAXINC  256                   // already-included files (once-only)
 #define MAXINCPATH 8                  // M14: extra roots from [include].paths

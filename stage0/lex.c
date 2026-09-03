@@ -5,7 +5,7 @@
  * therefore does not process #token — documented in the M1 spec. */
 #include "mc.h"
 
-#define MAXTOK 512
+#define MAXTOK 2048
 #define MAXOPEN 16            /* maximum #include nesting depth */
 #define MAXINC  256           /* files already included (once-only) */
 static TokEnt toktab[MAXTOK];

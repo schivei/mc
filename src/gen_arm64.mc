@@ -50,7 +50,7 @@
 #define REG_FRAME 32                  // fictitious base swapped for sp in fix_frame
 #define MAXDEPTH  64
 #define MAXLOCALS 256
-#define MAXFUNCS  1024
+#define MAXFUNCS  2048
 #define MAXLOOPS  32
 #define MAXGLOBALS 512                // M14: the C stage0 stays at 256 -- see below
 #define MAXSTRS    2048               // M14: the C stage0 stays at 512 -- see below

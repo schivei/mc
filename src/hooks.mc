@@ -21,8 +21,8 @@
 
 #define MAXPASSES   32
 #define MAXBACKENDS 16
-#define MAXSYNTAX   32
-#define MAXALIAS    64
+#define MAXSYNTAX   256
+#define MAXALIAS    256
 
 uptr pass_fn[MAXPASSES];
 i64  npasses = 0;

@@ -9,7 +9,7 @@
 /* 512, not 256: the transliteration to .mc spends ~104 #define entries just on the
  * offsets of the flat layouts (in C these are struct fields, zero cost), and
  * src/mc.mc reaches 319 constants. src/parse.mc has the same value. */
-#define MAXDEFS 512
+#define MAXDEFS 2048
 #define MAXOPCS 64
 
 static InfixEnt  infixes[MAXOPS];  static int ninfix;
