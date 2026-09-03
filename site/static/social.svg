@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630"
+     role="img" aria-label="mc - a mini compiler that compiles itself and can be taught new syntax">
+  <title>mc</title>
+  <defs>
+    <path id="s-ring" d="M56 12H12V52H56" fill="none" stroke="#f0a568" stroke-width="8"
+          stroke-linecap="butt" stroke-linejoin="round"/>
+    <style>
+      .mono { font-family: "Menlo", "DejaVu Sans Mono", "Liberation Mono", monospace; }
+      .sans { font-family: "Helvetica Neue", "Helvetica", "Arial", sans-serif; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="630" fill="#131211"/>
+  <rect y="624" width="1200" height="6" fill="#f0a568"/>
+
+  <g transform="translate(80 100) scale(2.5)">
+    <use href="#s-ring"/>
+    <use href="#s-ring" transform="translate(16 16) scale(0.5)"/>
+    <rect x="28" y="28" width="8" height="8" fill="#f0a568"/>
+  </g>
+
+  <text class="mono" x="276" y="232" font-size="128" font-weight="700"
+        fill="#ece8e2" letter-spacing="2">mc</text>
+  <text class="sans" x="100" y="316" font-size="36" fill="#a49d94">a mini compiler that compiles itself</text>
+  <text class="sans" x="100" y="364" font-size="36" fill="#a49d94">and can be taught new syntax</text>
+
+  <rect x="100" y="406" width="1000" height="146" rx="12" fill="#1a1917" stroke="#302d2a"/>
+  <text class="mono" x="140" y="464" font-size="30" xml:space="preserve"><tspan fill="#82b9ec" font-weight="700">#rule stmt:</tspan><tspan fill="#b0a99f"> </tspan><tspan fill="#f0a568" font-weight="700">while</tspan><tspan fill="#b0a99f"> ( </tspan><tspan fill="#82b9ec">expr</tspan><tspan fill="#c3a4f2" font-style="italic"> $c</tspan><tspan fill="#b0a99f"> ) </tspan><tspan fill="#82b9ec">block</tspan><tspan fill="#c3a4f2" font-style="italic"> $b</tspan></text>
+  <text class="mono" x="140" y="514" font-size="30" xml:space="preserve"><tspan fill="#b0a99f">    =&gt; </tspan><tspan fill="#ee8dc0" font-weight="700">loop</tspan><tspan fill="#b0a99f"> { </tspan><tspan fill="#ee8dc0" font-weight="700">if</tspan><tspan fill="#b0a99f"> (!</tspan><tspan fill="#c3a4f2" font-style="italic">$c</tspan><tspan fill="#b0a99f">) </tspan><tspan fill="#ee8dc0" font-weight="700">break</tspan><tspan fill="#b0a99f">; </tspan><tspan fill="#c3a4f2" font-style="italic">$b</tspan><tspan fill="#b0a99f"> }</tspan></text>
+</svg>

@@ -2,3 +2,4 @@ build/
 *.o
 *.dSYM
 tmp/
+site/public/

@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting started · mc</title>
+<meta name="description" content="mc is a small compiler for a schoolbook-C language, written in itself, whose syntax and backends are taught from ordinary source code.">
+<link rel="canonical" href="/preview/getting-started.html">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/static/icon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<link rel="stylesheet" href="/static/site.css">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="mc">
+<meta property="og:title" content="Getting started · mc">
+<meta property="og:url" content="/preview/getting-started.html">
+<meta property="og:image" content="/static/social.png">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<a class="skip-link" href="#content">Skip to content</a>
+
+<!-- The sidebar toggle is a checkbox so that the menu opens with no JavaScript.
+     It sits here, at the top of <body>, because the CSS reaches the sidebar
+     with a sibling combinator (.nav-toggle:checked ~ .layout .site-nav).
+     Above 900px both the checkbox and its label are display:none, which also
+     removes the invisible tab stop. -->
+<input class="nav-toggle" type="checkbox" id="nav-toggle">
+
+<header class="site-header">
+  <a class="brand" href="/">
+    <svg class="mark" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+      <path d="M56 12H12V52H56" fill="none" stroke="currentColor" stroke-width="8" stroke-linejoin="round"></path>
+      <path d="M44 22H22V42H44" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round"></path>
+      <rect x="28" y="28" width="8" height="8" fill="currentColor"></rect>
+    </svg>
+    <span>mc</span>
+  </a>
+  <label class="nav-button" for="nav-toggle">
+    <svg class="bars" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5" fill="none"></path>
+    </svg>
+    Menu
+  </label>
+  <nav class="header-nav" aria-label="Site sections">
+    <a href="/guide/">Guide</a>
+    <a href="/reference/">Reference</a>
+    <a href="/examples/">Examples</a>
+  </nav>
+</header>
+
+<div class="layout">
+
+  <nav class="site-nav" aria-label="Documentation">
+    <ul class="nav-list">
+      <li class="nav-section">
+        <span class="nav-section-title">Guide</span>
+        <ul class="nav-list">
+          <li><a href="/preview/getting-started.html" aria-current="page">Getting started</a></li>
+          <li><a href="/preview/404.html">One file, one binary</a></li>
+          <li><a href="/preview/404.html">Projects and mc.toml</a></li>
+          <li><a href="/preview/404.html">Teaching the compiler</a></li>
+          <li><a href="/preview/404.html">Cross-compiling</a></li>
+        </ul>
+      </li>
+      <li class="nav-section">
+        <span class="nav-section-title">Reference</span>
+        <ul class="nav-list">
+          <li><a href="/preview/404.html">Core language</a></li>
+          <li><a href="/preview/404.html">Directives</a></li>
+          <li><a href="/preview/404.html">Parser and hook API</a></li>
+          <li><a href="/preview/404.html">Command line</a></li>
+          <li><a href="/preview/404.html">Diagnostics</a></li>
+        </ul>
+      </li>
+    </ul>
+  </nav>
+
+  <main class="content" id="content">
+    <h1>Getting started</h1>
+
+<p class="lead">
+  Build the seed once with a C compiler, then never use a C compiler again. Fifteen minutes,
+  four commands, and one program that compiles itself.
+</p>
+
+<h2 id="build-the-seed">Build the seed <a class="anchor" href="#build-the-seed" aria-label="Link to this section">#</a></h2>
+
+<p>
+  <code>stage0/</code> is 2,846 lines of C23 &mdash; a lexer, a Pratt parser, an AArch64 code
+  generator and a Mach-O writer. It exists to compile exactly one program,
+  <code>src/mc.mc</code>, and it is the only part of the repository a C compiler ever sees.
+</p>
+
+<pre class="code" tabindex="0"><code class="lang-sh">git clone https://github.com/schivei/mc
+cd mc
+make stage0        # clang, once: build/mc0
+make budget        # 2846/3000 lines - over budget is a build failure</code></pre>
+
+<blockquote>
+  <p>
+    <code>make budget</code> is not decoration. The seed has a hard ceiling of 3,000 lines,
+    because a seed you cannot read in one sitting is a seed you have to trust instead of check.
+  </p>
+</blockquote>
+
+<h2 id="compile-the-compiler">Compile the compiler <a class="anchor" href="#compile-the-compiler" aria-label="Link to this section">#</a></h2>
+
+<p>
+  <code>build/mc0</code> now compiles the real compiler. The result,
+  <code>build/mc1</code>, understands strictly more than the seed does &mdash;
+  <code>#include &lt;name&gt;</code>, <code>#embed</code>, taught backends, direct executables.
+</p>
+
+<pre class="code" tabindex="0"><code class="lang-sh">make mc1           # build/mc0 compiles src/mc.mc  -> build/mc1
+make bootstrap     # mc1 -> mc2.o, mc2 -> mc3.o, then cmp
+make check         # everything: tests, cross-checks, bootstrap</code></pre>
+
+<h3 id="the-fixed-point">The fixed point <a class="anchor" href="#the-fixed-point" aria-label="Link to this section">#</a></h3>
+
+<p>
+  <code>make bootstrap</code> compiles the same source three times and compares the last two
+  objects byte for byte. They are identical, which is the only useful definition of
+  &ldquo;self-hosting&rdquo;: the compiler has stopped changing what it produces.
+</p>
+
+<ol>
+  <li><code>mc0</code> compiles <code>src/mc.mc</code> into <code>mc1.o</code>.</li>
+  <li><code>mc1</code> compiles the same source into <code>mc2.o</code>.</li>
+  <li><code>mc2</code> compiles the same source into <code>mc3.o</code>.</li>
+  <li><code>cmp mc2.o mc3.o</code> reports no difference, and the SHA-256 is checked
+      against <code>tests/golden/mc2.sha256</code>.</li>
+</ol>
+
+<h3 id="what-clang-touched">What clang touched <a class="anchor" href="#what-clang-touched" aria-label="Link to this section">#</a></h3>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>Artifact</th><th>Built by</th><th>Uses a C compiler</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>build/mc0</code></td><td><code>clang</code></td><td>yes, once</td></tr>
+      <tr><td><code>build/mc1</code></td><td><code>build/mc0</code></td><td>no</td></tr>
+      <tr><td><code>build/mc2.o</code></td><td><code>build/mc1</code></td><td>no</td></tr>
+      <tr><td>your programs</td><td><code>build/mc1</code></td><td>no</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="your-first-program">Your first program <a class="anchor" href="#your-first-program" aria-label="Link to this section">#</a></h2>
+
+<p>Put this in <code>hello.mc</code>:</p>
+
+<pre class="code" tabindex="0"><code class="lang-mc"><span class="tok-dir">#include</span> <span class="tok-str">&lt;sys&gt;</span>
+
+<span class="tok-keyword">i64</span> <span class="tok-ident">main</span><span class="tok-op">(</span><span class="tok-keyword">i64</span> <span class="tok-ident">argc</span><span class="tok-op">,</span> <span class="tok-keyword">uptr</span> <span class="tok-ident">argv</span><span class="tok-op">)</span> <span class="tok-op">{</span>
+    <span class="tok-ident">write</span><span class="tok-op">(</span><span class="tok-num">1</span><span class="tok-op">,</span> <span class="tok-str">"hello from mc\n"</span><span class="tok-op">,</span> <span class="tok-num">14</span><span class="tok-op">);</span>
+    <span class="tok-keyword">return</span> <span class="tok-num">0</span><span class="tok-op">;</span>
+<span class="tok-op">}</span>
+</code></pre>
+
+<pre class="code" tabindex="0"><code class="lang-sh">build/mc1 --exe hello.mc -o hello
+./hello
+hello from mc</code></pre>
+
+<p>
+  <code>--exe</code> writes the executable directly: segment layout, relocations, bind and
+  rebase opcodes, and an ad-hoc code signature. No <code>ld</code>, no <code>codesign</code>.
+  Without it you get a <code>.o</code> to link the ordinary way.
+</p>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>Flag</th><th>What it writes</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>-o out.o</code></td><td>a Mach-O object, the default</td></tr>
+      <tr><td><code>--exe</code></td><td>a signed Mach-O executable</td></tr>
+      <tr><td><code>--dump-tokens</code></td><td>one line per token, with its file and line</td></tr>
+      <tr><td><code>--dump-ast</code></td><td>the tree after every rule has expanded</td></tr>
+      <tr><td><code>--dump-asm</code></td><td>the instruction buffer before encoding</td></tr>
+      <tr><td><code>--dump-rules</code></td><td>every <code>#rule</code> the file registered</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="teach-it-something">Teach it something <a class="anchor" href="#teach-it-something" aria-label="Link to this section">#</a></h2>
+
+<p>
+  The core has no <code>while</code>. It has <code>loop</code>, <code>if</code> and
+  <code>break</code>, which is enough to build one &mdash; and building one is a two-line
+  directive, not a patch to the parser:
+</p>
+
+<pre class="code" tabindex="0"><code class="lang-mc"><span class="tok-comment">// this is the whole of `while`, and it lives in lib/prelude.mc</span>
+<span class="tok-dir">#rule</span> <span class="tok-dir">stmt</span><span class="tok-op">:</span> <span class="tok-taught">while</span> <span class="tok-op">(</span> <span class="tok-dir">expr</span> <span class="tok-hole">$c</span> <span class="tok-op">)</span> <span class="tok-dir">block</span> <span class="tok-hole">$b</span>
+    <span class="tok-op">=&gt;</span> <span class="tok-keyword">loop</span> <span class="tok-op">{</span> <span class="tok-keyword">if</span> <span class="tok-op">(!</span><span class="tok-hole">$c</span><span class="tok-op">)</span> <span class="tok-keyword">break</span><span class="tok-op">;</span> <span class="tok-hole">$b</span> <span class="tok-op">}</span>
+
+<span class="tok-comment">// and a hygienic one, where $$t is a fresh local per expansion</span>
+<span class="tok-dir">#rule</span> <span class="tok-dir">stmt</span><span class="tok-op">:</span> <span class="tok-taught">swap</span> <span class="tok-op">(</span> <span class="tok-dir">ident</span> <span class="tok-hole">$a</span> <span class="tok-op">,</span> <span class="tok-dir">ident</span> <span class="tok-hole">$b</span> <span class="tok-op">)</span> <span class="tok-op">;</span>
+    <span class="tok-op">=&gt;</span> <span class="tok-op">{</span> <span class="tok-keyword">i64</span> <span class="tok-hole">$$t</span> <span class="tok-op">=</span> <span class="tok-hole">$a</span><span class="tok-op">;</span> <span class="tok-hole">$a</span> <span class="tok-op">=</span> <span class="tok-hole">$b</span><span class="tok-op">;</span> <span class="tok-hole">$b</span> <span class="tok-op">=</span> <span class="tok-hole">$$t</span><span class="tok-op">;</span> <span class="tok-op">}</span>
+</code></pre>
+
+<p>Three tiers of teaching are available, each strictly larger than the last:</p>
+
+<ul>
+  <li><strong>Tier 1</strong> &mdash; directives: <code>#token</code>, <code>#infix</code>,
+      <code>#prefix</code>, <code>#rule</code>, <code>#section</code>, <code>#opcode</code>.</li>
+  <li><strong>Tier 2</strong> &mdash; programs: <code>pass()</code> rewrites the AST,
+      <code>backend()</code> replaces the code generator.
+    <ul>
+      <li><code>lib/backend_arm64.mc</code> reimplements the whole encoder from the public API
+          and produces byte-identical objects.</li>
+    </ul>
+  </li>
+  <li><strong>Tier 3</strong> &mdash; handlers: <code>syntax_stmt</code>,
+      <code>syntax_expr</code>, <code>syntax_infix</code> and <code>type_alias</code> add
+      constructs the directives cannot express.</li>
+</ul>
+
+<hr>
+
+<h2 id="where-to-go-next">Where to go next <a class="anchor" href="#where-to-go-next" aria-label="Link to this section">#</a></h2>
+
+<p>
+  Read <em>Teaching the compiler</em> for the three tiers in order, or jump to the
+  <em>Core language</em> reference for the seven types and the intrinsics.
+</p>
+
+
+    <nav class="pager" aria-label="Previous and next page">
+      <a class="pager-next" href="/preview/404.html" rel="next">
+        <span class="dir">Next &rarr;</span>
+        <span class="pager-title">One file, one binary</span>
+      </a>
+    </nav>
+
+    <p class="page-edit"><a href="https://github.com/schivei/mc/edit/main/docs/guide/getting-started.md">Edit this page</a></p>
+  </main>
+
+  <aside class="outline" aria-label="On this page">
+    <h2>On this page</h2>
+    <ul class="toc-list">
+      <li><a href="#build-the-seed">Build the seed</a></li>
+      <li><a href="#compile-the-compiler">Compile the compiler</a>
+        <ul class="toc-list">
+          <li><a href="#the-fixed-point">The fixed point</a></li>
+          <li><a href="#what-clang-touched">What clang touched</a></li>
+        </ul>
+      </li>
+      <li><a href="#your-first-program">Your first program</a></li>
+      <li><a href="#teach-it-something">Teach it something</a></li>
+      <li><a href="#where-to-go-next">Where to go next</a></li>
+    </ul>
+  </aside>
+
+</div>
+
+
+<footer class="site-footer">
+  <div class="inner">
+    <span>mc &mdash; a compiler that compiles itself.</span>
+    <span>&copy; 2026</span>
+    <span class="spacer"><a href="/reference/">Reference</a></span>
+  </div>
+</footer>
+</body>
+</html>

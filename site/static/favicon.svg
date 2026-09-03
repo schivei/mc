@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"
+     role="img" aria-label="mc">
+  <title>mc</title>
+  <!-- Tab-bar variant of icon.svg: one generation fewer, so nothing is thinner
+       than 2 device pixels at 16px, and a solid tile so the mark reads on both
+       a light and a dark tab strip. Colours are fixed, not theme-aware. -->
+  <rect width="64" height="64" rx="12" fill="#8f3d0d"/>
+  <path d="M56 12H12V52H56" fill="none" stroke="#fbfaf8" stroke-width="8"
+        stroke-linecap="butt" stroke-linejoin="round"/>
+  <rect x="24" y="24" width="16" height="16" fill="#fbfaf8"/>
+</svg>

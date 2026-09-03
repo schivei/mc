@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"
+     role="img" aria-label="mc">
+  <title>mc</title>
+  <!-- A 64-unit canvas on a 4-unit module. Reading outward from the centre:
+       core 8, gap 4, ring 4, gap 4, ring 8 - every measurement is a multiple
+       of 4, the byte width of an AArch64 instruction word.
+       The middle ring is the same path as the outer one at half scale: the
+       glyph contains a smaller copy of itself. The core is solid because the
+       third generation is identical to the second - the fixed point. -->
+  <style>
+    .ring { fill: none; stroke: #8f3d0d; stroke-width: 8;
+            stroke-linecap: butt; stroke-linejoin: round; }
+    .core { fill: #8f3d0d; }
+    @media (prefers-color-scheme: dark) {
+      .ring { stroke: #f0a568; }
+      .core { fill: #f0a568; }
+    }
+  </style>
+  <defs>
+    <path id="mc-ring" class="ring" d="M56 12H12V52H56"/>
+  </defs>
+  <use href="#mc-ring"/>
+  <use href="#mc-ring" transform="translate(16 16) scale(0.5)"/>
+  <rect class="core" x="28" y="28" width="8" height="8"/>
+</svg>
