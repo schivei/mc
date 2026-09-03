@@ -1,13 +1,13 @@
 #!/bin/sh
-# check-asm.sh [MC0] [MC1] — criterio da fatia 4 do M6.
-# Para cada fonte .mc do repo compara `MC0 --dump-asm F` com `MC1 --dump-asm F`.
-# Qualquer diferenca (stdout, stderr ou codigo de saida) e falha — inclusive os
-# arquivos que os compiladores rejeitam: a mensagem de erro e o codigo tem de ser
-# os mesmos. Os fontes de src/ compilados sozinhos sao justamente esses casos (as
-# funcoes que eles chamam moram em outro arquivo), e o erro identico e o teste.
+# check-asm.sh [MC0] [MC1] — acceptance criterion for M6 slice 4.
+# For each .mc source in the repo, compares `MC0 --dump-asm F` with `MC1 --dump-asm F`.
+# Any difference (stdout, stderr, or exit code) is a failure — including the
+# files the compilers reject: the error message and the code have to be the
+# same. The src/ sources compiled on their own are exactly those cases (the
+# functions they call live in another file), and the identical error is the test.
 #
-# Enquanto build/mc1 nao existe, rode com MC1 = MC0: tem de dar 100% identico
-# (prova que o proprio teste e deterministico e que o script esta correto).
+# While build/mc1 doesn't exist yet, run with MC1 = MC0: it has to come out
+# 100% identical (proves the test itself is deterministic and the script is correct).
 mc0="${1:-build/mc0}"
 mc1="${2:-build/mc1}"
 

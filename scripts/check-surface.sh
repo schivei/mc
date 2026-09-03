@@ -1,19 +1,20 @@
 #!/bin/sh
-# check-surface.sh [MC0] [MC1] — criterio do M10 (Tier 2) e do M12 (Tier 3).
+# check-surface.sh [MC0] [MC1] — acceptance criterion for M10 (Tier 2) and M12 (Tier 3).
 #
-# Liga a demonstracao da superficie trocando o include de src/user.mc por
-# lib/user_demo.mc, recompila o compilador com mc0 (build/mc1s), e para cada
-# tests/*.mc compara o objeto do backend `arm64-surface` (escrito em .mc, fora
-# do compilador) com o do backend `macho` embutido. Identidade byte a byte e o
-# criterio. Depois liga lib/user_tokadd.mc (um user_init que so chama tok_add) e
-# confere que os ids das palavras do nucleo continuam de pe. O src/user.mc
-# original e sempre devolvido, mesmo se algo falhar.
+# Wires up the surface demo by swapping src/user.mc's include for
+# lib/user_demo.mc, rebuilds the compiler with mc0 (build/mc1s), and for each
+# tests/*.mc compares the object from the `arm64-surface` backend (written in
+# .mc, outside the compiler) with the one from the built-in `macho` backend.
+# Byte-for-byte identity is the criterion. Then it wires up lib/user_tokadd.mc
+# (a user_init that only calls tok_add) and checks that the core keywords' ids
+# stay put. The original src/user.mc is always restored, no matter what fails.
 #
-# M12 (Tier 3): no fim vem o caso que NAO mexe em src/user.mc — um compilador
-# ensinado que e um arquivo proprio (lib/mc_syntax_demo.mc = src/core.mc + o
-# modulo do usuario). MC1 o compila com --exe, e o binario que sai compila
-# lib/syntax_demo_test.mc (que usa `unless`, `enum` e `bool`), tambem com --exe;
-# o programa tem de sair 42, e o compilador padrao tem de recusar o mesmo fonte.
+# M12 (Tier 3): at the end comes the case that does NOT touch src/user.mc — a
+# taught compiler that is its own file (lib/mc_syntax_demo.mc = src/core.mc +
+# the user's module). MC1 compiles it with --exe, and the resulting binary
+# compiles lib/syntax_demo_test.mc (which uses `unless`, `enum`, and `bool`),
+# also with --exe; the program has to exit 42, and the default compiler has to
+# refuse the same source.
 mc0="${1:-build/mc0}"
 mc1="${2:-build/mc1}"
 
@@ -29,7 +30,7 @@ save="${TMPDIR:-/tmp}/user.mc.$$"
 tmp="${TMPDIR:-/tmp}/check-surface.$$"
 mkdir -p "$tmp"
 cp "$user" "$save"
-# devolve o repositorio como estava, aconteca o que acontecer
+# restore the repository to how it was, no matter what happens
 trap 'cp "$save" "$user"; rm -f "$save"; rm -rf "$tmp"' EXIT INT TERM
 
 sed 's|user_default\.mc|user_demo.mc|' "$save" > "$user"
@@ -47,7 +48,7 @@ if ! msg=$(scripts/link.sh build/mc1s build/mc1s.o 2>&1); then
     echo "FAIL: link de build/mc1s: $msg"
     exit 1
 fi
-cp "$save" "$user"          # o demo ja esta dentro de build/mc1s: solta o fonte
+cp "$save" "$user"          # the demo is already baked into build/mc1s: release the source
 
 fails=0
 total=0
@@ -74,7 +75,7 @@ done
 
 echo "$((total - fails))/$total objetos identicos (arm64-surface vs macho)"
 
-# o pass de demonstracao tem de alterar a AST de tests/061-pass.mc, e nenhuma outra
+# the demo pass has to alter the AST of tests/061-pass.mc, and no other
 "$mc0"        --dump-ast tests/061-pass.mc > "$tmp/ast-sem" 2>&1
 build/mc1s    --dump-ast tests/061-pass.mc > "$tmp/ast-com" 2>&1
 if cmp -s "$tmp/ast-sem" "$tmp/ast-com"; then
@@ -93,8 +94,8 @@ for f in tests/*.mc; do
     fi
 done
 
-# Ordem de inicializacao: um user_init que chama tok_add nao pode deslocar os
-# ids das palavras do nucleo (K_U8..K_EXTERN = 256..269). Ver lib/user_tokadd.mc.
+# Init order: a user_init that calls tok_add must not shift the core
+# keywords' ids (K_U8..K_EXTERN = 256..269). See lib/user_tokadd.mc.
 sed 's|user_default\.mc|user_tokadd.mc|' "$save" > "$user"
 if ! grep -q 'user_tokadd\.mc' "$user"; then
     echo "FAIL: nao consegui ligar lib/user_tokadd.mc em $user"
@@ -124,10 +125,10 @@ else
 fi
 cp "$save" "$user"
 
-# ---- Tier 3 (M12): sintaxe ensinada por codigo, sem tocar em src/ ----
-# 1. MC1 compila o compilador ensinado (src/core.mc + lib/user_syntax_demo.mc)
-# 2. o compilador ensinado compila o teste que usa unless/enum/bool
-# 3. o teste roda e devolve 42
+# ---- Tier 3 (M12): syntax taught through code, without touching src/ ----
+# 1. MC1 compiles the taught compiler (src/core.mc + lib/user_syntax_demo.mc)
+# 2. the taught compiler compiles the test that uses unless/enum/bool
+# 3. the test runs and exits 42
 demo="build/mc-syntax-demo"
 rm -f "$demo"
 if ! msg=$("$mc1" --exe lib/mc_syntax_demo.mc -o "$demo" 2>&1); then
@@ -150,8 +151,8 @@ else
     fi
 fi
 
-# o compilador padrao tem de RECUSAR o mesmo fonte: a sintaxe e do modulo, nao
-# do nucleo. `enum` la e so um identificador no lugar de um tipo.
+# the default compiler has to REFUSE the same source: the syntax belongs to
+# the module, not to the core. `enum` there is just an identifier where a type is expected.
 if msg=$("$mc1" lib/syntax_demo_test.mc -o "$tmp/sdt.o" 2>&1); then
     echo "FAIL: o compilador padrao aceitou lib/syntax_demo_test.mc"
     fails=$((fails + 1))

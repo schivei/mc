@@ -1,11 +1,11 @@
 #!/bin/sh
-# check-obj.sh [MC0] [MC1] — criterio da fatia 5 do M6.
-# Para cada tests/*.mc compila o MESMO fonte com os dois compiladores e faz
-# `cmp` dos dois .o. Identidade byte a byte e o criterio; qualquer diferenca
-# (codigo de saida, mensagem de erro ou bytes) e falha.
+# check-obj.sh [MC0] [MC1] — acceptance criterion for M6 slice 5.
+# For each tests/*.mc, compiles the SAME source with both compilers and does a
+# `cmp` of the two .o files. Byte-for-byte identity is the criterion; any
+# difference (exit code, error message, or bytes) is a failure.
 #
-# Enquanto build/mc1 nao existe, rode com MC1 = MC0: tem de dar 100% identico
-# (prova que o proprio teste e deterministico e que o script esta correto).
+# While build/mc1 doesn't exist yet, run with MC1 = MC0: it has to come out
+# 100% identical (proves the test itself is deterministic and the script is correct).
 mc0="${1:-build/mc0}"
 mc1="${2:-build/mc1}"
 
@@ -47,7 +47,7 @@ for f in tests/*.mc; do
     fi
     if ! cmp "$a" "$b" > "$tmp/dc" 2>&1; then
         echo "FAIL $name ($(cat "$tmp/dc"))"
-        # primeiras divergencias e o xxd lado a lado em volta da primeira
+        # first divergences and xxd side by side around the first one
         cmp -l "$a" "$b" 2>/dev/null | head -8
         off=$(cmp -l "$a" "$b" 2>/dev/null | head -1 | awk '{print $1 - 1}')
         if [ -n "$off" ]; then

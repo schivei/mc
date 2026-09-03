@@ -1,8 +1,8 @@
 #!/bin/sh
-# test.sh COMPILADOR — para cada tests/*.mc: compila para build/tests/NOME.o,
-# linka com scripts/link.sh, executa e compara com o cabecalho do fonte:
-#   // expect-exit: N        (obrigatorio)
-#   // expect-stdout: TEXTO  (opcional)
+# test.sh COMPILER — for each tests/*.mc: compiles to build/tests/NAME.o,
+# links with scripts/link.sh, runs it, and compares against the source's header:
+#   // expect-exit: N        (required)
+#   // expect-stdout: TEXT   (optional)
 mc="${1:-build/mc0}"
 mkdir -p build/tests
 fails=0

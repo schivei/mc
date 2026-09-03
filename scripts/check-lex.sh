@@ -1,8 +1,8 @@
 #!/bin/sh
-# check-lex.sh [MC0] [LEXDUMP] — cross-check do M4.
-# Compila src/lexdump.mc (que inclui src/arena.mc e src/lex.mc) com MC0, linka em
-# LEXDUMP e, para cada fonte .mc do repo, compara `MC0 --dump-tokens F` com
-# `LEXDUMP F`. Qualquer diferenca (saida ou codigo de saida) e falha.
+# check-lex.sh [MC0] [LEXDUMP] — cross-check for M4.
+# Compiles src/lexdump.mc (which includes src/arena.mc and src/lex.mc) with MC0,
+# links it into LEXDUMP and, for each .mc source in the repo, compares
+# `MC0 --dump-tokens F` with `LEXDUMP F`. Any difference (output or exit code) is a failure.
 mc="${1:-build/mc0}"
 lexdump="${2:-build/lexdump}"
 

@@ -1,6 +1,6 @@
 #!/bin/sh
-# link.sh OUT IN.o [more.o...]  — liga objetos Mach-O arm64 contra libSystem.
-# ld nao e gcc/cc/clang: continua permitido apos o corte do cordao (M8).
+# link.sh OUT IN.o [more.o...]  — links arm64 Mach-O objects against libSystem.
+# ld is not gcc/cc/clang: it stays allowed after the cord is cut (M8).
 set -e
 out="$1"; shift
 sdk="$(xcrun --show-sdk-path)"

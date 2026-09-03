@@ -1,10 +1,10 @@
 #!/bin/sh
-# check-ast.sh [MC0] [ASTDUMP] — cross-check da fatia 3 do M6.
-# Compila src/astdump.mc (que inclui arena.mc, macho.mc, lex.mc, ast.mc e
-# parse.mc) com MC0, linka em ASTDUMP e, para cada fonte .mc do repo, compara
-# `MC0 --dump-ast F` com `ASTDUMP F`. Qualquer diferenca (stdout, stderr ou
-# codigo de saida) e falha — inclusive os arquivos que o MC0 rejeita: a mensagem
-# de erro e o codigo tem de ser os mesmos.
+# check-ast.sh [MC0] [ASTDUMP] — cross-check for M6 slice 3.
+# Compiles src/astdump.mc (which includes arena.mc, macho.mc, lex.mc, ast.mc
+# and parse.mc) with MC0, links it into ASTDUMP and, for each .mc source in
+# the repo, compares `MC0 --dump-ast F` with `ASTDUMP F`. Any difference
+# (stdout, stderr, or exit code) is a failure — including the files MC0
+# rejects: the error message and the code have to be the same.
 mc="${1:-build/mc0}"
 astdump="${2:-build/astdump}"
 

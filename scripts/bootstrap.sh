@@ -1,17 +1,17 @@
 #!/bin/sh
-# bootstrap.sh — M7: ponto fixo do compilador auto-hospedado.
+# bootstrap.sh — M7: fixed point of the self-hosted compiler.
 #
 #   build/mc0 src/mc.mc -> build/mc1.o  (+ link -> build/mc1)
 #   build/mc1 src/mc.mc -> build/mc2.o  (+ link -> build/mc2)
 #   build/mc2 src/mc.mc -> build/mc3.o
-#   cmp build/mc2.o build/mc3.o         <- o criterio (nao mc1.o vs mc2.o:
-#                                          esses podem diferir, sao compiladores
-#                                          diferentes — clang vs mc1)
-#   SHA-256 de build/mc2.o comparado com o golden versionado em
-#   tests/golden/mc2.sha256 (gravado na primeira vez que o script roda).
+#   cmp build/mc2.o build/mc3.o         <- the criterion (not mc1.o vs mc2.o:
+#                                          those may differ, they are different
+#                                          compilers — clang vs mc1)
+#   SHA-256 of build/mc2.o compared against the golden checked into
+#   tests/golden/mc2.sha256 (recorded the first time the script runs).
 #
-# Sem "set -e": cada etapa confere seu proprio exit code e falha com mensagem
-# clara, para que uma falha no meio da cadeia nunca passe silenciosa.
+# No "set -e": each step checks its own exit code and fails with a clear
+# message, so a failure in the middle of the chain never passes silently.
 
 mc0="build/mc0"
 golden="tests/golden/mc2.sha256"
@@ -25,15 +25,15 @@ if [ ! -f "src/mc.mc" ]; then
     exit 1
 fi
 
-# now() imprime o relogio com precisao de milissegundos. O 'time' do shell nao
-# da para capturar num formato portavel entre 'sh' e reaproveitar no total; e o
-# 'date +%s.%N' do GNU coreutils nao existe no BSD date do macOS (%N nao e
-# suportado). perl vem sempre instalado no macOS e tem Time::HiRes: usamos ele.
+# now() prints the clock with millisecond precision. The shell's 'time' can't
+# be captured in a format that's portable across 'sh' and reused in the total;
+# and GNU coreutils' 'date +%s.%N' doesn't exist in macOS's BSD date (%N isn't
+# supported). perl is always installed on macOS and has Time::HiRes: we use it.
 now() {
     perl -MTime::HiRes=time -e 'printf "%.3f\n", time'
 }
 
-# dt A B -> "B - A" com 3 casas decimais.
+# dt A B -> "B - A" with 3 decimal places.
 dt() {
     perl -e 'printf "%.3f", '"$2"' - '"$1"''
 }
@@ -41,8 +41,8 @@ dt() {
 fails=0
 t_total0=$(now)
 
-# etapa DESCRICAO CMD... — roda CMD, mede o tempo, falha com mensagem clara se
-# o exit code nao for 0. Nao usa set -e: o proprio 'if' captura o status.
+# etapa DESCRIPTION CMD... — runs CMD, times it, fails with a clear message if
+# the exit code isn't 0. Doesn't use set -e: the 'if' itself captures the status.
 etapa() {
     desc="$1"; shift
     t0=$(now)
@@ -63,7 +63,7 @@ tmp_err="${TMPDIR:-/tmp}/bootstrap.$$.err"
 trap 'rm -f "$tmp_out" "$tmp_err"' EXIT
 
 tamanho() {
-    # tamanho em bytes, portavel (BSD stat no macOS usa -f%z; GNU usa -c%s).
+    # size in bytes, portable (BSD stat on macOS uses -f%z; GNU uses -c%s).
     wc -c < "$1" | tr -d ' '
 }
 

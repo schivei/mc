@@ -1,126 +1,128 @@
-# core-language.md — linguagem núcleo `.mc`
+# core-language.md — the `.mc` core language
 
-Referência da linguagem núcleo especificada em `docs/plan.md` e detalhada em
-`docs/specs/M1.md`…`M5.5.md`. Estado do código (`stage0/`) neste marco (**M5.5 fechado**): lexer,
-parser Pratt, AST, codegen ARM64 e escritor Mach-O completos para tudo abaixo — `make test` roda
-24/24 testes (`tests/001-return42.mc` … `tests/043-include-norm.mc`) e todo exemplo deste documento
-foi compilado e executado de verdade com `build/mc0` para confirmar o texto. Só continuam
-**planejados**: `#rule`/prelúdio com `while`/`for` (**M9**), `pass()`/`backend()` programático
-(**M10**) e executável direto `MH_EXECUTE` (**M11**) — ver `docs/surface.md`.
+Reference for the core language specified in `docs/plan.md` and detailed in
+`docs/specs/M1.md`...`M5.5.md`. State of the code (`stage0/`) at this milestone (**M5.5 closed**):
+lexer, Pratt parser, AST, ARM64 codegen, and Mach-O writer complete for everything below —
+`make test` runs 24/24 tests (`tests/001-return42.mc` ... `tests/043-include-norm.mc`), and every
+example in this document was actually compiled and run with `build/mc0` to confirm the text. Only
+these remain **planned**: `#rule`/prelude with `while`/`for` (**M9**), programmatic
+`pass()`/`backend()` (**M10**), and a direct `MH_EXECUTE` executable (**M11**) — see
+`docs/surface.md`.
 
-## Tipos
+## Types
 
-7 palavras, registradas na tabela do núcleo na inicialização do lexer.
+7 words, registered in the core table when the lexer initializes.
 
-| Tipo | Tamanho | Uso |
+| Type | Size | Use |
 |---|---|---|
-| `u8` | 1 byte | bytes, campos Mach-O pequenos |
-| `u16` | 2 bytes | `n_desc` e afins |
-| `u32` | 4 bytes | `n_strx` e afins, palavra de instrução |
-| `u64` | 8 bytes | valores largos sem sinal |
-| `i64` | 8 bytes | inteiro de trabalho — a maioria das expressões |
-| `uptr` | 8 bytes | único tipo ponteiro: opaco, sem tipo apontado, aritmética em bytes |
-| `void` | — | retorno sem valor |
+| `u8` | 1 byte | bytes, small Mach-O fields |
+| `u16` | 2 bytes | `n_desc` and the like |
+| `u32` | 4 bytes | `n_strx` and the like, instruction word |
+| `u64` | 8 bytes | wide unsigned values |
+| `i64` | 8 bytes | working integer type — most expressions |
+| `uptr` | 8 bytes | the only pointer type: opaque, no pointee type, byte arithmetic |
+| `void` | — | no-value return |
 
-Sem `i8/i16/i32`, sem `float`, sem `bool` — comparações produzem `i64` 0/1. Comparações são sempre
-com sinal (endereços ficam abaixo de 2^63, por convenção documentada, não verificada em runtime).
+No `i8/i16/i32`, no `float`, no `bool` — comparisons produce `i64` 0/1. Comparisons are always
+signed (addresses stay below 2^63, by documented convention, not checked at runtime).
 
-## Literais
+## Literals
 
-- Inteiro decimal e hex (`0x...`).
-- Char `'a'`, escapes `\n \t \r \0 \\ \' \"` — dobra direto para `N_INT` (não existe kind de AST
-  separado para char). `\0` é válido em char literal.
-- String `"..."` — bytes decodificados em arena, emitidos em `__TEXT,__cstring` com NUL final,
-  dedup por conteúdo (busca linear, primeira ocorrência ganha o símbolo `l_strN`).
-  `\0` dentro de string literal é **erro**: `__cstring` é `S_CSTRING_LITERALS` e o `ld` funde
-  literais pelo primeiro NUL, o que faria `"a\0b"` e `"a"` virarem o mesmo endereço. Testado:
+- Decimal and hex integer (`0x...`).
+- Char `'a'`, escapes `\n \t \r \0 \\ \' \"` — folds directly into `N_INT` (there's no separate
+  AST kind for char). `\0` is valid inside a char literal.
+- String `"..."` — bytes decoded into the arena, emitted in `__TEXT,__cstring` with a trailing
+  NUL, deduped by content (linear search, first occurrence wins the `l_strN` symbol).
+  `\0` inside a string literal is an **error**: `__cstring` is `S_CSTRING_LITERALS` and `ld`
+  merges literals at the first NUL, which would make `"a\0b"` and `"a"` end up at the same
+  address. Tested:
   ```
   $ build/mc0 t.mc      # write(1, "a\0b", 3);
-  t.mc:2: \0 nao permitido em string
+  t.mc:2: \0 not allowed in string
   ```
 
-## Operadores e precedência
+## Operators and precedence
 
-Tabela Pratt do núcleo, maior prec liga mais forte.
+The core's Pratt table, higher precedence binds tighter.
 
-| Prec | Operadores | Nota |
+| Prec | Operators | Note |
 |---|---|---|
-| 11 | `f(a, b)` (chamada) | args em `x0..x7` |
-| 10 | `* / %` | ver "Divisão e módulo" abaixo |
+| 11 | `f(a, b)` (call) | args in `x0..x7` |
+| 10 | `* / %` | see "Signed vs. unsigned division and modulo" below |
 | 9 | `+ -` | |
-| 8 | `<< >>` | `>>` aritmético (`asr`) só se o operando esquerdo é `i64`; senão lógico (`lsr`) |
-| 7 | `< <= > >=` | resultado 0/1 via `cset` |
-| 6 | `== !=` | idem |
+| 8 | `<< >>` | `>>` is arithmetic (`asr`) only if the left operand is `i64`; logical (`lsr`) otherwise |
+| 7 | `< <= > >=` | result 0/1 via `cset` |
+| 6 | `== !=` | same |
 | 5 | `&` | bitwise |
 | 4 | `^` | bitwise |
 | 3 | `\|` | bitwise |
-| 2 | `&&` | curto-circuito obrigatório |
-| 1 | `\|\|` | curto-circuito obrigatório |
+| 2 | `&&` | mandatory short-circuit |
+| 1 | `\|\|` | mandatory short-circuit |
 
-Unários prefixos `- ~ !`. `&x` (endereço de local, global **ou função** — ver abaixo) — prefixo,
-mesma precedência de unário.
-Cast C `(u32) x` (inequívoco: depois de `(` vem palavra-chave de tipo) — `and`/`mov wd,wn` para
-mascarar u8/u16/u32. Atribuição `x = e` (só `=`, sem `+=` nativo).
+Prefix unaries `- ~ !`. `&x` (address of a local, global, **or function** — see below) — prefix,
+same precedence as the unaries.
+C-style cast `(u32) x` (unambiguous: a type keyword always follows `(`) — `and`/`mov wd,wn` to
+mask u8/u16/u32. Assignment `x = e` (`=` only, no native `+=`).
 
-### Divisão e módulo sem sinal
+### Signed vs. unsigned division and modulo
 
-`/` e `%` usam `sdiv`/`msub` (com sinal) só quando o tipo do operando **esquerdo** é `i64`; para
-`u8/u16/u32/u64/uptr` à esquerda usam `udiv`/`msub` sem sinal — mesma regra de decisão de `>>`.
-`fold()` (dobra de constantes) espelha o mesmo critério. Testado (`tests/041-udiv.mc`):
+`/` and `%` use `sdiv`/`msub` (signed) only when the **left** operand's type is `i64`; for
+`u8/u16/u32/u64/uptr` on the left they use `udiv`/`msub` unsigned — the same decision rule as
+`>>`. `fold()` (constant folding) mirrors the same criterion. Tested (`tests/041-udiv.mc`):
 
 ```c
 u64 big = 0xFFFFFFFFFFFFFFFF;
-if (big / 2 != 0x7FFFFFFFFFFFFFFF) return 1;                       // udiv, em runtime
-if ((u64) 0xFFFFFFFFFFFFFFFF / 2 != 0x7FFFFFFFFFFFFFFF) return 2;  // udiv, dobrado em compile time
+if (big / 2 != 0x7FFFFFFFFFFFFFFF) return 1;                       // udiv, at runtime
+if ((u64) 0xFFFFFFFFFFFFFFFF / 2 != 0x7FFFFFFFFFFFFFFF) return 2;  // udiv, folded at compile time
 i64 neg = 0 - 8;
-if (neg / 2 != 0 - 4) return 5;                                    // i64 continua com sinal (sdiv)
+if (neg / 2 != 0 - 4) return 5;                                    // i64 stays signed (sdiv)
 ```
 
-## Intrinsics de memória
+## Memory intrinsics
 
-`ld8 ld16 ld32 ld64` (leitura, zero-extend) e `st8 st16 st32 st64(p, v)` (escrita). Não existe `*p`
-nem `p->f`: acesso é sempre por largura explícita. Nome de array decai para `uptr` automaticamente.
+`ld8 ld16 ld32 ld64` (read, zero-extend) and `st8 st16 st32 st64(p, v)` (write). There's no `*p`
+or `p->f`: access is always by explicit width. An array name decays to `uptr` automatically.
 
-## `&funcao` e `callp` — ponteiro de função (M10)
+## `&function` and `callp` — function pointer (M10)
 
-O núcleo não tem tipo de função: um ponteiro de função é um `uptr` como qualquer outro, e a chamada
-indireta é uma intrinsic. São as duas peças que o Tier 2 (`pass()`/`backend()`) precisa.
+The core has no function type: a function pointer is a `uptr` like any other, and an indirect
+call is an intrinsic. These are the two pieces Tier 2 (`pass()`/`backend()`) needs.
 
-**`&nome` onde `nome` é uma função ou um `extern`** dá o endereço do símbolo `_nome`: `adrp`/`add`
-com as relocações `PAGE21` + `PAGEOFF12`, do mesmo jeito que `&global`. Se o nome veio de um
-`extern`, o símbolo sai **indefinido externo** no `.o`. `&local`, `&global` e `&funcao` são a mesma
-sintaxe: o codegen procura local, depois global, depois a tabela de assinaturas, e só então erra
-`nome desconhecido`.
+**`&name` where `name` is a function or an `extern`** gives the address of symbol `_name`:
+`adrp`/`add` with the `PAGE21` + `PAGEOFF12` relocations, the same as `&global`. If the name came
+from an `extern`, the symbol comes out **undefined external** in the `.o`. `&local`, `&global`,
+and `&function` are the same syntax: codegen looks for a local, then a global, then the
+signature table, and only then errors `unknown name`.
 
-**`callp(p, a1, ..., a7)`** chama o endereço `p`: os argumentos `a1..a7` vão para `x0..x6`, o
-ponteiro vai para `x16` (IP0 — caller-saved e fora de `x0..x7`, então nenhum argumento o atropela)
-e a chamada é `blr x16`. O salvamento das profundidades vivas é o mesmo de um `bl` normal. O
-resultado é `x0` e o tipo do resultado é `i64` — se a função chamada devolve outra coisa, cabe a
-quem escreve converter. Aridade de 1 a 8 (o ponteiro conta): sete argumentos é o máximo.
+**`callp(p, a1, ..., a7)`** calls address `p`: arguments `a1..a7` go into `x0..x6`, the pointer
+goes into `x16` (IP0 — caller-saved and outside `x0..x7`, so no argument steps on it), and the
+call is `blr x16`. Saving live depths is the same as for a normal `bl`. The result is `x0` and
+its type is `i64` — if the called function returns something else, converting it is up to the
+caller. Arity 1 to 8 (the pointer counts): seven arguments is the max.
 
 ```c
 i64 add2(i64 a) { return a + 2; }
 uptr tbl[2];
 
 i64 main() {
-    st64(tbl, &add2);                 // guarda o endereco de add2 na tabela
+    st64(tbl, &add2);                 // store add2's address in the table
     return callp(ld64(tbl), 40);      // add2(40) = 42
 }
 ```
 
-Testado em `tests/060-callp.mc` (tabela de `uptr` com `&add2`/`&mul2`, chamada de 7 argumentos,
-exit 42). **Limite conhecido, só do caminho `.o` + `ld`:** `&nome` de um `extern` que mora numa
-dylib (`&write` da libSystem) gera o `.o` correto, mas o `ld` recusa o link — um símbolo importado
-só tem endereço via `__got`, e o núcleo não emite relocação `GOT_LOAD_PAGE21`:
+Tested in `tests/060-callp.mc` (a `uptr` table with `&add2`/`&mul2`, a 7-argument call, exit 42).
+**Known limit, only along the `.o` + `ld` path:** `&name` for an `extern` living in a dylib
+(`&write` from libSystem) produces a correct `.o`, but `ld` refuses the link — an imported symbol
+only has an address via `__got`, and the core doesn't emit a `GOT_LOAD_PAGE21` relocation:
 
 ```
 $ build/mc1 amp.mc -o amp.o && scripts/link.sh amp amp.o     # uptr w = &write;
 ld: fixup error (kind=arm64_adrp_lo12) at '_main'+0xC from amp.o, target '_write' does not have address
 ```
 
-Com um `extern` resolvido por outro `.o` do mesmo link, `&nome` funciona. E **pelo `--exe` (M11)
-funciona sempre**: quem resolve a relocação ali é o próprio `mc`, que aponta o `adrp`/`add` para o
-stub do símbolo em `__TEXT,__stubs` — um endereço chamável.
+With an `extern` resolved by another `.o` in the same link, `&name` works. And **via `--exe`
+(M11) it always works**: whoever resolves the relocation there is `mc` itself, which points the
+`adrp`/`add` at the symbol's stub in `__TEXT,__stubs` — a callable address.
 
 ```
 $ build/mc1 --exe amp.mc -o amp && ./amp                     # callp(&write, 1, "via &write\n", 11)
@@ -129,58 +131,58 @@ via &write
 
 ## Arrays
 
-- Array local (`u8 buf[24];` dentro de função) — espaço no frame.
-- Array global (`u8 heap[HEAP_SIZE];` no top-level) — reserva em `__bss` sem inicializador ou
-  `__data` com inicializador.
-- **Inicializador de array global**: `tipo v[N] = { e1, e2, ... };` ou `tipo v[] = { ... }` (N
-  inferido da lista). Elementos são constantes dobradas, escritas com a largura do tipo; `N` maior
-  que a contagem preenche o resto com zero, contagem maior que `N` é erro. Vai para `__data`
-  (alinhado a 16). Para `uptr`, um elemento string literal grava 8 bytes zero mais uma relocação
-  `R_UNSIGNED` apontando para o símbolo `l_strN` daquela string (ver `docs/macho-notes.md`).
-  Testado (`tests/040-arrinit.mc`):
+- Local array (`u8 buf[24];` inside a function) — space in the frame.
+- Global array (`u8 heap[HEAP_SIZE];` at top level) — a reservation in `__bss` with no
+  initializer, or `__data` with one.
+- **Global array initializer**: `type v[N] = { e1, e2, ... };` or `type v[] = { ... }` (N
+  inferred from the list). Elements are folded constants, written at the type's width; `N`
+  larger than the count fills the rest with zero, a count larger than `N` is an error. Goes to
+  `__data` (aligned to 16). For `uptr`, a string-literal element writes 8 zero bytes plus an
+  `R_UNSIGNED` relocation pointing at that string's `l_strN` symbol (see
+  `docs/macho-notes.md`). Tested (`tests/040-arrinit.mc`):
   ```c
-  uptr names[] = {"zero", "um", "dois"};   // N inferido: 3 ponteiros em __data
-  u32  t[4] = {1, 2, 3};                   // N > count: o 4o elemento sai zerado
-  i64  soma[2] = {20 + 22, 7 * 6};         // dobra de constante no elemento
-  // ld64(names + 8) -> ponteiro para "um"; ld32(t+12) == 0; ld64(soma) == 42
+  uptr names[] = {"zero", "um", "dois"};   // N inferred: 3 pointers in __data
+  u32  t[4] = {1, 2, 3};                   // N > count: the 4th element comes out zeroed
+  i64  soma[2] = {20 + 22, 7 * 6};         // constant folding in the element
+  // ld64(names + 8) -> pointer to "um"; ld32(t+12) == 0; ld64(soma) == 42
   ```
 
-## Limite de frame e de array local
+## Frame and local-array limits
 
-Array local: `nelem * largura` não pode passar de 4095 bytes (checado no parser e de novo no
-codegen) — erro `array local grande demais`. Frame inteiro da função (todos os locais + área de
-spill, arredondado a 16) também não pode passar de 4095 bytes (`sub sp, sp, #imm` só cabe em 12
-bits) — erro `frame grande demais`. Testado:
+Local array: `nelem * width` may not exceed 4095 bytes (checked in the parser and again in
+codegen) — error `local array too large`. The whole function frame (all locals + spill area,
+rounded to 16) also may not exceed 4095 bytes (`sub sp, sp, #imm` only fits in 12 bits) — error
+`frame too large`. Tested:
 ```
-u8 big[4080];   // ok, frame cabe
-u8 big[4096];   // array local grande demais (nelem*largura > 4095)
-u8 big[4090];   // frame grande demais (arredondado a 16 estoura o subimediato)
+u8 big[4080];   // ok, frame fits
+u8 big[4096];   // local array too large (nelem*width > 4095)
+u8 big[4090];   // frame too large (rounding to 16 overflows the sub-immediate)
 ```
 
-## Controle
+## Control flow
 
 - `if (c) stmt [else stmt]`.
-- `loop { }`. Não há `while`/`for` no núcleo; vêm do prelúdio via `#rule` (**M9, implementado** —
-  `lib/prelude.mc`, § Prelúdio abaixo).
-- `break;` / `break N;` (sai N níveis, sem precisar de labels; N maior que a profundidade de loops
-  é erro).
+- `loop { }`. There's no `while`/`for` in the core; they come from the prelude via `#rule` (**M9,
+  implemented** — `lib/prelude.mc`, § Prelude below).
+- `break;` / `break N;` (exits N levels, no labels needed; N greater than the current loop depth
+  is an error).
 - `continue;`.
 - `return [e];`.
 
-## Funções
+## Functions
 
-`tipo nome(tipo a, ...) { }` — máximo 8 parâmetros (nunca argumento pela pilha; exceder é erro; sem
-variádicas). Duas passadas no top-level permitem chamar uma função antes de defini-la e recursão
-mútua sem forward declaration.
+`type name(type a, ...) { }` — max 8 parameters (never an argument on the stack; exceeding it is
+an error; no varargs). Two top-level passes allow calling a function before it's defined, and
+mutual recursion with no forward declaration.
 
-### Protótipo
+### Prototype
 
-`tipo nome(params);` no top-level (sem corpo, sem `extern`) registra a assinatura antes da
-definição; a definição posterior precisa bater tipo de retorno e aridade; protótipo sem definição
-nem `extern` no fim da unidade é erro. Testado (`tests/042-proto.mc`):
+`type name(params);` at top level (no body, no `extern`) registers the signature before the
+definition; the later definition must match return type and arity; a prototype with no
+definition and no `extern` by the end of the unit is an error. Tested (`tests/042-proto.mc`):
 ```c
-i64  soma(i64 a, i64 b);        // usado antes de definido
-i64  dobro(i64 x);              // definido depois de quem o chama
+i64  soma(i64 a, i64 b);        // used before it's defined
+i64  dobro(i64 x);              // defined after whoever calls it
 i64 main() { mostra(soma(dobro(20), 2)); return 0; }  // stdout "42\n", exit 0
 i64 soma(i64 a, i64 b) { return a + b; }
 i64 dobro(i64 x) { return x + x; }
@@ -188,12 +190,12 @@ i64 dobro(i64 x) { return x + x; }
 
 ## `extern`
 
-`extern tipo nome(tipo a, ...);` declara símbolo indefinido (`_nome` sem corpo — é como
-`write`/`open` da libSystem entram, ver `lib/sys.mc`).
+`extern type name(type a, ...);` declares an undefined symbol (`_name` with no body — this is
+how `write`/`open` from libSystem come in, see `lib/sys.mc`).
 
-O compilador **não verifica se o símbolo existe**: ele só registra a referência indefinida. Quem
-descobre o erro, e quando, depende do caminho de saída — e essa diferença é deliberada
-(`docs/bootstrap.md` § M11). Para
+The compiler **does not check whether the symbol exists**: it only registers the undefined
+reference. Who discovers the error, and when, depends on the output path — and that difference is
+deliberate (`docs/bootstrap.md` § M11). For
 
 ```
 // faltante.mc
@@ -204,7 +206,7 @@ i64 main() {
 }
 ```
 
-o caminho `.o` + `ld` (default) recusa **no link**:
+the `.o` + `ld` path (default) refuses **at link time**:
 
 ```
 $ build/mc1 faltante.mc -o faltante.o          # exit 0
@@ -215,8 +217,8 @@ Undefined symbols for architecture arm64:
 ld: symbol(s) not found for architecture arm64                  # exit 1
 ```
 
-e o caminho `--exe` gera o binário (assinado, `codesign --verify` passa) e falha **no
-carregamento**, no `dyld`:
+and the `--exe` path generates the binary (signed, `codesign --verify` passes) and fails **at
+load time**, in `dyld`:
 
 ```
 $ build/mc1 --exe faltante.mc -o faltante-exe   # exit 0
@@ -227,188 +229,197 @@ dyld[84421]: Symbol not found: _nao_existe_mesmo
                                                                 # exit 134 (SIGABRT)
 ```
 
-O `--exe` escreve o stub e o bind opcode do símbolo sem consultar a `libSystem`; validar o nome
-exigiria ler os `.tbd` do SDK, e o M11 recusa essa dependência (não há, nem haverá, lista embutida
-de símbolos conhecidos). Se você quer o erro em tempo de build, use o caminho do `.o` + `ld`.
+`--exe` writes the stub and the symbol's bind opcode without consulting `libSystem`; validating
+the name would require reading the SDK's `.tbd` files, and M11 refuses that dependency (there is
+no, and will be no, built-in list of known symbols). If you want the error at build time, use the
+`.o` + `ld` path.
 
-## `#include` e `#define`
+## `#include` and `#define`
 
-- `#include "arquivo.mc"`: inclusão textual, once-only, relativa ao diretório do arquivo que
-  inclui. `path_join` normaliza `.` e `..` lexicamente (sem tocar o filesystem) antes do
-  once-only, então dois caminhos que apontam para o mesmo arquivo por rotas textuais diferentes
-  (`inc/c.mc` e `inc/a/../c.mc`) contam como uma inclusão só. Profundidade máx. 16. Testado
-  (`tests/043-include-norm.mc`): `#include "inc/c.mc"` e `#include "./inc/a/b.mc"` (que por sua vez
-  inclui `../c.mc`) resolvem para o mesmo arquivo — `comum()` não é declarada duas vezes.
-- `#define NOME expr`: expr parseada e dobrada na definição (via `fold()`), constante — não é
-  macro textual. Redefinir = erro. Uso precisa vir depois da definição (ordem do fonte).
-- **`#define` vs nome**: declarar local, parâmetro, global ou função com um nome já usado por
-  `#define` é erro `nome ja definido por #define`, seja qual for a ordem entre os dois. Testado:
+- `#include "file.mc"`: textual inclusion, once-only, relative to the directory of the including
+  file. `path_join` normalizes `.` and `..` lexically (without touching the filesystem) before
+  the once-only check, so two paths that reach the same file via different textual routes
+  (`inc/c.mc` and `inc/a/../c.mc`) count as a single inclusion. Max depth 16. Tested
+  (`tests/043-include-norm.mc`): `#include "inc/c.mc"` and `#include "./inc/a/b.mc"` (which in
+  turn includes `../c.mc`) resolve to the same file — `comum()` isn't declared twice.
+- `#define NAME expr`: expr parsed and folded at definition time (via `fold()`), a constant — not
+  a textual macro. Redefining it is an error. Use must come after the definition (source order).
+- **`#define` vs. a name**: declaring a local, parameter, global, or function with a name already
+  used by `#define` is an error, `name already defined by #define`, regardless of the order
+  between the two. Tested:
   ```
   #define LIMIT 10
-  i64 LIMIT = 5;      // t.mc:2: nome ja definido por #define
-  i64 f(i64 N)         // idem para parametro, se N ja for #define
+  i64 LIMIT = 5;      // t.mc:2: name already defined by #define
+  i64 f(i64 N)         // same for a parameter, if N is already a #define
   ```
 
-## Prelúdio (`lib/prelude.mc`) — `while`, `for`, `+=`, `-=`, `++`, `--`
+## Prelude (`lib/prelude.mc`) — `while`, `for`, `+=`, `-=`, `++`, `--`
 
-Nada disso é sintaxe do núcleo: são seis `#rule stmt:` e quatro `#token` escritos na própria
-linguagem, num arquivo que só entra por `#include` explícito (§ `docs/surface.md` § `#rule`). O
-núcleo continua compilando sem ele — `src/lex.mc`, `src/parse.mc` e `src/gen_arm64.mc` não o
-incluem; `src/macho.mc` inclui, e é o módulo folha migrado no M9.
+None of this is core syntax: it's six `#rule stmt:` and four `#token` written in the language
+itself, in a file that only comes in via explicit `#include` (§ `docs/surface.md` § `#rule`). The
+core keeps compiling without it — `src/lex.mc`, `src/parse.mc`, and `src/gen_arm64.mc` don't
+include it; `src/macho.mc` does, and it's the leaf module migrated at M9.
 
 ```c
 #include "../lib/prelude.mc"
 
 i64 soma(i64 n) {
     i64 s = 0;
-    for (i64 i = 0; i < n; i = i + 1) {   // passo e `ident $x = expr $step`
+    for (i64 i = 0; i < n; i = i + 1) {   // step is `ident $x = expr $step`
         s += i;
     }
     i64 k = n;
-    while (k > 0) {                        // corpo e sempre um bloco: { }
+    while (k > 0) {                        // the body is always a block: { }
         k--;
     }
     return s;
 }
 ```
 
-O que o prelúdio dá e o que ele **não** dá:
+What the prelude gives you, and what it **doesn't**:
 
-| Escrito | Vira |
+| Written | Becomes |
 |---|---|
 | `while (c) { B }` | `loop { if (!c) break; { B } }` |
-| `for (INIT COND ; x = PASSO) { B }` | `{ INIT loop { if (!COND) break; { B } x = PASSO; } }` |
+| `for (INIT COND ; x = STEP) { B }` | `{ INIT loop { if (!COND) break; { B } x = STEP; } }` |
 | `x += e;` · `x -= e;` | `x = x + e;` · `x = x - e;` |
 | `x++;` · `x--;` | `x = x + 1;` · `x = x - 1;` |
 
-- **O corpo é sempre um bloco.** O padrão diz `block $b`, então `while (c) x++;` sem chaves é erro.
-- **O passo do `for` é `ident $x = expr $step`, não uma expressão qualquer.** No núcleo a
-  atribuição é um *statement*, não um operador (`=` não está na tabela Pratt), então um `expr`
-  sozinho no lugar do passo só poderia ser uma chamada de função — inútil para um contador. Por
-  isso o passo se escreve `i = i + 1` (e não `i++`, que é um statement inteiro, com `;`).
-- **`for (; c; i = i + 1)` não existe**: o padrão exige um `stmt $init` e o núcleo não tem
-  statement vazio. Onde o C usa `for` sem inicializador, o `.mc` usa `while`.
-- **`while` e `for` viram palavras reservadas** a partir do `#include`: o primeiro item literal de
-  uma regra é registrado como lexema (`tok_add`), então `i64 while = 1;` passa a ser erro
-  (`nome de variavel esperado`) — ver `tests/err/055-keyword.mc`.
+- **The body is always a block.** The pattern says `block $b`, so `while (c) x++;` with no braces
+  is an error.
+- **`for`'s step is `ident $x = expr $step`, not any arbitrary expression.** In the core,
+  assignment is a *statement*, not an operator (`=` isn't in the Pratt table), so a bare `expr`
+  in the step's place could only be a function call — useless for a counter. That's why the step
+  is written `i = i + 1` (and not `i++`, which is a whole statement, with its own `;`).
+- **`for (; c; i = i + 1)` doesn't exist**: the pattern requires a `stmt $init`, and the core has
+  no empty statement. Where C would use a `for` with no initializer, `.mc` uses `while`.
+- **`while` and `for` become reserved words** from the `#include` on: a rule's first literal item
+  is registered as a lexeme (`tok_add`), so `i64 while = 1;` becomes an error
+  (`variable name expected`) — see `tests/err/055-keyword.mc`.
 
-### `continue` dentro de `for` pula o passo
+### `continue` inside `for` skips the step
 
-O passo fica **no fim do corpo** do `loop` gerado, e `continue` volta para o topo do `loop` — logo
-`continue` pula o passo, exatamente como pularia num `loop{}` escrito à mão. Não é um bug do
-prelúdio: é a consequência direta de o núcleo não ter cláusula de passo, e o `#rule` não inventar
-uma. Quem sai por `continue` precisa avançar o contador antes:
+The step sits **at the end of the body** of the generated `loop`, and `continue` jumps back to
+the top of that `loop` — so `continue` skips the step, exactly as it would in a hand-written
+`loop{}`. This isn't a prelude bug: it's the direct consequence of the core having no step
+clause, and `#rule` not inventing one. Whoever exits via `continue` needs to advance the counter
+first:
 
 ```c
 for (k = 0; k < 10; k = k + 1) {
-    if (k % 2) { k = k + 1; continue; }   // sem esta linha o laco nao anda
+    if (k % 2) { k = k + 1; continue; }   // without this line the loop doesn't advance
     t = t + k;
 }
 ```
 
-`tests/051-for.mc` cobre os dois casos (o `for` normal e o `continue` que anda na mão). `break`
-dentro de `while`/`for` é o `break` do núcleo e sai do `loop` gerado, como se espera.
+`tests/051-for.mc` covers both cases (the normal `for` and the `continue` that advances by hand).
+`break` inside `while`/`for` is the core's `break` and exits the generated `loop`, as expected.
 
-## Estilo obrigatório em `mc.mc`
+## Mandatory style in `mc.mc`
 
-Nunca acessar layout cru (`ld64(n + 16)`) no meio do código: sempre `#define NODE_LHS 16` +
-acessoras `node_lhs(n)` / `set_node_lhs(n, v)`. Quando `struct` chegar pela superfície, trocam-se
-~20 acessoras, não milhares de call sites. Todo `src/*.mc` segue essa disciplina desde M6
-(`docs/specs/M6-M7.md`); o M9 **não** trouxe `struct` — a spec (`docs/specs/M9.md`) tirou-o de
-escopo depois que o M6 mostrou que `#define` + acessora resolve, e `struct` de verdade exigiria o
-buraco `type $t` e um modelo de layout, que é mais do que `#rule` entrega.
+Never access raw layout (`ld64(n + 16)`) in the middle of the code: always
+`#define NODE_LHS 16` + accessors `node_lhs(n)` / `set_node_lhs(n, v)`. When `struct` arrives via
+the surface, you swap ~20 accessors, not thousands of call sites. Every `src/*.mc` has followed
+this discipline since M6 (`docs/specs/M6-M7.md`); M9 did **not** bring `struct` — the spec
+(`docs/specs/M9.md`) took it out of scope once M6 showed that `#define` + accessor solves it, and
+a real `struct` would need the `type $t` hole and a layout model, more than `#rule` delivers.
 
-## Programa de exemplo
+## Example program
 
-Compilado e executado de verdade (`build/mc0 exemplo.mc -o out.o && scripts/link.sh out out.o &&
-./out` imprime `46368`, exit 0). `write` é declarado direto por `extern` aqui em vez de
-`#include "sys.mc"` porque `sys.mc` já traz `putnum` de `lib/io.mc` — o exemplo define o seu
-próprio para mostrar array local + `st8`/`ld8`; um programa real normalmente prefere incluir
-`sys.mc`/`sys_svc.mc` e usar o `putnum` de lá (ver `docs/surface.md`).
+Actually compiled and run (`build/mc0 exemplo.mc -o out.o && scripts/link.sh out out.o &&
+./out` prints `46368`, exit 0). `write` is declared directly via `extern` here instead of
+`#include "sys.mc"` because `sys.mc` already brings in `putnum` from `lib/io.mc` — this example
+defines its own to show a local array + `st8`/`ld8`; a real program would normally prefer to
+include `sys.mc`/`sys_svc.mc` and use the `putnum` from there (see `docs/surface.md`).
 
 ```c
-extern i64 write(i64 fd, uptr buf, i64 n);   // extern: so a assinatura, sem #include
+extern i64 write(i64 fd, uptr buf, i64 n);   // extern: just the signature, no #include
 
-#define HEAP_SIZE 1048576         // constante dobrada em compile time
+#define HEAP_SIZE 1048576         // constant folded at compile time
 
-u8  heap[HEAP_SIZE];              // array global = reserva em __bss
-i64 hp = 0;                       // global em __data
+u8  heap[HEAP_SIZE];              // global array = reservation in __bss
+i64 hp = 0;                       // global in __data
 
 uptr alloc(i64 n) {
-    uptr p = heap + hp;           // uptr e opaco: aritmetica em bytes
+    uptr p = heap + hp;           // uptr is opaque: byte arithmetic
     hp = hp + ((n + 7) & ~7);
     return p;
 }
 
-i64 fib(i64 n) {                  // parametros, recursao
+i64 fib(i64 n) {                  // parameters, recursion
     if (n < 2) return n;          // if/else
     return fib(n - 1) + fib(n - 2);
 }
 
 void putnum(i64 v) {
-    u8 buf[24];                   // array local = espaco no frame
+    u8 buf[24];                   // local array = space in the frame
     i64 i = 24;
     loop {                        // loop/break
         i = i - 1;
-        st8(buf + i, '0' + v % 10);   // acesso a memoria por largura explicita
+        st8(buf + i, '0' + v % 10);   // memory access by explicit width
         v = v / 10;
         if (v == 0) break;
     }
-    write(1, buf + i, 24 - i);    // write vem de extern
+    write(1, buf + i, 24 - i);    // write comes from extern
 }
 
 i64 main(i64 argc, uptr argv) {
-    uptr first = ld64(argv);      // argv[0] sem sigilo: ld64 le 8 bytes
-    putnum(fib(24));              // imprime 46368
-    write(1, "\n", 1);            // string literal vale um uptr para __cstring
+    uptr first = ld64(argv);      // argv[0] with no sigil: ld64 reads 8 bytes
+    putnum(fib(24));              // prints 46368
+    write(1, "\n", 1);            // string literal is worth a uptr into __cstring
     return 0;
 }
 ```
 
-## Armadilhas de transliteração
+## Transliteration pitfalls
 
-Transliterar `stage0/*.c` função a função para `src/*.mc` (M6, `docs/specs/M6-M7.md`) esbarra em
-recursos do C que o núcleo do `.mc` não tem. Cada item abaixo é um caso real encontrado no
-`stage0`, com o contorno que ficou no `.mc`:
+Transliterating `stage0/*.c` function by function into `src/*.mc` (M6, `docs/specs/M6-M7.md`)
+runs into C features the `.mc` core doesn't have. Each item below is a real case found in
+`stage0`, with the workaround that ended up in `.mc`:
 
-- **`struct`** — não existe. Vira `#define CAMPO off` + acessoras `campo(p)`/`set_campo(p, v)` (ver
-  "Estilo obrigatório em mc.mc" acima) — regra desde a primeira linha de `arena.mc`.
-- **`?:`** — não existe. Vira `if` explícito atribuindo a mesma variável nos dois ramos:
-  `size_t cap = b->cap ? b->cap : 64;` (`stage0/arena.c`) virou
+- **`struct`** — doesn't exist. Becomes `#define FIELD off` + accessors
+  `field(p)`/`set_field(p, v)` (see "Mandatory style in mc.mc" above) — a rule since the first
+  line of `arena.mc`.
+- **`?:`** — doesn't exist. Becomes an explicit `if` assigning the same variable on both branches:
+  `size_t cap = b->cap ? b->cap : 64;` (`stage0/arena.c`) became
   `i64 cap = buf_cap(b); if (cap == 0) cap = 64;` (`src/arena.mc`).
-- **`for`** — não existe, só `loop { }` + `break N`/`continue`. `for (init; cond; step) corpo` vira
-  `init; loop { if (!cond) break; corpo; step; }`, com o "passo" escrito à mão no fim do corpo.
-- **`static`** (linkage interna + forward declaration) — `.mc` não tem unidades de tradução: tudo
-  entra por `#include` num só arquivo, então `static` não tem o que fazer e é descartado. A parte
-  que importa — declarar a assinatura antes da definição, para recursão mútua (`parse_expr`/
-  `parse_unary` em `stage0/parse.c`, `gen_stmt`/`gen_expr` em `stage0/gen_arm64.c`) — usa o
-  protótipo nativo do `.mc` (testado em `tests/042-proto.mc`, M5.5), não o idioma do C.
-- **comparação sem sinal** — `.mc` só tem comparação com sinal (ver § Tipos acima). O C usa
-  `size_t`/`u64` sem sinal para offset e capacidade o tempo todo; o contorno é a convenção
-  "endereços e tamanhos ficam sempre abaixo de 2^63" (documentada, não verificada em runtime), que
-  torna `<`/`<=`/etc. assinados equivalentes aos sem sinal do C para todo valor que aparece de
-  verdade em `arena.mc`/`gen_arm64.mc`/`macho.mc`.
-- **`++`/`--`** — não existem **no núcleo**. Sem o prelúdio, `i++` vira `i = i + 1` e `i--` vira
-  `i = i - 1` — mecânico, mas espalhado por todo loop transliterado. Com
-  `#include "../lib/prelude.mc"` (M9) `i++`/`i--`/`i += e`/`i -= e` passam a existir como quatro
-  `#rule`, e é isso que `src/macho.mc` usa hoje.
-- **literais de string adjacentes** — o C concatena `"a" "b"` em compile time; `.mc` não tem essa
-  regra. `out_str(2, "uso: mc0 ... " "entrada.mc [-o saida.o]\n");` (`stage0/main.c`) virou um
-  único literal em `src/main.mc`.
-- **`&arr[i]` (endereço de elemento indexado)** — `&` só aceita um nome direto (`&nome`), não uma
-  expressão indexada — `.mc` não tem `p[i]` nem `p->f` (§ Operadores acima). `Node *p =
-  &nodes[nnodes]; p->kind = k;` (`stage0/ast.c`, `node_new`) virou passar o **índice** adiante e
-  deixar as acessoras calcularem `base + índice*tamanho`: `set_nd_kind(nnodes, kind);`
-  (`src/ast.mc`) — nunca se materializa "o endereço do elemento", só o índice.
-- **`continue` dentro de `loop{}` sem passo separado** (vale igual para o `for` do prelúdio, § acima) — num `for` do C, `continue` roda o `step` e
-  reavalia a condição; `loop{}` não tem cláusula de passo, então um `continue` ingênuo pula
-  justamente o avanço que fecharia o laço (`e = nodes[e].next`, `i++`), podendo travar em loop
-  infinito. O contorno usado: eliminar o `continue` reescrevendo o `if (cond) { ...; continue; }`
-  seguido de mais código como `if (cond) { ... } else { ... }`, com o avanço (`e = nd_next(e);`)
-  incondicional no fim do corpo. Exemplo real: o `for` com `continue` de `stage0/gen_arm64.c` (globais
-  com ponteiro para string) virou o `if`/`else` com `e = nd_next(e)` ao final em `src/gen_arm64.mc`.
-- **`open` variádica → `creat`** — `open(path, flags, ...)` da libSystem é variádica (`...` para o
-  `mode`), e no ABI arm64 da Apple os argumentos variádicos viajam pela pilha — que o `.mc` não sabe
-  montar (só `x0..x7`). O contorno é usar `creat(path, mode)` para criar arquivo (sem variádico;
-  `open` sem `O_CREAT` continua servindo para leitura, com `mode` sempre 0) — ver o comentário em
-  `stage0/arena.c` e `src/arena.mc`.
+- **`for`** — doesn't exist, only `loop { }` + `break N`/`continue`. `for (init; cond; step) body`
+  becomes `init; loop { if (!cond) break; body; step; }`, with the "step" hand-written at the end
+  of the body.
+- **`static`** (internal linkage + forward declaration) — `.mc` has no translation units:
+  everything comes in via `#include` into a single file, so `static` has nothing to do and is
+  dropped. The part that matters — declaring a signature before its definition, for mutual
+  recursion (`parse_expr`/`parse_unary` in `stage0/parse.c`, `gen_stmt`/`gen_expr` in
+  `stage0/gen_arm64.c`) — uses `.mc`'s native prototype (tested in `tests/042-proto.mc`, M5.5),
+  not the C idiom.
+- **unsigned comparison** — `.mc` only has signed comparison (see § Types above). C uses
+  `size_t`/`u64` unsigned for offsets and capacity throughout; the workaround is the convention
+  "addresses and sizes always stay below 2^63" (documented, not checked at runtime), which makes
+  signed `<`/`<=`/etc. equivalent to C's unsigned ones for every value that actually shows up in
+  `arena.mc`/`gen_arm64.mc`/`macho.mc`.
+- **`++`/`--`** — don't exist **in the core**. Without the prelude, `i++` becomes `i = i + 1` and
+  `i--` becomes `i = i - 1` — mechanical, but scattered across every transliterated loop. With
+  `#include "../lib/prelude.mc"` (M9) `i++`/`i--`/`i += e`/`i -= e` exist as four `#rule`s, and
+  that's what `src/macho.mc` uses today.
+- **adjacent string literals** — C concatenates `"a" "b"` at compile time; `.mc` has no such rule.
+  `out_str(2, "uso: mc0 ... " "entrada.mc [-o saida.o]\n");` (`stage0/main.c`) became a single
+  literal in `src/main.mc`.
+- **`&arr[i]` (address of an indexed element)** — `&` only accepts a direct name (`&name`), not an
+  indexing expression — `.mc` has no `p[i]` or `p->f` (§ Operators above). `Node *p =
+  &nodes[nnodes]; p->kind = k;` (`stage0/ast.c`, `node_new`) became passing the **index** along
+  and letting the accessors compute `base + index*size`: `set_nd_kind(nnodes, kind);`
+  (`src/ast.mc`) — "the address of the element" is never materialized, only the index.
+- **`continue` inside a `loop{}` with no separate step clause** (equally true for the prelude's
+  `for`, § above) — in C's `for`, `continue` runs the `step` and re-evaluates the condition;
+  `loop{}` has no step clause, so a naive `continue` skips exactly the advance that would close
+  the loop (`e = nodes[e].next`, `i++`), which can hang in an infinite loop. The workaround used:
+  eliminate the `continue` by rewriting `if (cond) { ...; continue; }` followed by more code as
+  `if (cond) { ... } else { ... }`, with the advance (`e = nd_next(e);`) unconditional at the end
+  of the body. Real example: the `for` with `continue` in `stage0/gen_arm64.c` (globals with a
+  string pointer) became the `if`/`else` with `e = nd_next(e)` at the end in
+  `src/gen_arm64.mc`.
+- **variadic `open` → `creat`** — libSystem's `open(path, flags, ...)` is variadic (`...` for
+  `mode`), and in the arm64 Apple ABI variadic arguments travel on the stack — which `.mc`
+  doesn't know how to set up (only `x0..x7`). The workaround is using `creat(path, mode)` to
+  create a file (no variadic; `open` without `O_CREAT` still works for reading, with `mode`
+  always 0) — see the comment in `stage0/arena.c` and `src/arena.mc`.

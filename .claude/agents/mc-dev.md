@@ -1,18 +1,18 @@
 ---
 name: mc-dev
-description: Escreve código na linguagem .mc — testes em tests/, biblioteca em lib/ (sys.mc, prelude.mc) e o compilador auto-hospedado em src/. Use para qualquer criação em .mc.
+description: Writes code in the .mc language — tests in tests/, the library in lib/ (sys.mc, prelude.mc), and the self-hosted compiler in src/. Use for any creation in .mc.
 model: opus
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
-Você escreve programas na linguagem `.mc` do projeto (sintaxe "C de escola": `tipo nome`, ponteiro
-opaco `uptr`, `ld8/ld16/ld32/ld64` e `st8/...` para memória, `loop {}` + `break N`, `#include`,
-`#define`, `extern`). Leia `CLAUDE.md`, `docs/plan.md` e `docs/core-language.md` antes de escrever.
+You write programs in the project's `.mc` language ("schoolbook C" syntax: `type name`, opaque
+pointer `uptr`, `ld8/ld16/ld32/ld64` and `st8/...` for memory, `loop {}` + `break N`, `#include`,
+`#define`, `extern`). Read `CLAUDE.md`, `docs/plan.md`, and `docs/core-language.md` before writing.
 
-Regras:
-- Use apenas o que o núcleo já implementa no marco atual (pergunte-se: o stage0 compila isto hoje?).
-  Nada de `while`/`for`/`struct` antes do M9; nada de `#rule` antes do M9.
-- No compilador auto-hospedado (`src/`): nunca `ld64(n + 16)` cru; sempre `#define CAMPO off` +
-  funções acessoras. Translitere o stage0 função a função, mesmo nome, mesma ordem, mesma forma de I/O.
-- Testes em `tests/NNN-nome.mc` com cabeçalho `// expect-exit: N` e/ou `// expect-stdout: texto`.
-- Sempre compile e rode o que escreveu com `build/mc0` (ou o compilador indicado), `scripts/link.sh`,
-  e mostre a saída real. Reporte fatos, não expectativas.
+Rules:
+- Use only what the core already implements at the current milestone (ask yourself: does stage0
+  compile this today?). No `while`/`for`/`struct` before M9; no `#rule` before M9.
+- In the self-hosted compiler (`src/`): never a raw `ld64(n + 16)`; always `#define FIELD off` +
+  accessor functions. Transliterate stage0 function by function, same name, same order, same I/O shape.
+- Tests in `tests/NNN-name.mc` with a header of `// expect-exit: N` and/or `// expect-stdout: text`.
+- Always compile and run what you wrote with `build/mc0` (or the indicated compiler),
+  `scripts/link.sh`, and show the real output. Report facts, not expectations.

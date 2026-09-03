@@ -1,12 +1,12 @@
 #!/bin/sh
-# test-exe.sh COMPILADOR — a suite inteira pelo caminho sem `ld`: para cada
-# tests/*.mc compila com --exe direto para build/tests-exe/NOME, executa e
-# compara com o cabecalho do fonte, exatamente como scripts/test.sh faz pelo
-# caminho .o + ld:
-#   // expect-exit: N        (obrigatorio)
-#   // expect-stdout: TEXTO  (opcional)
-# Alem disso confere que o binario esta assinado ad-hoc (codesign --verify).
-# So o compilador em .mc tem --exe; o stage0 em C nao (docs/surface.md § Tier 2).
+# test-exe.sh COMPILER — the whole suite via the path with no `ld`: for each
+# tests/*.mc, compiles straight to build/tests-exe/NAME with --exe, runs it,
+# and compares against the source's header, exactly like scripts/test.sh does
+# via the .o + ld path:
+#   // expect-exit: N        (required)
+#   // expect-stdout: TEXT   (optional)
+# It also checks that the binary is signed ad hoc (codesign --verify).
+# Only the .mc compiler has --exe; stage0 in C does not (docs/surface.md § Tier 2).
 mc="${1:-build/mc1}"
 mkdir -p build/tests-exe
 fails=0

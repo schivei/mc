@@ -1,9 +1,9 @@
-# macho-notes.md — notas verificadas de Mach-O/AArch64
+# macho-notes.md — verified Mach-O/AArch64 notes
 
-Valores conferidos lendo `stage0/macho.c` (implementado e em uso desde M0) — não é transcrição do
-plano, é o que o código realmente escreve.
+Values verified by reading `stage0/macho.c` (implemented and in use since M0) — not a transcript
+of the plan, this is what the code actually writes.
 
-## Header e constantes
+## Header and constants
 
 ```c
 MH_MAGIC_64                 = 0xfeedfacf
@@ -17,79 +17,82 @@ LC_BUILD_VERSION             = 0x32
 N_UNDF = 0x00   N_EXT = 0x01   N_SECT = 0x0e
 ```
 
-Flags de seção usadas hoje: `S_REGULAR=0x0`, `S_ZEROFILL=0x1`, `S_CSTRING_LITERALS=0x2`,
-`S_ATTR_PURE_INSTRUCTIONS=0x80000000`, `S_ATTR_SOME_INSTRUCTIONS=0x00000400` (as duas últimas
-compostas em `TEXT_FLAGS`, `stage0/mc.h`).
+Section flags in use today: `S_REGULAR=0x0`, `S_ZEROFILL=0x1`, `S_CSTRING_LITERALS=0x2`,
+`S_ATTR_PURE_INSTRUCTIONS=0x80000000`, `S_ATTR_SOME_INSTRUCTIONS=0x00000400` (the last two
+combined into `TEXT_FLAGS`, `stage0/mc.h`).
 
-### Coalescing de `S_CSTRING_LITERALS` — por que `\0` embutido é proibido
+### `S_CSTRING_LITERALS` coalescing — why an embedded `\0` is forbidden
 
-O `ld` da Apple trata toda seção marcada `S_CSTRING_LITERALS` como um pool de strings C: ele pode
-fundir (coalesce) dois literais cujo conteúdo bata **até o primeiro `\0`**, para economizar espaço
-— é assim que dois `.o` diferentes com a mesma string literal acabam compartilhando um endereço
-depois do link. O `mc0` já faz a sua própria dedup (busca linear por conteúdo completo, byte a
-byte, `stage0/gen_arm64.c`) antes de gravar `__cstring`, então strings idênticas de um mesmo módulo
-já saem com um símbolo só (confirmado: duas chamadas a `puts("dup")` no mesmo arquivo produzem um
-único `l_str0` em `--dump-syms`, seção `__cstring` de 4 bytes). O problema é o caso que a dedup do
-`mc0` **não** vê da mesma forma que o `ld`: `mc0` compara os bytes inteiros (`"a\0b"` com 3 bytes
-de conteúdo é diferente de `"a"` com 1), mas o coalescing do `ld` só olha até o primeiro `\0` — nos
-bytes gravados, `"a\0b\0"` e `"a\0"` têm o mesmo prefixo até o primeiro NUL, e o `ld` os trataria
-como o mesmo literal, silenciosamente dando a eles o mesmo endereço. Como o `mc0` não replica essa
-regra de fusão do `ld` na sua própria dedup, o resultado divergiria do que o `mc0` "acha" que
-compilou. Por isso `\0` dentro de string literal é erro de compilação (M5.5, ver
-`docs/core-language.md`) em vez de um caso a mais na dedup.
+Apple's `ld` treats every section marked `S_CSTRING_LITERALS` as a C string pool: it can coalesce
+two literals whose content matches **up to the first `\0`**, to save space — this is how two
+different `.o` files with the same string literal end up sharing one address after linking. `mc0`
+already does its own dedup (a linear search by full content, byte for byte,
+`stage0/gen_arm64.c`) before writing `__cstring`, so identical strings from the same module
+already come out with a single symbol (confirmed: two calls to `puts("dup")` in the same file
+produce a single `l_str0` in `--dump-syms`, a 4-byte `__cstring` section). The problem is the case
+`mc0`'s dedup does **not** see the same way `ld` does: `mc0` compares the entire byte sequence
+(`"a\0b"` with 3 bytes of content is different from `"a"` with 1), but `ld`'s coalescing only
+looks up to the first `\0` — in the bytes written, `"a\0b\0"` and `"a\0"` share the same prefix up
+to the first NUL, and `ld` would treat them as the same literal, silently giving them the same
+address. Since `mc0` doesn't replicate `ld`'s merge rule in its own dedup, the result would
+diverge from what `mc0` "thinks" it compiled. That's why `\0` inside a string literal is a
+compile-time error (M5.5, see `docs/core-language.md`) instead of one more case in the dedup.
 
-`macho_write()` sempre emite **4 load commands** (`ncmds=4`): um único `LC_SEGMENT_64` (que carrega
-todas as seções do módulo), depois `LC_BUILD_VERSION`, `LC_SYMTAB`, `LC_DYSYMTAB`, nessa ordem.
+`macho_write()` always emits **4 load commands** (`ncmds=4`): a single `LC_SEGMENT_64` (which
+carries every section in the module), then `LC_BUILD_VERSION`, `LC_SYMTAB`, `LC_DYSYMTAB`, in that
+order.
 
-## Layout de endereços
+## Address layout
 
-Duas passadas sobre as seções: primeiro as regulares, na ordem em que foram criadas por `sec_new`
-(primeira seção criada = primeiro endereço), depois as `S_ZEROFILL`. Cada seção é alinhada a
-`1 << align` antes de somar seu tamanho ao VM acumulado. `filesz` do segmento é o VM logo antes de
-entrar nas seções zerofill — zerofill não ocupa espaço em arquivo, só VM.
+Two passes over the sections: first the regular ones, in the order `sec_new` created them (first
+section created = first address), then the `S_ZEROFILL` ones. Each section is aligned to
+`1 << align` before its size is added to the accumulated VM. The segment's `filesz` is the VM
+right before entering the zerofill sections — zerofill takes no file space, only VM.
 
-## Ordem das seções (`gen_sections`, M5.5)
+## Section order (`gen_sections`, M5.5)
 
-A ordem de **criação** por `sec_new` — que é também a ordem de endereço da seção anterior — segue
-sempre esta receita, fixa desde M5.5 (`stage0/gen_arm64.c:gen_sections`, comentário no próprio
-código: "`__text`, `__cstring`, `__data` e `__bss` (as que o módulo usa) e só depois as do
-`#section`, na ordem de primeira aparição no fonte"):
+The **creation** order via `sec_new` — which is also the address order of the previous section —
+always follows this recipe, fixed since M5.5 (`stage0/gen_arm64.c:gen_sections`, comment in the
+code itself: "`__text`, `__cstring`, `__data`, and `__bss` (whichever the module uses), and only
+then the `#section` ones, in order of first appearance in the source"):
 
-1. `__TEXT,__text` — sempre criada, mesmo vazia.
-2. `__TEXT,__cstring` (`S_CSTRING_LITERALS`) — só se o módulo tem alguma string literal.
-3. `__DATA,__data` — só se há global inicializada (escalar ou array) sem seção custom.
-4. `__DATA,__bss` (`S_ZEROFILL`) — só se há global sem inicializador sem seção custom.
-5. Seções custom declaradas por `#section`, na ordem da **primeira aparição** de cada uma no
-   fonte (registradas numa tabela linear própria; `#section` sem argumentos não conta como
-   aparição, só devolve ao default).
+1. `__TEXT,__text` — always created, even if empty.
+2. `__TEXT,__cstring` (`S_CSTRING_LITERALS`) — only if the module has a string literal.
+3. `__DATA,__data` — only if there's an initialized global (scalar or array) without a custom
+   section.
+4. `__DATA,__bss` (`S_ZEROFILL`) — only if there's an uninitialized global without a custom
+   section.
+5. Custom sections declared via `#section`, in order of each one's **first appearance** in the
+   source (registered in their own linear table; `#section` with no arguments doesn't count as an
+   appearance, it only returns to the default).
 
-Confirmado com `--dump-syms` de verdade: `tests/030-section.mc` (que usa `__DATA,__tbl`,
-`__DATA,__zt` e `__TEXT,__hot` via `#section`) produz, nessa ordem exata, `__TEXT,__text` →
-`__DATA,__data` → `__DATA,__tbl` → `__DATA,__zt` → `__TEXT,__hot`; `tests/040-arrinit.mc` (sem
-`#section`, com strings e array inicializado) produz `__TEXT,__text` → `__TEXT,__cstring` →
-`__DATA,__data`; `tests/024-arena.mc` (array global sem inicializador) produz `__TEXT,__text` →
+Confirmed with a real `--dump-syms`: `tests/030-section.mc` (which uses `__DATA,__tbl`,
+`__DATA,__zt`, and `__TEXT,__hot` via `#section`) produces, in that exact order, `__TEXT,__text` →
+`__DATA,__data` → `__DATA,__tbl` → `__DATA,__zt` → `__TEXT,__hot`; `tests/040-arrinit.mc` (no
+`#section`, with strings and an initialized array) produces `__TEXT,__text` → `__TEXT,__cstring`
+→ `__DATA,__data`; `tests/024-arena.mc` (uninitialized global array) produces `__TEXT,__text` →
 `__DATA,__data` → `__DATA,__bss`.
 
-## Relocações — 4 tipos + o modificador `ADDEND`
+## Relocations — 4 types + the `ADDEND` modifier
 
 ```c
-R_UNSIGNED   = 0   // ponteiro em __data, len=3 (2^3 = 8 bytes)
-R_SUBTRACTOR = 1   // reservado no enum, sem uso ainda
+R_UNSIGNED   = 0   // pointer in __data, len=3 (2^3 = 8 bytes)
+R_SUBTRACTOR = 1   // reserved in the enum, unused so far
 R_BRANCH26   = 2   // bl
-R_PAGE21     = 3   // adrp — parte alta de endereco de string/global/array
-R_PAGEOFF12  = 4   // add/ldr — parte baixa
-R_ADDEND     = 10  // precede outra reloc quando ha soma constante (addend)
+R_PAGE21     = 3   // adrp — high part of a string/global/array address
+R_PAGEOFF12  = 4   // add/ldr — low part
+R_ADDEND     = 10  // precedes another reloc when there's a constant sum (addend)
 ```
 
-Essas mesmas quatro constantes (`UNSIGNED BRANCH26 PAGE21 PAGEOFF12`) ficam pré-definidas na
-tabela de `#define` da superfície para uso em `reloc(TIPO, "simbolo")` (`docs/surface.md`).
+These same four constants (`UNSIGNED BRANCH26 PAGE21 PAGEOFF12`) are predefined in the surface's
+`#define` table for use in `reloc(TYPE, "symbol")` (`docs/surface.md`).
 
-### `R_UNSIGNED` em `__data` — inicializador de array global de `uptr`
+### `R_UNSIGNED` in `__data` — a global `uptr` array initializer
 
-Desde M5.5, um elemento string literal dentro de `tipo v[] = {...}` grava 8 bytes zero em
-`__data` e prende uma relocação `R_UNSIGNED` (len=3, pcrel=0, extern=1) nesse offset, apontando
-para o símbolo local `l_strN` daquela string em `__cstring` — é o `ld`, na hora de linkar, que
-resolve o ponteiro somando o endereço final de `l_strN`. Confirmado com `otool -r` de
+Since M5.5, a string-literal element inside `type v[] = {...}` writes 8 zero bytes in `__data`
+and pins an `R_UNSIGNED` relocation (len=3, pcrel=0, extern=1) at that offset, pointing at the
+local symbol `l_strN` for that string in `__cstring` — it's `ld`, at link time, that resolves the
+pointer by adding `l_strN`'s final address. Confirmed with `otool -r` on
 `tests/040-arrinit.mc` (`uptr names[] = {"zero", "um", "dois"};`):
 
 ```
@@ -100,11 +103,12 @@ address  pcrel length extern type    scattered symbolnum/value
 00000000 0     3      1      0       0         0
 ```
 
-`type=0` é `R_UNSIGNED`, `length=3` é 8 bytes, `pcrel=0` (endereço absoluto, não relativo ao PC) —
-uma reloc por ponteiro do array, em ordem decrescente de endereço (regra geral da seção anterior).
+`type=0` is `R_UNSIGNED`, `length=3` is 8 bytes, `pcrel=0` (absolute address, not PC-relative) —
+one reloc per array pointer, in decreasing address order (the general rule from the previous
+section).
 
-Cada relocação são 8 bytes: offset (u32) + palavra de bits (u32), LE, layout
-`symbolnum:24 | pcrel:1 | length:2 | extern:1 | type:4` (bit 0 ao 31), escrita assim em
+Each relocation is 8 bytes: offset (u32) + bitfield word (u32), LE, layout
+`symbolnum:24 | pcrel:1 | length:2 | extern:1 | type:4` (bit 0 through 31), written like this in
 `macho_write()`:
 
 ```c
@@ -112,25 +116,26 @@ buf_u32(&o, r->off);
 buf_u32(&o, (symnum & 0xffffff) | (pcrel << 24) | (len << 25) | (ext << 27) | (type << 28));
 ```
 
-`symnum` é o índice do símbolo **na ordem final da symtab**, não o índice de criação — por isso
-`macho_write` monta `pos[]` (índice de criação → posição final) antes de emitir relocações.
-`ext=0` só quando `type == R_ADDEND` (usa o valor cru do addend em vez de um índice de símbolo).
-Relocações são emitidas em **ordem decrescente de endereço** dentro de cada seção — mesmo
-comportamento do `clang`/`ld` da Apple, importante para golden-matching (M7).
+`symnum` is the symbol's index in the symtab's **final order**, not its creation index — that's
+why `macho_write` builds `pos[]` (creation index → final position) before emitting relocations.
+`ext=0` only when `type == R_ADDEND` (uses the addend's raw value instead of a symbol index).
+Relocations are emitted in **decreasing address order** within each section — the same behavior
+as Apple's `clang`/`ld`, important for golden-matching (M7).
 
-## Ordem da symtab
+## Symtab order
 
-Partição estável em 3 classes, sempre nesta ordem: **locais → externos definidos → indefinidos**
-(`sym_class`: `sect==0` → indefinido; senão `global` → externo; senão local). `LC_DYSYMTAB` descreve
-os índices dessa partição: `ilocalsym=0`, `nlocalsym=count[local]`, `iextdefsym=count[local]`,
-`nextdefsym=count[extern]`, `iundefsym=count[local]+count[extern]`, `nundefsym=count[undef]`.
-`n_sect` é 1-based (seção 0 = "nenhuma"; símbolos indefinidos usam `n_sect=0`). A string table
-começa com um `\0` e é preenchida (`buf_pad`) até múltiplo de 8.
+A stable partition into 3 classes, always in this order: **locals → defined externs →
+undefined** (`sym_class`: `sect==0` → undefined; else `global` → extern; else local).
+`LC_DYSYMTAB` describes this partition's indices: `ilocalsym=0`, `nlocalsym=count[local]`,
+`iextdefsym=count[local]`, `nextdefsym=count[extern]`,
+`iundefsym=count[local]+count[extern]`, `nundefsym=count[undef]`. `n_sect` is 1-based (section 0
+= "none"; undefined symbols use `n_sect=0`). The string table starts with a `\0` and is padded
+(`buf_pad`) to a multiple of 8.
 
-## `LC_BUILD_VERSION` obrigatório
+## `LC_BUILD_VERSION` is mandatory
 
-Sem essa load command o `ld` moderno recusa o `.o` (comportamento observado no M0). Valores
-hardcoded em `macho.c` (regra de determinismo 4 — nada de ler versão do SDK instalado em runtime):
+Without this load command, the modern `ld` refuses the `.o` (behavior observed at M0). Values
+hardcoded in `macho.c` (determinism rule 4 — never read the installed SDK's version at runtime):
 `platform=1` (macOS), `minos=0x000D0000` (13.0.0), `sdk=0x000D0000` (13.0.0), `ntools=0`.
 
 ## Link
@@ -139,15 +144,15 @@ hardcoded em `macho.c` (regra de determinismo 4 — nada de ler versão do SDK i
 ```sh
 ld -arch arm64 -platform_version macos 13.0 13.0 -syslibroot "$(xcrun --show-sdk-path)" -lSystem -o "$out" "$@"
 ```
-`ld` continua permitido mesmo depois do corte do cordão (M8) — só `gcc`/`cc`/`clang` ficam de fora
-(o stage0 é a única coisa compilada por `clang`, uma única vez).
+`ld` remains allowed even after the cord is cut (M8) — only `gcc`/`cc`/`clang` are left out (
+stage0 is the only thing compiled by `clang`, exactly once).
 
 ## Syscalls (`x16` + `svc #0x80`)
 
-Convenção BSD/Darwin arm64: número da syscall em `x16`, argumentos em `x0..x5`, `svc #0x80`,
-resultado em `x0`. Números usados hoje (verificados contra `sys/syscall.h` do SDK):
+BSD/Darwin arm64 convention: syscall number in `x16`, arguments in `x0..x5`, `svc #0x80`, result
+in `x0`. Numbers used today (verified against the SDK's `sys/syscall.h`):
 
-| Syscall | Número |
+| Syscall | Number |
 |---|---|
 | `exit`  | 1 |
 | `read`  | 3 |
@@ -155,40 +160,42 @@ resultado em `x0`. Números usados hoje (verificados contra `sys/syscall.h` do S
 | `open`  | 5 |
 | `close` | 6 |
 
-`m05()` em `stage0/main.c` já usa isso: `mov x16, #4` + `svc #0x80` para `write`, `mov x16, #1` +
-`svc #0x80` para `exit`.
+`m05()` in `stage0/main.c` already uses this: `mov x16, #4` + `svc #0x80` for `write`,
+`mov x16, #1` + `svc #0x80` for `exit`.
 
-## Achado empírico do M0.5: binário estático é morto pelo kernel
+## Empirical finding from M0.5: a static binary is killed by the kernel
 
-Testado: gerar o `.o` de M0.5 e linkar **estático** (`ld -static -e _start ...`), que produz um
-executável com `LC_UNIXTHREAD` como ponto de entrada. Resultado: o processo é morto com **SIGKILL**
-pelo kernel logo ao iniciar — mesmo depois de `codesign -s - <binário>` (assinatura ad-hoc). O
-mesmo `.o`, linkado **dinamicamente** (`ld -e _start -lSystem -syslibroot ... -o out out.o`, o
-caminho que `scripts/link.sh` implementa), roda normalmente e o `svc` funciona como esperado.
+Tested: generate the M0.5 `.o` and link it **statically** (`ld -static -e _start ...`), which
+produces an executable with `LC_UNIXTHREAD` as its entry point. Result: the process is killed
+with **SIGKILL** by the kernel right at startup — even after `codesign -s - <binary>` (an ad-hoc
+signature). The same `.o`, linked **dynamically** (`ld -e _start -lSystem -syslibroot ... -o out out.o`,
+the path `scripts/link.sh` implements), runs normally and `svc` works as expected.
 
-**Conclusão:** o macOS atual (Xcode 26 / ld-1267, darwin arm64) não aceita mais executáveis Mach-O
-totalmente estáticos, mesmo ad-hoc assinados — dyld/`LC_LOAD_DYLINKER` é obrigatório. Usar sempre
-`-lSystem`/dyld para linkar (`scripts/link.sh` já faz isso); syscalls crus (`x16` + `svc`) continuam
-funcionando normalmente sob dyld — a restrição é sobre o binário ser estático, não sobre emitir
-`svc` diretamente. Isso implica que M11 (executável direto, `MH_EXECUTE`) precisa sempre incluir
-`LC_LOAD_DYLINKER` + `LC_LOAD_DYLIB libSystem`, como já está no critério de aceite do M11 no plano.
+**Conclusion:** today's macOS (Xcode 26 / ld-1267, darwin arm64) no longer accepts fully static
+Mach-O executables, even ad-hoc signed ones — dyld/`LC_LOAD_DYLINKER` is mandatory. Always link
+with `-lSystem`/dyld (`scripts/link.sh` already does this); raw syscalls (`x16` + `svc`) keep
+working fine under dyld — the restriction is about the binary being static, not about emitting
+`svc` directly. This implies M11 (direct executable, `MH_EXECUTE`) always needs to include
+`LC_LOAD_DYLINKER` + `LC_LOAD_DYLIB libSystem`, as already stated in M11's acceptance criteria in
+the plan.
 
-## M11 — executável direto (`MH_EXECUTE`), sem `ld`
+## M11 — direct executable (`MH_EXECUTE`), without `ld`
 
-Tudo abaixo foi conferido nos binários que `src/backend_exe.mc` realmente escreve (`otool -l`,
-`otool -s`, `nm -m`, `xxd`, `codesign -dvvv`), comparado campo a campo com a referência produzida
-por `ld` (`build/mc1 tests/001-return42.mc -o t.o && scripts/link.sh t t.o`). O `ld` moderno usa
-*chained fixups*; para ter uma referência do formato clássico que o M11 escreve, gere-a com
-`ld ... -no_fixup_chains` — ela produz `LC_DYLD_INFO_ONLY` e `__stubs`, e roda normalmente. Isso
-prova, de saída, que o `dyld` deste macOS (Darwin 25.6) ainda aceita bind/rebase por opcodes.
+Everything below was verified against the binaries `src/backend_exe.mc` actually writes
+(`otool -l`, `otool -s`, `nm -m`, `xxd`, `codesign -dvvv`), compared field by field with the
+reference produced by `ld` (`build/mc1 tests/001-return42.mc -o t.o && scripts/link.sh t t.o`).
+The modern `ld` uses *chained fixups*; to get a reference in the classic format that M11 writes,
+generate it with `ld ... -no_fixup_chains` — it produces `LC_DYLD_INFO_ONLY` and `__stubs`, and
+runs normally. This proves, as a side effect, that this macOS's `dyld` (Darwin 25.6) still
+accepts bind/rebase via opcodes.
 
-### Layout de segmentos
+### Segment layout
 
-Um `LC_SEGMENT_64` por **nome de segname distinto** entre as seções do módulo, na ordem de primeira
-aparição — como `__TEXT,__text` é sempre a primeira seção criada por `gen_sections`, `__TEXT` é
-sempre o primeiro. `__DATA` é criado mesmo sem globais quando há símbolo importado (é onde mora o
-`__got`). Dentro de cada segmento: seções regulares na ordem de criação, `S_ZEROFILL` no fim — a
-mesma regra de `macho_write`.
+One `LC_SEGMENT_64` per **distinct segname** among the module's sections, in order of first
+appearance — since `__TEXT,__text` is always the first section `gen_sections` creates, `__TEXT`
+is always first. `__DATA` is created even without globals when there's an imported symbol (that's
+where `__got` lives). Inside each segment: regular sections in creation order, `S_ZEROFILL` last
+— the same rule `macho_write` follows.
 
 ```
 __PAGEZERO   vmaddr 0            vmsize 0x100000000   fileoff 0      filesize 0       prot 0
@@ -197,85 +204,85 @@ __DATA       vmaddr 0x100004000  vmsize 0x4000        fileoff 16384  filesize 16
 __LINKEDIT   vmaddr 0x100008000  vmsize 0x4000        fileoff 32768  filesize 586     prot 1 (r--)
 ```
 
-(valores reais de `build/mc1 --exe tests/021-strings.mc`). Regras confirmadas:
+(real values from `build/mc1 --exe tests/021-strings.mc`). Confirmed rules:
 
-- **Página de 16 KiB** (`vm_page_size` do arm64): `vmaddr` e `fileoff` de todo segmento são
-  múltiplos de 16384. `filesize` é o conteúdo regular arredondado para cima (o arquivo é preenchido
-  com zeros até lá); `vmsize` é o conteúdo total, incluindo zerofill, arredondado para cima.
-- **VM e arquivo andam separados.** O próximo segmento tem `vmaddr = vmaddr + vmsize` e
-  `fileoff = fileoff + filesize` do anterior, calculados independentemente — é o que permite um
-  `__bss` de 32 MiB (`heap[]` de `src/arena.mc`) sem 32 MiB de arquivo. Confirmado no `ld`:
-  `build/mc1` tem `__DATA` com `vmsize 0x2030000` e `filesize 16384`, e `__LINKEDIT` em
+- **16 KiB page** (arm64's `vm_page_size`): every segment's `vmaddr` and `fileoff` are multiples
+  of 16384. `filesize` is the regular content rounded up (the file is padded with zeros up to
+  there); `vmsize` is the total content, zerofill included, rounded up.
+- **VM and file advance separately.** The next segment has `vmaddr = vmaddr + vmsize` and
+  `fileoff = fileoff + filesize` of the previous one, computed independently — that's what allows
+  a 32 MiB `__bss` (`heap[]` in `src/arena.mc`) without a 32 MiB file. Confirmed against `ld`:
+  `build/mc1` has `__DATA` with `vmsize 0x2030000` and `filesize 16384`, and `__LINKEDIT` at
   `vmaddr 0x10205c000` = `0x10002c000 + 0x2030000`.
-- **O header mora dentro do `__TEXT`**: `__TEXT` começa em `fileoff 0` e a primeira seção começa em
-  `32 + sizeofcmds`, arredondado para o alinhamento dela.
-- **`entryoff` do `LC_MAIN` é o offset em arquivo de `_main`.** Como `__TEXT` tem `fileoff 0` e
-  `vmaddr = 0x100000000`, é simplesmente `addr(_main) - 0x100000000`. O `dyld`/`libdyld` chama esse
-  endereço como `main(argc, argv, envp, apple)` e faz `exit(retorno)` — é por isso que um
-  `i64 main()` que devolve 42 dá `$? == 42` sem nenhum `_start` escrito à mão.
+- **The header lives inside `__TEXT`**: `__TEXT` starts at `fileoff 0` and the first section
+  starts at `32 + sizeofcmds`, rounded up to its own alignment.
+- **`LC_MAIN`'s `entryoff` is `_main`'s file offset.** Since `__TEXT` has `fileoff 0` and
+  `vmaddr = 0x100000000`, it's simply `addr(_main) - 0x100000000`. `dyld`/`libdyld` calls that
+  address as `main(argc, argv, envp, apple)` and does `exit(return value)` — which is why an
+  `i64 main()` that returns 42 gives `$? == 42` without any hand-written `_start`.
 
-Flags do header: `MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL | MH_PIE` = `0x200085`. O `ld` põe
-`MH_NOUNDEFS` mesmo com símbolos importados (conferido com `otool -hv` na referência) — a flag
-significa "nada ficou por resolver no link", não "não há símbolo indefinido na symtab".
+Header flags: `MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL | MH_PIE` = `0x200085`. `ld` sets
+`MH_NOUNDEFS` even with imported symbols (confirmed with `otool -hv` on the reference) — the flag
+means "nothing was left unresolved by the link", not "there's no undefined symbol in the symtab".
 
-### Load commands (13, nesta ordem)
+### Load commands (13, in this order)
 
-`LC_SEGMENT_64` ×4 · `LC_DYLD_INFO_ONLY` · `LC_SYMTAB` · `LC_DYSYMTAB` · `LC_LOAD_DYLINKER` ·
+`LC_SEGMENT_64` x4 · `LC_DYLD_INFO_ONLY` · `LC_SYMTAB` · `LC_DYSYMTAB` · `LC_LOAD_DYLINKER` ·
 `LC_UUID` · `LC_BUILD_VERSION` · `LC_MAIN` · `LC_LOAD_DYLIB` · `LC_CODE_SIGNATURE`.
 
 ```c
 LC_DYLD_INFO_ONLY = 0x80000022   /* 0x22 | LC_REQ_DYLD */   cmdsize 48
-LC_LOAD_DYLINKER  = 0x0e   cmdsize 32   name "/usr/lib/dyld" no offset 12
+LC_LOAD_DYLINKER  = 0x0e   cmdsize 32   name "/usr/lib/dyld" at offset 12
 LC_UUID           = 0x1b   cmdsize 24
 LC_MAIN           = 0x80000028   cmdsize 24   entryoff u64, stacksize u64 = 0
-LC_LOAD_DYLIB     = 0x0c   cmdsize 56   "/usr/lib/libSystem.B.dylib" no offset 24,
+LC_LOAD_DYLIB     = 0x0c   cmdsize 56   "/usr/lib/libSystem.B.dylib" at offset 24,
                                         timestamp 2, current 1356.0.0, compat 1.0.0
 LC_CODE_SIGNATURE = 0x1d   cmdsize 16   dataoff, datasize
 ```
 
-`LC_LOAD_DYLINKER` + `LC_LOAD_DYLIB` são obrigatórios: o achado empírico do M0.5 (seção anterior) é
-que binário estático é morto pelo kernel mesmo assinado. `LC_BUILD_VERSION` sai com `ntools = 0`
-(cmdsize 24), ao contrário do `ld`, que anexa uma entrada de ferramenta (cmdsize 32) — o `dyld` não
-se importa e `ntools=0` é mais determinístico (nada de versão de linker no arquivo).
+`LC_LOAD_DYLINKER` + `LC_LOAD_DYLIB` are mandatory: the empirical finding from M0.5 (previous
+section) is that a static binary gets killed by the kernel even when signed. `LC_BUILD_VERSION`
+comes out with `ntools = 0` (cmdsize 24), unlike `ld`, which appends a tool entry (cmdsize 32) —
+`dyld` doesn't care, and `ntools=0` is more deterministic (no linker version in the file).
 
-### `__stubs` e `__got` — chamada a símbolo importado
+### `__stubs` and `__got` — calling an imported symbol
 
-Cada símbolo indefinido ganha um stub de 12 bytes em `__TEXT,__stubs` e um slot de 8 bytes em
-`__DATA,__got`. Todo `BRANCH26` para um símbolo indefinido é resolvido para o **endereço do stub**;
-`PAGE21`/`PAGEOFF12` para um indefinido também apontam para o stub, o que faz `&write` passar a
-funcionar no executável direto (no `.o` + `ld` ele ainda é o limite conhecido do M10, ver
+Every undefined symbol gets a 12-byte stub in `__TEXT,__stubs` and an 8-byte slot in
+`__DATA,__got`. Every `BRANCH26` to an undefined symbol is resolved to the **stub's address**;
+`PAGE21`/`PAGEOFF12` for an undefined symbol also point at the stub, which is what makes `&write`
+work in the direct executable (in `.o` + `ld` it's still M10's known limit, see
 `docs/core-language.md`).
 
 ```
-__TEXT,__stubs   flags 0x80000408 (S_SYMBOL_STUBS|PURE|SOME)  reserved2 = 12 (tamanho do stub)
+__TEXT,__stubs   flags 0x80000408 (S_SYMBOL_STUBS|PURE|SOME)  reserved2 = 12 (stub size)
 __DATA,__got     flags 0x00000006 (S_NON_LAZY_SYMBOL_POINTERS)
 ```
 
-O conteúdo do stub, conferido com `otool -s __TEXT __stubs`:
+The stub's content, verified with `otool -s __TEXT __stubs`:
 
 ```
 0000000100000000  90000030 f9400210 d61f0200
-                  adrp x16, pagina do slot
+                  adrp x16, slot's page
                            ldr  x16, [x16, #off]
                                     br   x16
 ```
 
-`reserved1` é o índice na tabela de símbolos indiretos; ela lista os importados **duas vezes**,
-primeiro para `__stubs` (`reserved1 = 0`) e depois para `__got` (`reserved1 = nundef`), cada entrada
-sendo o índice do símbolo na symtab final. O `dyld` moderno não a usa (quem preenche o `__got` são
-os bind opcodes), mas `nm -m`/`otool` sim.
+`reserved1` is the index into the indirect symbol table; it lists the imported symbols **twice**,
+first for `__stubs` (`reserved1 = 0`) and then for `__got` (`reserved1 = nundef`), each entry
+being the symbol's index in the final symtab. The modern `dyld` doesn't use it (the bind opcodes
+are what fill `__got`), but `nm -m`/`otool` do.
 
-Símbolo indefinido na symtab: `n_type = N_UNDF|N_EXT`, `n_sect = 0`, **`n_desc = 0x0100`** — os bits
-8..15 do `n_desc` são o ordinal da dylib no espaço de nomes de dois níveis (`MH_TWOLEVEL`), e 1 é o
-único `LC_LOAD_DYLIB` do arquivo. Conferido na referência do `ld` (`xxd` da symtab: `_write` sai com
-`n_desc` `00 01` little-endian) e no resultado: `nm -m` mostra `(undefined) external _write (from
-libSystem)`.
+Undefined symbol in the symtab: `n_type = N_UNDF|N_EXT`, `n_sect = 0`,
+**`n_desc = 0x0100`** — bits 8..15 of `n_desc` are the dylib's ordinal in the two-level namespace
+(`MH_TWOLEVEL`), and 1 is the file's only `LC_LOAD_DYLIB`. Confirmed against `ld`'s reference
+(`xxd` of the symtab: `_write` comes out with `n_desc` `00 01` little-endian) and in the result:
+`nm -m` shows `(undefined) external _write (from libSystem)`.
 
-### Bind e rebase (`LC_DYLD_INFO_ONLY`)
+### Bind and rebase (`LC_DYLD_INFO_ONLY`)
 
-Só `rebase_off/size` e `bind_off/size`; `weak`, `lazy` e `export` ficam zerados (todo bind é
-imediato, e um executável não precisa exportar nada). Bytes reais de `tests/021-strings.mc`, que
-importa só `_write`:
+Only `rebase_off/size` and `bind_off/size`; `weak`, `lazy`, and `export` stay zeroed (every bind
+is immediate, and an executable doesn't need to export anything). Real bytes from
+`tests/021-strings.mc`, which only imports `_write`:
 
 ```
 $ xxd -s 32768 -l 14 tmp/e-021-strings
@@ -287,11 +294,11 @@ $ xxd -s 32768 -l 14 tmp/e-021-strings
                                         0x90 DO_BIND
 ```
 
-É byte a byte a mesma forma que o `ld` emite (conferido no `-no_fixup_chains`, que produz
-`1140 "dyld_stub_binder" 0051 7200 9000` para o binder preguiçoso dele).
+This is byte for byte the same shape `ld` emits (confirmed with `-no_fixup_chains`, which
+produces `1140 "dyld_stub_binder" 0051 7200 9000` for its own lazy binder).
 
-Rebase de `tests/040-arrinit.mc` (`uptr names[] = {"zero", "um", "dois"}` — três `R_UNSIGNED` em
-`__data`):
+Rebase from `tests/040-arrinit.mc` (`uptr names[] = {"zero", "um", "dois"}` — three
+`R_UNSIGNED` in `__data`):
 
 ```
 $ xxd -s 32768 -l 11 tmp/e-040-arrinit
@@ -300,66 +307,69 @@ $ xxd -s 32768 -l 11 tmp/e-040-arrinit
  \_ 0x11 REBASE_OPCODE_SET_TYPE_IMM 1 (REBASE_TYPE_POINTER)   ... off=8 ... off=16 ... 0x00 DONE
 ```
 
-O `__data` correspondente guarda o endereço **sem o slide** e o `dyld` soma o slide no rebase:
+The corresponding `__data` holds the address **without the slide**, and `dyld` adds the slide
+during rebase:
 
 ```
 $ otool -s __DATA __data tmp/e-040-arrinit
 0000000100004000  000006d8 00000001 000006dd 00000001 000006e0 00000001 ...
 ```
 
-(`0x1000006d8`, `0x1000006dd`, `0x1000006e0` são os três literais em `__cstring`.) Sem a entrada de
-rebase o ponteiro apontaria para o lugar errado assim que o ASLR desse um slide — testado rodando o
-binário três vezes seguidas, com stdout igual nas três.
+(`0x1000006d8`, `0x1000006dd`, `0x1000006e0` are the three `__cstring` literals.) Without the
+rebase entry the pointer would point to the wrong place as soon as ASLR applied a slide — tested
+by running the binary three times in a row, with identical stdout each time.
 
-Um `R_UNSIGNED` numa seção de segmento **não gravável** é recusado com
-`ponteiro relocado em __TEXT: o segmento e r-x e o dyld nao o rebasa` — não há como o `dyld`
-escrever ali, e um erro claro é melhor que um SIGKILL.
+An `R_UNSIGNED` in a segment section that is **not writable** is refused with
+`relocated pointer in __TEXT: the segment is r-x and dyld will not rebase it` — there's no way
+for `dyld` to write there, and a clear error beats a SIGKILL.
 
-### Resolução das quatro relocações
+### Resolving the four relocations
 
-Feita pelo próprio `mc`, patchando a palavra já encodada na seção:
+Done by `mc` itself, patching the already-encoded word in the section:
 
-| tipo | conta |
+| type | how it's computed |
 |---|---|
-| `BRANCH26` | `imm26 = (alvo - pc) / 4`, ±128 MiB; grava nos 26 bits baixos do `bl` |
-| `PAGE21` | `imm = (pagina(alvo) - pagina(pc)) / 4096`; `immlo` nos bits 29:30, `immhi` nos bits 5:23 do `adrp` |
-| `PAGEOFF12` | `imm12 = alvo & 0xfff` para `add`; para `ldr`/`str` com deslocamento sem sinal (`(w & 0x3b000000) == 0x39000000`), dividido pela largura do acesso (bits 31:30) |
-| `UNSIGNED` | 8 bytes com o endereço absoluto sem slide + entrada de rebase (ou bind, se o símbolo for importado) |
+| `BRANCH26` | `imm26 = (target - pc) / 4`, ±128 MiB; written into the low 26 bits of the `bl` |
+| `PAGE21` | `imm = (page(target) - page(pc)) / 4096`; `immlo` in bits 29:30, `immhi` in bits 5:23 of the `adrp` |
+| `PAGEOFF12` | `imm12 = target & 0xfff` for `add`; for `ldr`/`str` with an unsigned offset (`(w & 0x3b000000) == 0x39000000`), divided by the access width (bits 31:30) |
+| `UNSIGNED` | 8 bytes with the absolute address without a slide + a rebase entry (or bind, if the symbol is imported) |
 
-`R_ADDEND` e `R_SUBTRACTOR` são recusados: o núcleo nunca os emite (ver a seção de relocações
-acima) e a superfície só predefine `UNSIGNED BRANCH26 PAGE21 PAGEOFF12`.
+`R_ADDEND` and `R_SUBTRACTOR` are refused: the core never emits them (see the relocations
+section above) and the surface only predefines `UNSIGNED BRANCH26 PAGE21 PAGEOFF12`.
 
-### Assinatura ad-hoc (`LC_CODE_SIGNATURE`)
+### Ad-hoc signature (`LC_CODE_SIGNATURE`)
 
-Sem assinatura o kernel mata o processo. O blob fica no fim do `__LINKEDIT`, alinhado a 16, e é a
-última coisa do arquivo. Todo campo é **big-endian** — ao contrário de todo o resto do Mach-O.
+Without a signature, the kernel kills the process. The blob sits at the end of `__LINKEDIT`,
+aligned to 16, and is the last thing in the file. Every field is **big-endian** — unlike the rest
+of Mach-O.
 
 ```
 CS_SuperBlob   magic 0xfade0cc0, length, count = 1
   CS_BlobIndex type 0 (CSSLOT_CODEDIRECTORY), offset 20
-CS_CodeDirectory (em +20)   magic 0xfade0c02
-  version       0x20400        <- versao que tem execSeg*
+CS_CodeDirectory (at +20)   magic 0xfade0c02
+  version       0x20400        <- the version that has execSeg*
   flags         0x2 (CS_ADHOC)
-  hashOffset    88 + len(identificador)+1
-  identOffset   88             <- tamanho fixo do cabecalho da v0x20400
+  hashOffset    88 + len(identifier)+1
+  identOffset   88             <- fixed header size for v0x20400
   nSpecialSlots 0
   nCodeSlots    ceil(codeLimit / 4096)
-  codeLimit     offset do proprio blob no arquivo
+  codeLimit     the blob's own file offset
   hashSize 32 · hashType 2 (SHA-256) · platform 0 · pageSize 12 (1<<12 = 4 KiB)
   spare2, scatterOffset, teamOffset, spare3, codeLimit64 = 0
-  execSegBase   fileoff do __TEXT (0)
-  execSegLimit  filesize do __TEXT
+  execSegBase   __TEXT's fileoff (0)
+  execSegLimit  __TEXT's filesize
   execSegFlags  1 (CS_EXECSEG_MAIN_BINARY)
-  identificador NUL-terminado, depois nCodeSlots hashes de 32 bytes
+  NUL-terminated identifier, followed by nCodeSlots 32-byte hashes
 ```
 
-Os offsets `identOffset = 88` e `hashOffset = 90` (identificador `"t\0"`) foram lidos byte a byte de
-uma assinatura do `ld` com `xxd`, e o `execSegLimit = filesize do __TEXT` de uma assinatura do
-`codesign -f -s -` (o `ld`, na assinatura *linker-signed*, escreve ali o tamanho do `__text`, não do
-segmento — funciona, mas o `codesign` é a referência melhor). Cada slot é o SHA-256 de uma página de
-4 KiB **do arquivo**, com a última página parcial (o hash cobre só até `codeLimit`).
+The offsets `identOffset = 88` and `hashOffset = 90` (identifier `"t\0"`) were read byte by byte
+from an `ld` signature with `xxd`, and `execSegLimit = __TEXT's filesize` from a
+`codesign -f -s -` signature (`ld`, in its *linker-signed* signature, writes `__text`'s size
+there, not the segment's — it works, but `codesign` is the better reference). Each slot is the
+SHA-256 of a 4 KiB page **of the file**, with the last page partial (the hash only covers up to
+`codeLimit`).
 
-Resultado:
+Result:
 
 ```
 $ codesign -dvvv tmp/t1
@@ -373,20 +383,20 @@ tmp/t1: valid on disk
 tmp/t1: satisfies its Designated Requirement
 ```
 
-O identificador é o **basename do arquivo de saída** (`-o tmp/t1` → `t1`), a mesma convenção do
-`codesign`.
+The identifier is the **basename of the output file** (`-o tmp/t1` → `t1`), the same convention
+`codesign` uses.
 
-### `LC_UUID` determinístico
+### Deterministic `LC_UUID`
 
-Os 16 bytes são os primeiros 16 do SHA-256 do arquivo inteiro **com o campo do UUID zerado e sem a
-assinatura** (isto é, dos bytes `[0, codeLimit)`), com os bits de versão (`byte[6] = (b & 0x0f) |
-0x50`) e de variante (`byte[8] = (b & 0x3f) | 0x80`) forçados como manda a RFC 4122. Nada de data,
-caminho ou versão de SDK entra ali — dois builds do mesmo fonte para o mesmo nome de saída dão o
-mesmo UUID, e portanto o mesmo binário byte a byte.
+The 16 bytes are the first 16 of the SHA-256 of the whole file **with the UUID field zeroed and
+without the signature** (i.e. of bytes `[0, codeLimit)`), with the version bits
+(`byte[6] = (b & 0x0f) | 0x50`) and variant bits (`byte[8] = (b & 0x3f) | 0x80`) forced as RFC
+4122 requires. No date, path, or SDK version enters into it — two builds of the same source for
+the same output name give the same UUID, and therefore the same binary byte for byte.
 
-### Permissão de execução
+### Execute permission
 
-`write_file` do `arena.mc` usa `creat(path, 0644)`. O executável usa `creat(path, 0755)` **e** um
-`chmod(path, 0755)` depois de fechar: `creat` só aplica o modo quando *cria* o arquivo, então
-regravar um `-o` que já existia com outra permissão manteria a antiga. `chmod` é o único `extern`
-que o M11 acrescentou.
+`arena.mc`'s `write_file` uses `creat(path, 0644)`. The executable uses `creat(path, 0755)`
+**and** a `chmod(path, 0755)` after closing: `creat` only applies the mode when it *creates* the
+file, so overwriting a pre-existing `-o` with a different permission would keep the old one.
+`chmod` is the only `extern` M11 added.
