@@ -204,9 +204,9 @@ __LINKEDIT   vmaddr 0x100008000  vmsize 0x4000        fileoff 32768  filesize 58
   com zeros até lá); `vmsize` é o conteúdo total, incluindo zerofill, arredondado para cima.
 - **VM e arquivo andam separados.** O próximo segmento tem `vmaddr = vmaddr + vmsize` e
   `fileoff = fileoff + filesize` do anterior, calculados independentemente — é o que permite um
-  `__bss` de 256 MiB (`heap[]` de `src/arena.mc`) sem 256 MiB de arquivo. Confirmado no `ld`:
-  `build/mc1` tem `__DATA` com `vmsize 0x10024000` e `filesize 16384`, e `__LINKEDIT` em
-  `vmaddr 0x110048000` = `0x100024000 + 0x10024000`.
+  `__bss` de 32 MiB (`heap[]` de `src/arena.mc`) sem 32 MiB de arquivo. Confirmado no `ld`:
+  `build/mc1` tem `__DATA` com `vmsize 0x2030000` e `filesize 16384`, e `__LINKEDIT` em
+  `vmaddr 0x10205c000` = `0x10002c000 + 0x2030000`.
 - **O header mora dentro do `__TEXT`**: `__TEXT` começa em `fileoff 0` e a primeira seção começa em
   `32 + sizeofcmds`, arredondado para o alinhamento dela.
 - **`entryoff` do `LC_MAIN` é o offset em arquivo de `_main`.** Como `__TEXT` tem `fileoff 0` e

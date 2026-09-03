@@ -135,4 +135,14 @@ Agentes reportam fatos (comandos rodados + saída), nunca suposições.
   ponto fixo (`mc2.o == mc3.o`, 225640 bytes; o `diff` de `--dump-asm` entre `mc1` e `mc2` sai
   vazio) e golden regravado uma vez em `tests/golden/mc2.sha256` — o delta do codegen é só o guarda
   novo em `gen_word` (17 instruções) mais o deslocamento de +1 nos índices `l_strN` a partir de 285.
+- Arena 32 MiB (era 256): `HEAP_SIZE` caiu nos dois lados (`stage0/arena.c`, `src/arena.mc`) porque
+  o autocompilar toca só 14,5 MiB (`vmmap`; `/usr/bin/time -l build/mc1 src/mc.mc` dá RSS máximo de
+  16744448 bytes = 15,97 MiB). Único delta de codegen: o imediato de `HEAP_SIZE` em `xalloc`
+  (`movk x10, #4096, lsl #16` → `movk x10, #512, lsl #16`); `__bss` de `mc2.o` passou de
+  `0x1002ed70` para `0x0202ed70` e `build/mc1` de `__DATA vmsize 0x10030000` para `0x2030000`.
+  `mc2.o` continua com 225640 bytes (zerofill não ocupa arquivo) e golden regravado em
+  `tests/golden/mc2.sha256` (`ddc21ac6…b829a` → `f42cda85…39c28`). Estouro é limpo: `arena
+  exhausted`, exit 1 (sintético de 1000 funções × 12 statements, 14001 linhas; com 11 statements,
+  13001 linhas, ainda compila). `make check` verde: `test` 32/32, `check-lex`/`check-ast`/`check-asm`
+  57/57, `check-obj` 32/32, `check-surface` 32/32, `test-exe` 32/32, `bootstrap` com ponto fixo.
 - M12 é o próximo marco. Atualize esta seção ao fechar cada marco.

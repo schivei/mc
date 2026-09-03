@@ -27,7 +27,7 @@ extern i64 creat(uptr path, i64 mode);
 #define MAXSECS   32                  // #section que o fonte pode registrar
 #define MAXPARAMS 8                   // nunca passa argumento pela pilha
 
-#define HEAP_SIZE (256 << 20)
+#define HEAP_SIZE (32 << 20)
 u8  heap[HEAP_SIZE];
 i64 hp = 0;
 

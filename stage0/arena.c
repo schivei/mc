@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-#define HEAP_SIZE (256u << 20)
+#define HEAP_SIZE (32u << 20)
 static u8 heap[HEAP_SIZE];
 static size_t hp;
 
