@@ -1,4 +1,4 @@
-# objects.md — the object model and the codegen API
+# The object model and the codegen API
 
 Between the AST and the file on disk there is one format-neutral layer: sections, symbols and
 relocations in `src/macho.mc`, and a per-function buffer of `Ins` records in `src/gen_arm64.mc`.

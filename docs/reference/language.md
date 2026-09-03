@@ -1,4 +1,4 @@
-# language.md — the core language
+# The core language
 
 The core is what `stage0/*.c` and `src/*.mc` implement between them: the language `mc` compiles
 before any teaching happens. Everything else in this reference — `#rule`, `syntax`, `pass`,

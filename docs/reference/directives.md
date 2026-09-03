@@ -1,4 +1,4 @@
-# directives.md — the ten `#` directives
+# The ten `#` directives
 
 A directive is a `#name` at the start of a line-ish position, processed **at compile time, in
 source order**, mutating the compiler's own tables as the parse goes. There are exactly ten, and

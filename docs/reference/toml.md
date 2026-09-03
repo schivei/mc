@@ -1,4 +1,4 @@
-# toml.md — `mc.toml`, every key
+# `mc.toml`, every key
 
 `mc build [DIR]` reads `DIR/mc.toml` (or `--config FILE`). **Every path in the file is relative
 to the directory of the config**, never to the working directory, so `mc build examples/api` from

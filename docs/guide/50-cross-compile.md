@@ -1,4 +1,4 @@
-# 50 — Cross-compiling
+# Cross-compiling
 
 `mc` runs on macOS arm64 and produces binaries for macOS arm64 and **Linux arm64**. The Linux
 path is a backend (`elf-obj`), a system layer (`<sys_linux>`) and four lines of `mc.toml`;

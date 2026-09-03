@@ -1,4 +1,4 @@
-# 60 — Two worked examples
+# Two worked examples
 
 Everything in [30-teaching.md](30-teaching.md) and [40-backends.md](40-backends.md) exists because
 of two programs in this repository. Neither of them changes a single line in `src/` or `stage0/`.

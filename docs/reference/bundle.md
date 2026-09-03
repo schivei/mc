@@ -1,4 +1,4 @@
-# bundle.md — `#include <name>`, the library inside the binary
+# `#include <name>`, the library inside the binary
 
 `mc` carries its standard library **and its own source** inside the executable, compressed, and
 serves them through the angle-bracket form of `#include`. That is what makes one downloaded

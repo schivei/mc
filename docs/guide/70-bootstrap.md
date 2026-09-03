@@ -1,4 +1,4 @@
-# 70 — How `mc` compiles itself
+# How `mc` compiles itself
 
 `mc` is written in `mc`. That sentence is only interesting if it can be checked, so this page
 describes the chain that checks it, and the rules a contributor has to follow to keep it

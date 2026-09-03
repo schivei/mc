@@ -1,4 +1,4 @@
-# 20 — A project: `mc build` and `mc.toml`
+# A project: `mc build` and `mc.toml`
 
 One file at a time works until you have a linker to call, libraries to name, or a compiler to
 teach before you can compile your program at all. `mc build` reads a TOML file and does the whole

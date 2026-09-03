@@ -1,4 +1,4 @@
-# 30 — Teaching the compiler
+# Teaching the compiler
 
 The core language is deliberately small. What makes `mc` interesting is that the parts it leaves
 out are not missing — they are **teachable**, from ordinary `mc` source, in three escalating

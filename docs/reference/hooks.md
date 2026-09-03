@@ -1,4 +1,4 @@
-# hooks.md — the parser and hook API
+# The parser and hook API
 
 Everything a module may call to teach the compiler, with its exact signature, when the compiler
 calls it, what it returns, and what it refuses. This is the API of Tier 2 (passes and backends)

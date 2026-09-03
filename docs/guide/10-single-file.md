@@ -1,4 +1,4 @@
-# 10 — One file, one program
+# One file, one program
 
 Everything you can write without a project file. The exhaustive rules are
 [../reference/language.md](../reference/language.md); this page is the working tour.

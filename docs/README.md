@@ -15,14 +15,14 @@ nothing to a running signed binary in about two minutes.
 
 | page | what it covers |
 |---|---|
-| [00 — Getting started](guide/00-getting-started.md) | install, first program, `--exe`, the five dumps |
-| [10 — One file, one program](guide/10-single-file.md) | the working tour of the language: types, memory, control flow, `extern`, function pointers |
-| [20 — A project](guide/20-project-toml.md) | `mc build` and every `mc.toml` section by example |
-| [30 — Teaching the compiler](guide/30-teaching.md) | `#token`/`#infix`/`#prefix`, `#rule` and the prelude, then the syntax hooks with a worked toy language |
-| [40 — Emitting bytes](guide/40-backends.md) | `#section`, `#opcode`, `emit()`/`reloc()`, `pass()`, `backend()`, and the `arm64-surface` proof |
-| [50 — Cross-compiling](guide/50-cross-compile.md) | Linux arm64 targets, sysroots, external linkers |
-| [60 — Two worked examples](guide/60-examples.md) | `examples/api` and `examples/lang`, walked through |
-| [70 — How `mc` compiles itself](guide/70-bootstrap.md) | the bootstrap chain, the fixed point, and the determinism rules for contributors |
+| [Getting started](guide/00-getting-started.md) | install, first program, `--exe`, the five dumps |
+| [One file, one program](guide/10-single-file.md) | the working tour of the language: types, memory, control flow, `extern`, function pointers |
+| [A project](guide/20-project-toml.md) | `mc build` and every `mc.toml` section by example |
+| [Teaching the compiler](guide/30-teaching.md) | `#token`/`#infix`/`#prefix`, `#rule` and the prelude, then the syntax hooks with a worked toy language |
+| [Emitting bytes](guide/40-backends.md) | `#section`, `#opcode`, `emit()`/`reloc()`, `pass()`, `backend()`, and the `arm64-surface` proof |
+| [Cross-compiling](guide/50-cross-compile.md) | Linux arm64 targets, sysroots, external linkers |
+| [Two worked examples](guide/60-examples.md) | `examples/api` and `examples/lang`, walked through |
+| [How `mc` compiles itself](guide/70-bootstrap.md) | the bootstrap chain, the fixed point, and the determinism rules for contributors |
 
 ## The reference — exhaustive, read by lookup
 

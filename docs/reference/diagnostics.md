@@ -1,4 +1,4 @@
-# diagnostics.md — every message the compiler emits
+# Every message the compiler emits
 
 Every diagnostic `mc` can print, with what causes it and what to do about it. The list is
 extracted from the `die`/`die2`/`err_at`/`err_at2`/`err_node`/`expect`/`toml_err*` call sites in

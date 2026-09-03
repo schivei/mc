@@ -1,4 +1,4 @@
-# cli.md — every command, flag and dump
+# Every command, flag and dump
 
 `mc` has one binary and three entry points: the single-file compiler, `mc build` and `mc limits`.
 Everything below is read off `src/main.mc` (the single-file CLI) and `src/driver.mc` (the two

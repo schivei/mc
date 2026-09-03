@@ -1,4 +1,4 @@
-# machine.md — the machine task contract
+# The machine task contract
 
 > **Status: specified, not yet implemented.** No `machine*` function exists in `src/` in this
 > checkout. The contract below is what `docs/specs/M17.md` (the walker/machine split and the

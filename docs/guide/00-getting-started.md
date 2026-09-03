@@ -1,4 +1,4 @@
-# 00 — Getting started
+# Getting started
 
 `mc` is a compiler small enough to read, written in itself. It compiles a schoolbook-C language —
 seven types, one opaque pointer, `if` and `loop` — into AArch64 Mach-O, and it writes and signs

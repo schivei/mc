@@ -1,4 +1,4 @@
-# 40 — Emitting bytes: sections, opcodes, passes and backends
+# Emitting bytes: sections, opcodes, passes and backends
 
 [30-teaching.md](30-teaching.md) changed what the compiler *parses*. This page changes what it
 *emits* — from one raw instruction up to a complete replacement of the code generator and the
