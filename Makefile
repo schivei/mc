@@ -158,7 +158,7 @@ site: build/mc1
 check-site: site
 	build/mcsite site --check
 
-check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-limits test-linux check-examples check-lang check-docs site check-site
+check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-limits test-linux check-examples check-lang check-desktop check-docs site check-site
 
 budget:
 	scripts/loc-budget.sh $(BUDGET)
@@ -166,4 +166,10 @@ budget:
 clean:
 	rm -rf build
 
-.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-limits sysroot-linux test-linux check-examples check-lang check-docs site check-site check budget clean
+.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-limits sysroot-linux test-linux check-examples check-lang check-docs site check-site check budget clean check-desktop
+
+# M32: examples/desktop -- a GTK4 application written in mc, and the same
+# application with its widget tree written in a UI language taught by ui.mc.
+# Skips itself with exit 0 when `pkg-config --exists gtk4` fails (CI has no GTK4).
+check-desktop: build/mc1
+	sh examples/desktop/test.sh
