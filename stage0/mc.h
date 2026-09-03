@@ -100,6 +100,10 @@ const char *type_name(int t);
 int  type_width(int t);          /* bytes de um tipo */
 void dump_ast(int n);
 
+/* ---- limites compartilhados por parse.c e gen_arm64.c ---- */
+#define MAXSECS   32              /* #section que o fonte pode registrar */
+#define MAXPARAMS 8               /* nunca passa argumento pela pilha */
+
 /* ---- parser (parse.c) ---- */
 typedef struct { int tok, prec; bool right; int tmpl; } InfixEnt;  /* tmpl 0 = builtin */
 typedef struct { int tok, tmpl; } PrefixEnt;

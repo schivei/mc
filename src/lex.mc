@@ -6,8 +6,14 @@
 //
 // Mesmas funcoes, mesma ordem, mesma tabela na mesma ordem de insercao e ids.
 // Sem struct: Token, TokEnt e OpenFile sao registros planos (TOK_*, TE_*, OF_*).
+// Layouts (campos de 8 bytes, na ordem dos structs de stage0/mc.h):
+//   TokEnt   { text, len, word, id }                       — 32 B
+//   Token    { id, start, len, val, line, file }            — 48 B
+//   OpenFile { cp, cend, line, name }                       — 32 B
 // Depende de arena.mc (xalloc, cstrlen, str_eq, mem_eq, buf_*, out_*, die,
-// err_at, read_file, src_name).
+// die2, err_at, read_file, src_name).
+// err_at do arena.mc imprime src_name, que lex_push/lex_pop mantem igual a
+// lex_file(): e exatamente o `err_at(lex_file(), ...)` do stage0.
 
 #define MAXTOK  512
 #define MAXOPEN 16                    // profundidade maxima de #include
@@ -32,6 +38,51 @@
 #define D_SECTION 6
 #define D_OPCODE  7
 
+// ---- ids do nucleo: 256 em diante, na ordem fixa de insercao de tok_init ----
+#define K_U8       256
+#define K_U16      257
+#define K_U32      258
+#define K_U64      259
+#define K_I64      260
+#define K_UPTR     261
+#define K_VOID     262
+#define K_IF       263
+#define K_ELSE     264
+#define K_LOOP     265
+#define K_BREAK    266
+#define K_CONTINUE 267
+#define K_RETURN   268
+#define K_EXTERN   269
+#define K_LPAR     270
+#define K_RPAR     271
+#define K_LBRACE   272
+#define K_RBRACE   273
+#define K_LBRACK   274
+#define K_RBRACK   275
+#define K_COMMA    276
+#define K_SEMI     277
+#define K_ADD      278
+#define K_SUB      279
+#define K_MUL      280
+#define K_DIV      281
+#define K_MOD      282
+#define K_AND      283
+#define K_OR       284
+#define K_XOR      285
+#define K_TILDE    286
+#define K_SHL      287
+#define K_SHR      288
+#define K_EQ       289
+#define K_NE       290
+#define K_LT       291
+#define K_LE       292
+#define K_GT       293
+#define K_GE       294
+#define K_ANDAND   295
+#define K_OROR     296
+#define K_BANG     297
+#define K_ASSIGN   298
+
 // ---- TokEnt: { text, len, word, id } ----
 #define TE_TEXT 0
 #define TE_LEN  8
@@ -39,13 +90,14 @@
 #define TE_ID   24
 #define TE_SIZE 32
 
-// ---- Token: { id, start, len, val, line } ----
+// ---- Token: { id, start, len, val, line, file } ----
 #define TOK_ID    0
 #define TOK_START 8
 #define TOK_LEN   16
 #define TOK_VAL   24
 #define TOK_LINE  32
-#define TOK_SIZE  40
+#define TOK_FILE  40
+#define TOK_SIZE  48
 
 // ---- OpenFile: { cp, cend, line, name } ----
 #define OF_CP   0
@@ -84,11 +136,13 @@ uptr tok_start(uptr t) { return ld64(t + TOK_START); }
 i64  tok_len(uptr t)   { return ld64(t + TOK_LEN); }
 i64  tok_val(uptr t)   { return ld64(t + TOK_VAL); }
 i64  tok_line(uptr t)  { return ld64(t + TOK_LINE); }
+uptr tok_file(uptr t)  { return ld64(t + TOK_FILE); }
 void set_tok_id(uptr t, i64 v)     { st64(t + TOK_ID, v); }
 void set_tok_start(uptr t, uptr v) { st64(t + TOK_START, v); }
 void set_tok_len(uptr t, i64 v)    { st64(t + TOK_LEN, v); }
 void set_tok_val(uptr t, i64 v)    { st64(t + TOK_VAL, v); }
 void set_tok_line(uptr t, i64 v)   { st64(t + TOK_LINE, v); }
+void set_tok_file(uptr t, uptr v)  { st64(t + TOK_FILE, v); }
 
 // ---- acessoras de OpenFile e da lista de includes ----
 uptr of_at(i64 i)   { return fstack + i * OF_SIZE; }
@@ -155,7 +209,7 @@ uptr tok_text(i64 id) {
 
 // A lista `core[]` do stage0 e um array de ponteiros inicializado; o nucleo nao
 // tem isso, entao a ordem de insercao vira uma sequencia de chamadas. Mesma
-// ordem, mesmos ids: K_U8 = 256 ate K_ASSIGN = 299.
+// ordem, mesmos ids: K_U8 = 256 ate K_ASSIGN = 298.
 void tok_init() {
     tok_add("u8", 2);
     tok_add("u16", 3);
@@ -248,12 +302,77 @@ i64 dir_index(uptr s, i64 nl) {
 }
 
 // ---- pilha de arquivos ----
-// junta o diretorio de base com rel; caminho absoluto passa direto
+#define MAXSEG 64
+
+// normaliza . e .. lexicamente (sem tocar no filesystem), para que dois caminhos
+// que nomeiam o mesmo arquivo virem a mesma string e o once-only funcione
+uptr path_norm(uptr p) {
+    i64 sb[MAXSEG];                    // inicio de cada segmento
+    i64 sl[MAXSEG];                    // tamanho de cada segmento
+    i64 nseg = 0;
+    i64 n = cstrlen(p);
+    i64 i = 0;
+    i64 abs = ld8(p) == '/';
+    loop {
+        if (i >= n) break;
+        loop {
+            if (i >= n) break;
+            if (ld8(p + i) != '/') break;
+            i = i + 1;
+        }
+        i64 b = i;
+        loop {
+            if (i >= n) break;
+            if (ld8(p + i) == '/') break;
+            i = i + 1;
+        }
+        i64 l = i - b;
+        if (l == 0 || (l == 1 && ld8(p + b) == '.')) continue;
+        i64 up = l == 2 && ld8(p + b) == '.' && ld8(p + b + 1) == '.';
+        uptr pb = sb + (nseg - 1) * 8;     // ultimo segmento; so lido se nseg > 0
+        i64 prev_up = nseg && ld64(sl + (nseg - 1) * 8) == 2
+                      && ld8(p + ld64(pb)) == '.' && ld8(p + ld64(pb) + 1) == '.';
+        i64 drop = 0;                  // o ternario do C vira um if explicito
+        if (up) {
+            if (nseg) { if (!prev_up) drop = 1; }
+            else if (abs) drop = 1;
+        }
+        if (drop) {
+            if (nseg) nseg = nseg - 1;
+            continue;
+        }
+        if (nseg == MAXSEG) die2("caminho com segmentos demais", p);
+        st64(sb + nseg * 8, b);
+        st64(sl + nseg * 8, l);
+        nseg = nseg + 1;
+    }
+    uptr s = xalloc(n + 2);
+    i64 w = 0;
+    if (abs) { st8(s + w, '/'); w = w + 1; }
+    i64 k = 0;
+    loop {
+        if (k >= nseg) break;
+        if (k) { st8(s + w, '/'); w = w + 1; }
+        i64 j = 0;
+        loop {
+            if (j >= ld64(sl + k * 8)) break;
+            st8(s + w, ld8(p + ld64(sb + k * 8) + j));
+            w = w + 1;
+            j = j + 1;
+        }
+        k = k + 1;
+    }
+    if (w == 0) { st8(s + w, '.'); w = w + 1; }
+    st8(s + w, 0);
+    return s;
+}
+
+// junta o diretorio de base com rel e normaliza; caminho absoluto ignora a base
 uptr path_join(uptr base, uptr rel) {
-    if (ld8(rel) == '/') return rel;
     i64 cut = 0;
     i64 bl = cstrlen(base);
     i64 rl = cstrlen(rel);
+    if (ld8(rel) == '/') bl = 0;
     i64 i = 0;
     loop {
         if (i >= bl) break;
@@ -274,7 +393,7 @@ uptr path_join(uptr base, uptr rel) {
         i = i + 1;
     }
     st8(s + cut + rl, 0);
-    return s;
+    return path_norm(s);
 }
 
 void lex_push(uptr path, i64 line) {
@@ -306,12 +425,13 @@ void lex_pop() {
 
 uptr lex_file() {
     if (nopen) return of_name(of_at(nopen - 1));
-    return src_name;
+    return "?";
 }
 
 void lex_init(uptr path) {
     nopen = 0;
     ninc = 0;
+    path = path_norm(path);
     set_inc_at(ninc, path);            // o raiz tambem conta para o once-only
     ninc = ninc + 1;
     lex_push(path, 0);
@@ -369,8 +489,9 @@ void skip_space() {
     }
 }
 
-// le um caractere de literal, decodificando escape
-i64 read_char() {
+// le um caractere de literal, decodificando escape. Em string \0 e proibido:
+// __cstring e S_CSTRING_LITERALS e o ld funde literais pelo primeiro NUL.
+i64 read_char(i64 in_str) {
     if (cp >= cend) err_at(cline, "literal nao terminado");
     i64 c = ld8(cp);
     cp = cp + 1;
@@ -382,7 +503,10 @@ i64 read_char() {
     if (e == 'n')  return '\n';
     if (e == 't')  return '\t';
     if (e == 'r')  return '\r';
-    if (e == '0')  return 0;
+    if (e == '0')  {
+        if (in_str) err_at(cline, "\\0 nao permitido em string");
+        return 0;
+    }
     if (e == '\\') return '\\';
     if (e == '\'') return '\'';
     if (e == '"')  return '"';
@@ -420,7 +544,7 @@ void lex_string(uptr t) {
     loop {
         if (cp >= cend) break;
         if (ld8(cp) == '"') break;
-        buf_u8(b, read_char());
+        buf_u8(b, read_char(1));
     }
     if (cp >= cend) err_at(tok_line(t), "string nao terminada");
     cp = cp + 1;
@@ -485,6 +609,7 @@ void lex_next(uptr t) {
     set_tok_val(t, 0);
     set_tok_start(t, cp);
     set_tok_len(t, 0);
+    set_tok_file(t, lex_file());
     if (cp >= cend) {
         set_tok_id(t, T_EOF);
         set_tok_start(t, "EOF");
@@ -511,7 +636,7 @@ void lex_next(uptr t) {
     }
     if (ld8(cp) == '\'') {
         cp = cp + 1;
-        set_tok_val(t, read_char());
+        set_tok_val(t, read_char(0));
         if (cp >= cend || ld8(cp) != '\'') err_at(tok_line(t), "char literal nao terminado");
         cp = cp + 1;
         set_tok_id(t, T_CHAR);

@@ -23,10 +23,13 @@ test: build/mc0
 check-lex: build/mc0
 	scripts/check-lex.sh build/mc0
 
+check-ast: build/mc0
+	scripts/check-ast.sh build/mc0
+
 budget:
 	scripts/loc-budget.sh $(BUDGET)
 
 clean:
 	rm -rf build
 
-.PHONY: all stage0 stage0-san test check-lex budget clean
+.PHONY: all stage0 stage0-san test check-lex check-ast budget clean

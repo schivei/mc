@@ -1,5 +1,5 @@
 /* arena.c — arena estatica em bss, buffers little-endian e I/O por fd.
- * Mesma forma que a versao em .mc: so open/read/write/close/exit. */
+ * Mesma forma que a versao em .mc: so open/creat/read/write/close/exit. */
 #include "mc.h"
 #include <unistd.h>
 #include <fcntl.h>
@@ -108,8 +108,11 @@ u8 *read_file(const char *path, size_t *len) {
     *len = b.len - 1;
     return b.p;
 }
+/* creat e nao open: `open` da libSystem e variadica e no arm64 da Apple o modo
+ * viaja pela pilha, que a linguagem nao sabe montar (so x0..x7). Usando creat, a
+ * versao .mc tem a mesma forma de I/O que esta. */
 void write_file(const char *path, Buf *b) {
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = creat(path, 0644);
     if (fd < 0) die2("cannot create", path);
     io_write(fd, b->p, b->len);
     close(fd);

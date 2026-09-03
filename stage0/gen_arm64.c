@@ -24,20 +24,18 @@ static int nlabels;
 #define MAXLOCALS 256
 #define MAXFUNCS  512
 #define MAXLOOPS  32
-#define MAXPARAMS 8
 #define MAXGLOBALS 256
 #define MAXSTRS    512
 #define MAXPREL    64             /* relocacoes de reloc() por funcao */
-#define MAXSECS    32             /* #section registrados pelo parser */
 
 /* ---- estado da funcao atual ---- */
 static Local locals[MAXLOCALS]; static int nlocals;
 static int dslot[MAXDEPTH];      /* slot da profundidade: salvamento (<=6) ou spill (>=7) */
 static int frame_off;            /* bytes ja reservados no frame */
 static int lbreak[MAXLOOPS], lcont[MAXLOOPS]; static int nloops;
-/* reloc(): a relocacao fica pendente ate a proxima instrucao entrar no buffer */
+/* reloc(): a relocacao fica pendente ate a proxima palavra crua (gen_word) */
 static int prel_ins[MAXPREL], prel_sym[MAXPREL], prel_type[MAXPREL]; static int nprel;
-static int pend_type = -1, pend_sym;
+static int pend_type = -1, pend_sym, pend_node;
 
 /* assinaturas de todo o arquivo (N_FUNC e N_EXTERN), registradas antes dos corpos */
 static FuncSig funcs[MAXFUNCS]; static int nfuncs;
@@ -50,6 +48,9 @@ static int secmap[MAXSECS];        /* #section i do parser -> secao real */
 
 /* ---- buffer ---- */
 static void ins_add(int op, int rd, int rn, int rm, i64 imm, int label, int sym) {
+    /* a relocacao pendente so cola na palavra crua que gen_word poe no buffer;
+     * label nao vira palavra e e transparente, o resto e erro */
+    if (pend_type >= 0 && op != I_LABEL) err_node(pend_node, "reloc sem emit imediatamente a seguir");
     if (nins == inscap) {
         int cap = inscap ? inscap * 2 : 256;
         Ins *n = xalloc(sizeof(Ins) * (size_t)cap);
@@ -58,12 +59,6 @@ static void ins_add(int op, int rd, int rn, int rm, i64 imm, int label, int sym)
     }
     ibuf[nins].op = op; ibuf[nins].rd = rd; ibuf[nins].rn = rn; ibuf[nins].rm = rm;
     ibuf[nins].imm = imm; ibuf[nins].label = label; ibuf[nins].sym = sym;
-    if (pend_type >= 0 && op != I_LABEL) {       /* a relocacao cola nesta palavra */
-        if (nprel == MAXPREL) die("relocacoes cruas demais na funcao");
-        prel_ins[nprel] = nins; prel_sym[nprel] = pend_sym; prel_type[nprel] = pend_type;
-        nprel++;
-        pend_type = -1;
-    }
     nins++;
 }
 static void e0(int op)                        { ins_add(op, 0, 0, 0, 0, 0, 0); }
@@ -274,13 +269,10 @@ static void gen_value(int n, int depth) {        /* onde um valor e obrigatorio 
     if (nodes[n].type == TY_VOID) err_node(n, "valor de tipo void");
 }
 
+static const int cmp_toks[6]  = { K_EQ, K_NE, K_LT, K_LE, K_GT, K_GE };
+static const int cmp_conds[6] = { C_EQ, C_NE, C_LT, C_LE, C_GT, C_GE };
 static int cmp_cond(int op) {
-    if (op == K_EQ) return C_EQ;
-    if (op == K_NE) return C_NE;
-    if (op == K_LT) return C_LT;
-    if (op == K_LE) return C_LE;
-    if (op == K_GT) return C_GT;
-    if (op == K_GE) return C_GE;
+    for (int i = 0; i < 6; i++) if (cmp_toks[i] == op) return cmp_conds[i];
     return -1;
 }
 
@@ -424,6 +416,12 @@ static void gen_intrin(int n, int depth, int in) {
 /* uma palavra de 32 bits no fluxo de instrucoes; a relocacao pendente cola nela */
 static void gen_word(int n, i64 w) {
     if ((u64)w > 0xffffffffu) err_node(n, "palavra emitida nao cabe em 32 bits");
+    if (pend_type >= 0) {                        /* a relocacao pendente cola nesta palavra */
+        if (nprel == MAXPREL) die("relocacoes cruas demais na funcao");
+        prel_ins[nprel] = nins; prel_sym[nprel] = pend_sym; prel_type[nprel] = pend_type;
+        nprel++;
+        pend_type = -1;
+    }
     ins_add(I_EMIT, 0, 0, 0, w, 0, 0);
     nodes[n].type = TY_VOID;
 }
@@ -437,7 +435,7 @@ static void gen_opcode(int n, int oi) {
     if (nodes[e].kind != N_INT) err_node(n, "argumento de #opcode nao constante");
     gen_word(n, nodes[e].val);
 }
-/* reloc(TIPO, "simbolo"): fica pendente ate a proxima palavra entrar no buffer */
+/* reloc(TIPO, "simbolo"): a proxima instrucao gerada tem de ser a palavra crua */
 static void gen_reloc(int n) {
     if (arg_count(n) != 2) err_node(n, "reloc espera dois argumentos");
     int a = nodes[n].a, b = nodes[a].next;
@@ -449,6 +447,7 @@ static void gen_reloc(int n) {
     if (pend_type >= 0) err_node(n, "duas relocacoes para a mesma palavra");
     pend_type = (int)t;
     pend_sym  = sym_ref(nodes[b].name);
+    pend_node = n;
     nodes[n].type = TY_VOID;
 }
 
@@ -831,7 +830,7 @@ static void gen_func(int f, int text, bool dump) {
         i++;
     }
     gen_stmt(nodes[f].b, lepi);
-    if (pend_type >= 0) err_node(f, "reloc sem palavra seguinte na funcao");
+    if (pend_type >= 0) err_node(pend_node, "reloc sem emit imediatamente a seguir");
     el(I_LABEL, lepi);
     int iadd = nins; ei(I_ADDI, REG_SP, REG_SP, 0);
     ins_add(I_LDP_POST, REG_FP, REG_SP, REG_LR, 16, 0, 0);
@@ -895,7 +894,7 @@ static void gen_sections(int unit) {
     sec_text = sec_new("__TEXT", "__text", TEXT_FLAGS, 2);
     sec_cstr = -1; sec_data = -1; sec_bss = -1;
     if (want_str)  sec_cstr = sec_new("__TEXT", "__cstring", S_CSTRING_LITERALS, 0);
-    if (want_data) sec_data = sec_new("__DATA", "__data", S_REGULAR, 3);
+    if (want_data) sec_data = sec_new("__DATA", "__data", S_REGULAR, 4);
     if (want_bss)  sec_bss  = sec_new("__DATA", "__bss", S_ZEROFILL, 4);
     if (sec_pending() > MAXSECS) die("secoes demais");
     for (int i = 0; i < sec_pending(); i++) secmap[i] = sec_make(i);

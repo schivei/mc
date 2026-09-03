@@ -8,8 +8,6 @@
 #define MAXOPS 128
 #define MAXDEFS 256
 #define MAXOPCS 64
-#define MAXSECS 32
-#define MAXPARAMS 8               /* nunca passa argumento pela pilha */
 
 static InfixEnt  infixes[MAXOPS];  static int ninfix;
 static PrefixEnt prefixes[MAXOPS]; static int nprefix;
@@ -501,7 +499,8 @@ static i64 const_arg(int line, const char *fl, const char *msg) {
 }
 
 /* #section SEG SECT FLAGS [ALIGN] — secao corrente das funcoes e globais seguintes.
- * Sem argumentos volta ao default. ALIGN e log2 e vale 3 quando omitido. */
+ * Sem argumentos volta ao default. ALIGN e log2 e vale 4 (16 bytes) quando
+ * omitido: mesmo alinhamento que o codegen da a __data. */
 static void do_section(int line, const char *fl) {
     if (cur.id != T_IDENT) { cur_sect = 0; return; }
     const char *seg = cur_name();
@@ -510,7 +509,7 @@ static void do_section(int line, const char *fl) {
     const char *sect = cur_name();
     next();
     i64 flags = const_arg(line, fl, "#section espera flags constantes");
-    i64 align = 3;
+    i64 align = 4;
     /* so um numero, um #define ou um parentese podem comecar o alinhamento:
      * nenhum deles comeca uma declaracao de topo, entao nao ha ambiguidade */
     if (cur.id == T_INT || cur.id == T_IDENT || cur.id == K_LPAR) {
@@ -521,7 +520,11 @@ static void do_section(int line, const char *fl) {
     cur_sect = sec_ent(seg, sect, (u32)flags, (u32)align) + 1;
 }
 
-/* #opcode nome(p1, ...) EXPR — registra um encoder; nao e simbolo nem funcao */
+/* #opcode nome(p1, ...) EXPR — registra um encoder; nao e simbolo nem funcao.
+ * O nome de um parametro sombreia de proposito um #define de mesmo nome: dentro
+ * do template primary() consulta opc_param antes de def_find, entao o parametro
+ * ganha. E o que se quer — o template fala dos seus proprios argumentos — e vale
+ * so ate o fim da definicao, quando opc_nparams volta a zero. */
 static void do_opcode(int line, const char *fl) {
     if (cur.id != T_IDENT) err_at(fl, line, "#opcode espera um nome");
     const char *name = cur_name();

@@ -7,6 +7,14 @@ extern i64 read(i64 fd, uptr buf, i64 n);
 extern i64 write(i64 fd, uptr buf, i64 n);
 extern i64 close(i64 fd);
 extern void _exit(i64 code);
+// NOTA (M5.6): `open` da libSystem e variadica — `int open(const char *, int, ...)`
+// — e no ABI arm64 da Apple todo argumento variadico vai para a PILHA, nao para
+// x2. O nucleo so sabe passar argumentos em x0..x7, entao o modo enviado por
+// `open(path, flags, MODE_644)` seria ignorado e o arquivo nasceria com permissao
+// lixo (medido: `-r--------`). Por isso quem cria arquivo e `creat`, que nao e
+// variadica; `stage0/arena.c` usa a mesma chamada, e as duas versoes de
+// write_file tem exatamente a mesma forma de I/O.
+extern i64 creat(uptr path, i64 mode);
 
 // valores do macOS (sys/fcntl.h)
 #define O_RDONLY 0
@@ -242,8 +250,27 @@ uptr read_file(uptr path, uptr plen) {
 }
 
 void write_file(uptr path, uptr b) {
-    i64 fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, MODE_644);
+    i64 fd = creat(path, MODE_644);       // ver a NOTA sobre open variadica acima
     if (fd < 0) die2("cannot create", path);
     io_write(fd, buf_p(b), buf_len(b));
     close(fd);
+}
+
+// ---- copia/zera bytes (o C usa atribuicao de struct; aqui e byte a byte) ----
+void mem_copy(uptr d, uptr s, i64 n) {
+    i64 i = 0;
+    loop {
+        if (i >= n) break;
+        st8(d + i, ld8(s + i));
+        i = i + 1;
+    }
+}
+
+void mem_zero(uptr p, i64 n) {
+    i64 i = 0;
+    loop {
+        if (i >= n) break;
+        st8(p + i, 0);
+        i = i + 1;
+    }
 }

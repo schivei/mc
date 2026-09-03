@@ -34,4 +34,10 @@ Agentes reportam fatos (comandos rodados + saída), nunca suposições.
 - M5.5 ✔ (`\0` proibido em string, `path_join` normaliza `.`/`..`, token carrega arquivo,
   `#define` vs nome, ordem das seções, array global inicializado, `udiv`, protótipo)
   — 2492/3000 linhas, `make test` 24/24, `make check-lex` 31/31
-- Próximo: M6 (`docs/specs/M6-M7.md`). Atualize esta seção ao fechar cada marco.
+- M5.6 ✔ (`reloc()` só gruda em palavra crua; `__data` e `#section` sem ALIGN com
+  alinhamento 16; `MAXSECS`/`MAXPARAMS` só em `mc.h`; `creat` no lugar de `open`
+  variádica ao escrever arquivo — `stage0/arena.c`, `lib/sys.mc`, `lib/sys_svc.mc`,
+  `src/arena.mc`; `cmp_cond` por tabela)
+  — 2497/3000 linhas, `make test` 24/24, `make check-lex` 36/36
+- M6 em andamento (`docs/specs/M6-M7.md`): `src/macho.mc` ✔, `src/parse.mc` em curso.
+  Atualize esta seção ao fechar cada marco.
