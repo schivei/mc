@@ -27,14 +27,17 @@
 //
 // Depende de arena.mc (xalloc, xstrdup, cstrlen, str_eq, mem_eq, die),
 // de lex.mc (Token, lex_next, lex_include, tok_add, ids K_*/T_*/D_*),
-// de ast.mc (nos, fold sobre eles, p_err_at, err_node, type_width) e de
+// de ast.mc (nos, fold sobre eles, err_node, type_width), de arena.mc (err_at) e de
 // macho.mc (sec_new e os R_* que defs_init registra como constantes internas).
 
 #define MAXOPS    128
-#define MAXDEFS   256
+// 512 e nao 256: a transliteracao para .mc gasta ~104 #define so com os
+// offsets dos layouts planos (em C sao campos de struct, custo zero), e
+// src/mc.mc chega a 319 constantes. stage0/parse.c tem o mesmo valor.
+#define MAXDEFS   512
 #define MAXOPCS   64
-#define MAXSECS   32
-#define MAXPARAMS 8                   // nunca passa argumento pela pilha
+// MAXSECS e MAXPARAMS vivem em arena.mc, como viviam em stage0/mc.h: parse.mc e
+// gen_arm64.mc compartilham os dois e `#define` repetido e erro.
 
 // ---- InfixEnt ----
 #define INF_TOK   0
@@ -132,7 +135,7 @@ void set_op_at(i64 i, uptr v) { st64(opc_params + i * 8, v); }
 void next() { lex_next(cur); }
 
 void expect(i64 id, uptr msg) {
-    if (tok_id(cur) != id) p_err_at(tok_file(cur), tok_line(cur), msg);
+    if (tok_id(cur) != id) err_at(tok_file(cur), tok_line(cur), msg);
     next();
 }
 
@@ -221,7 +224,7 @@ i64 def_find(uptr s, i64 len) {
 }
 
 void def_add(uptr name, i64 val, i64 line, uptr fl) {
-    if (def_find(name, cstrlen(name)) >= 0) p_err_at(fl, line, "#define repetido");
+    if (def_find(name, cstrlen(name)) >= 0) err_at(fl, line, "#define repetido");
     if (ndefs == MAXDEFS) die("defines demais");
     uptr e = de_at(ndefs);
     set_de_name(e, name);
@@ -233,7 +236,7 @@ void def_add(uptr name, i64 val, i64 line, uptr fl) {
 // constante em alguns pontos do fonte e nao em outros. Erro, entao
 void check_def() {
     if (def_find(tok_start(cur), tok_len(cur)) >= 0)
-        p_err_at(tok_file(cur), tok_line(cur), "nome ja definido por #define");
+        err_at(tok_file(cur), tok_line(cur), "nome ja definido por #define");
 }
 
 // tipos de relocacao de reloc(): constantes internas, nao precisam de #include
@@ -374,7 +377,7 @@ i64 parse_primary() {
         next();
         i64 ty = type_of_token(tok_id(cur));
         if (ty >= 0) {                       // cast: apos ( veio palavra de tipo
-            if (ty == TY_VOID) p_err_at(fl, line, "cast para void");
+            if (ty == TY_VOID) err_at(fl, line, "cast para void");
             next();
             expect(K_RPAR, "esperado ) no cast");
             i64 e = parse_unary();
@@ -387,7 +390,7 @@ i64 parse_primary() {
         expect(K_RPAR, "esperado ) apos expressao");
         return e;
     }
-    p_err_at(fl, line, "expressao esperada");
+    err_at(fl, line, "expressao esperada");
     return 0;
 }
 
@@ -395,7 +398,7 @@ i64 parse_primary() {
 i64 parse_call(i64 callee) {
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
-    if (nd_kind(callee) != N_IDENT) p_err_at(fl, line, "chamada so por nome");
+    if (nd_kind(callee) != N_IDENT) err_at(fl, line, "chamada so por nome");
     uptr name = nd_name(callee);
     next();                                  // (
     i64 head = 0;
@@ -442,7 +445,7 @@ i64 parse_unary() {
         return node_copy_subst(tmpl, holes, 1);
     }
     if (tok == K_AND) {                      // &nome: endereco de um local
-        if (nd_kind(operand) != N_IDENT) p_err_at(fl, line, "& espera um nome");
+        if (nd_kind(operand) != N_IDENT) err_at(fl, line, "& espera um nome");
         uptr name = nd_name(operand);
         i64 u = node_new(N_ADDR, line, fl);
         set_nd_name(u, name);
@@ -601,7 +604,7 @@ i64 parse_dim(i64 line, uptr fl) {
     if (tok_id(cur) != K_RBRACK) {
         i64 e = fold(parse_expr(0));
         if (nd_kind(e) != N_INT || nd_val(e) <= 0)
-            p_err_at(fl, line, "tamanho de array deve ser constante positiva");
+            err_at(fl, line, "tamanho de array deve ser constante positiva");
         nel = nd_val(e);                     // a conta e em i64
     }
     expect(K_RBRACK, "esperado ] no tamanho do array");
@@ -610,10 +613,10 @@ i64 parse_dim(i64 line, uptr fl) {
 
 // declaracao de local: tipo nome = expr; | tipo nome; | tipo nome[CONST];
 i64 parse_var(i64 line, uptr fl, i64 ty) {
-    if (ty == TY_VOID) p_err_at(fl, line, "local de tipo void");
+    if (ty == TY_VOID) err_at(fl, line, "local de tipo void");
     next();                                  // tipo
     if (tok_id(cur) != T_IDENT)
-        p_err_at(tok_file(cur), tok_line(cur), "nome de variavel esperado");
+        err_at(tok_file(cur), tok_line(cur), "nome de variavel esperado");
     check_def();
     uptr name = cur_name();
     next();
@@ -621,9 +624,9 @@ i64 parse_var(i64 line, uptr fl, i64 ty) {
     i64 init = 0;
     if (tok_id(cur) == K_LBRACK) {
         nel = parse_dim(line, fl);
-        if (nel < 1) p_err_at(fl, line, "tamanho de array deve ser constante positiva");
+        if (nel < 1) err_at(fl, line, "tamanho de array deve ser constante positiva");
         if (nel > 4095 || nel * type_width(ty) > 4095)
-            p_err_at(fl, line, "array local grande demais");
+            err_at(fl, line, "array local grande demais");
     } else if (tok_id(cur) == K_ASSIGN) {
         next();
         init = parse_expr(0);
@@ -668,7 +671,7 @@ i64 parse_stmt() {
         next();
         i64 lv = 1;
         if (tok_id(cur) == T_INT) { lv = tok_val(cur); next(); }
-        if (lv < 1) p_err_at(fl, line, "break espera um nivel positivo");
+        if (lv < 1) err_at(fl, line, "break espera um nivel positivo");
         expect(K_SEMI, "esperado ; apos break");
         i64 n = node_new(N_BREAK, line, fl);
         set_nd_val(n, lv);
@@ -691,7 +694,7 @@ i64 parse_stmt() {
     i64 ex = parse_expr(0);
     if (tok_id(cur) == K_ASSIGN) {           // nome = expr; (o = nao esta na tabela infix)
         if (nd_kind(ex) != N_IDENT)
-            p_err_at(fl, line, "lado esquerdo da atribuicao deve ser um nome");
+            err_at(fl, line, "lado esquerdo da atribuicao deve ser um nome");
         uptr name = nd_name(ex);
         next();
         i64 v = parse_expr(0);
@@ -715,7 +718,7 @@ i64 parse_block() {
     i64 tail = 0;
     loop {
         if (tok_id(cur) == K_RBRACE) break;
-        if (tok_id(cur) == T_EOF) p_err_at(fl, line, "bloco nao terminado");
+        if (tok_id(cur) == T_EOF) err_at(fl, line, "bloco nao terminado");
         i64 s = parse_stmt();
         if (tail) set_nd_next(tail, s); else head = s;
         tail = s;
@@ -729,35 +732,40 @@ i64 parse_block() {
 // uma constante do fonte, ja dobrada; usada pelos argumentos de #section
 i64 const_arg(i64 line, uptr fl, uptr msg) {
     i64 e = fold(parse_expr(0));
-    if (nd_kind(e) != N_INT) p_err_at(fl, line, msg);
+    if (nd_kind(e) != N_INT) err_at(fl, line, msg);
     return nd_val(e);
 }
 
 // #section SEG SECT FLAGS [ALIGN] — secao corrente das funcoes e globais seguintes.
-// Sem argumentos volta ao default. ALIGN e log2 e vale 3 quando omitido.
+// Sem argumentos volta ao default. ALIGN e log2 e vale 4 (16 bytes) quando
+// omitido: mesmo alinhamento que o codegen da a __data.
 void do_section(i64 line, uptr fl) {
     if (tok_id(cur) != T_IDENT) { cur_sect = 0; return; }
     uptr seg = cur_name();
     next();
     if (tok_id(cur) != T_IDENT)
-        p_err_at(tok_file(cur), tok_line(cur), "#section espera o nome da secao");
+        err_at(tok_file(cur), tok_line(cur), "#section espera o nome da secao");
     uptr sect = cur_name();
     next();
     i64 flags = const_arg(line, fl, "#section espera flags constantes");
-    i64 align = 3;
+    i64 align = 4;
     // so um numero, um #define ou um parentese podem comecar o alinhamento:
     // nenhum deles comeca uma declaracao de topo, entao nao ha ambiguidade
     if (tok_id(cur) == T_INT || tok_id(cur) == T_IDENT || tok_id(cur) == K_LPAR) {
         align = const_arg(line, fl, "#section espera alinhamento constante");
-        if (align < 0 || align > 15) p_err_at(fl, line, "alinhamento fora de 0..15");
+        if (align < 0 || align > 15) err_at(fl, line, "alinhamento fora de 0..15");
     }
-    if (flags < 0 || flags > 0xffffffff) p_err_at(fl, line, "flags de secao fora de 32 bits");
+    if (flags < 0 || flags > 0xffffffff) err_at(fl, line, "flags de secao fora de 32 bits");
     cur_sect = sec_ent(seg, sect, (u32) flags, (u32) align) + 1;
 }
 
-// #opcode nome(p1, ...) EXPR — registra um encoder; nao e simbolo nem funcao
+// #opcode nome(p1, ...) EXPR — registra um encoder; nao e simbolo nem funcao.
+// O nome de um parametro sombreia de proposito um #define de mesmo nome: dentro
+// do template parse_primary consulta opc_param antes de def_find, entao o
+// parametro ganha. E o que se quer — o template fala dos seus proprios
+// argumentos — e vale so ate o fim da definicao, quando opc_nparams volta a zero.
 void do_opcode(i64 line, uptr fl) {
-    if (tok_id(cur) != T_IDENT) p_err_at(fl, line, "#opcode espera um nome");
+    if (tok_id(cur) != T_IDENT) err_at(fl, line, "#opcode espera um nome");
     uptr name = cur_name();
     next();
     expect(K_LPAR, "esperado ( no #opcode");
@@ -765,9 +773,9 @@ void do_opcode(i64 line, uptr fl) {
     loop {
         if (tok_id(cur) == K_RPAR) break;
         if (tok_id(cur) != T_IDENT)
-            p_err_at(tok_file(cur), tok_line(cur), "nome de parametro esperado no #opcode");
+            err_at(tok_file(cur), tok_line(cur), "nome de parametro esperado no #opcode");
         if (opc_nparams == MAXPARAMS)
-            p_err_at(tok_file(cur), tok_line(cur), "no maximo 8 parametros no #opcode");
+            err_at(tok_file(cur), tok_line(cur), "no maximo 8 parametros no #opcode");
         set_op_at(opc_nparams, cur_name());
         opc_nparams = opc_nparams + 1;
         next();
@@ -778,7 +786,7 @@ void do_opcode(i64 line, uptr fl) {
     i64 tmpl = parse_expr(0);                    // os parametros ja viraram N_HOLE
     i64 np = opc_nparams;
     opc_nparams = 0;                             // fora da definicao nao ha parametro
-    if (opc_find(name) >= 0) p_err_at(fl, line, "#opcode repetido");
+    if (opc_find(name) >= 0) err_at(fl, line, "#opcode repetido");
     if (nopcs == MAXOPCS)    die("opcodes demais");
     uptr e = oe_at(nopcs);
     set_oe_name(e, name);
@@ -795,45 +803,45 @@ void do_directive() {
     uptr fl = tok_file(cur);
     next();
     if (d == D_INCLUDE) {
-        if (tok_id(cur) != T_STR) p_err_at(fl, line, "#include espera uma string");
+        if (tok_id(cur) != T_STR) err_at(fl, line, "#include espera uma string");
         uptr path = cur_name();
         lex_include(path, line);                 // 0 = ja incluido: segue em frente
         next();                                  // ja no arquivo incluido, se houve push
         return;
     }
     if (d == D_DEFINE) {
-        if (tok_id(cur) != T_IDENT) p_err_at(fl, line, "#define espera um nome");
+        if (tok_id(cur) != T_IDENT) err_at(fl, line, "#define espera um nome");
         uptr name = cur_name();
         next();
         i64 e = fold(parse_expr(0));
-        if (nd_kind(e) != N_INT) p_err_at(fl, line, "#define espera uma expressao constante");
+        if (nd_kind(e) != N_INT) err_at(fl, line, "#define espera uma expressao constante");
         def_add(name, nd_val(e), line, fl);
         return;
     }
     if (d == D_TOKEN) {
-        if (tok_id(cur) != T_STR) p_err_at(fl, line, "#token espera uma string");
+        if (tok_id(cur) != T_STR) err_at(fl, line, "#token espera uma string");
         tok_add(tok_start(cur), tok_len(cur));   // bytes ficam na arena
         next();
         return;
     }
     if (d == D_INFIX || d == D_PREFIX) {
-        if (tok_id(cur) != T_STR) p_err_at(fl, line, "diretiva espera uma string");
+        if (tok_id(cur) != T_STR) err_at(fl, line, "diretiva espera uma string");
         i64 tok = tok_add(tok_start(cur), tok_len(cur));
         next();
         i64 prec = 0;
         i64 right = 0;
         if (d == D_INFIX) {
             if (tok_id(cur) != T_INT)
-                p_err_at(tok_file(cur), tok_line(cur), "#infix espera a precedencia");
+                err_at(tok_file(cur), tok_line(cur), "#infix espera a precedencia");
             if (tok_val(cur) < 1 || tok_val(cur) > 100)
-                p_err_at(tok_file(cur), tok_line(cur), "precedencia fora de 1..100");
+                err_at(tok_file(cur), tok_line(cur), "precedencia fora de 1..100");
             prec = tok_val(cur);
             next();
             if (tok_id(cur) != T_IDENT)
-                p_err_at(tok_file(cur), tok_line(cur), "#infix espera left ou right");
+                err_at(tok_file(cur), tok_line(cur), "#infix espera left ou right");
             if (cur_is("right")) right = 1;
             else if (!cur_is("left"))
-                p_err_at(tok_file(cur), tok_line(cur), "#infix espera left ou right");
+                err_at(tok_file(cur), tok_line(cur), "#infix espera left ou right");
             next();
         }
         i64 tmpl = parse_expr(0);                    // $1/$2 viram N_HOLE
@@ -843,7 +851,7 @@ void do_directive() {
     }
     if (d == D_SECTION) { do_section(line, fl); return; }
     if (d == D_OPCODE)  { do_opcode(line, fl);  return; }
-    p_err_at(fl, line, "diretiva ainda nao suportada");
+    err_at(fl, line, "diretiva ainda nao suportada");
 }
 
 // ---- topo ----
@@ -858,11 +866,11 @@ i64 parse_params() {
         i64 line = tok_line(cur);
         uptr fl = tok_file(cur);
         i64 pty = type_of_token(tok_id(cur));
-        if (pty < 0)        p_err_at(fl, line, "tipo esperado no parametro");
-        if (pty == TY_VOID) p_err_at(fl, line, "parametro de tipo void");
+        if (pty < 0)        err_at(fl, line, "tipo esperado no parametro");
+        if (pty == TY_VOID) err_at(fl, line, "parametro de tipo void");
         next();
         if (tok_id(cur) != T_IDENT)
-            p_err_at(tok_file(cur), tok_line(cur), "nome de parametro esperado");
+            err_at(tok_file(cur), tok_line(cur), "nome de parametro esperado");
         check_def();
         uptr pname = cur_name();
         next();
@@ -872,7 +880,7 @@ i64 parse_params() {
         if (tail) set_nd_next(tail, p); else head = p;
         tail = p;
         n = n + 1;
-        if (n > MAXPARAMS) p_err_at(fl, line, "no maximo 8 parametros");
+        if (n > MAXPARAMS) err_at(fl, line, "no maximo 8 parametros");
         if (tok_id(cur) != K_COMMA) break;
         next();
     }
@@ -886,9 +894,9 @@ i64 parse_extern() {
     uptr fl = tok_file(cur);
     next();                                  // extern
     i64 ty = type_of_token(tok_id(cur));
-    if (ty < 0) p_err_at(tok_file(cur), tok_line(cur), "tipo esperado no extern");
+    if (ty < 0) err_at(tok_file(cur), tok_line(cur), "tipo esperado no extern");
     next();
-    if (tok_id(cur) != T_IDENT) p_err_at(tok_file(cur), tok_line(cur), "nome esperado no extern");
+    if (tok_id(cur) != T_IDENT) err_at(tok_file(cur), tok_line(cur), "nome esperado no extern");
     check_def();
     uptr name = cur_name();
     next();
@@ -921,14 +929,14 @@ i64 parse_initlist(i64 line, uptr fl, i64 ty, uptr pn) {
         next();
     }
     expect(K_RBRACE, "esperado } no inicializador do array");
-    if (k == 0) p_err_at(fl, line, "inicializador de array vazio");
+    if (k == 0) err_at(fl, line, "inicializador de array vazio");
     st64(pn, k);
     return head;
 }
 
 // global: tipo nome[N] = { ... }; | tipo nome = CONST; | tipo nome; | tipo nome[CONST];
 i64 parse_global(i64 line, uptr fl, i64 ty, uptr name) {
-    if (ty == TY_VOID) p_err_at(fl, line, "global de tipo void");
+    if (ty == TY_VOID) err_at(fl, line, "global de tipo void");
     i64 nel = 0;
     i64 count = 0;
     i64 init = 0;
@@ -939,15 +947,15 @@ i64 parse_global(i64 line, uptr fl, i64 ty, uptr name) {
         if (arr) {
             init = parse_initlist(line, fl, ty, &count);
             if (nel == 0) nel = count;                   // [] = { ... }: N vem da lista
-            if (count > nel) p_err_at(fl, line, "inicializador com elementos demais");
+            if (count > nel) err_at(fl, line, "inicializador com elementos demais");
         } else {
             init = fold(parse_expr(0));
             if (nd_kind(init) != N_INT)
-                p_err_at(fl, line, "inicializador de global deve ser constante");
+                err_at(fl, line, "inicializador de global deve ser constante");
         }
     }
-    if (arr && nel <= 0) p_err_at(fl, line, "tamanho de array deve ser constante positiva");
-    if (nel > (1 << 30) / type_width(ty)) p_err_at(fl, line, "array global grande demais");
+    if (arr && nel <= 0) err_at(fl, line, "tamanho de array deve ser constante positiva");
+    if (nel > (1 << 30) / type_width(ty)) err_at(fl, line, "array global grande demais");
     expect(K_SEMI, "esperado ; apos a global");
     i64 n = node_new(N_GLOBAL, line, fl);
     set_nd_name(n, name);
@@ -962,9 +970,9 @@ i64 parse_top() {
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
     i64 ty = type_of_token(tok_id(cur));
-    if (ty < 0) p_err_at(fl, line, "tipo esperado no topo");
+    if (ty < 0) err_at(fl, line, "tipo esperado no topo");
     next();
-    if (tok_id(cur) != T_IDENT) p_err_at(tok_file(cur), tok_line(cur), "nome esperado no topo");
+    if (tok_id(cur) != T_IDENT) err_at(tok_file(cur), tok_line(cur), "nome esperado no topo");
     check_def();
     uptr name = cur_name();
     next();

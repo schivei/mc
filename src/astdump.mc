@@ -21,7 +21,6 @@ i64 main(i64 argc, uptr argv) {
         return 1;
     }
     uptr in = ld64(argv + 8);          // argv[1]
-    src_name = in;
     tok_init();
     lex_init(in);                      // o lexer abre e empilha o arquivo
     i64 unit = parse_unit();

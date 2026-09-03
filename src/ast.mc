@@ -21,7 +21,7 @@
 // do no (nd_kind(n)), exatamente como `nodes[n].kind` no C — em nenhum lugar
 // fora delas aparece um ld64/st64 sobre o no.
 //
-// Depende de arena.mc (xalloc, out_str, out_num, mem_copy, mem_zero, _exit) e de
+// Depende de arena.mc (xalloc, out_str, out_num, mem_copy, mem_zero, err_at) e de
 // lex.mc (tok_text, so para o dump).
 
 // ---- kinds de no (enum de mc.h, mesma ordem) ----
@@ -115,21 +115,6 @@ void set_nd_file(i64 n, uptr v) { st64(node_at(n) + ND_FILE, v); }
 void node_assign(i64 d, i64 s) { mem_copy(node_at(d), node_at(s), ND_SIZE); }
 void node_zero(i64 n)          { mem_zero(node_at(n), ND_SIZE); }
 
-// err_at(arquivo, linha, msg) do stage0. O err_at de arena.mc so tem (linha,
-// msg) e imprime src_name: serve ao lexer, nao ao parser, que cita o arquivo do
-// token/no. Enquanto arena.mc nao expuser a forma de tres argumentos, ela mora
-// aqui com prefixo p_.
-void p_err_at(uptr file, i64 line, uptr msg) {
-    if (file) out_str(2, file);
-    else      out_str(2, "?");
-    out_str(2, ":");
-    out_num(2, line);
-    out_str(2, ": ");
-    out_str(2, msg);
-    out_str(2, "\n");
-    _exit(1);
-}
-
 void nodes_grow() {
     if (nnodes < nodecap) return;
     i64 cap = nodecap * 2;
@@ -153,7 +138,7 @@ i64 node_new(i64 kind, i64 line, uptr file) {
 }
 
 // o codegen roda com o lexer ja no fim: o arquivo tem de vir do proprio no
-void err_node(i64 n, uptr msg) { p_err_at(nd_file(n), nd_line(n), msg); }
+void err_node(i64 n, uptr msg) { err_at(nd_file(n), nd_line(n), msg); }
 
 // copia profunda simples, sem substituir buraco nenhum (N_HOLE e copiado como e).
 // Cada chamada devolve subarvore nova: e o que impede dois usos do mesmo buraco

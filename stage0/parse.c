@@ -6,7 +6,10 @@
 #include "mc.h"
 
 #define MAXOPS 128
-#define MAXDEFS 256
+/* 512 e nao 256: a transliteracao para .mc gasta ~104 #define so com os
+ * offsets dos layouts planos (em C sao campos de struct, custo zero), e
+ * src/mc.mc chega a 319 constantes. src/parse.mc tem o mesmo valor. */
+#define MAXDEFS 512
 #define MAXOPCS 64
 
 static InfixEnt  infixes[MAXOPS];  static int ninfix;

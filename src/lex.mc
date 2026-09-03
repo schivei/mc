@@ -11,9 +11,9 @@
 //   Token    { id, start, len, val, line, file }            — 48 B
 //   OpenFile { cp, cend, line, name }                       — 32 B
 // Depende de arena.mc (xalloc, cstrlen, str_eq, mem_eq, buf_*, out_*, die,
-// die2, err_at, read_file, src_name).
-// err_at do arena.mc imprime src_name, que lex_push/lex_pop mantem igual a
-// lex_file(): e exatamente o `err_at(lex_file(), ...)` do stage0.
+// die2, err_at, read_file).
+// err_at(arquivo, linha, msg) e o mesmo de arena.mc/stage0: o arquivo vem de
+// lex_file() (topo da pilha de #include) ou do proprio token, como no stage0.
 
 #define MAXTOK  512
 #define MAXOPEN 16                    // profundidade maxima de #include
@@ -397,7 +397,7 @@ uptr path_join(uptr base, uptr rel) {
 }
 
 void lex_push(uptr path, i64 line) {
-    if (nopen == MAXOPEN) err_at(line, "includes aninhados demais");
+    if (nopen == MAXOPEN) err_at(lex_file(), line, "includes aninhados demais");
     if (nopen) {
         uptr prev = of_at(nopen - 1);
         set_of_cp(prev, cp);
@@ -411,7 +411,6 @@ void lex_push(uptr path, i64 line) {
     cp = src;
     cend = src + len;
     cline = 1;
-    src_name = path;
 }
 
 void lex_pop() {
@@ -420,7 +419,6 @@ void lex_pop() {
     cp = of_cp(top);
     cend = of_cend(top);
     cline = of_line(top);
-    src_name = of_name(top);
 }
 
 uptr lex_file() {
@@ -446,7 +444,7 @@ i64 lex_include(uptr rel, i64 line) {
         if (str_eq(inc_at(i), path)) return 0;
         i = i + 1;
     }
-    if (ninc == MAXINC) err_at(line, "includes demais");
+    if (ninc == MAXINC) err_at(lex_file(), line, "includes demais");
     set_inc_at(ninc, path);
     ninc = ninc + 1;
     lex_push(path, line);
@@ -481,7 +479,7 @@ void skip_space() {
                 if (ld8(cp) == '\n') cline = cline + 1;
                 cp = cp + 1;
             }
-            if (cp + 1 >= cend) err_at(open_line, "comentario nao terminado");
+            if (cp + 1 >= cend) err_at(lex_file(), open_line, "comentario nao terminado");
             cp = cp + 2;
             continue;
         }
@@ -492,25 +490,25 @@ void skip_space() {
 // le um caractere de literal, decodificando escape. Em string \0 e proibido:
 // __cstring e S_CSTRING_LITERALS e o ld funde literais pelo primeiro NUL.
 i64 read_char(i64 in_str) {
-    if (cp >= cend) err_at(cline, "literal nao terminado");
+    if (cp >= cend) err_at(lex_file(), cline, "literal nao terminado");
     i64 c = ld8(cp);
     cp = cp + 1;
     if (c == '\n') { cline = cline + 1; return c; }
     if (c != '\\') return c;
-    if (cp >= cend) err_at(cline, "escape nao terminado");
+    if (cp >= cend) err_at(lex_file(), cline, "escape nao terminado");
     i64 e = ld8(cp);
     cp = cp + 1;
     if (e == 'n')  return '\n';
     if (e == 't')  return '\t';
     if (e == 'r')  return '\r';
     if (e == '0')  {
-        if (in_str) err_at(cline, "\\0 nao permitido em string");
+        if (in_str) err_at(lex_file(), cline, "\\0 nao permitido em string");
         return 0;
     }
     if (e == '\\') return '\\';
     if (e == '\'') return '\'';
     if (e == '"')  return '"';
-    err_at(cline, "escape desconhecido");
+    err_at(lex_file(), cline, "escape desconhecido");
     return 0;
 }
 
@@ -518,7 +516,7 @@ void lex_number(uptr t) {
     u64 v = 0;
     if (ld8(cp) == '0' && cp + 1 < cend && (ld8(cp + 1) == 'x' || ld8(cp + 1) == 'X')) {
         cp = cp + 2;
-        if (cp >= cend || hex_val(ld8(cp)) < 0) err_at(cline, "hexadecimal invalido");
+        if (cp >= cend || hex_val(ld8(cp)) < 0) err_at(lex_file(), cline, "hexadecimal invalido");
         loop {
             if (cp >= cend) break;
             if (hex_val(ld8(cp)) < 0) break;
@@ -546,7 +544,7 @@ void lex_string(uptr t) {
         if (ld8(cp) == '"') break;
         buf_u8(b, read_char(1));
     }
-    if (cp >= cend) err_at(tok_line(t), "string nao terminada");
+    if (cp >= cend) err_at(tok_file(t), tok_line(t), "string nao terminada");
     cp = cp + 1;
     buf_u8(b, 0);                      // sentinela; o len nao a conta
     set_tok_id(t, T_STR);
@@ -564,7 +562,7 @@ void lex_directive(uptr t) {
     }
     i64 nl = cp - ns;
     i64 d = dir_index(ns, nl);
-    if (d < 0) err_at(tok_line(t), "diretiva desconhecida");
+    if (d < 0) err_at(tok_file(t), tok_line(t), "diretiva desconhecida");
     set_tok_id(t, T_DIR);
     set_tok_val(t, d);
 }
@@ -591,7 +589,7 @@ void lex_hole(uptr t) {
         }
         set_tok_val(t, -1);
     } else {
-        err_at(tok_line(t), "buraco invalido");
+        err_at(tok_file(t), tok_line(t), "buraco invalido");
     }
     if (gensym) set_tok_val(t, -2);
     set_tok_id(t, T_HOLE);
@@ -637,7 +635,7 @@ void lex_next(uptr t) {
     if (ld8(cp) == '\'') {
         cp = cp + 1;
         set_tok_val(t, read_char(0));
-        if (cp >= cend || ld8(cp) != '\'') err_at(tok_line(t), "char literal nao terminado");
+        if (cp >= cend || ld8(cp) != '\'') err_at(tok_file(t), tok_line(t), "char literal nao terminado");
         cp = cp + 1;
         set_tok_id(t, T_CHAR);
         set_tok_len(t, cp - tok_start(t));
@@ -649,7 +647,7 @@ void lex_next(uptr t) {
 
     i64 plen = 0;
     i64 pid = punct_id(cp, cend - cp, &plen);
-    if (pid < 0) err_at(tok_line(t), "caractere inesperado");
+    if (pid < 0) err_at(tok_file(t), tok_line(t), "caractere inesperado");
     cp = cp + plen;
     set_tok_len(t, plen);
     set_tok_id(t, pid);

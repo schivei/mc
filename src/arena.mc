@@ -23,6 +23,10 @@ extern i64 creat(uptr path, i64 mode);
 #define O_TRUNC 0x400
 #define MODE_644 420                  // 0644 em decimal: nao ha literal octal
 
+// ---- limites compartilhados por parse.mc e gen_arm64.mc (mc.h do stage0) ----
+#define MAXSECS   32                  // #section que o fonte pode registrar
+#define MAXPARAMS 8                   // nunca passa argumento pela pilha
+
 #define HEAP_SIZE (256 << 20)
 u8  heap[HEAP_SIZE];
 i64 hp = 0;
@@ -221,11 +225,17 @@ void die2(uptr msg, uptr detail) {
     _exit(1);
 }
 
-uptr src_name;                        // main/lex_push definem antes de qualquer erro
-
-void err_at(i64 line, uptr msg) {
-    out_str(2, src_name); out_str(2, ":"); out_num(2, line);
-    out_str(2, ": "); out_str(2, msg); out_str(2, "\n");
+// arquivo:linha: msg — o arquivo vem sempre do token/no que deu a linha. Unica
+// forma de erro posicionado do compilador: o lexer passa lex_file() ou o arquivo
+// do token, o parser o do token corrente, o codegen o do no (err_node).
+void err_at(uptr file, i64 line, uptr msg) {
+    if (file) out_str(2, file);
+    else      out_str(2, "?");
+    out_str(2, ":");
+    out_num(2, line);
+    out_str(2, ": ");
+    out_str(2, msg);
+    out_str(2, "\n");
     _exit(1);
 }
 
