@@ -191,6 +191,46 @@ i64 dobro(i64 x) { return x + x; }
 `extern tipo nome(tipo a, ...);` declara símbolo indefinido (`_nome` sem corpo — é como
 `write`/`open` da libSystem entram, ver `lib/sys.mc`).
 
+O compilador **não verifica se o símbolo existe**: ele só registra a referência indefinida. Quem
+descobre o erro, e quando, depende do caminho de saída — e essa diferença é deliberada
+(`docs/bootstrap.md` § M11). Para
+
+```
+// faltante.mc
+extern i64 nao_existe_mesmo(i64 x);
+
+i64 main() {
+    return nao_existe_mesmo(1);
+}
+```
+
+o caminho `.o` + `ld` (default) recusa **no link**:
+
+```
+$ build/mc1 faltante.mc -o faltante.o          # exit 0
+$ scripts/link.sh faltante faltante.o
+Undefined symbols for architecture arm64:
+  "_nao_existe_mesmo", referenced from:
+      _main in faltante.o
+ld: symbol(s) not found for architecture arm64                  # exit 1
+```
+
+e o caminho `--exe` gera o binário (assinado, `codesign --verify` passa) e falha **no
+carregamento**, no `dyld`:
+
+```
+$ build/mc1 --exe faltante.mc -o faltante-exe   # exit 0
+$ ./faltante-exe
+dyld[84421]: Symbol not found: _nao_existe_mesmo
+  Referenced from: <CCEFFEF5-D25D-5C49-8593-D99D8433E7BA> .../faltante-exe
+  Expected in:     <4FED5EE2-5D3E-35B1-A170-9859C4B683BB> /usr/lib/libSystem.B.dylib
+                                                                # exit 134 (SIGABRT)
+```
+
+O `--exe` escreve o stub e o bind opcode do símbolo sem consultar a `libSystem`; validar o nome
+exigiria ler os `.tbd` do SDK, e o M11 recusa essa dependência (não há, nem haverá, lista embutida
+de símbolos conhecidos). Se você quer o erro em tempo de build, use o caminho do `.o` + `ld`.
+
 ## `#include` e `#define`
 
 - `#include "arquivo.mc"`: inclusão textual, once-only, relativa ao diretório do arquivo que

@@ -433,6 +433,9 @@ static void gen_intrin(int n, int depth, int in) {
 static void gen_word(int n, i64 w) {
     if ((u64)w > 0xffffffffu) err_node(n, "palavra emitida nao cabe em 32 bits");
     if (pend_type >= 0) {                        /* a relocacao pendente cola nesta palavra */
+        /* UNSIGNED e de 8 bytes (length 3) e passaria por cima da palavra seguinte */
+        if (pend_type == R_UNSIGNED)
+            err_node(pend_node, "reloc UNSIGNED exige 8 bytes: use inicializador de array global");
         if (nprel == MAXPREL) die("relocacoes cruas demais");
         prel_ins[nprel] = nins - ins_base;            /* indice relativo a funcao */
         prel_sym[nprel] = pend_sym; prel_type[nprel] = pend_type;

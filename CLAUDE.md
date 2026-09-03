@@ -89,7 +89,8 @@ Agentes reportam fatos (comandos rodados + saída), nunca suposições.
   `make check` verde: `test` 32/32, `check-lex` 54/54, `check-ast` 54/54, `check-asm` 54/54,
   `check-obj` 32/32, `check-surface` 32/32, `bootstrap` com ponto fixo (`mc2.o == mc3.o`,
   191368 bytes) e golden regravado em `tests/golden/mc2.sha256`.
-- M11 ✔ (`docs/specs/M11.md`): **executável direto (`mc --exe`), sem `ld`**. O executável é um
+- M11 ✔ verificado e revisado; plano concluído; ver `docs/bootstrap.md` (`docs/specs/M11.md`):
+  **executável direto (`mc --exe`), sem `ld`**. O executável é um
   backend em `.mc` — `src/backend_exe.mc` (858 linhas), registrado por padrão no driver como
   `macho-exe`, com `--exe` de apelido. Ele reusa `gen_lower` + `gen_encode_all` (o mesmo encoder e
   as mesmas seções/relocs do backend `macho`) e faz o que o `ld` fazia: layout de segmentos com
@@ -119,4 +120,19 @@ Agentes reportam fatos (comandos rodados + saída), nunca suposições.
   `check-ast` 57/57, `check-asm` 57/57, `check-obj` 32/32, `check-surface` 32/32, `test-exe` 32/32,
   `bootstrap` com ponto fixo (`mc2.o == mc3.o`, 225424 bytes) e golden regravado em
   `tests/golden/mc2.sha256` (o `diff` de `--dump-asm` entre `mc1` e `mc2` sai vazio).
+- Lote pós-M11 (revisão): `reloc(UNSIGNED, "sym")` seguido de `emit()`/`#opcode` era aceito e
+  registrava uma relocação de 8 bytes (`length 3`) sobre uma palavra de 4, passando por cima da
+  instrução seguinte — reproduzido nos dois backends (`otool -r`: `address 00000008, length 3`).
+  `gen_word` agora recusa nos dois lados com a mesma mensagem, `reloc UNSIGNED exige 8 bytes: use
+  inicializador de array global` (`stage0/gen_arm64.c` +3 linhas, `src/gen_arm64.mc` +3);
+  `tests/err/062-reloc-unsigned.mc` documenta o caso (fora de `scripts/test.sh`, como o `055`).
+  Docs: `docs/surface.md` § `emit()`/`reloc()`; trade-off do `--exe` com símbolo indefinido
+  (`.o` + `ld` recusa no link; `--exe` gera o binário e o `dyld` mata com `Symbol not found`,
+  exit 134) em `docs/bootstrap.md` § M11, `docs/core-language.md` § `extern` e
+  `docs/specs/M11.md` § Riscos — decisão registrada: sem lista heurística de símbolos.
+  — stage0 2846/3000 linhas; `make check` verde: `test` 32/32, `check-lex` 57/57, `check-ast` 57/57,
+  `check-asm` 57/57, `check-obj` 32/32, `check-surface` 32/32, `test-exe` 32/32, `bootstrap` com
+  ponto fixo (`mc2.o == mc3.o`, 225640 bytes; o `diff` de `--dump-asm` entre `mc1` e `mc2` sai
+  vazio) e golden regravado uma vez em `tests/golden/mc2.sha256` — o delta do codegen é só o guarda
+  novo em `gen_word` (17 instruções) mais o deslocamento de +1 nos índices `l_strN` a partir de 285.
 - M12 é o próximo marco. Atualize esta seção ao fechar cada marco.

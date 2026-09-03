@@ -251,7 +251,16 @@ Bytes e relocações crus, para o que `#opcode` não cobre. `emit(CONST)` grava 
 (mesmo `I_RAW` de `#opcode`); `reloc(TIPO, "simbolo")` registra uma relocação para a **próxima**
 palavra emitida na função. `TIPO` ∈ `BRANCH26 PAGE21 PAGEOFF12 UNSIGNED`, constantes pré-definidas
 internamente na tabela de `#define` (mesmos valores de `docs/macho-notes.md`: `BRANCH26=2 PAGE21=3
-PAGEOFF12=4 UNSIGNED=0`). Símbolo desconhecido vira indefinido externo. Testado
+PAGEOFF12=4 UNSIGNED=0`). Símbolo desconhecido vira indefinido externo.
+
+`UNSIGNED` é aceito como constante mas **recusado nesta posição**: é uma relocação de 8 bytes
+(`length 3`) e a palavra que `emit()`/`#opcode` põem no fluxo tem 4, então ela passaria por cima da
+instrução seguinte. O erro é `reloc UNSIGNED exige 8 bytes: use inicializador de array global`, nos
+dois lados (`stage0/gen_arm64.c` e `src/gen_arm64.mc`) — caso em `tests/err/062-reloc-unsigned.mc`.
+Endereço de 8 bytes se escreve como inicializador de array global, que gera o `R_UNSIGNED` no lugar
+certo (`tests/040-arrinit.mc`, `tests/060-callp.mc`).
+
+Testado
 (`tests/033-reloc.mc`, roda e retorna 42; `otool -r` mostra a relocação `R_BRANCH26` gerada por
 `reloc()` ao lado da que o `bl` do compilador gera para a chamada em `main`):
 

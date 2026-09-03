@@ -105,6 +105,70 @@ descartada de propósito: `codesign -dvvv` mostrando `Identifier=mc-exe` é a me
 esse caminho: compila com `--exe`, confere `codesign --verify` e compara exit code e stdout com o
 cabeçalho de cada fonte — 32/32.
 
+### Trade-off do `--exe`: símbolo indefinido só aparece no `dyld`
+
+Os dois caminhos de saída falham em momentos diferentes quando um `extern` não existe em lugar
+nenhum. Fonte usado nas duas execuções abaixo:
+
+```
+// faltante.mc
+extern i64 nao_existe_mesmo(i64 x);
+
+i64 main() {
+    return nao_existe_mesmo(1);
+}
+```
+
+O caminho `.o` + `ld` recusa **no link** — o `ld` resolve contra a `libSystem` e sabe dizer não:
+
+```
+$ build/mc1 faltante.mc -o faltante.o
+$ echo $?
+0
+$ scripts/link.sh faltante faltante.o
+Undefined symbols for architecture arm64:
+  "_nao_existe_mesmo", referenced from:
+      _main in faltante.o
+ld: symbol(s) not found for architecture arm64
+$ echo $?
+1
+```
+
+O `--exe` **não tem como validar** isso: o backend `macho-exe` emite um stub `__TEXT,__stubs` +
+uma entrada `__DATA,__got` com bind opcode para cada símbolo importado, e conferir se o nome existe
+de verdade exigiria ler os `.tbd` do SDK (ou o próprio `/usr/lib/libSystem.B.dylib`) — dependência
+externa que o M11 recusa por definição, já que o ponto do marco é não depender de mais nada além do
+`dyld` em tempo de execução. O binário sai bem-formado e assinado; quem recusa é o `dyld`, no
+carregamento:
+
+```
+$ build/mc1 --exe faltante.mc -o faltante-exe
+$ echo $?
+0
+$ ls -l faltante-exe
+-rwxr-xr-x  1 schivei  wheel  33289 faltante-exe
+$ codesign --verify --verbose=4 faltante-exe
+faltante-exe: valid on disk
+faltante-exe: satisfies its Designated Requirement
+$ ./faltante-exe
+dyld[84421]: Symbol not found: _nao_existe_mesmo
+  Referenced from: <CCEFFEF5-D25D-5C49-8593-D99D8433E7BA> .../faltante-exe
+  Expected in:     <4FED5EE2-5D3E-35B1-A170-9859C4B683BB> /usr/lib/libSystem.B.dylib
+$ echo $?
+134
+```
+
+O exit 134 é o `SIGABRT` (128 + 6) com que o `dyld` mata o processo. Note que a assinatura ad-hoc
+está correta e `codesign --verify` passa: assinatura e resolução de símbolos são coisas
+independentes, e o `--exe` acerta a primeira sem opinar sobre a segunda.
+
+**Decisão:** não há lista de símbolos conhecidos embutida no compilador. Uma tabela heurística de
+nomes da `libSystem` daria falso negativo (símbolo que existe e não está na lista) e falso positivo
+(símbolo na lista ausente na versão do SO em uso), e envelheceria a cada release do macOS — trocaria
+um erro tardio e exato por um erro precoce e errado. Quem quiser a checagem em tempo de build tem o
+caminho do `.o` + `ld`, que continua sendo o default (`--exe` é opt-in) e é o que `make test` e
+`scripts/bootstrap.sh` usam.
+
 **O `ld` continua sendo o caminho do bootstrap.** `scripts/bootstrap.sh` não mudou: o critério do
 ponto fixo do M7 é sobre `.o`, e o `.o` continua sendo o formato de saída padrão. O `--exe` é uma
 segunda saída, provada por `make test-exe` e pela cadeia acima, não uma substituição.
