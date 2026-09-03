@@ -1,5 +1,5 @@
 #!/bin/sh
-# check-surface.sh [MC0] — criterio do M10 (Tier 2).
+# check-surface.sh [MC0] [MC1] — criterio do M10 (Tier 2) e do M12 (Tier 3).
 #
 # Liga a demonstracao da superficie trocando o include de src/user.mc por
 # lib/user_demo.mc, recompila o compilador com mc0 (build/mc1s), e para cada
@@ -8,12 +8,21 @@
 # criterio. Depois liga lib/user_tokadd.mc (um user_init que so chama tok_add) e
 # confere que os ids das palavras do nucleo continuam de pe. O src/user.mc
 # original e sempre devolvido, mesmo se algo falhar.
+#
+# M12 (Tier 3): no fim vem o caso que NAO mexe em src/user.mc — um compilador
+# ensinado que e um arquivo proprio (lib/mc_syntax_demo.mc = src/core.mc + o
+# modulo do usuario). MC1 o compila com --exe, e o binario que sai compila
+# lib/syntax_demo_test.mc (que usa `unless`, `enum` e `bool`), tambem com --exe;
+# o programa tem de sair 42, e o compilador padrao tem de recusar o mesmo fonte.
 mc0="${1:-build/mc0}"
+mc1="${2:-build/mc1}"
 
-if [ ! -x "$mc0" ]; then
-    echo "FAIL: compilador '$mc0' nao encontrado ou nao executavel"
-    exit 1
-fi
+for mc in "$mc0" "$mc1"; do
+    if [ ! -x "$mc" ]; then
+        echo "FAIL: compilador '$mc' nao encontrado ou nao executavel"
+        exit 1
+    fi
+done
 
 user="src/user.mc"
 save="${TMPDIR:-/tmp}/user.mc.$$"
@@ -114,5 +123,40 @@ else
     fi
 fi
 cp "$save" "$user"
+
+# ---- Tier 3 (M12): sintaxe ensinada por codigo, sem tocar em src/ ----
+# 1. MC1 compila o compilador ensinado (src/core.mc + lib/user_syntax_demo.mc)
+# 2. o compilador ensinado compila o teste que usa unless/enum/bool
+# 3. o teste roda e devolve 42
+demo="build/mc-syntax-demo"
+rm -f "$demo"
+if ! msg=$("$mc1" --exe lib/mc_syntax_demo.mc -o "$demo" 2>&1); then
+    echo "FAIL: compilacao de lib/mc_syntax_demo.mc: $msg"
+    fails=$((fails + 1))
+elif ! msg=$(codesign --verify --verbose=4 "$demo" 2>&1); then
+    echo "FAIL: assinatura de $demo: $msg"
+    fails=$((fails + 1))
+elif ! msg=$("$demo" --exe lib/syntax_demo_test.mc -o "$tmp/sdt" 2>&1); then
+    echo "FAIL: o compilador ensinado nao compilou lib/syntax_demo_test.mc: $msg"
+    fails=$((fails + 1))
+else
+    "$tmp/sdt"
+    rc=$?
+    if [ "$rc" != "42" ]; then
+        echo "FAIL: lib/syntax_demo_test.mc devolveu $rc, esperado 42"
+        fails=$((fails + 1))
+    else
+        echo "ok syntax/syntax_stmt/type_alias: mc_syntax_demo compila o teste (exit 42)"
+    fi
+fi
+
+# o compilador padrao tem de RECUSAR o mesmo fonte: a sintaxe e do modulo, nao
+# do nucleo. `enum` la e so um identificador no lugar de um tipo.
+if msg=$("$mc1" lib/syntax_demo_test.mc -o "$tmp/sdt.o" 2>&1); then
+    echo "FAIL: o compilador padrao aceitou lib/syntax_demo_test.mc"
+    fails=$((fails + 1))
+else
+    echo "ok o compilador padrao recusa o mesmo fonte ($msg)"
+fi
 
 [ "$fails" -eq 0 ]

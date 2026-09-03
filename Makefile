@@ -50,10 +50,18 @@ bootstrap: stage0
 
 # M10: liga lib/user_demo.mc em src/user.mc, recompila e compara o backend da
 # superficie com o embutido. Devolve src/user.mc como estava.
-check-surface: build/mc0
-	scripts/check-surface.sh build/mc0
+# M12: o mesmo alvo roda o caso do Tier 3 (lib/mc_syntax_demo.mc), que nao mexe
+# em src/user.mc — por isso o build/mc1 na dependencia.
+check-surface: build/mc0 build/mc1
+	scripts/check-surface.sh build/mc0 build/mc1
 
-check: budget test check-lex check-ast check-asm check-obj bootstrap check-surface test-exe
+# M12: o exemplo completo (examples/api) — compilador ensinado com class/interface,
+# #dylib para a libsqlite3 e o servidor HTTP. Nada disto passa pelo stage0: o
+# compilador de partida e build/mc1. Depende de curl e do sqlite3 do sistema.
+check-examples: build/mc1
+	$(MAKE) -C examples/api test
+
+check: budget test check-lex check-ast check-asm check-obj bootstrap check-surface test-exe check-examples
 
 budget:
 	scripts/loc-budget.sh $(BUDGET)
@@ -61,4 +69,4 @@ budget:
 clean:
 	rm -rf build
 
-.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe check budget clean
+.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe check-examples check budget clean

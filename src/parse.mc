@@ -179,6 +179,18 @@ i64 cur_is(uptr s) {
 // o nome do token corrente, copiado para a arena
 uptr cur_name() { return xstrdup(tok_start(cur), tok_len(cur)); }
 
+// erro de "nome esperado aqui". Um registro do Tier 3 (syntax/syntax_stmt/
+// type_alias) reserva a palavra no programa inteiro, e nao so na posicao
+// gramatical do handler: se o token que chegou no lugar do nome e uma dessas
+// palavras, a colisao e a causa e vale dize-la, em vez de um "nome esperado"
+// sem relacao aparente com o modulo que ensinou a sintaxe.
+void err_name(uptr msg) {
+    if (word_is_taught(tok_id(cur)))
+        err_at2(tok_file(cur), tok_line(cur),
+                "nome reservado por syntax/syntax_stmt/type_alias", cur_name());
+    err_at(tok_file(cur), tok_line(cur), msg);
+}
+
 // ---- tabelas Pratt ----
 i64 infix_find(i64 tok) {
     i64 i = 0;
@@ -902,7 +914,7 @@ uptr decl_name(uptr msg) {
             return p;
         }
     }
-    if (tok_id(cur) != T_IDENT) err_at(tok_file(cur), tok_line(cur), msg);
+    if (tok_id(cur) != T_IDENT) err_name(msg);
     check_def();
     uptr s = cur_name();
     next();
@@ -939,7 +951,16 @@ i64 parse_stmt() {
     uptr fl = tok_file(cur);
     i64 si = syntax_stmt_find(tok_id(cur));      // Tier 3: statement ensinado
     if (si >= 0) {
+        uptr cp0 = cp;                           // cursor do lexer antes do handler
+        uptr t0 = tok_start(cur);                // ... e o token que ele recebeu
         i64 sn = callp(syntax_stmt_fn_at(si));   // o handler come a palavra tambem
+        // um handler que nao avancou devolve o parser ao mesmo token e seria
+        // chamado de novo, para sempre; aqui isso morre com nome e posicao em
+        // vez de travar (topo) ou esgotar a arena (statement). As duas condicoes
+        // sao precisas juntas: `cp` para no fim do arquivo (a palavra podia ser
+        // o ultimo token) e o token corrente vira T_EOF, que tem outro start.
+        if (cp == cp0 && tok_start(cur) == t0)
+            err_at2(fl, line, "handler de syntax_stmt nao consumiu nenhum token", cur_name());
         // 0 = o handler nao produziu statement; um bloco vazio ocupa o lugar
         // sem quebrar a lista de irmaos de quem chamou
         if (sn == 0) sn = node_new(N_BLOCK, line, fl);
@@ -1456,8 +1477,7 @@ i64 parse_params() {
         if (pty < 0)        err_at(fl, line, "tipo esperado no parametro");
         if (pty == TY_VOID) err_at(fl, line, "parametro de tipo void");
         next();
-        if (tok_id(cur) != T_IDENT)
-            err_at(tok_file(cur), tok_line(cur), "nome de parametro esperado");
+        if (tok_id(cur) != T_IDENT) err_name("nome de parametro esperado");
         check_def();
         uptr pname = cur_name();
         next();
@@ -1559,13 +1579,17 @@ i64 parse_top() {
     uptr fl = tok_file(cur);
     i64 si = syntax_find(tok_id(cur));       // Tier 3: declaracao de topo ensinada
     if (si >= 0) {
-        callp(syn_fn_at(si));                // o handler come a palavra e chama top_add
+        uptr cp0 = cp;                       // cursor do lexer antes do handler
+        uptr t0 = tok_start(cur);            // ... e o token que ele recebeu
+        callp(syntax_fn_at(si));             // o handler come a palavra e chama top_add
+        if (cp == cp0 && tok_start(cur) == t0)   // nao avancou: parse_unit chamaria de novo
+            err_at2(fl, line, "handler de syntax nao consumiu nenhum token", cur_name());
         return 0;
     }
     i64 ty = type_of_token(tok_id(cur));
     if (ty < 0) err_at(fl, line, "tipo esperado no topo");
     next();
-    if (tok_id(cur) != T_IDENT) err_at(tok_file(cur), tok_line(cur), "nome esperado no topo");
+    if (tok_id(cur) != T_IDENT) err_name("nome esperado no topo");
     check_def();
     uptr name = cur_name();
     next();

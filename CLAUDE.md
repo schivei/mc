@@ -145,4 +145,79 @@ Agentes reportam fatos (comandos rodados + saída), nunca suposições.
   exhausted`, exit 1 (sintético de 1000 funções × 12 statements, 14001 linhas; com 11 statements,
   13001 linhas, ainda compila). `make check` verde: `test` 32/32, `check-lex`/`check-ast`/`check-asm`
   57/57, `check-obj` 32/32, `check-surface` 32/32, `test-exe` 32/32, `bootstrap` com ponto fixo.
-- Próximo: M12 (`docs/specs/M12.md`); M13 em backlog (`docs/specs/M13.md`). Atualize esta seção ao fechar cada marco.
+- M12-núcleo ✔ (seção A de `docs/specs/M12.md`): **Tier 3 — sintaxe ensinada por código**. Só no
+  `.mc`; `stage0/` intocado (2846/3000). `src/core.mc` (41 linhas) é o compilador **sem**
+  `user.mc`, e `src/mc.mc` virou `#include "core.mc"` + `#include "user.mc"`: um compilador
+  ensinado deixou de ser uma edição de `src/user.mc` e passou a ser um arquivo próprio
+  (`#include "../src/core.mc"` + módulos + `void user_init()`). `src/astdump.mc` ganhou
+  `#include "hooks.mc"` porque `parse.mc` agora consulta as tabelas que moram lá.
+  Registros novos em `src/hooks.mc` (+109 linhas): `syntax(palavra, &f)` (posição de topo,
+  `MAXSYNTAX 32`), `syntax_stmt(palavra, &f)` (posição de statement) e
+  `type_alias(nome, TY_*)` (`MAXALIAS 64`) — tabelas lineares, último registro vence, e as três
+  recusam palavra-chave do núcleo (`word_add`, testado com `type_alias("if",…)` e
+  `syntax_stmt("return",…)`: `nao pode redefinir palavra-chave do nucleo`).
+  `src/parse.mc` (+219): `parse_top` consulta `syntax_find` antes de exigir um tipo e devolve 0
+  (o handler entrega por `top_add`); `parse_stmt` consulta `syntax_stmt_find` antes do despacho de
+  `#rule` e aceita o nó devolvido (0 → `N_BLOCK` vazio); `type_of_token` cai em `alias_find`, o que
+  faz o alias valer de uma vez em global, local, parâmetro, `extern`, cast e `p_type`.
+  API pública fixa: `p_id/p_val/p_name/p_line/p_file/p_next/p_accept/p_expect/p_ident/p_type`,
+  `parse_expr(0)/parse_stmt()/parse_block()/parse_params()`, `parse_function(ty,name,params)`,
+  `top_add(n)`, `def_add(name,val,line,fl)`, `param_new(ty,name)`, `list_append(head,n)`.
+  `#dylib "caminho"` (`D_DYLIB 8`, no fim da lista de `lex.mc`): tabela de caminhos
+  (`MAXDYLIBS 8`, ordinal = índice + 2), `cur_dylib`, `extern_lib_find(name)` (default 1);
+  `#dylib ""` volta à libSystem. `src/backend_exe.mc` (+56) emite um `LC_LOAD_DYLIB` por dylib,
+  põe o ordinal no `n_desc` e troca de `BIND_SET_DYLIB_ORD_IMM` por símbolo. Verificado com
+  `/usr/lib/libsqlite3.dylib`: `otool -L` mostra as duas, `nm -m` mostra `(from libsqlite3)`,
+  `dyld_info -fixups` mostra os três binds nas dylibs certas e o programa imprime `3051000`
+  (= SQLite 3.51.0, igual ao `sqlite3 --version` do sistema). O `.o` + `ld` ignora `#dylib` (o
+  `ld` recusa com `symbol(s) not found`), como já documentado para o M11.
+  Provas: `lib/user_syntax_demo.mc` (64 linhas: `unless` via `syntax_stmt`, `enum Nome { … }` via
+  `syntax` gerando `#define`s + alias, `type_alias("bool", TY_U8)`),
+  `lib/syntax_demo_test.mc` (usa os três, sai 42) e o entry `lib/mc_syntax_demo.mc`
+  (`#include "../src/core.mc"` + o demo). Caso novo em `scripts/check-surface.sh` (agora
+  `check-surface.sh MC0 MC1`, e o alvo depende de `build/mc1`): `mc1 --exe lib/mc_syntax_demo.mc`,
+  o binário compila o teste por `--exe`, roda e sai 42 — e o compilador padrão **recusa** o mesmo
+  fonte (`tipo esperado no topo`).
+  — `make check` verde: `budget` 2846/3000, `test` 32/32, `check-lex` 61/61, `check-ast` 61/61,
+  `check-asm` 61/61, `check-obj` 32/32, `check-surface` 32/32 + Tier 3, `test-exe` 32/32,
+  `bootstrap` com ponto fixo (`mc2.o == mc3.o`, 235960 bytes; `diff` de `--dump-asm` entre `mc1` e
+  `mc2` vazio) e golden regravado uma vez em `tests/golden/mc2.sha256`
+  (`f42cda85…39c28` → `905f52c1…fbbc4`). Auto-hospedagem sem `ld` mantida:
+  `build/mc1 --exe src/mc.mc -o build/mc-exe` e `build/mc-exe src/mc.mc` idêntico a `build/mc2.o`.
+- M12 ✔ (seção B de `docs/specs/M12.md`): **`examples/api`** — uma API HTTP de todos com
+  persistência em SQLite escrita com `class`, `interface`, `bool` e `str`, quatro coisas que a
+  linguagem não tem. `src/` e `stage0/` **intocados** por esta seção: a superfície inteira vem de
+  `examples/api/oop.mc` (458 linhas, roda dentro do compilador pela API pública do parser) mais
+  `examples/api/mc-api.mc` (20 linhas: `#include "../../src/core.mc"` + `oop.mc` + `user_init()`
+  com dois `syntax` e dois `type_alias`). Programa: `main.mc` (359 linhas) com
+  `class Request`/`Response`/`Todo`/`Db`, `interface Handler` e `class TodoHandler : Handler` /
+  `class HealthHandler : Handler`; roteamento por tabela linear de (prefixo, `Handler`) despachada
+  pela vtable (`callp`, M10) — o laço principal nunca sabe qual handler chama. As sete declarações
+  `class`/`interface` viram **39** declarações comuns (`--dump-ast`), com
+  `TODO_ID=0 TODO_TITLE=8 TODO_DONE=16 TODO_SIZE=24 HANDLER_HANDLE=0 TODOHANDLER_SIZE=8`
+  conferidos por um programa que os imprime. Bibliotecas do outro agente: `lib/rt.mc` (arena fixa de
+  4 MiB, strbuf, strings), `lib/http.mc` (sockets, requisição/resposta HTTP/1.1) e `lib/sqlite.mc`
+  (`#dylib "/usr/lib/libsqlite3.dylib"` + 13 externs + wrappers). Rotas: `GET /health` →
+  `{"ok":true}`, `GET /todos` → lista JSON, `POST /todos` (corpo = título) → `201` com o todo criado,
+  `DELETE /todos/N` → `{"deleted":N}`, 404 para o resto; argumentos `PORTA CAMINHO_DO_BANCO`, uma
+  conexão por vez.
+  `examples/api/test.sh` (139 linhas) sobe o servidor numa porta livre com banco temporário, bate em
+  cada rota com `curl`, compara corpo **e** status, confere o estado final com o `sqlite3` do sistema
+  (`2|pagar conta|0`) e mata o servidor. `examples/api/Makefile`: `mc-api`, `api`, `test-oop`,
+  `test-lib`, `test-api`, `test`, `clean` — nenhuma dependência além de `../../build/mc1` (construído
+  pela raiz se faltar), `curl` e `sqlite3`. O Makefile da raiz ganhou `check-examples`
+  (`make -C examples/api test`) dentro de `make check`.
+  Provas: `build/api` 55616 bytes, `codesign --verify` ok e `flags=0x2(adhoc)`, `otool -L` com
+  libSystem **e** libsqlite3, `nm -m` com 13 símbolos `_sqlite3_*` `(from libsqlite3)`; o compilador
+  padrão recusa o mesmo fonte (`examples/api/main.mc:27: tipo esperado no parametro` — `str`).
+  Detalhe operacional que custou um build: sobrescrever um executável assinado no mesmo inode faz o
+  kernel matar a execução seguinte com `Killed: 9`, então o `Makefile` e o `test.sh` dão `rm -f` no
+  alvo antes de cada compilação. Docs: `examples/api/README.md` (novo) e `docs/surface.md` § Tier 3
+  ganhou "O exemplo real: `examples/api`".
+  — `stage0/` intocado, 2846/3000; `make check` verde de ponta a ponta: `test` 32/32, `check-lex`
+  61/61, `check-ast` 61/61, `check-asm` 61/61, `check-obj` 32/32, `check-surface` 32/32,
+  `test-exe` 32/32, `bootstrap` com ponto fixo (`mc2.o == mc3.o`) e golden **inalterado**
+  (`905f52c1…fbbc4` confere com `tests/golden/mc2.sha256`), `check-examples` verde.
+- M13 é o próximo marco (`docs/specs/M13.md`: dimensionar a memória do programa em tempo de
+  compilação — a arena fixa de 4 MiB de `examples/api/lib/rt.mc` é mais um caso motivador).
+  Atualize esta seção ao fechar cada marco.

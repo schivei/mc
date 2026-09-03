@@ -470,3 +470,359 @@ do M11 (`src/backend_exe.mc` + `src/sha256.mc`, 1035 linhas de `.mc`) não caber
 mecanismo em C justamente porque o compilador que se ensina é o que está escrito na própria
 linguagem. O que o C precisou ganhar no M10 foi só o que a linguagem precisa para expressar um
 hook: `&funcao`, `callp` e a divisão do gen em duas metades.
+
+## Tier 3 — sintaxe ensinada por código (`syntax` / `syntax_stmt` / `type_alias` / `#dylib`) — implementado (M12)
+
+O `#rule stmt:` do Tier 1 é uma macro higiênica: ele casa uma sequência **fixa** de tokens numa
+posição **de statement** e devolve um template já parseado. Isso basta para `while`, `for`, `+=`.
+Não basta para `class` ou `interface`: são declarações de topo, têm listas de tamanho variável, e o
+efeito delas é gerar *vários* nomes derivados (`Todo_ID`, `todo_json`, `todo_new`) — coisas que um
+template não expressa. O Tier 3 é a saída, e é a mesma ideia do Tier 2: **o usuário escreve um
+módulo `.mc` que roda dentro do compilador**, agora durante o *parse*, usando a API pública do
+parser.
+
+### Os três registros novos
+
+| registro | o que você escreve | quando roda |
+|---|---|---|
+| `syntax("class", &f)` | `void f()` (ou `i64 f()`, o retorno é ignorado) | `parse_top`, antes de exigir um tipo |
+| `syntax_stmt("unless", &f)` | `i64 f()` — devolve o índice do nó do statement (0 = nenhum) | `parse_stmt`, antes do despacho de `#rule` |
+| `type_alias("bool", TY_U8)` | — | `type_of_token`, depois das palavras do núcleo |
+
+As três registram a palavra no lexer (`tok_add`), como `#rule` faz com o literal de despacho, e as
+três **recusam palavra-chave do núcleo** (`K_U8`..`K_EXTERN`):
+
+```
+$ build/mc1 --exe meu_compilador.mc -o mc-meu && ./mc-meu x.mc -o x.o
+mc: nao pode redefinir palavra-chave do nucleo: if
+```
+
+O handler recebe o parser parado **na própria palavra** (ele mesmo a consome com `p_next()`) e
+devolve o controle com o token seguinte já no lookahead. As tabelas em `src/hooks.mc` são lineares,
+na ordem de registro, percorridas de trás para a frente — o último registro do mesmo nome vence,
+como na tabela de backends. Nada de hash, nada de backtracking: `docs/determinism.md`, regra 1.
+
+**Consumir pelo menos um token é obrigação do handler.** Se ele devolver o controle sem ter
+avançado, o parser encontra o mesmo token e chama o mesmo handler de novo — para sempre no topo, e
+até `arena exhausted` na posição de statement. `parse_top` e `parse_stmt` comparam o cursor do lexer
+(e o token corrente) antes e depois da chamada e recusam:
+
+```
+$ ./mc-meu --exe prog.mc -o prog
+prog.mc:1: handler de syntax nao consumiu nenhum token: bad2
+```
+
+### O registro reserva a palavra no programa inteiro
+
+Os três registros são globais e definitivos: a partir de `word_add` a palavra deixa de lexar como
+`T_IDENT` **em qualquer posição**, e não só na posição gramatical do handler. Quem registra
+`syntax_stmt("log", &f)` tira `log` do vocabulário de identificadores do fonte compilado —
+`i64 log(i64 x)`, `i64 soma(i64 log, i64 b)` e `i64 log = 1;` viram erro, mesmo sem usar a sintaxe
+nova em nada.
+
+É decisão de projeto, não descuido: o lexer tem uma tabela de palavras só, e `user_init()` roda
+**antes** de o primeiro token do fonte ser lido — no momento do registro não há como saber que o
+programa usaria aquele nome. O que o compilador faz é dizer o motivo, em vez de um "nome esperado"
+sem relação aparente com o módulo de sintaxe:
+
+```
+$ ./mc-meu --exe user_prog.mc -o user_prog
+user_prog.mc:1: nome reservado por syntax/syntax_stmt/type_alias: log
+```
+
+Na prática: escolha palavras que um fonte não usaria como identificador (`class`, `interface`,
+`unless`, `enum`) e prefira maiúscula nos nomes de `type_alias` (`Todo`, `Request`).
+
+### A API pública do parser
+
+Nomes fixos, em `src/parse.mc` (seção "API publica do parser", logo antes de `---- topo ----`).
+Um módulo que ensina sintaxe depende só disto, de `node_new`/`nd_*`/`set_nd_*` de `src/ast.mc`, e
+dos registros de `src/hooks.mc`:
+
+```
+i64  p_id()                       id do token corrente
+i64  p_val()                      valor (T_INT / T_CHAR / T_DIR / T_HOLE)
+uptr p_name()                     lexema corrente, copiado para a arena
+i64  p_line()                     uptr p_file()
+void p_next()                     avanca um token
+i64  p_accept(id)                 consome se bater; 1/0
+void p_expect(id, msg)            exige o token, senao err_at
+uptr p_ident()                    exige T_IDENT (e nao ser #define), devolve o nome e avanca
+i64  p_type()                     exige tipo — do nucleo ou alias — devolve TY_*, avanca
+
+i64  parse_expr(0)                as quatro descidas que o proprio nucleo usa
+i64  parse_stmt()
+i64  parse_block()
+i64  parse_params()               le `( ... )` e devolve a lista de N_PARAM
+
+i64  parse_function(ty, name, params)   le o bloco e devolve o N_FUNC montado
+void top_add(n)                   anexa N_FUNC/N_GLOBAL/N_EXTERN/N_PROTO a unidade, em ordem
+void def_add(name, val, line, fl) registra um #define (recusa nome repetido)
+i64  param_new(ty, name)          um N_PARAM solto, para prepender `self`
+i64  list_append(head, n)         anexa n ao fim da lista e devolve a cabeca
+```
+
+`parse_function` recebe a lista de parâmetros **já montada** — é por isso que um handler de `class`
+consegue prepender `self` a cada método antes de ler o corpo. `top_add` é o único caminho de saída
+de um handler de `syntax`: ele produz zero, uma ou muitas declarações, e `parse_top` devolve 0.
+Um handler de `syntax_stmt` devolve o nó direto; se devolver 0, o parser põe um `N_BLOCK` vazio no
+lugar, para não quebrar a lista de irmãos de quem o chamou.
+
+### Um compilador ensinado é um arquivo, não uma edição de `src/`
+
+O Tier 2 (M10) ensinava o compilador trocando o `#include` de `src/user.mc`. O M12 divide o
+compilador em dois arquivos para que isso deixe de ser necessário:
+
+- **`src/core.mc`** — a lista de `#include` do compilador **sem** `user.mc`. É o compilador menos
+  exatamente uma função: `void user_init()`.
+- **`src/mc.mc`** — `#include "core.mc"` + `#include "user.mc"`. É o compilador padrão, e
+  `src/user.mc` continua sendo a costura de quem prefere ensinar *esse*.
+
+Um compilador ensinado é um arquivo próprio, fora de `src/`:
+
+```c
+// lib/mc_syntax_demo.mc
+#include "../src/core.mc"
+#include "user_syntax_demo.mc"      // define os handlers e o user_init
+```
+
+```
+$ build/mc1 --exe lib/mc_syntax_demo.mc -o build/mc-syntax-demo
+$ build/mc-syntax-demo --exe lib/syntax_demo_test.mc -o /tmp/t && /tmp/t; echo $?
+42
+$ build/mc1 lib/syntax_demo_test.mc -o /tmp/t.o
+lib/syntax_demo_test.mc:7: tipo esperado no topo
+```
+
+A última linha é o ponto: a sintaxe pertence ao módulo, não ao núcleo. `make check-surface` roda
+esses três comandos.
+
+### A prova: `lib/user_syntax_demo.mc`
+
+64 linhas que ensinam três coisas que o `#rule` não alcança:
+
+```c
+// unless (cond) block  ->  if (!cond) block
+i64 sd_unless() {
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_next();                                    // a palavra `unless`
+    p_expect(K_LPAR, "esperado ( apos unless");
+    i64 c = parse_expr(0);
+    p_expect(K_RPAR, "esperado ) apos a condicao do unless");
+    i64 b = parse_block();
+    i64 neg = node_new(N_UNARY, line, fl);       // !cond
+    set_nd_op(neg, K_BANG);
+    set_nd_a(neg, c);
+    i64 n = node_new(N_IF, line, fl);
+    set_nd_a(n, neg);
+    set_nd_b(n, b);
+    return n;
+}
+
+// enum Nome { A, B, C }  ->  #define A 0, #define B 1, #define C 2
+// e `Nome` vira alias de i64. Nao produz declaracao: nao chama top_add.
+void sd_enum() {
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_next();                                    // a palavra `enum`
+    uptr nome = p_ident();
+    p_expect(K_LBRACE, "esperado { no enum");
+    i64 v = 0;
+    loop {
+        if (p_id() == K_RBRACE) break;
+        def_add(p_ident(), v, line, fl);
+        v = v + 1;
+        if (!p_accept(K_COMMA)) break;
+    }
+    p_expect(K_RBRACE, "esperado } no enum");
+    if (v == 0) err_at(fl, line, "enum sem membros");
+    type_alias(nome, TY_I64);
+}
+
+void user_init() {
+    syntax("enum", &sd_enum);                    // posicao de topo
+    syntax_stmt("unless", &sd_unless);           // posicao de statement
+    type_alias("bool", TY_U8);                   // tipo novo, sem sintaxe nova
+}
+```
+
+`unless` caberia num `#rule stmt:` — está aí de propósito, para mostrar o mesmo resultado pelos dois
+caminhos. `enum` não cabe: é posição de topo, a lista tem tamanho variável e o efeito é registrar
+constantes, não produzir um nó. `bool` também não: `#rule` não tem buraco `type $t`.
+
+`lib/syntax_demo_test.mc` usa os três (`enum Cor { VERDE, AMARELO, VERMELHO }`, `bool` como tipo de
+parâmetro e de local, dois `unless`) e sai 42.
+
+### `type_alias` e o resto da linguagem
+
+`type_alias(nome, TY_*)` não toca em nenhum ponto do parser além de `type_of_token`, que é por onde
+**toda** posição de tipo passa: declaração de global, declaração de local, parâmetro, `extern`,
+cast e o próprio `p_type()`. Por isso o alias funciona em todos eles de uma vez:
+
+```c
+type_alias("bool", TY_U8);      // bool x = 1;  i64 f(bool b)  (bool) v
+type_alias("str",  TY_UPTR);
+type_alias("Todo", TY_UPTR);    // e assim uma classe vira um tipo
+```
+
+O nome vira palavra reservada a partir do registro, como acontece com o literal de despacho de um
+`#rule` — no programa inteiro, ver "O registro reserva a palavra no programa inteiro" acima.
+
+### `#dylib "caminho"` — implementado (M12)
+
+Até o M11 todo `extern` vinha da `libSystem`. `#dylib` diz de qual biblioteca vêm os `extern`
+declarados **depois** dele, até o próximo `#dylib`; `#dylib ""` volta ao default (libSystem), que é
+como um módulo evita contaminar quem for incluído depois dele.
+
+```c
+#include "sys.mc"
+
+#dylib "/usr/lib/libsqlite3.dylib"
+extern i64 sqlite3_libversion_number();
+#dylib ""                         // volta ao default: libSystem
+extern i64 getpid();
+
+i64 main() {
+    putnum(sqlite3_libversion_number());
+    puts("\n");
+    if (getpid() > 0) return 0;
+    return 1;
+}
+```
+
+```
+$ build/mc1 --exe prog.mc -o prog && ./prog
+3051000
+$ otool -L prog
+prog:
+	/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)
+	/usr/lib/libsqlite3.dylib (compatibility version 1.0.0, current version 1356.0.0)
+$ nm -m prog | grep undefined
+                 (undefined) external _getpid (from libSystem)
+                 (undefined) external _sqlite3_libversion_number (from libsqlite3)
+                 (undefined) external _write (from libSystem)
+$ dyld_info -fixups prog
+prog [arm64]:
+    -fixups:
+        segment         section          address             type   target
+        __DATA          __got            0x100004000           bind  libSystem/_write
+        __DATA          __got            0x100004008           bind  libsqlite3/_sqlite3_libversion_number
+        __DATA          __got            0x100004010           bind  libSystem/_getpid
+```
+
+O mecanismo é pequeno: `parse.mc` guarda os caminhos numa tabela linear (`MAXDYLIBS 8`) e o ordinal
+de uma dylib é **índice + 2**, porque no two-level namespace do Mach-O o 1 é sempre a libSystem;
+cada `extern` é anotado com o ordinal em vigor numa tabela por nome (`extern_lib_find(name)`,
+default 1). `backend_exe.mc` emite um `LC_LOAD_DYLIB` a mais por dylib, na ordem de registro, põe o
+ordinal no `n_desc` de cada símbolo indefinido e troca de `BIND_SET_DYLIB_ORD_IMM` quando o símbolo
+seguinte vem de outra biblioteca — os bind opcodes do exemplo acima saem `ord 1 / _write`,
+`ord 2 / _sqlite3_libversion_number`, `ord 1 / _getpid`.
+
+O caminho **não é validado**: no macOS moderno a maioria das dylibs do sistema não existe em disco
+(vivem no dyld shared cache), e quem valida é o `dyld` no `execve`.
+
+**`#dylib` só vale no `--exe`.** O `MH_OBJECT` não tem load command de dylib: um `.o` compilado do
+exemplo acima linka com `ld -lSystem` e o `ld` recusa, `symbol(s) not found for architecture arm64`.
+É a mesma troca já documentada em `docs/bootstrap.md` § M11 — o `--exe` é o caminho completo, o
+`.o` + `ld` é o caminho de compatibilidade. E o stage0, como sempre, não conhece nada disto:
+`#dylib` num fonte compilado por `build/mc0` é `diretiva desconhecida`.
+
+### O exemplo real: `examples/api`
+
+O demo de `lib/` prova o mecanismo com 64 linhas. `examples/api` prova que ele aguenta um programa:
+uma **API HTTP de todos com persistência em SQLite**, escrita com `class`, `interface`, `bool` e
+`str` — quatro coisas que a linguagem não tem. O compilador que a compila é um arquivo de 20 linhas:
+
+```c
+// examples/api/mc-api.mc
+#include "../../src/core.mc"
+#include "oop.mc"
+
+void user_init() {
+    syntax("class", &oop_class);
+    syntax("interface", &oop_interface);
+    type_alias("bool", TY_U8);
+    type_alias("str", TY_UPTR);
+}
+```
+
+`examples/api/oop.mc` (458 linhas) é o módulo que roda dentro do compilador. Ele não estende o
+parser: consome tokens com a API pública e devolve declarações comuns por `top_add`.
+
+```c
+// examples/api/main.mc — como o programa se escreve
+interface Handler {
+    i64 handle(self, Request req, Response res);
+}
+
+class Todo {
+    i64  id;
+    str  title;
+    bool done;
+
+    str json(self) { ... }
+}
+
+class TodoHandler : Handler {
+    Db db;
+
+    i64 handle(self, Request req, Response res) { ... }
+}
+```
+
+```
+// e o que o compilador vê depois de oop.mc
+#define HANDLER_HANDLE 0
+i64 handler_handle(uptr self, uptr req, uptr res) {
+    return callp(ld64(ld64(self) + 0), self, req, res);
+}
+#define TODO_ID 0
+#define TODO_TITLE 8
+#define TODO_DONE 16
+#define TODO_SIZE 24
+i64  todo_id(uptr self)          { return ld64(self + 0); }
+void set_todo_done(uptr self, u8 v) { st8(self + 16, v); }
+uptr todo_json(uptr self)        { ... }
+uptr todo_new()                  { uptr p = rt_alloc(24); return p; }
+u8   todohandler_vt[8];
+void todohandler_vt_init()       { st64(todohandler_vt + 0, &todohandler_handle); }
+uptr todohandler_new()           { ... st64(p, todohandler_vt); return p; }
+```
+
+As sete declarações `class`/`interface` de `main.mc` viram 39 declarações comuns; os deslocamentos
+saem conferidos por um programa que os imprime:
+
+```
+$ build/mc-api --exe defs.mc -o defs && ./defs
+TODO_ID=0 TODO_TITLE=8 TODO_DONE=16 TODO_SIZE=24 HANDLER_HANDLE=0 TODOHANDLER_SIZE=8
+```
+
+O roteamento é o ponto do exercício: o laço principal guarda `Handler`, nunca a classe concreta, e o
+despacho sai pela vtable do objeto (`callp`, M10). O binário sai pelo `--exe` (M11), assinado, com a
+`libsqlite3` entrando por `#dylib` (M12) — os três marcos no mesmo programa:
+
+```
+$ make -C examples/api test
+...
+  ok    POST /todos (comprar pao)
+        {"id":1,"title":"comprar pao","done":false}
+  ok    GET /todos (dois)
+        [{"id":1,"title":"comprar pao","done":false},{"id":2,"title":"pagar conta","done":false}]
+  ok    DELETE /todos/1
+        {"deleted":1}
+  ok    SELECT * FROM todos
+        2|pagar conta|0
+== ok: todas as rotas responderam o esperado ==
+
+$ otool -L examples/api/build/api
+	/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)
+	/usr/lib/libsqlite3.dylib (compatibility version 1.0.0, current version 1356.0.0)
+
+$ build/mc1 examples/api/main.mc -o /tmp/x.o
+examples/api/main.mc:27: tipo esperado no parametro
+```
+
+A última linha é a mesma de sempre: o compilador padrão não conhece `str`. A superfície pertence ao
+diretório que a ensina. `make check` roda tudo isso no alvo `check-examples`; o passo a passo está
+em `examples/api/README.md`.

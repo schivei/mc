@@ -462,7 +462,8 @@ void exe_fix_unsigned(i64 x, uptr p, uptr r) {
         die("ponteiro relocado em __TEXT: o segmento e r-x e o dyld nao o rebasa");
     if (sym_sect(sym_at(sym)) == 0) {
         st64(p + at, 0);                            // o dyld escreve o endereco importado
-        exe_bind_add(seg + 1, off, sym_name(sym_at(sym)));
+        uptr nm = sym_name(sym_at(sym));
+        exe_bind_add(seg + 1, off, nm, exe_sym_ord(nm));
     } else {
         st64(p + at, exe_sym_addr(sym));            // endereco sem o slide do ASLR
         exe_rebase_add(seg + 1, off);               // ... que o dyld soma no rebase

@@ -100,10 +100,10 @@ i64  syns_tok[MAXSYNTAX];
 uptr syns_fn[MAXSYNTAX];
 i64  nsyns = 0;
 
-i64  syn_tok_at(i64 i)  { return ld64(syn_tok + i * 8); }
-uptr syn_fn_at(i64 i)   { return ld64(syn_fn + i * 8); }
-i64  syns_tok_at(i64 i) { return ld64(syns_tok + i * 8); }
-uptr syns_fn_at(i64 i)  { return ld64(syns_fn + i * 8); }
+i64  syn_tok_at(i64 i)        { return ld64(syn_tok + i * 8); }
+uptr syntax_fn_at(i64 i)      { return ld64(syn_fn + i * 8); }
+i64  syns_tok_at(i64 i)       { return ld64(syns_tok + i * 8); }
+uptr syntax_stmt_fn_at(i64 i) { return ld64(syns_fn + i * 8); }
 
 // palavra nova para o lexer; recusa sequestrar uma palavra-chave do nucleo
 // (`if`, `loop`, `i64`, `extern` ...), pelo mesmo motivo que #rule recusa
@@ -180,4 +180,16 @@ i64 alias_find(i64 id) {
         i = i - 1;
     }
     return -1;
+}
+
+// 1 se `id` e uma palavra ensinada por syntax/syntax_stmt/type_alias. A palavra
+// vale no programa INTEIRO, nao so na posicao gramatical do handler: quem
+// registra `log` tira `log` do vocabulario de identificadores do fonte. O
+// parser usa isto so para dizer isso na cara quando um nome nao vem
+// (docs/surface.md § Tier 3, "o registro reserva a palavra no programa todo").
+i64 word_is_taught(i64 id) {
+    if (syntax_find(id) >= 0) return 1;
+    if (syntax_stmt_find(id) >= 0) return 1;
+    if (alias_find(id) >= 0) return 1;
+    return 0;
 }
