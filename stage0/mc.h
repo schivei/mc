@@ -32,8 +32,8 @@ void out_num(int fd, i64 v);
 void out_hex(int fd, u64 v);
 [[noreturn]] void die(const char *msg);
 [[noreturn]] void die2(const char *msg, const char *detail);
-extern const char *src_name;               /* nome do fonte, usado por err_at */
-[[noreturn]] void err_at(int line, const char *msg);   /* arquivo:linha: msg */
+/* arquivo:linha: msg — o arquivo vem sempre do token/no que deu a linha */
+[[noreturn]] void err_at(const char *file, int line, const char *msg);
 u8  *read_file(const char *path, size_t *len);   /* NUL-terminado; die se falhar */
 void write_file(const char *path, Buf *b);
 size_t cstrlen(const char *s);
@@ -43,7 +43,8 @@ bool mem_eq(const void *a, const void *b, size_t n);
 /* ---- tokens (lex.c) ---- */
 enum { T_EOF = 0, T_IDENT = 1, T_INT = 2, T_CHAR = 3, T_STR = 4, T_DIR = 5, T_HOLE = 6 };
 
-typedef struct { int id; const u8 *start; int len; i64 val; int line; } Token;
+/* file: arquivo de onde o token saiu; o lexer ja pode ter voltado para outro */
+typedef struct { int id; const u8 *start; int len; i64 val; int line; const char *file; } Token;
 typedef struct { const char *text; int len; bool word; int id; } TokEnt;
 
 /* ids do nucleo: 256 em diante, na ordem fixa de insercao feita por tok_init */
@@ -75,6 +76,7 @@ enum { N_NONE = 0, N_INT, N_STR, N_IDENT, N_UNARY, N_BINARY, N_CAST, N_CALL,
        N_GLOBAL,            /* reservado pelo plano para o M3 */
        N_EXTERN, N_ADDR,
        N_INDEX,             /* reservado pelo plano (nao ha p[i] no nucleo) */
+       N_PROTO,             /* tipo nome(params); sem corpo */
        N_KIND_MAX };
 enum { TY_VOID = 0, TY_U8, TY_U16, TY_U32, TY_U64, TY_I64, TY_UPTR, TY_MAX };
 
@@ -84,12 +86,13 @@ typedef struct {
     const char *name;        /* N_IDENT/N_FUNC/N_PARAM: nome; N_STR: bytes */
     int a, b, c, d;          /* filhos, sempre indices de no */
     int next;                /* proximo da lista */
+    int sect;                /* N_FUNC/N_GLOBAL: secao do #section + 1; 0 = default */
     int line;
     const char *file;        /* arquivo de origem: o codegen roda depois do lexer */
 } Node;
 
 extern Node *nodes; extern int nnodes;
-int  node_new(int kind, int line);
+int  node_new(int kind, int line, const char *file);
 /* copia profunda trocando N_HOLE(i) por holes[i] (i de 1 a nholes) */
 int  node_copy_subst(int n, const int *holes, int nholes);
 [[noreturn]] void err_node(int n, const char *msg);   /* erro no arquivo/linha do no */
@@ -101,8 +104,16 @@ void dump_ast(int n);
 typedef struct { int tok, prec; bool right; int tmpl; } InfixEnt;  /* tmpl 0 = builtin */
 typedef struct { int tok, tmpl; } PrefixEnt;
 typedef struct { const char *name; i64 val; } DefEnt;   /* #define ja dobrado */
+/* #opcode: template com os parametros ja trocados por N_HOLE numerados de 1 a nparams */
+typedef struct { const char *name; int nparams, tmpl; } OpcEnt;
+/* #section so registra aqui; a secao real nasce em gen_sections, na ordem certa */
+typedef struct { const char *seg, *sect; u32 flags, align; } SecEnt;
 int  parse_unit(void);       /* devolve a lista de N_FUNC do topo */
 int  fold(int n);            /* dobra constantes no lugar; devolve n */
+int  opc_find(const char *name);      /* indice na tabela de #opcode, -1 se nao ha */
+int  opc_expand(int i, int call);     /* poe os args da chamada no template e dobra */
+int  sec_pending(void);               /* quantos #section o fonte registrou */
+int  sec_make(int i);                 /* cria a secao real do #section i */
 
 /* ---- codegen (gen_arm64.c) ---- */
 typedef struct { int op, rd, rn, rm; i64 imm; int label, sym; } Ins;
@@ -122,8 +133,9 @@ typedef struct { const char *name; int type, off, nelem; } Local;
 typedef struct { const char *name; int type, nelem, sym; } Global;
 /* literal de string ja emitida em __cstring, para deduplicar por conteudo */
 typedef struct { const char *bytes; int len, sym; } StrEnt;
-/* assinatura de funcao do arquivo (N_FUNC ou N_EXTERN), registrada antes dos corpos */
-typedef struct { const char *name; int type, nparams; } FuncSig;
+/* assinatura do arquivo (N_FUNC, N_EXTERN ou N_PROTO), registrada antes dos corpos.
+ * def = 0 enquanto so ha prototipo; node e o no que a declarou (para o erro final) */
+typedef struct { const char *name; int type, nparams, def, node; } FuncSig;
 void gen_unit(int funcs, bool dump);
 
 /* ---- modelo de objeto (macho.c) ---- */

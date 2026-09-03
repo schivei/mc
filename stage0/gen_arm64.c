@@ -27,12 +27,17 @@ static int nlabels;
 #define MAXPARAMS 8
 #define MAXGLOBALS 256
 #define MAXSTRS    512
+#define MAXPREL    64             /* relocacoes de reloc() por funcao */
+#define MAXSECS    32             /* #section registrados pelo parser */
 
 /* ---- estado da funcao atual ---- */
 static Local locals[MAXLOCALS]; static int nlocals;
 static int dslot[MAXDEPTH];      /* slot da profundidade: salvamento (<=6) ou spill (>=7) */
 static int frame_off;            /* bytes ja reservados no frame */
 static int lbreak[MAXLOOPS], lcont[MAXLOOPS]; static int nloops;
+/* reloc(): a relocacao fica pendente ate a proxima instrucao entrar no buffer */
+static int prel_ins[MAXPREL], prel_sym[MAXPREL], prel_type[MAXPREL]; static int nprel;
+static int pend_type = -1, pend_sym;
 
 /* assinaturas de todo o arquivo (N_FUNC e N_EXTERN), registradas antes dos corpos */
 static FuncSig funcs[MAXFUNCS]; static int nfuncs;
@@ -41,6 +46,7 @@ static FuncSig funcs[MAXFUNCS]; static int nfuncs;
 static Global globals[MAXGLOBALS]; static int nglobals;
 static StrEnt strs[MAXSTRS];       static int nstrs;
 static int sec_text, sec_cstr, sec_data, sec_bss;   /* -1 = secao nao criada */
+static int secmap[MAXSECS];        /* #section i do parser -> secao real */
 
 /* ---- buffer ---- */
 static void ins_add(int op, int rd, int rn, int rm, i64 imm, int label, int sym) {
@@ -52,6 +58,12 @@ static void ins_add(int op, int rd, int rn, int rm, i64 imm, int label, int sym)
     }
     ibuf[nins].op = op; ibuf[nins].rd = rd; ibuf[nins].rn = rn; ibuf[nins].rm = rm;
     ibuf[nins].imm = imm; ibuf[nins].label = label; ibuf[nins].sym = sym;
+    if (pend_type >= 0 && op != I_LABEL) {       /* a relocacao cola nesta palavra */
+        if (nprel == MAXPREL) die("relocacoes cruas demais na funcao");
+        prel_ins[nprel] = nins; prel_sym[nprel] = pend_sym; prel_type[nprel] = pend_type;
+        nprel++;
+        pend_type = -1;
+    }
     nins++;
 }
 static void e0(int op)                        { ins_add(op, 0, 0, 0, 0, 0, 0); }
@@ -92,18 +104,32 @@ static void dst_done(int depth, int rd) {
     if (!in_reg(depth)) em(I_STR, rd, REG_FRAME, -slot_depth(depth));
 }
 
-/* ---- tipos (a largura mora em ast.c: o parser tambem precisa dela) ---- */
-static int ld_op(int t) {
-    if (t == TY_U8)  return I_LDRB;
-    if (t == TY_U16) return I_LDRH;
-    if (t == TY_U32) return I_LDRW;
-    return I_LDR;
+/* ---- tabelas de instrucao (dump e encoder leem as mesmas) ---- */
+/* tres operandos registrador-registrador: mesma forma, so muda a base */
+static const int rrr_ins[] = { I_ADD, I_SUB, I_MUL, I_SDIV, I_UDIV, I_AND, I_ORR, I_EOR,
+                               I_LSLV, I_LSRV, I_ASRV, 0 };
+static const u32 rrr_base[] = { 0x8B000000u, 0xCB000000u, 0x9B007C00u, 0x9AC00C00u, 0x9AC00800u,
+                                0x8A000000u, 0xAA000000u, 0xCA000000u,
+                                0x9AC02000u, 0x9AC02400u, 0x9AC02800u };
+static const char *rrr_name[] = { "add", "sub", "mul", "sdiv", "udiv", "and", "orr", "eor",
+                                  "lsl", "lsr", "asr" };
+/* memoria: pares load/store por largura, da mais larga para a mais estreita */
+static const int mem_ins[] = { I_LDR, I_STR, I_LDRW, I_STRW, I_LDRH, I_STRH, I_LDRB, I_STRB, 0 };
+static const u32 mem_base[] = { 0xF9400000u, 0xF9000000u, 0xB9400000u, 0xB9000000u,
+                                0x79400000u, 0x79000000u, 0x39400000u, 0x39000000u };
+static const int mem_scale[] = { 8, 8, 4, 4, 2, 2, 1, 1 };
+static const char *mem_name[] = { "ldr", "str", "ldr", "str", "ldrh", "strh", "ldrb", "strb" };
+static int mem_slot(int op) {                    /* -1 se nao e acesso a memoria */
+    for (int i = 0; mem_ins[i]; i++) if (op == mem_ins[i]) return i;
+    return -1;
 }
-static int st_op(int t) {
-    if (t == TY_U8)  return I_STRB;
-    if (t == TY_U16) return I_STRH;
-    if (t == TY_U32) return I_STRW;
-    return I_STR;
+/* acesso da largura de t; as posicoes pares sao load, as impares store */
+static int mem_op(int t, bool store) {
+    int i = 0;
+    if (t == TY_U8)       i = 6;
+    else if (t == TY_U16) i = 4;
+    else if (t == TY_U32) i = 2;
+    return mem_ins[i + (store ? 1 : 0)];
 }
 
 /* ---- locais (pilha plana, marca de tamanho por bloco) ---- */
@@ -123,10 +149,20 @@ static int func_find(const char *name) {
     for (int i = 0; i < nfuncs; i++) if (str_eq(funcs[i].name, name)) return i;
     return -1;
 }
-static void func_add(const char *name, int type, int nparams, int n) {
-    if (func_find(name) >= 0) err_node(n, "funcao declarada duas vezes");
+/* def = 1 para N_FUNC/N_EXTERN, 0 para prototipo; o prototipo so reserva a
+ * assinatura e a definicao posterior tem de bater com ela */
+static void func_add(const char *name, int type, int nparams, int def, int n) {
+    int i = func_find(name);
+    if (i >= 0) {
+        if (funcs[i].def && def) err_node(n, "funcao declarada duas vezes");
+        if (funcs[i].type != type || funcs[i].nparams != nparams)
+            err_node(n, "declaracao nao bate com o prototipo");
+        if (def) { funcs[i].def = 1; funcs[i].node = n; }
+        return;
+    }
     if (nfuncs == MAXFUNCS) die("funcoes demais");
     funcs[nfuncs].name = name; funcs[nfuncs].type = type; funcs[nfuncs].nparams = nparams;
+    funcs[nfuncs].def = def;   funcs[nfuncs].node = n;
     nfuncs++;
 }
 static const char *usym(const char *name) {      /* o compilador prefixa _ */
@@ -143,21 +179,35 @@ static int global_find(const char *name) {
     for (int i = 0; i < nglobals; i++) if (str_eq(globals[i].name, name)) return i;
     return -1;
 }
-/* tudo no __bss comeca em multiplo de 16 e ocupa multiplo de 16 */
-static u64 bss_alloc(i64 size) {
-    u64 off = (sections[sec_bss].zsize + 15) & ~15ull;
-    sections[sec_bss].zsize = off + (((u64)size + 15) & ~15ull);
-    return off;
-}
-/* grava o inicializador com a largura do tipo, alinhado a ela */
-static u64 data_put(i64 val, int width) {
-    Buf *b = &sections[sec_data].data;
-    buf_pad(b, (size_t)width);
+static int str_sym(const char *bytes, int len);
+
+/* Coloca a global g (size bytes) na secao sec e devolve o offset.
+ * Zerofill so conta bytes (tudo comeca e ocupa multiplo de 16); nas demais cada
+ * elemento do inicializador sai na largura do tipo e o resto vai zerado — e por
+ * isso que um array em secao custom nao-zerofill ocupa espaco no arquivo. */
+static u64 glob_place(int g, int sec, i64 size, int width) {
+    if ((sections[sec].flags & 0xff) == S_ZEROFILL) {
+        u64 off = (sections[sec].zsize + 15) & ~15ull;
+        sections[sec].zsize = off + (((u64)size + 15) & ~15ull);
+        return off;
+    }
+    Buf *b = &sections[sec].data;
+    buf_pad(b, (size_t)(nodes[g].val ? 16 : width));   /* array a 16, escalar a largura */
     u64 off = b->len;
-    if (width == 1)      buf_u8(b, (u8)val);
-    else if (width == 2) buf_u16(b, (u16)val);
-    else if (width == 4) buf_u32(b, (u32)val);
-    else                 buf_u64(b, (u64)val);
+    for (int e = nodes[g].a; e; e = nodes[e].next) {
+        if (nodes[e].kind == N_STR) {            /* ponteiro para l_strN: 8 zeros + R_UNSIGNED */
+            reloc_add(sec, (u32)b->len, str_sym(nodes[e].name, (int)nodes[e].val),
+                      R_UNSIGNED, 0, 3);
+            buf_u64(b, 0);
+            continue;
+        }
+        i64 v = nodes[e].val;
+        if (width == 1)      buf_u8(b, (u8)v);
+        else if (width == 2) buf_u16(b, (u16)v);
+        else if (width == 4) buf_u32(b, (u32)v);
+        else                 buf_u64(b, (u64)v);
+    }
+    while ((i64)(b->len - off) < size) buf_u8(b, 0);
     return off;
 }
 
@@ -192,9 +242,12 @@ static void gen_gaddr(int rd, int sym) {
     ins_add(I_ADDLO, rd, rd, 0, 0, 0, sym);
 }
 
-/* ---- intrinsics de memoria (nome, nao simbolo) ---- */
-enum { IN_NONE = 0, IN_LD8, IN_LD16, IN_LD32, IN_LD64, IN_ST8, IN_ST16, IN_ST32, IN_ST64 };
+/* ---- intrinsics (nome, nao simbolo); as de memoria e as de saida crua ---- */
+enum { IN_NONE = 0, IN_EMIT, IN_RELOC,
+       IN_LD8, IN_LD16, IN_LD32, IN_LD64, IN_ST8, IN_ST16, IN_ST32, IN_ST64 };
 static int intrin_id(const char *name) {
+    if (str_eq(name, "emit"))  return IN_EMIT;
+    if (str_eq(name, "reloc")) return IN_RELOC;
     if (str_eq(name, "ld8"))  return IN_LD8;
     if (str_eq(name, "ld16")) return IN_LD16;
     if (str_eq(name, "ld32")) return IN_LD32;
@@ -279,12 +332,14 @@ static void gen_binary(int n, int depth) {
     int rl = val_reg(depth, REG_S1);
     int rr = val_reg(depth + 1, REG_S2);
     int rd = dst_reg(depth);
+    /* so i64 divide com sinal; todo o resto (u8..u64, uptr) usa udiv */
+    int div = nodes[nodes[n].a].type == TY_I64 ? I_SDIV : I_UDIV;
     if (cond >= 0) { e3(I_CMP, 0, rl, rr); ins_add(I_CSET, rd, 0, 0, cond, 0, 0); }
-    else if (op == K_ADD) e3(I_ADD,  rd, rl, rr);
-    else if (op == K_SUB) e3(I_SUB,  rd, rl, rr);
-    else if (op == K_MUL) e3(I_MUL,  rd, rl, rr);
-    else if (op == K_DIV) e3(I_SDIV, rd, rl, rr);
-    else if (op == K_MOD) { e3(I_SDIV, REG_TMP, rl, rr);
+    else if (op == K_ADD) e3(I_ADD, rd, rl, rr);
+    else if (op == K_SUB) e3(I_SUB, rd, rl, rr);
+    else if (op == K_MUL) e3(I_MUL, rd, rl, rr);
+    else if (op == K_DIV) e3(div,   rd, rl, rr);
+    else if (op == K_MOD) { e3(div, REG_TMP, rl, rr);
                             ins_add(I_MSUB, rd, REG_TMP, rr, rl, 0, 0); }  /* rd = rl - q*rr */
     else if (op == K_AND) e3(I_AND,  rd, rl, rr);
     else if (op == K_OR)  e3(I_ORR,  rd, rl, rr);
@@ -295,42 +350,38 @@ static void gen_binary(int n, int depth) {
     dst_done(depth, rd);
 }
 
+/* resolve o nome de um no: >= 0 e indice de local, < 0 e a global -(g + 1) */
+static int name_find(int n) {
+    int i = local_find(nodes[n].name);
+    if (i >= 0) return i;
+    int g = global_find(nodes[n].name);
+    if (g < 0) err_node(n, "nome desconhecido");
+    return -(g + 1);
+}
+
 /* nome: local primeiro, global depois. Array decai para o endereco (uptr);
  * escalar e lido pela largura do tipo. */
 static void gen_ident(int n, int depth) {
-    int rd = dst_reg(depth);
-    int i = local_find(nodes[n].name);
+    int rd = dst_reg(depth), i = name_find(n);
     if (i >= 0) {
-        if (locals[i].nelem) {
-            ei(I_ADDI, rd, REG_FRAME, -locals[i].off);
-            nodes[n].type = TY_UPTR;
-        } else {
-            em(ld_op(locals[i].type), rd, REG_FRAME, -locals[i].off);
-            nodes[n].type = locals[i].type;
-        }
+        if (locals[i].nelem) { ei(I_ADDI, rd, REG_FRAME, -locals[i].off);
+                               nodes[n].type = TY_UPTR; }
+        else { em(mem_op(locals[i].type, false), rd, REG_FRAME, -locals[i].off);
+               nodes[n].type = locals[i].type; }
         dst_done(depth, rd);
         return;
     }
-    int g = global_find(nodes[n].name);
-    if (g < 0) err_node(n, "nome desconhecido");
+    int g = -i - 1;
     gen_gaddr(rd, globals[g].sym);
     if (globals[g].nelem) nodes[n].type = TY_UPTR;
-    else {
-        em(ld_op(globals[g].type), rd, rd, 0);
-        nodes[n].type = globals[g].type;
-    }
+    else { em(mem_op(globals[g].type, false), rd, rd, 0); nodes[n].type = globals[g].type; }
     dst_done(depth, rd);
 }
 
 static void gen_addr(int n, int depth) {
-    int rd = dst_reg(depth);
-    int i = local_find(nodes[n].name);
+    int rd = dst_reg(depth), i = name_find(n);
     if (i >= 0) ei(I_ADDI, rd, REG_FRAME, -locals[i].off);
-    else {
-        int g = global_find(nodes[n].name);
-        if (g < 0) err_node(n, "nome desconhecido em &");
-        gen_gaddr(rd, globals[g].sym);
-    }
+    else        gen_gaddr(rd, globals[-i - 1].sym);
     nodes[n].type = TY_UPTR;
     dst_done(depth, rd);
 }
@@ -357,7 +408,7 @@ static void gen_intrin(int n, int depth, int in) {
     if (!store) {
         int rp = val_reg(depth, REG_S1);
         int rd = dst_reg(depth);
-        em(ld_op(t), rd, rp, 0);                 /* zero-extend por construcao */
+        em(mem_op(t, false), rd, rp, 0);                 /* zero-extend por construcao */
         dst_done(depth, rd);
         nodes[n].type = t;
         return;
@@ -365,14 +416,50 @@ static void gen_intrin(int n, int depth, int in) {
     gen_value(nodes[p].next, depth + 1);
     int rp = val_reg(depth, REG_S1);
     int rv = val_reg(depth + 1, REG_S2);
-    em(st_op(t), rv, rp, 0);
+    em(mem_op(t, true), rv, rp, 0);
+    nodes[n].type = TY_VOID;
+}
+
+/* ---- saida crua: emit(), reloc() e as chamadas de #opcode ---- */
+/* uma palavra de 32 bits no fluxo de instrucoes; a relocacao pendente cola nela */
+static void gen_word(int n, i64 w) {
+    if ((u64)w > 0xffffffffu) err_node(n, "palavra emitida nao cabe em 32 bits");
+    ins_add(I_EMIT, 0, 0, 0, w, 0, 0);
+    nodes[n].type = TY_VOID;
+}
+static void gen_emit(int n) {
+    if (arg_count(n) != 1) err_node(n, "emit espera um argumento");
+    if (nodes[nodes[n].a].kind != N_INT) err_node(n, "emit espera uma constante");
+    gen_word(n, nodes[nodes[n].a].val);
+}
+static void gen_opcode(int n, int oi) {
+    int e = opc_expand(oi, n);
+    if (nodes[e].kind != N_INT) err_node(n, "argumento de #opcode nao constante");
+    gen_word(n, nodes[e].val);
+}
+/* reloc(TIPO, "simbolo"): fica pendente ate a proxima palavra entrar no buffer */
+static void gen_reloc(int n) {
+    if (arg_count(n) != 2) err_node(n, "reloc espera dois argumentos");
+    int a = nodes[n].a, b = nodes[a].next;
+    if (nodes[a].kind != N_INT) err_node(n, "tipo de relocacao deve ser constante");
+    if (nodes[b].kind != N_STR) err_node(n, "reloc espera o simbolo entre aspas");
+    i64 t = nodes[a].val;
+    if (t != R_UNSIGNED && t != R_BRANCH26 && t != R_PAGE21 && t != R_PAGEOFF12)
+        err_node(n, "tipo de relocacao desconhecido");
+    if (pend_type >= 0) err_node(n, "duas relocacoes para a mesma palavra");
+    pend_type = (int)t;
+    pend_sym  = sym_ref(nodes[b].name);
     nodes[n].type = TY_VOID;
 }
 
 /* chamada: args nas profundidades cur..cur+n-1, salvamento dos vivos, bl, resultado */
 static void gen_call(int n, int depth) {
     int in = intrin_id(nodes[n].name);
+    if (in == IN_EMIT)  { gen_emit(n);  return; }
+    if (in == IN_RELOC) { gen_reloc(n); return; }
     if (in) { gen_intrin(n, depth, in); return; }
+    int oi = opc_find(nodes[n].name);
+    if (oi >= 0) { gen_opcode(n, oi); return; }
     int fi = func_find(nodes[n].name);
     if (fi < 0) err_node(n, "chamada a funcao desconhecida");
     if (arg_count(n) != funcs[fi].nparams) err_node(n, "numero de argumentos errado");
@@ -437,23 +524,18 @@ static void gen_var(int n) {
     if (nodes[n].a) gen_value(nodes[n].a, 0);    /* inicializador antes de o nome existir */
     int off = slot_new(8);
     local_add(nodes[n].name, ty, off, 0);
-    if (nodes[n].a) em(st_op(ty), REG_BASE, REG_FRAME, -off);
+    if (nodes[n].a) em(mem_op(ty, true), REG_BASE, REG_FRAME, -off);
 }
 
 static void gen_assign(int n) {
-    int i = local_find(nodes[n].name);
-    if (i >= 0) {
-        if (locals[i].nelem) err_node(n, "atribuicao a array");
-        gen_value(nodes[n].a, 0);
-        em(st_op(locals[i].type), REG_BASE, REG_FRAME, -locals[i].off);
-        return;
-    }
-    int g = global_find(nodes[n].name);
-    if (g < 0)            err_node(n, "nome desconhecido na atribuicao");
-    if (globals[g].nelem) err_node(n, "atribuicao a array");
+    int i = name_find(n);
+    if (i >= 0 ? locals[i].nelem != 0 : globals[-i - 1].nelem != 0)
+        err_node(n, "atribuicao a array");
     gen_value(nodes[n].a, 0);
+    if (i >= 0) { em(mem_op(locals[i].type, true), REG_BASE, REG_FRAME, -locals[i].off); return; }
+    int g = -i - 1;
     gen_gaddr(REG_S1, globals[g].sym);           /* x16 esta livre: a expressao ja terminou */
-    em(st_op(globals[g].type), REG_BASE, REG_S1, 0);
+    em(mem_op(globals[g].type, true), REG_BASE, REG_S1, 0);
 }
 
 static void gen_if(int n, int lepi) {
@@ -541,6 +623,22 @@ static void d_mem(const char *m, bool wreg, int rt, int rn, i64 off) {
     if (off) { out_str(1, ", #"); out_num(1, off); }
     out_str(1, "]\n");
 }
+/* palavra crua sempre com os 8 digitos hexadecimais, para o dump ser estavel */
+static const char hexdig[] = "0123456789abcdef";
+static void d_word(u32 w) {
+    out_str(1, "  .word 0x");
+    for (int i = 7; i >= 0; i--) { char c = hexdig[(w >> (4 * i)) & 15]; out_bytes(1, &c, 1); }
+    out_str(1, "\n");
+}
+static const char *rel_name(int t) {
+    if (t == R_BRANCH26)  return "BRANCH26";
+    if (t == R_PAGE21)    return "PAGE21";
+    if (t == R_PAGEOFF12) return "PAGEOFF12";
+    return "UNSIGNED";
+}
+static int rel_pcrel(int t) { return t == R_BRANCH26 || t == R_PAGE21; }
+static int rel_len(int t)   { return t == R_UNSIGNED ? 3 : 2; }
+
 static const char *cond_name(int c) {
     if (c == C_EQ) return "eq";
     if (c == C_NE) return "ne";
@@ -562,24 +660,18 @@ static void dump_ins(Ins *in) {
         out_str(1, "\n");
         return;
     }
+    for (int i = 0; rrr_ins[i]; i++)                      /* os 11 de 3 operandos */
+        if (op == rrr_ins[i]) { d_3(rrr_name[i], in->rd, in->rn, in->rm); return; }
+    int mi = mem_slot(op);
+    if (mi >= 0) { d_mem(mem_name[mi], mi >= 2, in->rd, in->rn, in->imm); return; }
     if (op == I_MOV)  { d_2("mov", in->rd, in->rn); return; }
     if (op == I_MOVW) { d_head("mov"); out_str(1, "w"); out_num(1, in->rd);
                         out_str(1, ", w"); out_num(1, in->rn); out_str(1, "\n"); return; }
-    if (op == I_ADD)  { d_3("add",  in->rd, in->rn, in->rm); return; }
-    if (op == I_SUB)  { d_3("sub",  in->rd, in->rn, in->rm); return; }
-    if (op == I_MUL)  { d_3("mul",  in->rd, in->rn, in->rm); return; }
-    if (op == I_SDIV) { d_3("sdiv", in->rd, in->rn, in->rm); return; }
     if (op == I_MSUB) { d_head("msub"); d_reg(in->rd); out_str(1, ", "); d_reg(in->rn);
                         out_str(1, ", "); d_reg(in->rm); out_str(1, ", ");
                         d_reg((int)in->imm); out_str(1, "\n"); return; }
-    if (op == I_AND)  { d_3("and",  in->rd, in->rn, in->rm); return; }
-    if (op == I_ORR)  { d_3("orr",  in->rd, in->rn, in->rm); return; }
-    if (op == I_EOR)  { d_3("eor",  in->rd, in->rn, in->rm); return; }
     if (op == I_MVN)  { d_2("mvn", in->rd, in->rn); return; }
     if (op == I_NEG)  { d_2("neg", in->rd, in->rn); return; }
-    if (op == I_LSLV) { d_3("lsl",  in->rd, in->rn, in->rm); return; }
-    if (op == I_LSRV) { d_3("lsr",  in->rd, in->rn, in->rm); return; }
-    if (op == I_ASRV) { d_3("asr",  in->rd, in->rn, in->rm); return; }
     if (op == I_CMP)  { d_head("cmp"); d_reg(in->rn); out_str(1, ", "); d_reg(in->rm);
                         out_str(1, "\n"); return; }
     if (op == I_CMPI) { d_head("cmp"); d_reg(in->rn); out_str(1, ", #"); out_num(1, in->imm);
@@ -590,14 +682,6 @@ static void dump_ins(Ins *in) {
     if (op == I_ADDI) { if (in->imm == 0) d_2("mov", in->rd, in->rn);
                         else d_i("add", in->rd, in->rn, in->imm); return; }
     if (op == I_SUBI) { d_i("sub", in->rd, in->rn, in->imm); return; }
-    if (op == I_LDR)  { d_mem("ldr",  false, in->rd, in->rn, in->imm); return; }
-    if (op == I_STR)  { d_mem("str",  false, in->rd, in->rn, in->imm); return; }
-    if (op == I_LDRW) { d_mem("ldr",  true,  in->rd, in->rn, in->imm); return; }
-    if (op == I_STRW) { d_mem("str",  true,  in->rd, in->rn, in->imm); return; }
-    if (op == I_LDRH) { d_mem("ldrh", true,  in->rd, in->rn, in->imm); return; }
-    if (op == I_STRH) { d_mem("strh", true,  in->rd, in->rn, in->imm); return; }
-    if (op == I_LDRB) { d_mem("ldrb", true,  in->rd, in->rn, in->imm); return; }
-    if (op == I_STRB) { d_mem("strb", true,  in->rd, in->rn, in->imm); return; }
     if (op == I_BL)   { d_head("bl"); out_str(1, symbols[in->sym].name); out_str(1, "\n"); return; }
     if (op == I_ADRP) { d_head("adrp"); d_reg(in->rd); out_str(1, ", ");
                         out_str(1, symbols[in->sym].name); out_str(1, "@PAGE\n"); return; }
@@ -613,7 +697,20 @@ static void dump_ins(Ins *in) {
     if (op == I_CBZ || op == I_CBNZ) {
                         d_head(op == I_CBZ ? "cbz" : "cbnz"); d_reg(in->rd);
                         out_str(1, ", L"); out_num(1, in->label); out_str(1, "\n"); return; }
+    if (op == I_EMIT) { d_word((u32)in->imm); return; }
     die("instrucao sem dump");
+}
+
+/* o buffer com as relocacoes de reloc() antes da palavra em que cada uma cola */
+static void dump_buf(void) {
+    for (int k = 0; k < nins; k++) {
+        for (int j = 0; j < nprel; j++)
+            if (prel_ins[j] == k) {
+                out_str(1, "  .reloc "); out_str(1, rel_name(prel_type[j]));
+                out_str(1, " "); out_str(1, symbols[prel_sym[j]].name); out_str(1, "\n");
+            }
+        dump_ins(&ibuf[k]);
+    }
 }
 
 /* ---- encoders ---- */
@@ -625,33 +722,20 @@ static u32 br_off(int target, int pc, int line_ok) {
 }
 
 /* ldr/str com deslocamento escalado sem sinal (0..4095 * largura) */
-static u32 enc_mem(Ins *in) {
-    int op = in->op;
-    u32 base = 0; int scale = 8;
-    if (op == I_LDR)       { base = 0xF9400000u; scale = 8; }
-    else if (op == I_STR)  { base = 0xF9000000u; scale = 8; }
-    else if (op == I_LDRW) { base = 0xB9400000u; scale = 4; }
-    else if (op == I_STRW) { base = 0xB9000000u; scale = 4; }
-    else if (op == I_LDRH) { base = 0x79400000u; scale = 2; }
-    else if (op == I_STRH) { base = 0x79000000u; scale = 2; }
-    else if (op == I_LDRB) { base = 0x39400000u; scale = 1; }
-    else                   { base = 0x39000000u; scale = 1; }
+static u32 enc_mem(Ins *in, int i) {
+    int scale = mem_scale[i];
     if (in->imm < 0 || in->imm % scale != 0 || in->imm / scale > 4095)
         die("deslocamento de memoria fora de alcance");
-    return base | ((u32)(in->imm / scale) << 10) | ((u32)in->rn << 5) | (u32)in->rd;
+    return mem_base[i] | ((u32)(in->imm / scale) << 10) | ((u32)in->rn << 5) | (u32)in->rd;
 }
-
-/* opcodes de 3 operandos registrador-registrador: mesma forma, so muda a base */
-static const int rrr_ins[] = { I_ADD, I_SUB, I_MUL, I_SDIV, I_AND, I_ORR, I_EOR,
-                               I_LSLV, I_LSRV, I_ASRV, 0 };
-static const u32 rrr_base[] = { 0x8B000000u, 0xCB000000u, 0x9B007C00u, 0x9AC00C00u, 0x8A000000u,
-                                0xAA000000u, 0xCA000000u, 0x9AC02000u, 0x9AC02400u, 0x9AC02800u };
 
 static u32 encode(Ins *in, int pc, const int *lab) {
     int op = in->op, rd = in->rd, rn = in->rn, rm = in->rm;
     u32 im = (u32)in->imm;
-    for (int i = 0; rrr_ins[i]; i++)                      /* os 10 de 3 operandos rd, rn, rm */
+    for (int i = 0; rrr_ins[i]; i++)                      /* os 11 de 3 operandos rd, rn, rm */
         if (op == rrr_ins[i]) return rrr_base[i] | ((u32)rm << 16) | ((u32)rn << 5) | (u32)rd;
+    int mi = mem_slot(op);
+    if (mi >= 0) return enc_mem(in, mi);
     if (op == I_MOVZ) return 0xD2800000u | ((u32)rn << 21) | ((im & 0xffff) << 5) | (u32)rd;
     if (op == I_MOVK) return 0xF2800000u | ((u32)rn << 21) | ((im & 0xffff) << 5) | (u32)rd;
     if (op == I_MOV)  return 0xAA0003E0u | ((u32)rn << 16) | (u32)rd;    /* orr rd, xzr, rn */
@@ -678,8 +762,6 @@ static u32 encode(Ins *in, int pc, const int *lab) {
         u32 base = op == I_ADDI ? 0x91000000u : 0xD1000000u;
         return base | ((im & 0xfff) << 10) | ((u32)rn << 5) | (u32)rd;
     }
-    if (op == I_LDR || op == I_STR || op == I_LDRW || op == I_STRW ||
-        op == I_LDRH || op == I_STRH || op == I_LDRB || op == I_STRB) return enc_mem(in);
     if (op == I_STP_PRE)  return 0xA9800000u | ((u32)((in->imm / 8) & 0x7f) << 15)
                                  | ((u32)rm << 10) | ((u32)rn << 5) | (u32)rd;
     if (op == I_LDP_POST) return 0xA8C00000u | ((u32)((in->imm / 8) & 0x7f) << 15)
@@ -716,6 +798,10 @@ static void gen_encode(int text, u64 base) {
         if (ibuf[i].op == I_BL)         reloc_add(text, at, ibuf[i].sym, R_BRANCH26, 1, 2);
         else if (ibuf[i].op == I_ADRP)  reloc_add(text, at, ibuf[i].sym, R_PAGE21, 1, 2);
         else if (ibuf[i].op == I_ADDLO) reloc_add(text, at, ibuf[i].sym, R_PAGEOFF12, 0, 2);
+        for (int k = 0; k < nprel; k++)              /* as que reloc() pendurou aqui */
+            if (prel_ins[k] == i)
+                reloc_add(text, at, prel_sym[k], prel_type[k],
+                          rel_pcrel(prel_type[k]), rel_len(prel_type[k]));
         buf_u32(&sections[text].data, encode(&ibuf[i], off[i], lab));
     }
 }
@@ -729,7 +815,9 @@ static void fix_frame(int frame) {
 
 static void gen_func(int f, int text, bool dump) {
     nins = 0; nlabels = 0; nlocals = 0; nloops = 0; frame_off = 0;
+    nprel = 0; pend_type = -1;
     for (int d = 0; d < MAXDEPTH; d++) dslot[d] = 0;
+    if ((sections[text].flags & 0xff) == S_ZEROFILL) err_node(f, "funcao em secao zerofill");
     int lepi = ++nlabels;
 
     ins_add(I_STP_PRE, REG_FP, REG_SP, REG_LR, -16, 0, 0);
@@ -739,10 +827,11 @@ static void gen_func(int f, int text, bool dump) {
     for (int p = nodes[f].a; p; p = nodes[p].next) {  /* params: x0..x7 vao para o frame */
         int off = slot_new(8);
         local_add(nodes[p].name, nodes[p].type, off, 0);
-        em(st_op(nodes[p].type), i, REG_FRAME, -off);
+        em(mem_op(nodes[p].type, true), i, REG_FRAME, -off);
         i++;
     }
     gen_stmt(nodes[f].b, lepi);
+    if (pend_type >= 0) err_node(f, "reloc sem palavra seguinte na funcao");
     el(I_LABEL, lepi);
     int iadd = nins; ei(I_ADDI, REG_SP, REG_SP, 0);
     ins_add(I_LDP_POST, REG_FP, REG_SP, REG_LR, 16, 0, 0);
@@ -755,15 +844,15 @@ static void gen_func(int f, int text, bool dump) {
     fix_frame(frame);
 
     const char *sym = usym(nodes[f].name);
-    if (dump) {
-        out_str(1, sym); out_str(1, ":\n");
-        for (int k = 0; k < nins; k++) dump_ins(&ibuf[k]);
-    }
+    if (dump) { out_str(1, sym); out_str(1, ":\n"); dump_buf(); }
     buf_pad(&sections[text].data, 4);             /* cada funcao alinhada a 4 */
     u64 base = sections[text].data.len;
     sym_new(sym, text + 1, base, true);
     gen_encode(text, base);
 }
+
+/* secao de uma funcao ou global: a do #section em vigor, senao a default */
+static int node_sec(int n, int def) { return nodes[n].sect ? secmap[nodes[n].sect - 1] : def; }
 
 /* aloca cada global e cria seu simbolo; roda antes de qualquer corpo de funcao */
 static void gen_globals(int unit) {
@@ -774,10 +863,10 @@ static void gen_globals(int unit) {
             err_node(g, "nome global declarado duas vezes");
         int ty = nodes[g].type, w = type_width(ty);
         i64 nel = nodes[g].val;
-        int sec; u64 off;
-        if (nel)                 { sec = sec_bss;  off = bss_alloc(nel * w); }
-        else if (nodes[g].a)     { sec = sec_data; off = data_put(nodes[nodes[g].a].val, w); }
-        else                     { sec = sec_bss;  off = bss_alloc(w); }
+        int sec = node_sec(g, nodes[g].a == 0 ? sec_bss : sec_data);
+        if (nodes[g].a && (sections[sec].flags & 0xff) == S_ZEROFILL)
+            err_node(g, "global com inicializador em secao zerofill");
+        u64 off = glob_place(g, sec, nel ? nel * w : w, w);
         globals[nglobals].name = nodes[g].name; globals[nglobals].type = ty;
         globals[nglobals].nelem = (int)nel;
         globals[nglobals].sym = sym_new(usym(nodes[g].name), sec + 1, off, false);
@@ -785,33 +874,46 @@ static void gen_globals(int unit) {
     }
 }
 
-/* secoes sempre nesta ordem, e so as que o modulo usa */
+/* __text, __cstring, __data e __bss (as que o modulo usa) e so depois as do
+ * #section, na ordem de primeira aparicao no fonte */
 static void gen_sections(int unit) {
+    bool want_str = false, want_data = false, want_bss = false;
+    /* a string de reloc() nomeia um simbolo e nao e literal: marca-la em op a tira
+     * da conta do __cstring (o codegen tambem nunca a passa por str_sym) */
+    for (int i = 1; i < nnodes; i++) {
+        if (nodes[i].kind != N_CALL || intrin_id(nodes[i].name) != IN_RELOC) continue;
+        int a = nodes[i].a;
+        if (a && nodes[a].next) nodes[nodes[a].next].op = 1;
+    }
+    for (int i = 1; i < nnodes; i++)
+        if (nodes[i].kind == N_STR && nodes[i].op == 0) want_str = true;
+    for (int g = unit; g; g = nodes[g].next) {
+        if (nodes[g].kind != N_GLOBAL || nodes[g].sect) continue;    /* custom ja tem secao */
+        if (nodes[g].a == 0) want_bss = true;
+        else                 want_data = true;
+    }
     sec_text = sec_new("__TEXT", "__text", TEXT_FLAGS, 2);
     sec_cstr = -1; sec_data = -1; sec_bss = -1;
-    bool want_str = false, want_data = false, want_bss = false;
-    for (int i = 1; i < nnodes; i++) if (nodes[i].kind == N_STR) want_str = true;
-    for (int g = unit; g; g = nodes[g].next) {
-        if (nodes[g].kind != N_GLOBAL) continue;
-        if (nodes[g].val || nodes[g].a == 0) want_bss = true;
-        else                                 want_data = true;
-    }
     if (want_str)  sec_cstr = sec_new("__TEXT", "__cstring", S_CSTRING_LITERALS, 0);
     if (want_data) sec_data = sec_new("__DATA", "__data", S_REGULAR, 3);
     if (want_bss)  sec_bss  = sec_new("__DATA", "__bss", S_ZEROFILL, 4);
+    if (sec_pending() > MAXSECS) die("secoes demais");
+    for (int i = 0; i < sec_pending(); i++) secmap[i] = sec_make(i);
 }
 
 void gen_unit(int unit, bool dump) {
     gen_sections(unit);
     for (int f = unit; f; f = nodes[f].next) {    /* assinaturas antes dos corpos */
         int k = nodes[f].kind;
-        if (k != N_FUNC && k != N_EXTERN) continue;
+        if (k != N_FUNC && k != N_EXTERN && k != N_PROTO) continue;
         int np = 0;
         for (int p = nodes[f].a; p; p = nodes[p].next) np++;
         if (np > MAXPARAMS) err_node(f, "no maximo 8 parametros");
-        func_add(nodes[f].name, nodes[f].type, np, f);
+        func_add(nodes[f].name, nodes[f].type, np, k != N_PROTO, f);
     }
+    for (int i = 0; i < nfuncs; i++)              /* prototipo sem definicao nem extern */
+        if (!funcs[i].def) err_node(funcs[i].node, "prototipo sem definicao");
     gen_globals(unit);
     for (int f = unit; f; f = nodes[f].next)
-        if (nodes[f].kind == N_FUNC) gen_func(f, sec_text, dump);
+        if (nodes[f].kind == N_FUNC) gen_func(f, node_sec(f, sec_text), dump);
 }

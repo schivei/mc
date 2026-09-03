@@ -20,10 +20,13 @@ build/mc0-san: $(SRC) stage0/mc.h
 test: build/mc0
 	scripts/test.sh build/mc0
 
+check-lex: build/mc0
+	scripts/check-lex.sh build/mc0
+
 budget:
 	scripts/loc-budget.sh $(BUDGET)
 
 clean:
 	rm -rf build
 
-.PHONY: all stage0 stage0-san test budget clean
+.PHONY: all stage0 stage0-san test check-lex budget clean

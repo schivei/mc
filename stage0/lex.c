@@ -90,39 +90,71 @@ static const char *dir_names[] = { "include", "define", "token", "infix",
                                    "prefix", "rule", "section", "opcode", 0 };
 
 /* ---- pilha de arquivos ---- */
-/* junta o diretorio de base com rel; caminho absoluto passa direto */
+/* normaliza . e .. lexicamente (sem tocar no filesystem), para que dois caminhos
+ * que nomeiam o mesmo arquivo virem a mesma string e o once-only funcione */
+#define MAXSEG 64
+static const char *path_norm(const char *p) {
+    int sb[MAXSEG], sl[MAXSEG], nseg = 0;      /* inicio e tamanho de cada segmento */
+    size_t n = cstrlen(p), i = 0;
+    bool abs = p[0] == '/';
+    while (i < n) {
+        while (i < n && p[i] == '/') i++;
+        size_t b = i;
+        while (i < n && p[i] != '/') i++;
+        int l = (int)(i - b);
+        if (l == 0 || (l == 1 && p[b] == '.')) continue;
+        bool up = l == 2 && p[b] == '.' && p[b + 1] == '.';
+        bool prev_up = nseg && sl[nseg - 1] == 2 && p[sb[nseg - 1]] == '.'
+                       && p[sb[nseg - 1] + 1] == '.';
+        if (up && (nseg ? !prev_up : abs)) { if (nseg) nseg--; continue; }
+        if (nseg == MAXSEG) die2("caminho com segmentos demais", p);
+        sb[nseg] = (int)b; sl[nseg] = l; nseg++;
+    }
+    char *s = xalloc(n + 2);
+    size_t w = 0;
+    if (abs) s[w++] = '/';
+    for (int k = 0; k < nseg; k++) {
+        if (k) s[w++] = '/';
+        for (int j = 0; j < sl[k]; j++) s[w++] = p[sb[k] + j];
+    }
+    if (w == 0) s[w++] = '.';
+    s[w] = 0;
+    return s;
+}
+
+/* junta o diretorio de base com rel e normaliza; caminho absoluto ignora a base */
 static const char *path_join(const char *base, const char *rel) {
-    if (rel[0] == '/') return rel;
     size_t cut = 0, bl = cstrlen(base), rl = cstrlen(rel);
-    for (size_t i = 0; i < bl; i++) if (base[i] == '/') cut = i + 1;
+    if (rel[0] == '/') bl = 0;
+    else for (size_t i = 0; i < bl; i++) if (base[i] == '/') cut = i + 1;
     char *s = xalloc(cut + rl + 1);
     for (size_t i = 0; i < cut; i++) s[i] = base[i];
     for (size_t i = 0; i < rl; i++) s[cut + i] = rel[i];
     s[cut + rl] = 0;
-    return s;
+    return path_norm(s);
 }
 
 static void lex_push(const char *path, int line) {
-    if (nopen == MAXOPEN) err_at(line, "includes aninhados demais");
+    if (nopen == MAXOPEN) err_at(lex_file(), line, "includes aninhados demais");
     if (nopen) { fstack[nopen - 1].cp = cp; fstack[nopen - 1].cend = cend;
                  fstack[nopen - 1].line = cline; }
     size_t len = 0;
     const u8 *src = read_file(path, &len);
     fstack[nopen].name = path; nopen++;
     cp = src; cend = src + len; cline = 1;
-    src_name = path;
 }
 
 static void lex_pop(void) {
     nopen--;
     cp = fstack[nopen - 1].cp; cend = fstack[nopen - 1].cend;
-    cline = fstack[nopen - 1].line; src_name = fstack[nopen - 1].name;
+    cline = fstack[nopen - 1].line;
 }
 
-const char *lex_file(void) { return nopen ? fstack[nopen - 1].name : src_name; }
+const char *lex_file(void) { return nopen ? fstack[nopen - 1].name : "?"; }
 
 void lex_init(const char *path) {
     nopen = 0; ninc = 0;
+    path = path_norm(path);
     inclist[ninc++] = path;                    /* o raiz tambem conta para o once-only */
     lex_push(path, 0);
 }
@@ -130,7 +162,7 @@ void lex_init(const char *path) {
 bool lex_include(const char *rel, int line) {
     const char *path = path_join(fstack[nopen - 1].name, rel);
     for (int i = 0; i < ninc; i++) if (str_eq(inclist[i], path)) return false;
-    if (ninc == MAXINC) err_at(line, "includes demais");
+    if (ninc == MAXINC) err_at(lex_file(), line, "includes demais");
     inclist[ninc++] = path;
     lex_push(path, line);
     return true;
@@ -155,7 +187,7 @@ static void skip_space(void) {
                 if (*cp == '\n') cline++;
                 cp++;
             }
-            if (cp + 1 >= cend) err_at(open_line, "comentario nao terminado");
+            if (cp + 1 >= cend) err_at(lex_file(), open_line, "comentario nao terminado");
             cp += 2;
             continue;
         }
@@ -163,29 +195,31 @@ static void skip_space(void) {
     }
 }
 
-/* le um caractere de literal, decodificando escape */
-static i64 read_char(void) {
-    if (cp >= cend) err_at(cline, "literal nao terminado");
+/* le um caractere de literal, decodificando escape. Em string \0 e proibido:
+ * __cstring e S_CSTRING_LITERALS e o ld funde literais pelo primeiro NUL. */
+static i64 read_char(bool in_str) {
+    if (cp >= cend) err_at(lex_file(), cline, "literal nao terminado");
     u8 c = *cp++;
     if (c == '\n') { cline++; return c; }
     if (c != '\\') return c;
-    if (cp >= cend) err_at(cline, "escape nao terminado");
+    if (cp >= cend) err_at(lex_file(), cline, "escape nao terminado");
     u8 e = *cp++;
     if (e == 'n')  return '\n';
     if (e == 't')  return '\t';
     if (e == 'r')  return '\r';
-    if (e == '0')  return 0;
+    if (e == '0')  { if (in_str) err_at(lex_file(), cline, "\\0 nao permitido em string");
+                     return 0; }
     if (e == '\\') return '\\';
     if (e == '\'') return '\'';
     if (e == '"')  return '"';
-    err_at(cline, "escape desconhecido");
+    err_at(lex_file(), cline, "escape desconhecido");
 }
 
 static void lex_number(Token *t) {
     u64 v = 0;
     if (cp[0] == '0' && cp + 1 < cend && (cp[1] == 'x' || cp[1] == 'X')) {
         cp += 2;
-        if (cp >= cend || hex_val(*cp) < 0) err_at(cline, "hexadecimal invalido");
+        if (cp >= cend || hex_val(*cp) < 0) err_at(lex_file(), cline, "hexadecimal invalido");
         while (cp < cend && hex_val(*cp) >= 0) { v = v * 16 + (u64)hex_val(*cp); cp++; }
     } else {
         while (cp < cend && is_digit(*cp)) { v = v * 10 + (u64)(*cp - '0'); cp++; }
@@ -196,8 +230,8 @@ static void lex_number(Token *t) {
 static void lex_string(Token *t) {
     Buf b = {0};
     cp++;                                  /* aspas de abertura */
-    while (cp < cend && *cp != '"') buf_u8(&b, (u8)read_char());
-    if (cp >= cend) err_at(t->line, "string nao terminada");
+    while (cp < cend && *cp != '"') buf_u8(&b, (u8)read_char(true));
+    if (cp >= cend) err_at(t->file, t->line, "string nao terminada");
     cp++;
     buf_u8(&b, 0);                         /* sentinela; o len nao a conta */
     t->id = T_STR; t->start = b.p; t->len = (int)b.len - 1;
@@ -213,7 +247,7 @@ static void lex_directive(Token *t) {
             t->id = T_DIR; t->val = i;
             return;
         }
-    err_at(t->line, "diretiva desconhecida");
+    err_at(t->file, t->line, "diretiva desconhecida");
 }
 
 /* $1 / $2 -> val = numero; $nome -> val = -1; $$nome -> val = -2 (gensym, so reservado) */
@@ -229,7 +263,7 @@ static void lex_hole(Token *t) {
         while (cp < cend && is_alnum(*cp)) cp++;
         t->val = -1;
     } else {
-        err_at(t->line, "buraco invalido");
+        err_at(t->file, t->line, "buraco invalido");
     }
     if (gensym) t->val = -2;
     t->id = T_HOLE;
@@ -238,7 +272,7 @@ static void lex_hole(Token *t) {
 void lex_next(Token *t) {
     skip_space();
     while (cp >= cend && nopen > 1) { lex_pop(); skip_space(); }   /* fim de um #include */
-    t->line = cline; t->val = 0; t->start = cp; t->len = 0;
+    t->line = cline; t->val = 0; t->start = cp; t->len = 0; t->file = lex_file();
     if (cp >= cend) { t->id = T_EOF; t->start = (const u8 *)"EOF"; t->len = 3; return; }
 
     if (is_digit(*cp))  { lex_number(t);    t->len = (int)(cp - t->start); return; }
@@ -251,8 +285,8 @@ void lex_next(Token *t) {
     }
     if (*cp == '\'') {
         cp++;
-        t->val = read_char();
-        if (cp >= cend || *cp != '\'') err_at(t->line, "char literal nao terminado");
+        t->val = read_char(false);
+        if (cp >= cend || *cp != '\'') err_at(t->file, t->line, "char literal nao terminado");
         cp++;
         t->id = T_CHAR; t->len = (int)(cp - t->start);
         return;
@@ -263,7 +297,7 @@ void lex_next(Token *t) {
 
     int plen = 0;
     int id = punct_id(cp, (int)(cend - cp), &plen);
-    if (id < 0) err_at(t->line, "caractere inesperado");
+    if (id < 0) err_at(t->file, t->line, "caractere inesperado");
     cp += plen; t->len = plen; t->id = id;
 }
 

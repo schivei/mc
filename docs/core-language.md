@@ -31,6 +31,8 @@ com sinal (endereços ficam abaixo de 2^63, por convenção documentada, não ve
   `N_INT` (não existe kind de AST separado para char).
 - String `"..."` — lexer decodifica escapes e guarda os bytes em arena desde **M1**; emitir em
   `__TEXT,__cstring` com NUL final é do codegen, que só cobre strings a partir de **M3**.
+  `\0` dentro de string é **erro** (**M5.5**): `__cstring` é `S_CSTRING_LITERALS` e o `ld` funde
+  literais pelo primeiro NUL, o que faria `"a\0b"` e `"a"` virarem o mesmo endereço.
 
 ## Operadores e precedência
 

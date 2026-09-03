@@ -27,5 +27,11 @@ Agentes reportam fatos (comandos rodados + saída), nunca suposições.
 ## Estado
 - M0 ✔ (`.o` manual, exit 42) · M0.5 ✔ (svc funciona sob dyld; estático é morto pelo kernel)
 - M1 ✔ verificado e revisado (lexer, Pratt, AST, dumps, codegen constante)
-- M2 ✔ verificado e revisado (locais, chamadas, extern, ld/st, spill) — 1890/3000 linhas
-- Próximo: M3 (`docs/specs/M3.md`). Atualize esta seção ao fechar cada marco.
+- M2 ✔ verificado e revisado (locais, chamadas, extern, ld/st, spill)
+- M3 ✔ (globais, arrays, strings, `&x`, `#include`, `#define`, `extern`, arena)
+- M4 ✔ (tokenizador em `.mc`; `make check-lex` cruza `--dump-tokens` com `src/lexdump.mc`)
+- M5 ✔ (4 relocações, `#section`, `#opcode`, `emit()`/`reloc()`, `lib/sys_svc.mc`)
+- M5.5 ✔ (`\0` proibido em string, `path_join` normaliza `.`/`..`, token carrega arquivo,
+  `#define` vs nome, ordem das seções, array global inicializado, `udiv`, protótipo)
+  — 2492/3000 linhas, `make test` 24/24, `make check-lex` 31/31
+- Próximo: M6 (`docs/specs/M6-M7.md`). Atualize esta seção ao fechar cada marco.

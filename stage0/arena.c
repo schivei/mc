@@ -87,9 +87,8 @@ void die(const char *msg) { out_str(2, "mc: "); out_str(2, msg); out_str(2, "\n"
 void die2(const char *msg, const char *detail) {
     out_str(2, "mc: "); out_str(2, msg); out_str(2, ": "); out_str(2, detail); out_str(2, "\n"); _exit(1);
 }
-const char *src_name = "?";
-void err_at(int line, const char *msg) {
-    out_str(2, src_name); out_str(2, ":"); out_num(2, line);
+void err_at(const char *file, int line, const char *msg) {
+    out_str(2, file ? file : "?"); out_str(2, ":"); out_num(2, line);
     out_str(2, ": "); out_str(2, msg); out_str(2, "\n"); _exit(1);
 }
 

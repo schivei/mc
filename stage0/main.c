@@ -30,7 +30,6 @@ int main(int argc, char **argv) {
     }
     if (in == 0) { usage(); return 1; }
 
-    src_name = in;
     tok_init();
     lex_init(in);                                      /* o lexer abre e empilha o arquivo */
     if (mode == M_TOKENS) { dump_tokens(); return 0; }

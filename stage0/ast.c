@@ -12,29 +12,27 @@ static void nodes_grow(void) {
     nodes = n; nodecap = cap;
 }
 
-int node_new(int kind, int line) {
+/* file vem do token que deu a linha: o lexer ja pode ter voltado de um #include */
+int node_new(int kind, int line, const char *file) {
     if (nnodes == 0) { nodes_grow(); nnodes = 1; }   /* indice 0 reservado */
     nodes_grow();
     Node *p = &nodes[nnodes];
     *p = (Node){0};
     p->kind = kind;
     p->line = line;
-    p->file = lex_file();
+    p->file = file;
     return nnodes++;
 }
 
 /* o codegen roda com o lexer ja no fim: o arquivo tem de vir do proprio no */
-void err_node(int n, const char *msg) {
-    if (nodes[n].file) src_name = nodes[n].file;
-    err_at(nodes[n].line, msg);
-}
+void err_node(int n, const char *msg) { err_at(nodes[n].file, nodes[n].line, msg); }
 
 /* copia profunda simples, sem substituir buraco nenhum (N_HOLE e copiado como e).
  * Cada chamada devolve subarvore nova: e o que impede dois usos do mesmo buraco
  * de virarem dois apontadores para o mesmo no. */
 static int node_copy(int n) {
     if (n == 0) return 0;
-    int c = node_new(nodes[n].kind, nodes[n].line);
+    int c = node_new(nodes[n].kind, nodes[n].line, nodes[n].file);
     nodes[c] = nodes[n];
     int a  = node_copy(nodes[c].a);
     int b  = node_copy(nodes[c].b);
@@ -53,13 +51,13 @@ int node_copy_subst(int n, const int *holes, int nholes) {
     if (n == 0) return 0;
     if (nodes[n].kind == N_HOLE) {
         i64 h = nodes[n].val;
-        if (h < 1 || h > nholes) err_at(nodes[n].line, "buraco fora de alcance no template");
+        if (h < 1 || h > nholes) err_node(n, "buraco fora de alcance no template");
         int c = node_copy(holes[h]);
         int nx = node_copy_subst(nodes[n].next, holes, nholes);
         nodes[c].next = nx;
         return c;
     }
-    int c = node_new(nodes[n].kind, nodes[n].line);
+    int c = node_new(nodes[n].kind, nodes[n].line, nodes[n].file);
     nodes[c] = nodes[n];                         /* campos planos */
     int a  = node_copy_subst(nodes[c].a, holes, nholes);
     int b  = node_copy_subst(nodes[c].b, holes, nholes);
@@ -74,7 +72,7 @@ static const char *kind_names[] = {
     "NONE", "INT", "STR", "IDENT", "UNARY", "BINARY", "CAST", "CALL",
     "RETURN", "BLOCK", "EXPRSTMT", "FUNC", "PARAM", "HOLE",
     "IF", "LOOP", "BREAK", "CONTINUE", "ASSIGN", "VAR", "GLOBAL",
-    "EXTERN", "ADDR", "INDEX" };
+    "EXTERN", "ADDR", "INDEX", "PROTO" };
 static const char *type_names[] = { "void", "u8", "u16", "u32", "u64", "i64", "uptr" };
 
 const char *type_name(int t) { return (t >= 0 && t < TY_MAX) ? type_names[t] : "?"; }
