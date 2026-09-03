@@ -1,0 +1,46 @@
+# ui.toml — Part B of M32: the same directory, a taught compiler, a `.ui` entry.
+#
+#   ../../build/mc1 build examples/desktop --config examples/desktop/ui.toml
+#
+# Two steps come out of it: the compiler that understands `window` (the `mc`
+# core from the binary's own bundle, plus ui.mc) and then `main.ui` compiled BY
+# that binary into a signed executable. Nothing in src/ changes.
+
+[project]
+name  = "desktop-ui"
+entry = "main.ui"
+out   = "build/desktop-ui"
+kind  = "exe"
+
+[target]
+os   = "macos"
+arch = "aarch64"
+
+# `mc build` writes build/mc-ui.mc (`#include <mc/core>` + `#include "../ui.mc"`),
+# compiles it with the built-in macho-exe backend, and spawns the result as
+# `build/mc-ui build . --config ui.toml --entry-only` -- the second half, which
+# re-reads this same file, which is why [libs]/[externs]/[include] below apply
+# to main.ui even though a different binary compiles it.
+[compiler]
+modules = ["ui.mc"]
+out     = "build/mc-ui"
+
+# identical to mc.toml: the language changed, the linkage did not
+[libs]
+gtk4    = "/opt/homebrew/lib/libgtk-4.1.dylib"
+gobject = "/opt/homebrew/lib/libgobject-2.0.0.dylib"
+gio     = "/opt/homebrew/lib/libgio-2.0.0.dylib"
+glib    = "/opt/homebrew/lib/libglib-2.0.0.dylib"
+
+[externs]
+"gtk_*"           = "gtk4"
+"g_signal_*"      = "gobject"
+"g_object_*"      = "gobject"
+"g_application_*" = "gio"
+"g_*"             = "glib"
+
+[include]
+paths = ["lib"]
+
+[limits]
+tolerance = 0.25

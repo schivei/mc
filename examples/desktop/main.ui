@@ -1,0 +1,207 @@
+// main.ui — the same application as main.mc, with the widget tree written in
+// the taught `ui` language (Part B of M32).
+//
+//   ../../build/mc1 build examples/desktop --config examples/desktop/ui.toml
+//   examples/desktop/build/desktop-ui --self-test    # same output as Part A
+//
+// `mc build` first assembles the compiler that understands `window` (the `mc`
+// core plus ui.mc, into build/mc-ui) and then hands this file to it. The
+// DEFAULT compiler refuses the same source at the first `window` line: the
+// syntax belongs to ui.mc, not to the language.
+//
+// Everything below the two `window` blocks is ordinary `mc` and is the same
+// source as main.mc, line for line. That is the whole claim of Part B: the DSL
+// replaced the tree, not the program.
+
+#include <sys>
+#include <prelude>
+#include "lib/gtk.mc"
+
+i64 counter = 0;
+
+// ---- the tree ----
+// Each named widget becomes a `uptr` global of that name, and each block
+// becomes one `void ui_build_<name>(uptr app)`. `-> handler` on the window is
+// the "destroy" signal; on a button "clicked"; on an entry "activate".
+// Unnamed widgets (the two counter buttons, the hbox) get generated locals,
+// because nothing outside the tree ever reaches for them.
+
+window w_main "mc desktop" size 360 440 {
+    header;
+    vbox root spacing 12 margin 12 {
+        label l_count "0";
+        hbox spacing 6 {
+            button "-" -> on_minus;
+            button "+" -> on_plus;
+        }
+        check c_step2 "step by two";
+        entry e_name placeholder "type and press Enter" -> on_entry_activate;
+        label l_echo "";
+        list lb_items;
+        button "About" -> on_about;
+    }
+}
+
+window w_about "About" size 260 140 -> on_about_destroy {
+    vbox spacing 12 margin 12 {
+        label "mc desktop -- GTK4 driven from mc";
+        button "Close" -> on_about_close;
+    }
+}
+
+// ---- everything from here down is identical to main.mc ----
+
+// signed decimal into `buf`, NUL-terminated, returning `buf` so the result can
+// be passed straight to gtk_label_set_text
+uptr ui_itoa(i64 v, uptr buf) {
+    u8 tmp[24];
+    i64 i = 24;
+    i64 neg = 0;
+    if (v < 0) {
+        neg = 1;
+        v = 0 - v;
+    }
+    loop {
+        i = i - 1;
+        st8(tmp + i, '0' + v % 10);
+        v = v / 10;
+        if (v == 0) break;
+    }
+    i64 o = 0;
+    if (neg) {
+        st8(buf, '-');
+        o = 1;
+    }
+    while (i < 24) {
+        st8(buf + o, ld8(tmp + i));
+        o = o + 1;
+        i = i + 1;
+    }
+    st8(buf + o, 0);
+    return buf;
+}
+
+i64 ui_streq(uptr a, uptr b) {
+    i64 i = 0;
+    loop {
+        i64 c = ld8(a + i);
+        if (c != ld8(b + i)) return 0;
+        if (c == 0) return 1;
+        i = i + 1;
+    }
+}
+
+i64 ui_step() {
+    if (gtk_check_active(c_step2)) return 2;
+    return 1;
+}
+
+void ui_refresh_count() {
+    u8 buf[24];
+    gtk_label_set_text(l_count, ui_itoa(counter, buf));
+}
+
+void on_plus(uptr w, uptr data) {
+    counter = counter + ui_step();
+    ui_refresh_count();
+}
+
+void on_minus(uptr w, uptr data) {
+    counter = counter - ui_step();
+    ui_refresh_count();
+}
+
+void on_entry_activate(uptr entry, uptr data) {
+    uptr text = g_strdup(gtk_editable_get_text(entry));
+    if (ld8(text) != 0) {
+        gtk_label_set_text(l_echo, text);
+        gtk_list_box_append(lb_items, gtk_label_new(text));
+        gtk_editable_set_text(entry, "");
+    }
+    g_free(text);
+}
+
+void on_about_close(uptr w, uptr data) {
+    gtk_window_close(w_about);
+}
+
+void on_about_destroy(uptr w, uptr data) {
+    w_about = 0;
+}
+
+// the only two functions that differ from main.mc, and both only because the
+// tree moved: they call the build functions the `window` blocks generated.
+uptr ui_about_new() {
+    ui_build_w_about(0);
+    return w_about;
+}
+
+void ui_build(uptr app) {
+    ui_build_w_main(app);
+}
+
+void on_about(uptr w, uptr data) {
+    if (w_about == 0) {
+        ui_about_new();
+        gtk_window_set_transient_for(w_about, w_main);
+        gtk_window_set_modal(w_about, 1);
+    }
+    gtk_window_present(w_about);
+}
+
+void on_activate(uptr app, uptr data) {
+    ui_build(app);
+    gtk_window_present(w_main);
+}
+
+i64 ui_self_test() {
+    gtk_init();
+    ui_build(0);
+
+    on_plus(0, 0);
+    on_plus(0, 0);
+    on_minus(0, 0);
+    puts("count=");
+    puts(gtk_label_get_text(l_count));
+    puts("\n");
+
+    gtk_editable_set_text(e_name, "hello mc");
+    on_entry_activate(e_name, 0);
+    puts("echo=");
+    puts(gtk_label_get_text(l_echo));
+    puts("\n");
+    puts("rows=");
+    putnum(gtk_list_box_length(lb_items));
+    puts("\n");
+
+    gtk_check_button_set_active(c_step2, 1);
+    on_plus(0, 0);
+    puts("count=");
+    puts(gtk_label_get_text(l_count));
+    puts("\n");
+
+    gtk_editable_set_text(e_name, "second");
+    on_entry_activate(e_name, 0);
+    puts("rows=");
+    putnum(gtk_list_box_length(lb_items));
+    puts("\n");
+
+    uptr about = ui_about_new();
+    puts("about=");
+    puts(gtk_window_get_title(about));
+    puts("\n");
+
+    puts("ok\n");
+    return 0;
+}
+
+i64 main(i64 argc, uptr argv) {
+    if (argc > 1) {
+        if (ui_streq(ld64(argv + 8), "--self-test")) return ui_self_test();
+    }
+    uptr app = gtk_application_new("dev.minicompiler.desktop", G_APPLICATION_DEFAULT_FLAGS);
+    g_signal_connect_data(app, "activate", &on_activate, 0, 0, 0);
+    i64 status = (u32) g_application_run(app, 0, 0);
+    g_object_unref(app);
+    return status;
+}
