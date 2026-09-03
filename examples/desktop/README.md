@@ -404,3 +404,19 @@ check-desktop: all checks passed
 * **Linux** (spec § Acceptance) is not covered here: `[target] os = "linux"`
   works (M16) but would need a GTK4 sysroot and `[linker]` args, and the
   self-test would still need a display.
+
+## Running it as a macOS application bundle
+
+A bare Mach-O executable has no bundle identifier, so Launch Services, the window manager's app
+list and screenshot tools treat it as an anonymous process. `bundle-app.sh` wraps a built binary in
+a minimal `.app` (Info.plist with a bundle id, ad-hoc signed):
+
+```sh
+sh examples/desktop/bundle-app.sh examples/desktop/build/desktop-ui \
+   "examples/desktop/build/mc desktop.app" dev.minicompiler.desktop "mc desktop"
+open "examples/desktop/build/mc desktop.app"
+```
+
+Visual check (2026-09-03, macOS 26.6, GTK 4.22): the window renders the header bar, the counter,
+`+`/`-`, the "step by two" check button, the entry and the About button; clicks delivered to the
+window change the counter label. The automated check stays headless (`--self-test`).
