@@ -379,3 +379,37 @@ and x86 only if still wanted afterwards.
 | **M23** | Dynamic limits: growable tables in the self-hosted `mc`, best-effort estimate (static pre-scan + remembered usage) reserved at `estimate * (1 + tolerance)`, single `[limits] tolerance` float in [0,1] (basis points internally), `mc limits` checker (ok/grew/tight, CI exit codes), `mc build --fix-limits` adjusting only the tolerance with consent, `check-limits` on the seed's headroom (`docs/specs/M23.md`) | 5k-function/5k-string program builds with no TOML change; `tolerance = 0` grows and is reported; `make check` warns before the seed's tables fill |
 | **M24** | `f32`/`f64` in the self-hosted `mc` (literals, arithmetic, comparisons, casts, `ldf*/stf*`, AAPCS64 float args/returns, `putf64`) as new tasks of the M17 machine table; `#machine ARCH task(params) ENCODING` lets the developer name the hardware instruction for a task per architecture, with `--dump-machine` auditing (`docs/specs/M24.md`; depends on M17 step A) | bit-exact float tests in `tests/mc/`; `#machine` override observed; x86-64 SSE2 tasks with M17 step B |
 | **M25** | Sysroots and cross-compilation resolution: explicit path -> running system -> `~/.mc/sysroots` cache -> precise instructions; Apple: synthesized text stubs from the program's externs by default, or `mc sysroot fetch macos-*` from community SDK mirrors with the `mc.toml` lines printed (nothing redistributed by `mc`); `mc sysroot fetch` for musl (Alpine apk) and mingw-w64 import libs (llvm-mingw) with checksums and offline fallback; `mc sysroot list` (`docs/specs/M25.md`) | link on macOS without an SDK via synthesized stubs; fetch into a temp cache and build for linux; offline paths exit with instructions |
+
+---
+
+# Phase 3 — documentation, website, identity, editor experience
+
+Owner's direction (2026-09-03): detailed documentation of every use case and of every element of the
+`mc` API; a `site/` directory with a static site generator **written in mc** (Hugo-like) producing the
+documentation website for GitHub Pages; designer agents, an attractive but simple layout and an icon
+that expresses `mc`; and a VS Code extension with an LSP and a debugger. The LSP must give developers
+back the syntax they created themselves (colors, navigation, tracking of definitions and uses).
+
+## Architecture decisions
+- **The language server is the taught compiler.** `mc lsp` (JSON-RPC over stdio, in `.mc`) serves
+  semantic tokens, diagnostics, definitions, references and hover from the real lexer/parser with the
+  project's hooks registered — the extension launches the project's taught compiler (from `mc.toml`),
+  so a `class`/`namespace`/`ref` taught by `examples/lang` is colored and navigable exactly as parsed.
+- **The debugger is standard.** `mc` emits DWARF (line table, subprograms, locals with frame offsets)
+  into `.o` and `--exe` outputs; the extension uses `lldb-dap`. Line rows point at the developer's
+  source (`.lx` or `.mc`), because every node carries `file:line`.
+- **Docs are the single source; the site renders them.** `docs/` stays plain Markdown; `site/` holds
+  the generator (`mcsite`, an `mc` program), templates, CSS and the icon; GitHub Pages serves
+  `site/public`.
+- New agent roles: `designer` (layout, CSS, typography, SVG icon, accessibility), `ts-dev` (VS Code
+  extension in TypeScript, DAP/LSP client glue). The LSP server itself is `mc-dev` work; its detailed
+  design goes through a design panel like M21 before implementation.
+
+## Milestones
+| # | Deliverable | Acceptance |
+|---|---|---|
+| **M26** | Documentation set: `docs/guide/` (getting started, single file, project + `mc.toml`, teaching the compiler, Tier 1-3 recipes, cross-compiling, examples walkthroughs) and `docs/reference/` (language, directives, CLI, TOML keys, parser/hook API with the meaning of every public function, object primitives, machine tasks, diagnostics catalogue); `scripts/check-docs.sh` verifies every public `p_*`/hook/CLI flag appears in the reference and every code sample compiles (`docs/specs/M26.md`) | `make check` gains `check-docs`; zero undocumented public symbols |
+| **M27** | `site/`: `mcsite` static generator in `mc` (Markdown subset -> HTML, code fences highlighted by the bundled lexer, nav/search index/sitemap from `site/site.toml`, templates with placeholders), layout by the designer agent, SVG icon/favicon, GitHub Pages workflow YAML (`docs/specs/M27.md`) | `mc build site` renders `site/public` from `docs/`; pages validate (HTML, links, a11y review); icon delivered as SVG + PNG set |
+| **M28** | `mc lsp`: JSON-RPC/stdio server in `.mc` (JSON in `.mc`, UTF-16 offsets), incremental full-document reparse, semantic tokens incl. taught words/operators, diagnostics, go-to-definition, references, hover, document symbols; project awareness via `mc.toml` (taught compiler) (`docs/specs/M28.md`, design panel first) | LSP conformance tests with a scripted client; `examples/lang` files colored/navigable through the taught compiler |
+| **M29** | VS Code extension (`editor/vscode`): TextMate baseline grammar, LSP client, build/run commands, problem matcher, `lldb-dap` launch configs; packaged `.vsix` (`docs/specs/M29.md`) | extension installs from `.vsix`; smoke test in the Extension Host |
+| **M30** | DWARF in `.o`/`--exe` (macOS) and ELF (Linux): `.debug_line`, `.debug_info`/`.debug_abbrev` with subprograms and locals, `.debug_str`; `lldb` steps through `.mc` and `.lx` sources (`docs/specs/M30.md`) | `lldb` breakpoints by file:line and `frame variable` show mc locals; extension debug session works end to end |
