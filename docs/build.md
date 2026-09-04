@@ -46,7 +46,7 @@ kind  = "exe"              # exe (default) | obj
 
 [target]
 os   = "macos"             # macos (default) | linux; anything else is an error
-arch = "aarch64"           # aarch64 only
+arch = "aarch64"           # aarch64 (default); linux also takes x86_64
 
 [compiler]                 # optional: build a taught compiler first, then use it
 core    = "../../src/core.mc"
@@ -82,17 +82,23 @@ paths = ["lib"]            # extra roots for #include "x"
 
 ### `[target]`
 
-`os` defaults to `macos` and takes `linux` since M16; `arch` defaults to `aarch64` and takes
-nothing else. Any other value is an error at the position of the offending value:
+`os` defaults to `macos` and takes `linux` since M16; `arch` defaults to `aarch64`, and since M17
+`os = "linux"` also takes `x86_64`. What is accepted is exactly the `(os, arch)` pairs the
+`target()` registry holds ([reference/hooks.md](reference/hooks.md)) — `macos/aarch64`,
+`linux/aarch64`, `linux/x86_64` — and a module may register more. Any other value is an error at
+the position of the offending value, and the message is built from the registry:
 
 ```
 $ build/mc1 build tests/proj --config /tmp/windows.toml
 /tmp/windows.toml:6:6: only macos and linux (see docs/build.md): target.os
+$ build/mc1 build tests/proj --config /tmp/riscv.toml
+/tmp/riscv.toml:7:8: only aarch64 and x86_64 (see docs/build.md): target.arch
 ```
 
 `os = "linux"` changes two things and nothing else: the object comes out as an ELF64 `ET_REL`
-(the `elf-obj` backend, `src/backend_elf.mc`) instead of a Mach-O, and `[linker]` becomes
-**required** — there is no direct-executable backend for Linux. See § Linux targets below.
+(the `elf-obj` / `elf-obj-x86_64` backends, `src/backend_elf.mc`) instead of a Mach-O, and
+`[linker]` becomes **required** — there is no direct-executable backend for Linux. `arch` then
+picks which instruction set the object holds. See § Linux targets below.
 
 ### `[compiler]` — building the compiler that will compile `entry`
 
@@ -345,8 +351,8 @@ table, so it walks the flat table in order. That walk is also what fixes the dyl
 output against `tests/toml/*.expect` — well-formed files and malformed ones alike. The
 pretty-printer lives in that driver and **not** in `src/toml.mc` on purpose: `toml.mc` is part of
 `src/core.mc`, so every compiler binary carries it, and a dump nobody calls is a dozen string
-literals charged against a budget the C seed still caps at 512 (`MAXSTRS` in
-`stage0/gen_arm64.c`; `src/mc.mc` is at 489).
+literals charged against a budget the C seed still caps at 2048 (`MAXSTRS` in
+`stage0/gen_arm64.c`; `make check-limits` is what watches how close `src/mc.mc` gets to it).
 
 ---
 
@@ -415,7 +421,7 @@ prog.mc:1: unknown bundled include: no/such/module
 | names | files |
 |---|---|
 | `sys`, `sys_svc`, `sys_linux`, `io`, `prelude`, `lz`, `backend_arm64`, `pass_demo`, `user_default`, … | every `lib/*.mc`, plus `src/lz.mc` (a library, not only a compiler module) |
-| `mc/core`, `mc/arena`, `mc/lex`, `mc/parse`, `mc/gen_arm64`, `mc/backend_exe`, `mc/backend_elf`, … | every module `src/core.mc` includes |
+| `mc/core`, `mc/arena`, `mc/lex`, `mc/parse`, `mc/gen_resolve`, `mc/gen_walk`, `mc/machine_arm64`, `mc/backend_exe`, `mc/backend_elf`, … | every module `src/core.mc` includes |
 
 Everything a taught compiler needs is there, which is what makes `<mc/core>` complete.
 
@@ -630,12 +636,17 @@ seed is frozen. That is why their tests live in `tests/mc/` rather than in `test
 
 ---
 
-## M16 — Linux targets (`os = "linux"`)
+## M16 / M17 — Linux targets (`os = "linux"`, `arch = "aarch64"` or `"x86_64"`)
 
 `os = "linux"` in `[target]` makes `mc build` write an **ELF64 relocatable** instead of a Mach-O
 and hand it to the linker named in `[linker]`. Nothing else in the file changes, and nothing in
 `stage0/` changes: the ELF writer is `src/backend_elf.mc`, a backend registered like any other
-(`--backend=elf-obj` also works from the single-file CLI).
+(`--backend=elf-obj` and `--backend=elf-obj-x86_64` also work from the single-file CLI).
+
+`arch = "x86_64"` (M17 step B) changes the instruction set and three fields of the file —
+`e_machine`, the relocation numbers and their addend — and nothing else: the same `gen_lower`, the
+same two-pass encoder, the same section table, the same symbol partition. What it swaps is the
+**machine** behind the walker (`src/machine_x86_64.mc`, [reference/machine.md](reference/machine.md)).
 
 The real config — this is exactly what `scripts/test-linux.sh` generates, with absolute paths:
 
@@ -677,12 +688,14 @@ $ build/mc1 build tests/proj --config /tmp/d.toml
 
 ### The sysroot
 
-`scripts/sysroot-linux.sh` fills `build/sysroot/linux-aarch64` by running `apk add musl-dev`
-inside a throwaway `linux/arm64` Alpine container and copying out `crt1.o`, `crti.o`, `crtn.o`,
-`libc.a` (and `libc.so`, for reference). It is a cache: with the four files already there it does
-nothing, so `make test-linux` does not pull an image on every run. `make sysroot-linux` runs it;
-`scripts/test-linux.sh` runs it by itself when any of the four files is missing (the same check
-the script itself makes, so a half-populated sysroot is repaired instead of failing every test).
+`scripts/sysroot-linux.sh [--arch aarch64|x86_64]` fills `build/sysroot/linux-<arch>` by running
+`apk add musl-dev` inside a throwaway Alpine container of the matching platform (`linux/arm64` or
+`linux/amd64`, the second emulated on an Apple Silicon host) and copying out `crt1.o`, `crti.o`,
+`crtn.o`, `libc.a` (and `libc.so`, for reference). It is a cache: with the four files already
+there it does nothing, so `make test-linux` does not pull an image on every run.
+`make sysroot-linux` and `make sysroot-linux-x86_64` run it; `scripts/test-linux.sh` runs it by
+itself when any of the four files is missing (the same check the script itself makes, so a
+half-populated sysroot is repaired instead of failing every test).
 
 ### What the ELF writer says
 
@@ -709,14 +722,34 @@ section that has relocations, `.symtab`, `.strtab`, `.shstrtab` — so a module 
 its ELF section index minus one, which is what lets `st_shndx` be `sym_sect` unchanged. Symbols
 come out in `macho.mc`'s stable partition (locals, defined globals, undefined), which is also
 what ELF requires (`sh_info` = index of the first non-local). Relocation entries are sorted by
-ascending offset, the ELF convention, and every `r_addend` is 0 — the encoder leaves the relocated
-immediate zeroed, so there is no implicit addend to carry over. The determinism rules are the same
-ones `docs/determinism.md` states for Mach-O.
+ascending offset, the ELF convention. On aarch64 every `r_addend` is 0 — the encoder leaves the
+relocated immediate zeroed, so there is no implicit addend to carry over. The determinism rules
+are the same ones `docs/determinism.md` states for Mach-O.
 
 Verified field by field against `clang --target=aarch64-linux-musl -c` of equivalent C, with
 `llvm-readobj --all` and `llvm-objdump -dr`; the one difference that is not the writer's is the
 `R_PAGEOFF12` row: `mc` always materializes a global's address with `adrp` + `add`, so it asks for
 `ADD_ABS_LO12_NC` where clang folds the offset into the load and asks for `LDST64_ABS_LO12_NC`.
+
+### The x86-64 rows
+
+`arch = "x86_64"` writes `EM_X86_64` (62) and three relocations instead of the five above:
+
+| mc | ELF | where | addend |
+|---|---|---|---|
+| `call rel32` (`R_X86_PLT32`) | `R_X86_64_PLT32` (4) | instruction + 1 | −4 |
+| `lea r, [rip + disp32]` (`R_X86_PC32`) | `R_X86_64_PC32` (2) | instruction + 3 | −4 |
+| `R_UNSIGNED` (8 bytes, in data) | `R_X86_64_64` (1) | as written | 0 |
+
+The addend is −4 because a `rel32` counts from the **end** of its own field, which is four bytes
+past `r_offset`; that is exactly what `clang --target=x86_64-linux-musl -c` emits for the same
+constructs, offsets and addends included. Every distinct instruction the machine produced while
+compiling `src/mc.mc` for x86-64 — 948 of them — re-assembles byte-identically under
+`llvm-mc -triple=x86_64-linux-musl`.
+
+Sections, symbol names and the symbol partition are unchanged: `.text`/`.rodata`/`.data`/`.bss`,
+`_main` → `main`, `l_str0` → `.Lstr0`. Functions are aligned to 4, so up to three zero bytes sit
+between them; they are never executed, but a disassembler decodes them as `add %al, (%rax)`.
 
 ### No libc at all: `<sys_linux>`
 
@@ -732,7 +765,9 @@ cmd  = "ld.lld"
 args = ["-nostdlib", "-e", "_start", "-o", "{out}", "{obj}"]
 ```
 
-`tests/linux/070-nolibc.mc` is that case, inside `scripts/test-linux.sh`.
+`tests/linux/070-nolibc.mc` is that case, inside `scripts/test-linux.sh`. It is AArch64-only —
+the syscall words and `_start` are hand-encoded instructions — so it carries a `// skip-x86_64:`
+header, and `--arch x86_64` lists it as skipped instead of running it.
 
 The `O_RDONLY`/`O_WRONLY`/`O_CREAT`/`O_TRUNC` constants moved out of `lib/io.mc` and into each
 system layer at M16, because they are per-system: `O_CREAT` is `0x200` on macOS and `0x40` on
@@ -741,28 +776,46 @@ Linux. `lib/io.mc` still holds only what is written in the language itself (`str
 
 ### Running the suite
 
-`scripts/test-linux.sh` cross-compiles every `tests/*.mc` with the config above, links each one
-with `ld.lld`, and runs it inside `docker run --rm --platform linux/arm64 -v <repo>:/w -w /w
-alpine:3`, comparing exit code and stdout with the same `// expect-exit:` / `// expect-stdout:`
-headers the macOS suites use. The repository root is the mount and the working directory because
-a test may open its own source by a relative path (`tests/025-linecount.mc` does).
+`scripts/test-linux.sh [--arch aarch64|x86_64]` cross-compiles every `tests/*.mc` with the config
+above, links each one with `ld.lld`, and runs it inside `docker run --rm --platform
+linux/arm64|linux/amd64 -v <repo>:/w -w /w alpine:3`, comparing exit code and stdout with the same
+`// expect-exit:` / `// expect-stdout:` headers the macOS suites use. The repository root is the
+mount and the working directory because a test may open its own source by a relative path
+(`tests/025-linecount.mc` does).
 
-A test that cannot work on Linux carries a third header, `// skip-linux: REASON`, and the script
-prints the list at the end. Exactly one test has it:
+A test that cannot run on a target carries a third header and the script prints the list at the
+end. `// skip-linux: REASON` is the whole operating system; `// skip-x86_64: REASON` is that
+instruction set only.
 
 ```
-32/32 tests passed on linux/arm64
-skipped (macOS only):
+32/32 tests passed on linux/aarch64
+skipped (not portable to this target):
   032-svc — lib/sys_svc.mc has the Darwin syscall numbers in x16 and svc #0x80; the Linux equivalent is lib/sys_linux.mc
 ```
 
-Everything else is portable as written, including `030-section` (custom `#section`s, which
-`ld.lld` folds into `.text`/`.data` by name), `031-opcode` (plain AArch64 encodings) and
-`033-reloc` (a hand-written `bl` with `reloc(BRANCH26, "_helper")`, whose symbol name loses its
-`_` on the way into ELF exactly like the definition's).
+```
+29/29 tests passed on linux/x86_64
+skipped (not portable to this target):
+  031-opcode — the #opcode templates are AArch64 words (movz/add); the x86-64 machine emits its own instruction set
+  032-svc — lib/sys_svc.mc has the Darwin syscall numbers in x16 and svc #0x80; the Linux equivalent is lib/sys_linux.mc
+  033-reloc — the raw word is an AArch64 `bl` and BRANCH26 is a Mach-O/AArch64 relocation; x86-64 calls are R_X86_64_PLT32
+  070-nolibc — lib/sys_linux.mc encodes the syscalls and _start as AArch64 `svc #0` words; the x86-64 equivalent would be `syscall`
+```
 
-`make test-linux` is inside `make check` but guarded: without `ld.lld` in `PATH`, or with Docker
-not running, it prints `test-linux: SKIPPED (...)` and the build stays green.
+Everything else is portable as written on both, including `030-section` (custom `#section`s, which
+`ld.lld` folds into `.text`/`.data` by name). The three that are not are exactly the three that
+write instructions by hand — which is the point: `#opcode`, `emit()` and `reloc()` are an
+instruction set, and everything above them is not.
+
+One behaviour above them is still the hardware's: a division whose divisor is zero at run time, and
+`INT64_MIN / -1`, answer `0`/`x`/`INT64_MIN` on AArch64 and raise `SIGFPE` on x86-64. No test in the
+suite divides by zero, so the corpus does not see it; a program of yours can
+([core-language.md](core-language.md) § "Division by zero, and `INT64_MIN / -1`").
+
+`make test-linux` and `make test-linux-x86_64` are both inside `make check` and both guarded:
+without `ld.lld` in `PATH`, or with Docker not running, they print `SKIPPED (...)` and the build
+stays green. In CI each one has a job that links and *runs* the suite on a real machine of that
+architecture (`docs/ci.md`), which is what `docs/plan.md` § Rule for every new target requires.
 
 ---
 
@@ -982,13 +1035,42 @@ failing at 90%:
 ```
 $ scripts/check-limits.sh build/mc1
 ok   tokens        51 / 2048     2%  (MAXTOK)
-ok   defines      493 / 2048    24%  (MAXDEFS)
-ok   funcs        836 / 2048    40%  (MAXFUNCS)
-ok   globals      259 / 512     50%  (MAXGLOBALS)
-ok   strings      571 / 2048    27%  (MAXSTRS)
+ok   defines      634 / 2048    30%  (MAXDEFS)
+ok   funcs       1002 / 2048    48%  (MAXFUNCS)
+ok   globals      320 / 512     62%  (MAXGLOBALS)
+ok   strings      648 / 2048    31%  (MAXSTRS)
 ...
-16/16 seed limits under 90%
+ok   heap        29Mi / 64Mi    46%  (HEAP_SIZE, max RSS of build/mc0)
+17/17 seed limits under 90%
 ```
+
+### The seventeenth row: the seed's arena
+
+The last row is not a table, and it is the one that bit. At M17 every `MAX*` above was under 57%
+and `build/mc0 src/mc.mc` started failing with `arena exhausted`: what had filled was
+`HEAP_SIZE` in `stage0/arena.c`, which nothing watched.
+
+The reason the arena fills faster than any element count suggests is that **the seed's growable
+arrays double and never free**. `stage0/arena.c` is a bump allocator with no `free`, and
+`nodes_grow` in `stage0/ast.c` allocates a new array of twice the capacity and copies — leaving
+every earlier copy resident forever. With `sizeof(Node) == 72` and `src/mc.mc` at about 79 000
+nodes, the live array is 9.4 MB and the dead ones another 9.4 MB: 18.9 MB of arena for a number
+that `mc limits` prints as one line of `nodes`. The largest single contributor to that count is
+`src/bundle_data.mc`, which carries the bundle as one `N_INT` node per `u64` (about 27 800 of
+them) because the frozen seed has no `#embed` — see `scripts/check-bundle.sh`.
+
+The seed cannot report its own high-water mark, and instrumenting it would be a change to the
+frozen seed, so the row uses the **maximum resident set size** of one real `build/mc0 src/mc.mc`
+run as the proxy (`/usr/bin/time -l`). The arena is a bss array, so only the pages the allocator
+touched are resident; the measurement over-reports by the size of the binary itself, which is the
+safe direction for a guard. On a system without `/usr/bin/time -l` the row skips instead of
+failing.
+
+When it does go over 90%, the fix is the one the project has made before (`517685f` lowered the
+arena from 256 MiB to 32 MiB when self-compiling touched 14.5 MiB; `a5aa850` raised five `MAX*`
+constants at M23): raise the constant. It is capacity, not behaviour — the arena size is not
+observable in any output, so `check-obj`, `check-asm`, the fixed point and the golden are all
+unaffected. M17 raised it to 64 MiB.
 
 ### What it buys
 
@@ -1046,7 +1128,8 @@ make -C examples/api test        # test-oop + tests/lib_test.sh + test.sh
 | `check-mc` | `scripts/check-mc.sh`: `tests/mc/*.mc` (`#embed`, `#include <name>`) through `.o` + `ld` and through `--exe`, plus the assertion that `build/mc0` rejects them |
 | `check-standalone` | `scripts/check-standalone.sh`: `build/mc-exe` copied alone into a temporary directory, compiling `<sys>`/`<prelude>`, a taught compiler from `<mc/core>`, and the byte-for-byte comparison against `build/mc2.o` |
 | `test-linux` | `scripts/test-linux.sh`: every `tests/*.mc` without `// skip-linux` cross-compiled with `elf-obj`, linked by `ld.lld` against musl and run in `docker --platform linux/arm64`, plus the no-libc case. Guarded: skipped with a message when Docker or `ld.lld` is missing |
-| `check-limits` | `scripts/check-limits.sh`: `mc limits src/mc.mc` against the fixed `MAX*` constants still in `stage0/mc.h` and `stage0/*.c`; fails when any of them is over 90% used |
+| `test-linux-x86_64` | the same with `--arch x86_64`: the `elf-obj-x86_64` backend, an amd64 musl sysroot and `docker --platform linux/amd64`. Also skips the tests that carry `// skip-x86_64`. Guarded the same way |
+| `check-limits` | `scripts/check-limits.sh`: `mc limits src/mc.mc` against the fixed `MAX*` constants still in `stage0/mc.h` and `stage0/*.c`, plus the seed's `HEAP_SIZE` against the max RSS of a real `build/mc0` run; fails when any of them is over 90% used |
 
 ```
 $ scripts/check-toml.sh build/mc1
@@ -1057,19 +1140,23 @@ $ scripts/check-build.sh build/mc1
 11/11 mc build checks passed
 $ scripts/check-limits.sh build/mc1
 ...
-16/16 seed limits under 90%
+17/17 seed limits under 90%
 $ scripts/test-linux.sh build/mc1
 ...
-32/32 tests passed on linux/arm64
+32/32 tests passed on linux/aarch64
+$ scripts/test-linux.sh --arch x86_64 build/mc1
+...
+29/29 tests passed on linux/x86_64
 ```
 
 ---
 
 ## Limits of M14, M15, M16 and M23
 
-- **aarch64 only, and for Linux only through an external linker.** `[target].arch` other than
-  `aarch64` is a clear error, and so is `[target].os` other than `macos`/`linux`; COFF and x86-64
-  are later milestones. A Linux `exe` without `[linker]` is refused — there is no ELF equivalent
+- **Two architectures, and for Linux only through an external linker.** `[target].arch` other than
+  `aarch64` (macOS, Linux) or `x86_64` (Linux) is a clear error, and so is `[target].os` other than
+  `macos`/`linux`; COFF and wasm are later milestones. A Linux `exe` without `[linker]` is refused —
+  there is no ELF equivalent
   of `macho-exe`, so `ld.lld` (or any linker named in the config) does the layout.
 - **The taught compiler is always built for the host.** `[compiler]` compiles with `macho-exe`
   even when `[target].os = "linux"`: it is a tool that has to run here, not part of the artifact.

@@ -339,7 +339,7 @@ internally in the surface's `#define` table (same values as `docs/macho-notes.md
 `UNSIGNED` is accepted as a constant but **refused in this position**: it's an 8-byte relocation
 (`length 3`), and the word `emit()`/`#opcode` place in the stream is 4 bytes, so it would overrun
 the next instruction. The error is `reloc UNSIGNED requires 8 bytes: use a global array
-initializer`, on both sides (`stage0/gen_arm64.c` and `src/gen_arm64.mc`) — the case is in
+initializer`, on both sides (`stage0/gen_arm64.c` and `src/gen_walk.mc`) — the case is in
 `tests/err/062-reloc-unsigned.mc`. An 8-byte address is written as a global array initializer,
 which generates the `R_UNSIGNED` in the right place (`tests/040-arrinit.mc`,
 `tests/060-callp.mc`).
@@ -462,7 +462,7 @@ The built-in `macho` backend is literally `gen_lower` + `gen_encode_all` + `mach
   resolves the labels, and writes the 32-bit words with their relocations.
 
 A surface backend calls `gen_lower` and replaces the second half. To do that, it reads the buffer
-through `src/gen_arm64.mc`'s public accessors:
+through `src/gen_walk.mc`'s public accessors:
 
 ```
 gen_func_count()            how many functions were lowered
@@ -504,15 +504,49 @@ and replaces `x * 1` with `x`, rewriting the node in place (preserving `next`, w
 the sibling list). The core doesn't do this — `fold` only folds constant against constant — and
 `tests/061-pass.mc` shows the difference in `--dump-ast`.
 
-### The three built-in backends: `macho`, `macho-exe` and `elf-obj`
+### The third seam, since M17: the machine table
 
-`src/main.mc` registers three backends before calling `user_init()`:
+Replacing the *whole* encoder is what `lib/backend_arm64.mc` does. M17 opened the seam one level
+finer: `gen_lower` itself is now two files, and what stands between them is a table of `&fn`, one
+per instruction-selection task, registered with `machine("arm64", tab)` and called through `callp`
+— the same linear-table-of-function-pointers idea as `pass()` and `backend()`.
+
+- `src/gen_resolve.mc` binds every name and types every expression into a side table indexed by
+  node, before a single instruction exists. `res_type`, `res_kind`, `res_decl`, `res_bind`,
+  `res_addr_taken` are what a backend that consumes the AST directly reads, and it never has to
+  call `gen_lower` at all.
+- `src/gen_walk.mc` is the walk: frames, the depth stack, labels, calls, sections, globals,
+  strings, symbols. It mentions no register.
+- `src/machine_arm64.mc` is the AArch64 machine: the register partition, the spill policy, the
+  encoders, the dump.
+
+`docs/reference/machine.md` is the contract — thirty slots, versioned. Nothing about the surface
+changed: `gen_lower`, `gen_encode_all` and every `gen_*` accessor kept their names and their
+behaviour, and `make check-surface` still compares `arm64-surface` against the built-in backend
+byte for byte, 32/32. The acceptance of the split was that the frozen C seed, still one monolithic
+generator, keeps producing **identical** objects (`check-obj` 32/32) and identical `--dump-asm`
+(`check-asm` 73/73).
+
+The other half of M17's step A is `target(os, arch, obj_backend, exe_backend)`: `src/driver.mc`
+used to carry the whitelist itself (`only macos and linux`, `only aarch64`), and now reads a
+registry filled in `src/main.mc`, with those same messages generated from it.
+
+M17's **step B** is the payoff: `src/machine_x86_64.mc`, a second machine behind the same walker,
+and `linux/x86_64` as a third registered target. Not one line of `src/gen_walk.mc` is
+architecture-specific, and the ELF writer is shared down to the section table — the whole
+difference is a register partition, an ABI and thirty-odd encoders
+(`docs/reference/machine.md` § The x86-64 implementation).
+
+### The four built-in backends: `macho`, `macho-exe`, `elf-obj` and `elf-obj-x86_64`
+
+`src/main.mc` registers four backends before calling `user_init()`:
 
 | name | writes | alias |
 |---|---|---|
 | `macho` (default) | `MH_OBJECT` — the `.o` that `scripts/link.sh` links with `ld` | — |
 | `macho-exe` (M11) | ad-hoc signed arm64 `MH_EXECUTE`, no `ld` | `--exe` |
 | `elf-obj` (M16) | ELF64 `ET_REL` for `EM_AARCH64` — the `.o` a Linux linker takes | — |
+| `elf-obj-x86_64` (M17) | the same file for `EM_X86_64` | — |
 
 ```
 $ build/mc1 --exe tests/001-return42.mc -o tmp/t1 && tmp/t1; echo $?
@@ -520,14 +554,15 @@ $ build/mc1 --exe tests/001-return42.mc -o tmp/t1 && tmp/t1; echo $?
 $ build/mc1 --backend=macho-exe tests/001-return42.mc -o tmp/t1    # the same thing
 $ build/mc1 --backend=xyz tests/001-return42.mc -o x.o
 unknown backend: xyz
-registered: macho macho-exe elf-obj
+registered: macho macho-exe elf-obj elf-obj-x86_64
 ```
 
 `elf-obj` lives in `src/backend_elf.mc` and is built the same way `macho-exe` is: `gen_lower` +
 `gen_encode_all` and then only the public API of `src/macho.mc` (sections, symbols, relocations,
 `sym_order`). It is the proof that the object model in the middle of the compiler really is
 format-neutral — see `docs/build.md` § Linux targets for the whole mapping, and
-`scripts/test-linux.sh` for the suite it passes.
+`scripts/test-linux.sh` for the suite it passes. `elf-obj-x86_64` is the same file: it names its
+machine (`machine_use("x86_64")`), sets `e_machine`, and shares every other line.
 
 `macho-exe` lives in `src/backend_exe.mc` and is **part of the compiler**, not a user module: it's
 M11's answer, not a Tier 2 demo. But it's written exactly the way a surface backend would be — it

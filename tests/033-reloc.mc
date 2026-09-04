@@ -1,4 +1,5 @@
 // expect-exit: 42
+// skip-x86_64: the raw word is an AArch64 `bl` and BRANCH26 is a Mach-O/AArch64 relocation; x86-64 calls are R_X86_64_PLT32
 // reloc(TYPE, "symbol") hangs the relocation on the next word emitted; here the
 // word is a raw bl. The bl lives alone in an emit-only function: that way the x30
 // it clobbers is already saved in its frame and the caller sees no difference at all.

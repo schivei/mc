@@ -117,12 +117,57 @@ Read one row of the registration tables: the name and the function pointer of ba
 the function pointer of pass `i`. `backend_fn_at` is what the driver hands to `callp` to run the
 chosen backend; the other two exist so a module can inspect what is registered.
 
-### `void backend_macho(i64 unit, uptr out)` · `void backend_exe(i64 root, uptr out)` · `void backend_elf(i64 root, uptr out)`
+### `void backend_macho(i64 unit, uptr out)` · `void backend_exe(i64 root, uptr out)` · `void backend_elf(i64 root, uptr out)` · `void backend_elf_x86(i64 root, uptr out)`
 
-The three built-in backends themselves, callable by name if a module wants to wrap or delegate to
+The four built-in backends themselves, callable by name if a module wants to wrap or delegate to
 one. `backend_macho` is literally `gen_lower` + `gen_encode_all` + `macho_write`; `backend_exe`
 adds what `ld` used to do (segment layout, relocation resolution, stubs, bind opcodes, an ad-hoc
-signature); `backend_elf` writes an ELF64 `ET_REL` for `EM_AARCH64`.
+signature); `backend_elf` writes an ELF64 `ET_REL` for `EM_AARCH64`, and `backend_elf_x86` the
+same file for `EM_X86_64`. The two ELF ones share every line of the writer: each begins with
+`machine_use("arm64")` / `machine_use("x86_64")`, because an object records its architecture and
+therefore has to name the machine that produced it.
+
+### `void machine(uptr name, uptr tab)` · `i64 machine_find(uptr name)` · `void machine_use(uptr name)`
+
+Registers the table of instruction-selection tasks the walker drives, and picks which one is in
+effect. `tab` is `MTASK_COUNT` entries of `&fn`, in `MTASK_*` order; the full contract — every slot,
+its signature, and what the walker keeps for itself — is [machine.md](machine.md). Unlike
+`backend()`, registering a machine also **makes it the one in effect**: a machine is chosen by the
+target, not by a flag, and the compiler always has exactly one. `machine_use` switches between
+registered ones; an unknown name is `unknown machine`.
+
+`src/machine_arm64.mc` fills its own table with `void machine_task(i64 task, uptr fn)` and
+registers it from `void machine_arm64_init()`; `src/machine_x86_64.mc` does the same with
+`void x86_task(i64 task, uptr fn)` and `void machine_x86_64_init()`. `main()` calls both before
+any backend can lower, and then `machine_use("arm64")`, because each registration also makes its
+machine current and the host's is the default. A module that wants to replace one task copies the
+table, overwrites the slot with `machine_task`, and registers the copy under its own name.
+
+Who calls `machine_use` in a normal build: **the object backend**, once, as its first statement.
+That keeps `target()`'s four columns (below) — `[target].arch` is a *file format* question, and
+the backend that answers it is the same one that knows which instruction set it is writing.
+`--machine=NAME` ([cli.md](cli.md)) is the other caller, for the `--dump-*` modes, which never
+reach a backend.
+
+### `void target(uptr os, uptr arch, uptr obj, uptr exe)`
+
+Registers an `(os, arch)` pair `mc build` accepts, with the backend it writes objects with and the
+one it writes direct executables with. `exe = 0` says the target has no direct executable and
+always goes through `[linker]` — which is what `os = "linux"` does. Three are registered before
+`user_init()` runs:
+
+```c
+target("macos", "aarch64", "macho", "macho-exe");
+target("linux", "aarch64", "elf-obj", 0);
+target("linux", "x86_64", "elf-obj-x86_64", 0);
+```
+
+`src/driver.mc` reads nothing but this table: `target_find(os, arch)` gives the row,
+`tgt_obj_at(i)` / `tgt_exe_at(i)` the two backends, `target_os_known(os)` whether the operating
+system exists at all, and `target_os_list()` / `target_arch_list(os)` build the diagnostics
+(`only macos and linux (see docs/build.md)`, and per operating system
+`only aarch64 and x86_64 (see docs/build.md)` for Linux) **from the registry**, so a target a module registers appears in them. Registering one is how a new operating
+system or architecture becomes reachable from `mc.toml` without editing the driver.
 
 ---
 

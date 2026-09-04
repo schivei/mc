@@ -7,10 +7,13 @@
 //   lex.mc       mutable token table and incremental lexer
 //   ast.mc       nodes in a flat array in the arena + dump
 //   parse.mc     recursive descent + table-driven Pratt + folding
-//   gen_arm64.mc instruction buffer, AArch64 encoders and --dump-asm
+//   gen_resolve.mc name resolution and typing, in a side table (M17 step A)
+//   gen_walk.mc  the target-independent walk: frames, depths, labels, calls
+//   machine_arm64.mc the AArch64 machine behind the walker's task table
+//   machine_x86_64.mc the x86-64 machine (SysV), for linux/x86_64 (M17 step B)
 //   sha256.mc    pure SHA-256, for the ad-hoc signature and the executable UUID
 //   backend_exe.mc backend `macho-exe`: signed MH_EXECUTE, without `ld` (M11)
-//   backend_elf.mc backend `elf-obj`: ELF64 ET_REL for Linux arm64 (M16)
+//   backend_elf.mc backends `elf-obj` / `elf-obj-x86_64`: ELF64 ET_REL (M16/M17)
 //   hooks.mc     Tier 2/3: passes (pass), backends (backend), syntax (syntax)
 //   lz.mc        LZ77 both ways, for the bundle and for `#embed ... lz` (M15)
 //   toml.mc      the TOML subset mc.toml is written in (M14)
@@ -42,7 +45,10 @@
 #include "lex.mc"
 #include "ast.mc"
 #include "parse.mc"
-#include "gen_arm64.mc"
+#include "gen_resolve.mc"
+#include "gen_walk.mc"
+#include "machine_arm64.mc"
+#include "machine_x86_64.mc"
 #include "sha256.mc"
 #include "backend_exe.mc"
 #include "backend_elf.mc"

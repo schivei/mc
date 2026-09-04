@@ -364,6 +364,11 @@ encoding, reasons — `i64` needs register pairs and `uptr` becomes 4 bytes, whi
 8-bytes-per-field layouts the language (and the compiler itself) assume. Recommended: x64 before x86,
 and x86 only if still wanted afterwards.
 
+## Rule for every change (owner, 2026-09-04)
+Every pull request that touches `src/`, `lib/`, `examples/`, `stage0/` or `tools/` also updates
+`docs/` (guide, reference or example pages); the `Docs updated` check enforces it and the site is
+regenerated from `docs/` on merge. A change without documentation is not finished.
+
 ## Rule for every new target (owner, 2026-09-03)
 A milestone that adds an OS or an architecture ships, in the same PR, its CI leg (a job that links
 and RUNS the suite on a runner of that platform: `ubuntu-latest` for linux/x86_64, `windows-11-arm`

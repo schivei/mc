@@ -14,7 +14,7 @@ the release. The contributor-facing half of that is
 
 | workflow | trigger | machine | what it does |
 |---|---|---|---|
-| `ci.yml` | pull requests to `main`, push to `main` | `macos-15` + `ubuntu-24.04-arm` | `make check`, then the Linux suite in two halves |
+| `ci.yml` | pull requests to `main`, push to `main` | `macos-15` + `ubuntu-24.04-arm` + `ubuntu-latest` | `make check`, then the Linux suite — once per architecture — in two halves |
 | `autotag.yml` | push to `main` | `ubuntu-24.04` | if the push is a merged pull request: computes the next version from its labels, pushes the annotated tag `vX.Y.Z` and starts `release.yml` |
 | `tag.yml` | manual | `ubuntu-24.04` | the escape hatch: validates `X.Y.Z` against the newest tag, pushes the tag and starts `release.yml` |
 | `release.yml` | dispatched by `autotag.yml`/`tag.yml`, tag `v*`, or manual | `macos-15` | builds `mc`, verifies it, packages it, publishes the GitHub Release |
@@ -77,10 +77,10 @@ same breath, or `main` starts requiring a check that no longer exists and nothin
 Runs `make check` unchanged: `budget`, `test`, `check-lex`, `check-ast`, `check-bundle`,
 `check-asm`, `check-obj`, `bootstrap` (the fixed point plus the golden SHA-256), `check-surface`,
 `test-exe`, `check-mc`, `check-standalone`, `check-toml`, `check-build`, `check-limits`,
-`test-linux`, `check-examples`, `check-lang`, `check-docs`, `site` and `check-site`. No
-environment variable is passed and the `Makefile` is not touched: the `test-linux` target already
-guards itself, and `check-site` skips `checkhtml.py`/`contrast.py` when `python3` is absent
-(the link check still runs).
+`test-linux`, `test-linux-x86_64`, `check-examples`, `check-lang`, `check-docs`, `site` and
+`check-site`. No environment variable is passed and the `Makefile` is not touched: the two
+`test-linux*` targets already guard themselves, and `check-site` skips
+`checkhtml.py`/`contrast.py` when `python3` is absent (the link check still runs).
 
 `site.yml` therefore duplicates only the last two: the deploy job needs the rendered tree as an
 artifact, not merely the proof that it renders.
@@ -105,7 +105,8 @@ Two artifacts come out:
 - `mc-macos-arm64` — `build/mc-exe`, the self-hosted, `ld`-free compiler `make check` already
   builds for `check-standalone`. GitHub's artifact zip does not carry the executable bit, so a
   download needs `chmod +x mc-exe` (and, off a browser download, `xattr -d com.apple.quarantine`).
-- `linux-arm64-objects` — the input to the second job, described next.
+- `linux-arm64-objects` and `linux-x86_64-objects` — the inputs to the two jobs below. The
+  cross-compilation runs twice, once per `--arch`, and neither run needs a linker or Docker.
 
 ### The two-stage Linux design
 
@@ -126,6 +127,10 @@ scripts/test-linux.sh --build-only OUTDIR [MC] # cross-compile only
 scripts/test-linux.sh --run-only OUTDIR        # link and run
 ```
 
+Since M17 all three take `--arch aarch64` (the default) or `--arch x86_64`, which picks
+`[target].arch` in the generated `mc.toml`, the sysroot directory, the Docker platform and which
+`// skip-<arch>:` header applies.
+
 `--build-only` needs `mc` and nothing else — no `ld.lld`, no Docker, no sysroot. It writes an
 `mc.toml` with `kind = "obj"`, so the driver stops at the ELF object, and fills `OUTDIR` with:
 
@@ -133,7 +138,7 @@ scripts/test-linux.sh --run-only OUTDIR        # link and run
 OUTDIR/<name>.o         the ELF64 relocatable
 OUTDIR/<name>.expect    "exit: N" and, when the test declares one, "stdout: TEXT"
 OUTDIR/manifest         one "<name> <linkmode>" line per object, in test order
-OUTDIR/skipped          the `// skip-linux:` tests and their reasons
+OUTDIR/skipped          the `// skip-linux:` / `// skip-<arch>:` tests and their reasons
 ```
 
 `<linkmode>` is `musl` (crt objects plus `libc.a`) or `nolibc` (`-nostdlib -e _start`, the
@@ -147,7 +152,7 @@ the split can be exercised end to end on a Mac. It needs `ld.lld` and the sysroo
 **not** need `mc`. The repository still has to be checked out and the working directory still has
 to be its root, because `tests/025-linecount.mc` opens its own source by a relative path.
 
-`MC_SYSROOT` overrides the sysroot directory (default `build/sysroot/linux-aarch64`) for the two
+`MC_SYSROOT` overrides the sysroot directory (default `build/sysroot/linux-<arch>`) for the two
 modes that link.
 
 ### Job `linux-arm64` — `ubuntu-24.04-arm`
@@ -160,6 +165,19 @@ The sysroot is the same four files the local flow uses (`crt1.o crti.o crtn.o li
 runners. It is cached on the hash of that script, and the script is itself a cache: with the four
 files present it does nothing. If Docker is ever unavailable there, the step falls back to
 Debian's `musl-dev` (`/usr/lib/aarch64-linux-musl/`), which ships the same four objects.
+
+### Job `linux-x86_64` — `ubuntu-latest`
+
+The same job, one architecture over: it downloads `linux-x86_64-objects`, installs `lld`, obtains
+the amd64 musl sysroot (`build/sysroot/linux-x86_64`, cached on the same script hash, with the
+same `/usr/lib/x86_64-linux-musl/` fallback) and runs
+`scripts/test-linux.sh --arch x86_64 --run-only`. It runs the binaries **natively** — the runner
+is x86-64 — so nothing is emulated and nothing is skipped for being slow.
+
+This job is what `docs/plan.md` § "Rule for every new target" asks for: an architecture is not
+supported until something links and runs its suite on real hardware of that kind, and that job is
+a required status check on `main`. `make test-linux-x86_64` is the same suite locally, in an
+emulated `linux/amd64` container.
 
 ---
 
@@ -322,12 +340,13 @@ The output is built directly as `dist/mc` on purpose: the identifier inside an a
 the output file's basename (`docs/bootstrap.md` § M11), so the binary a user installs as `mc` has
 to have been *written* as `mc`.
 
-Job `build-future-hosts` is `if: false`. It holds the four targets that are not possible yet —
-`linux-arm64`, `linux-x86_64`, `windows-arm64`, `windows-x86_64` — and turns on when **`mc` itself
-runs on Linux and Windows**. What blocks each one is written next to it: `mc` is a macOS arm64
-program (`src/driver.mc` uses `_NSGetEnviron`, which is libSystem-only — `docs/build.md` § Limits
-of M14, M15 and M16), and Windows additionally waits for the COFF writer of M19/M20. M16 gave
-Linux arm64 *targets*, not a Linux *host*. The milestone that flips `if: false` to `if: true` is
+Job `build-future-hosts` is `if: false`. It holds the four **host** builds that are not possible
+yet — `linux-arm64`, `linux-x86_64`, `windows-arm64`, `windows-x86_64` — and turns on when **`mc`
+itself runs on Linux and Windows**. What blocks each one is written next to it: `mc` is a macOS
+arm64 program (`src/driver.mc` uses `_NSGetEnviron`, which is libSystem-only — `docs/build.md`
+§ Limits of M14, M15 and M16), and Windows additionally waits for the COFF writer of M19/M20. Note
+what these are not: M16 and M17 gave Linux arm64 and Linux x86-64 *targets*, which `ci.yml`
+already runs; a *host* is a different milestone. The milestone that flips `if: false` to `if: true` is
 **"mc hosted on Linux/Windows"** — that one name covers all four entries, and until it lands the
 job is skipped without allocating a runner.
 

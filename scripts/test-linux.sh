@@ -1,21 +1,28 @@
 #!/bin/sh
-# test-linux.sh — the whole suite cross-compiled to linux/aarch64 and run for
-# real (M16, docs/build.md § Linux targets).
+# test-linux.sh — the whole suite cross-compiled to Linux and run for real
+# (M16 for linux/aarch64, M17 step B for linux/x86_64; docs/build.md § Linux
+# targets).
 #
-#   test-linux.sh [MC]                       cross-compile, link and run (default)
-#   test-linux.sh --build-only OUTDIR [MC]   cross-compile only, write OUTDIR
-#   test-linux.sh --run-only OUTDIR          link OUTDIR's objects and run them
+#   test-linux.sh [--arch A] [MC]                       cross-compile, link, run
+#   test-linux.sh [--arch A] --build-only OUTDIR [MC]   cross-compile only
+#   test-linux.sh [--arch A] --run-only OUTDIR          link OUTDIR and run it
+#
+# --arch is aarch64 (the default) or x86_64. It picks the object backend through
+# `[target].arch` in the generated mc.toml, the sysroot directory, the Docker
+# platform and which `// skip-` header applies.
 #
 # For each tests/*.mc the default mode writes a Linux mc.toml in a temporary
 # directory (absolute paths, so the config's directory does not matter), runs
 # `mc build --config` on it -- which compiles with the `elf-obj` backend and
 # hands the object to `ld.lld` against the musl sysroot -- and then executes the
-# binary inside `docker run --platform linux/arm64 alpine:3`, comparing exit
-# code and stdout with the same headers scripts/test.sh uses:
+# binary inside `docker run --platform linux/arm64|linux/amd64 alpine:3`
+# (emulated on an Apple Silicon host for amd64), comparing exit code and stdout
+# with the same headers scripts/test.sh uses:
 #
 #   // expect-exit: N        (required)
 #   // expect-stdout: TEXT   (optional)
 #   // skip-linux: REASON    (this test is macOS-only; the reason is printed)
+#   // skip-x86_64: REASON   (AArch64-specific: #opcode words, reloc() on a bl)
 #
 # The repository root is mounted at /w and is also the container's working
 # directory, because a test may open its own source by a relative path
@@ -23,11 +30,12 @@
 #
 # The last case is the one with no libc at all: tests/linux/070-nolibc.mc uses
 # `#include <sys_linux>` (raw `svc #0` syscalls plus a hand-written _start) and
-# is linked with `-nostdlib -e _start`.
+# is linked with `-nostdlib -e _start`. Its syscalls are AArch64 words, so it
+# carries a `// skip-x86_64:` header like any other test.
 #
 # The split modes (docs/ci.md) exist because the two halves need different
-# machines: only macOS has `mc`, only a linux/arm64 machine can run the result
-# without emulation.
+# machines: only macOS has `mc`, only a machine of the target architecture can
+# run the result without emulation.
 #
 #   --build-only OUTDIR   needs `mc` and nothing else -- no ld.lld, no Docker,
 #                         no sysroot. Writes OUTDIR/<name>.o (kind = "obj", so
@@ -36,39 +44,57 @@
 #                         "<name> <linkmode>" line per object, in test order) and
 #                         OUTDIR/skipped.
 #   --run-only OUTDIR     needs ld.lld and the sysroot, not `mc`. Links each
-#                         object and runs it: natively on a linux/arm64 host,
+#                         object and runs it: natively on a host of that
+#                         architecture,
 #                         otherwise in the same Docker container the default
 #                         mode uses. The repository still has to be checked out,
 #                         and the working directory still has to be its root.
 #
-# MC_SYSROOT overrides the sysroot directory (default build/sysroot/linux-aarch64)
-# for the modes that link.
+# MC_SYSROOT overrides the sysroot directory (default
+# build/sysroot/linux-<arch>) for the modes that link.
 mode="full"
 split=""
-case "$1" in
-    --build-only)
-        [ -n "$2" ] || { echo "FAIL: $1 needs a directory" >&2; exit 1; }
-        mode="build"; split="$2"; shift 2
-        ;;
-    --run-only)
-        [ -n "$2" ] || { echo "FAIL: $1 needs a directory" >&2; exit 1; }
-        mode="run"; split="$2"; shift 2
-        ;;
+arch="aarch64"
+mc=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --arch)
+            [ -n "$2" ] && [ "${2#-}" = "$2" ] \
+                || { echo "FAIL: --arch needs a value (aarch64 | x86_64)" >&2; exit 1; }
+            arch="$2"; shift 2
+            ;;
+        --arch=*) arch="${1#--arch=}"; shift ;;
+        --build-only|--run-only)
+            [ -n "$2" ] || { echo "FAIL: $1 needs a directory" >&2; exit 1; }
+            if [ "$1" = "--build-only" ]; then mode="build"; else mode="run"; fi
+            split="$2"; shift 2
+            ;;
+        *) mc="$1"; shift ;;
+    esac
+done
+
+case "$arch" in
+    aarch64) platform="linux/arm64" ;;
+    x86_64)  platform="linux/amd64" ;;
+    *) echo "FAIL: unknown --arch $arch (aarch64 | x86_64)" >&2; exit 1 ;;
 esac
-mc="${1:-build/mc1}"
+mc="${mc:-build/mc1}"
 img="alpine:3"
-sysroot="${MC_SYSROOT:-build/sysroot/linux-aarch64}"
-outdir="build/tests-linux"
+sysroot="${MC_SYSROOT:-build/sysroot/linux-$arch}"
+outdir="build/tests-linux-$arch"
 
 if [ "$mode" != "run" ] && [ ! -x "$mc" ]; then
     echo "FAIL: compiler '$mc' not found or not executable"
     exit 1
 fi
 
-# a linux/arm64 host runs the binaries itself; anything else goes through Docker
+# a host of the target architecture runs the binaries itself; anything else
+# goes through Docker
 native=0
 if [ "$(uname -s)" = "Linux" ]; then
-    case "$(uname -m)" in aarch64|arm64) native=1 ;; esac
+    case "$arch/$(uname -m)" in
+        aarch64/aarch64|aarch64/arm64|x86_64/x86_64|x86_64/amd64) native=1 ;;
+    esac
 fi
 
 if [ "$mode" != "build" ]; then
@@ -86,7 +112,7 @@ if [ "$mode" != "build" ]; then
     # enough, a missing crt object only shows up later as an ld.lld error per test
     if [ ! -f "$sysroot/libc.a" ] || [ ! -f "$sysroot/crt1.o" ] \
        || [ ! -f "$sysroot/crti.o" ] || [ ! -f "$sysroot/crtn.o" ]; then
-        scripts/sysroot-linux.sh "$sysroot" || exit 1
+        scripts/sysroot-linux.sh --arch "$arch" "$sysroot" || exit 1
     fi
 fi
 
@@ -116,7 +142,7 @@ gen_toml() {
         echo
         echo '[target]'
         echo 'os   = "linux"'
-        echo 'arch = "aarch64"'
+        echo "arch = \"$arch\""
         echo
         echo '[sysroot]'
         echo "path = \"$root/$sysroot\""
@@ -138,8 +164,16 @@ gen_toml_obj() {
         echo
         echo '[target]'
         echo 'os   = "linux"'
-        echo 'arch = "aarch64"'
+        echo "arch = \"$arch\""
     } > "$tmp/mc.toml"
+}
+
+# why this test cannot run on this target, or empty. `// skip-linux:` is the
+# whole operating system; `// skip-<arch>:` is this instruction set only.
+skip_reason() {
+    r=$(sed -n 's|^// skip-linux: *||p' "$1" | head -1)
+    [ -n "$r" ] && { echo "$r"; return; }
+    sed -n "s|^// skip-$arch: *||p" "$1" | head -1
 }
 
 # reads the test's headers into want_exit / want_out / has_out
@@ -171,7 +205,7 @@ run_one() {
     # non-executable binary, wrong architecture, docker/QEMU trouble) only says
     # "exit 127" or "exit 255" otherwise, which reads exactly like the program
     # itself returning the wrong code
-    got_out=$(docker run --rm --platform linux/arm64 -v "$root":/w -w /w "$img" \
+    got_out=$(docker run --rm --platform "$platform" -v "$root":/w -w /w "$img" \
               "/w/$outdir/$name" 2>"$tmp/err")
     got_exit=$?
     if [ "$got_exit" != "$want_exit" ]; then
@@ -241,7 +275,7 @@ link_run_one() {
     if [ "$native" = "1" ]; then
         got_out=$("$split/$name" 2>"$tmp/err")
     else
-        got_out=$(docker run --rm --platform linux/arm64 -v "$root":/w -v "$split":/out \
+        got_out=$(docker run --rm --platform "$platform" -v "$root":/w -v "$split":/out \
                   -w /w "$img" "/out/$name" 2>"$tmp/err")
     fi
     got_exit=$?
@@ -277,7 +311,7 @@ else
     for f in tests/*.mc; do
         [ -f "$f" ] || continue
         name=$(basename "$f" .mc)
-        why=$(sed -n 's|^// skip-linux: *||p' "$f" | head -1)
+        why=$(skip_reason "$f")
         if [ -n "$why" ]; then
             skipped="$skipped
   $name — $why"
@@ -292,7 +326,12 @@ else
     done
 
     # the no-libc case: no crt objects, no libc.a, entry point _start
-    if [ "$mode" = "build" ]; then
+    why=$(skip_reason tests/linux/070-nolibc.mc)
+    if [ -n "$why" ]; then
+        skipped="$skipped
+  070-nolibc — $why"
+        [ "$mode" = "build" ] && echo "070-nolibc — $why" >> "$split/skipped"
+    elif [ "$mode" = "build" ]; then
         build_one tests/linux/070-nolibc.mc 070-nolibc nolibc
     else
         run_one tests/linux/070-nolibc.mc 070-nolibc "$NOLIBC_ARGS"
@@ -301,11 +340,11 @@ fi
 
 rm -rf "$tmp"
 if [ "$mode" = "build" ]; then
-    echo "$((total - fails))/$total objects cross-compiled for linux/arm64 in $split"
+    echo "$((total - fails))/$total objects cross-compiled for linux/$arch in $split"
 else
-    echo "$((total - fails))/$total tests passed on linux/arm64"
+    echo "$((total - fails))/$total tests passed on linux/$arch"
 fi
 if [ -n "$skipped" ]; then
-    echo "skipped (macOS only):$skipped"
+    echo "skipped (not portable to this target):$skipped"
 fi
 [ "$fails" -eq 0 ]

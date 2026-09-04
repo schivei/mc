@@ -1,16 +1,16 @@
 // main.mc — transliteration of stage0/main.c: compiler driver.
 // usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules]
-//         [--backend=NAME|--exe] input.mc [-o output]
+//         [--backend=NAME|--exe] [--machine=NAME] input.mc [-o output]
 //        mc build [DIR] [--limits|--fix-limits]   ·   mc limits [DIR|FILE.mc]
 // The --dump-* modes write to stdout and do not generate the object.
 //
 // argv arrives as uptr: argv[i] is ld64(argv + i * 8) (there is no typed pointer).
 // Depends on arena.mc (str_eq, out_str, die, die2), on lex.mc (tok_init,
 // lex_init, dump_tokens), on parse.mc (parse_unit, fold), on ast.mc (dump_ast),
-// on gen_arm64.mc (gen_lower, gen_encode_all, gen_dump_asm), on macho.mc
-// (dump_syms, macho_write), on backend_exe.mc (backend_exe), on backend_elf.mc
-// (backend_elf), on hooks.mc (pass/backend/run_passes/backend_find) and on
-// user.mc (user_init).
+// on gen_walk.mc (gen_lower, gen_encode_all, gen_dump_asm), on machine_arm64.mc
+// (machine_arm64_init), on macho.mc (dump_syms, macho_write), on backend_exe.mc
+// (backend_exe), on backend_elf.mc (backend_elf), on hooks.mc (pass, backend,
+// run_passes, backend_find, machine, target) and on user.mc (user_init).
 //
 // M10: the driver calls user_init() before any parse (that is where the user's
 // modules register passes and backends), applies the passes to the AST and
@@ -29,6 +29,12 @@
 // for aarch64 Linux. It has no `--exe`-style alias: a Linux build always goes
 // through an external linker, chosen by `[target].os = "linux"` in mc.toml
 // (src/driver.mc, docs/build.md § Linux targets).
+//
+// M17 step B: `elf-obj-x86_64` is its x86-64 sibling, and `[target] os = "linux"
+// arch = "x86_64"` selects it. An object backend names the machine it needs
+// (`machine_use`), because the file format records the architecture too; the
+// dump modes never reach a backend, so `--machine=NAME` is what points them at
+// a machine other than the host's.
 
 #define M_COMPILE 0
 #define M_TOKENS  1
@@ -56,7 +62,7 @@ uptr opt_val(uptr a, uptr pre) {
 }
 
 void usage() {
-    out_str(2, "usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NAME|--exe] source.mc [-o out]\n");
+    out_str(2, "usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NAME|--exe] [--machine=NAME] source.mc [-o out]\n");
     drv_usage();
 }
 
@@ -64,11 +70,27 @@ i64 main(i64 argc, uptr argv) {
     uptr in = 0;
     uptr out = "out.o";
     uptr bname = "macho";
+    uptr mname = 0;                             // --machine=, for the dump modes
     i64 mode = M_COMPILE;
 
+    // M17: the machines the walker can drive, before any backend can lower.
+    // `machine()` also makes each one current, so the host machine is named
+    // again at the end; from there on the object backend in use picks its own
+    // (src/backend_elf.mc) and `--machine=` overrides for the dump modes.
+    machine_arm64_init();
+    machine_x86_64_init();
+    machine_use("arm64");
     backend("macho", &backend_macho);           // the built-ins, always registered
     backend("macho-exe", &backend_exe);
     backend("elf-obj", &backend_elf);
+    backend("elf-obj-x86_64", &backend_elf_x86);
+    // M17/M33: the (os, arch) pairs `mc build` accepts, with the backend each
+    // one writes objects and direct executables with. `0` as the executable
+    // backend says the target has none and always goes through [linker] --
+    // which is what Linux does. src/driver.mc reads nothing but this table.
+    target("macos", "aarch64", "macho", "macho-exe");
+    target("linux", "aarch64", "elf-obj", 0);
+    target("linux", "x86_64", "elf-obj-x86_64", 0);
     // M15: the lexer only reaches the bundle through this pointer, so
     // src/lexdump.mc and src/astdump.mc keep compiling without src/bundle.mc.
     // Registered here, before any lex_init -- including the one inside
@@ -97,9 +119,11 @@ i64 main(i64 argc, uptr argv) {
             i = i + 1;
             out = ld64(argv + i * 8);
         } else if (ld8(a) == '-') {
+            uptr mn = opt_val(a, "--machine=");
             uptr bn = opt_val(a, "--backend=");
-            if (bn == 0) die2("unknown option", a);
-            bname = bn;
+            if (mn)      mname = mn;
+            else if (bn) bname = bn;
+            else         die2("unknown option", a);
         }
         else if (in == 0)          in = a;
         else                       die2("duplicate entry", a);
@@ -118,6 +142,8 @@ i64 main(i64 argc, uptr argv) {
     // the entire core. Before any token is read, because the lexer is
     // incremental: the user's `#token`/`#rule` still apply to the whole source.
     user_init();
+    // after user_init, so a module can register the machine the flag names
+    if (mname) machine_use(mname);
     if (mode == M_TOKENS) { dump_tokens(); return 0; }
 
     i64 unit = parse_unit();
