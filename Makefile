@@ -5,6 +5,26 @@ MCSRC   = $(wildcard src/*.mc)
 TOOLSRC = $(wildcard tools/*.mc)
 BUDGET  = 3000
 
+# M37: which HOST this is. The C seed emits Mach-O and only Mach-O, so a Linux
+# host has no `mc0` at all: it bootstraps from a `mc` binary that already exists
+# (scripts/bootstrap-linux.sh, docs/guide/90-linux-host.md). Everything below
+# that names a compiler names one of these two variables instead, so the same
+# cross-check scripts run on both hosts.
+#
+#   REF   the compiler a cross-check compares AGAINST -- mc0 on macOS (the
+#         frozen C seed, the oracle), mc1l on Linux (the stage the seed built)
+#   MC    the compiler under test -- mc1 on macOS, mc2l on Linux
+HOST     := $(shell uname -s)
+HOSTARCH := $(shell uname -m | sed -e 's/^arm64$$/aarch64/' -e 's/^amd64$$/x86_64/')
+
+ifeq ($(HOST),Linux)
+REF = build/mc1l
+MC  = build/mc2l
+else
+REF = build/mc0
+MC  = build/mc1
+endif
+
 all: stage0
 
 stage0: build/mc0
@@ -19,14 +39,27 @@ build/mc0-san: $(SRC) stage0/mc.h
 	@mkdir -p build
 	$(CC) -std=c2x -O0 -g -fwrapv -fno-strict-aliasing -fsanitize=undefined,address -o $@ $(SRC)
 
+ifeq ($(HOST),Linux)
+# M37: on Linux the suite goes through `mc build` with [linker] = ld.lld and the
+# musl sysroot, and runs natively (scripts/test-linux.sh, native mode). It is
+# also what scripts/bootstrap-linux.sh ends with, which is why `check` below
+# does not list it a second time.
+test: $(MC)
+	scripts/test-linux.sh --arch $(HOSTARCH) $(MC)
+else
 test: build/mc0
 	scripts/test.sh build/mc0
+endif
 
-check-lex: build/mc0
-	scripts/check-lex.sh build/mc0
+# The reference on macOS is the frozen C lexer (mc0): the whole point is that
+# the .mc lexer agrees with it. On Linux there is no C seed, so the comparison
+# degrades to the compiled-in lexer against the same lexer built as its own
+# program -- still a build-and-run gate, no longer an oracle (M37).
+check-lex: $(REF)
+	scripts/check-lex.sh $(REF)
 
-check-ast: build/mc0
-	scripts/check-ast.sh build/mc0
+check-ast: $(REF)
+	scripts/check-ast.sh $(REF)
 
 mc1: build/mc1
 
@@ -35,11 +68,11 @@ build/mc1: build/mc0 $(MCSRC)
 	build/mc0 src/mc.mc -o build/mc1.o
 	scripts/link.sh build/mc1 build/mc1.o
 
-check-asm: build/mc0 build/mc1
-	scripts/check-asm.sh build/mc0 build/mc1
+check-asm: $(REF) $(MC)
+	scripts/check-asm.sh $(REF) $(MC)
 
-check-obj: build/mc0 build/mc1
-	scripts/check-obj.sh build/mc0 build/mc1
+check-obj: $(REF) $(MC)
+	scripts/check-obj.sh $(REF) $(MC)
 
 # M11: the standalone executable of the compiler itself, via --exe and no ld.
 # scripts/check-standalone.sh copies exactly this file into an empty directory.
@@ -58,14 +91,14 @@ bundle: build/mc1 $(TOOLSRC) tools/bundle.list
 # M15: the checked-in bundle is reproducible and up to date. Runs BEFORE
 # bootstrap, so a stale bundle fails with a message that says `make bundle`
 # instead of failing later as a mysterious fixed-point difference.
-check-bundle: build/mc1 $(TOOLSRC)
-	scripts/check-bundle.sh build/mc1
+check-bundle: $(MC) $(TOOLSRC)
+	scripts/check-bundle.sh $(MC)
 
 # M15: tests/mc/*.mc — #embed and #include <name>, which exist only in the
 # self-hosted compiler. Kept out of tests/*.mc so the mc0-vs-mc1 cross-checks
 # keep comparing compilers that are supposed to agree.
-check-mc: build/mc0 build/mc1
-	scripts/check-mc.sh build/mc1
+check-mc: $(MC)
+	scripts/check-mc.sh $(MC)
 
 # M15: `mc` alone in an empty directory is the whole toolchain. Needs
 # build/mc2.o as the byte-for-byte reference, which `make bootstrap` produces.
@@ -90,8 +123,8 @@ check-surface: build/mc0 build/mc1
 # M14: the TOML subset (src/toml.mc) through src/tomldump.mc, against
 # tests/toml/*.expect — well-formed files and the malformed ones, whose .expect
 # holds the exact file:line:col error.
-check-toml: build/mc1
-	scripts/check-toml.sh build/mc1
+check-toml: $(MC)
+	scripts/check-toml.sh $(MC)
 
 # M14: `mc build` end to end over tests/proj — [include].paths, [libs]/[externs],
 # the built-in --exe backend, an external linker with {out} {obj} {sdk} {libs},
@@ -137,8 +170,8 @@ test-linux-x86_64: build/mc1
 # still in stage0/mc.h and stage0/*.c. Fails when any of them is over 90% used,
 # which is the early warning that the C seed has to be raised before it stops
 # being able to compile src/mc.mc.
-check-limits: build/mc1
-	scripts/check-limits.sh build/mc1
+check-limits: $(MC)
+	scripts/check-limits.sh $(MC)
 
 # M12: the full example (examples/api) — a taught compiler with class/interface,
 # #dylib for libsqlite3, and the HTTP server. None of this goes through stage0:
@@ -182,7 +215,61 @@ site: build/mc1
 check-site: site
 	build/mcsite site --check
 
+# M37: the Linux chain. There is no mc0 here, so `check` starts from
+# scripts/bootstrap-linux.sh -- seed -> mc1l -> mc2l -> mc3l, cmp, golden, and
+# the suite run with the compiler that came out. SEED is optional: with none the
+# script takes build/mc-linux-<target> if it is there and otherwise downloads
+# the release asset and verifies its checksum.
+bootstrap-linux:
+	scripts/bootstrap-linux.sh $(SEED)
+
+build/mc2l:
+	scripts/bootstrap-linux.sh $(SEED)
+
+# an empty recipe on purpose: the file is written by the rule above, and without
+# one make would try its built-in "link an executable from a .o" rule (clang)
+build/mc1l: build/mc2l
+	@:
+
+# M37: cross-building `mc` itself for a Linux host, from macOS. Two configs,
+# two ELF executables, both statically linked against musl by ld.lld.
+mc-linux: build/mc1 sysroot-linux
+	build/mc1 build src --config src/mc.linux-aarch64.toml
+
+mc-linux-x86_64: build/mc1 sysroot-linux-x86_64
+	build/mc1 build src --config src/mc.linux-x86_64.toml
+
+# M37: the Linux HOST proof, run from macOS. Cross-builds both compilers and,
+# for each architecture, runs the whole Linux chain inside a container of that
+# platform: bootstrap-linux.sh to its fixed point, then the Linux `make check`
+# subset, then the cross proof that an object written on Linux for macOS is the
+# byte-for-byte object macOS writes for itself. Self-skips without Docker.
+check-linux-host: build/mc1
+	@if ! docker info > /dev/null 2>&1; then \
+	    echo "check-linux-host: SKIPPED (docker is not running; see docs/guide/90-linux-host.md)"; \
+	else \
+	    scripts/check-linux-host.sh; \
+	fi
+
+# M37: what a Linux host cannot prove, with the reason. Every line here is a
+# target `make check` runs on macOS and does not run on Linux.
+check-skipped:
+	@echo "budget/stage0: the C seed is macOS-first -- it emits Mach-O only (docs/bootstrap.md)"
+	@echo "bootstrap: SKIPPED (macOS chain: mc0 -> mc1 -> mc2 -> mc3; bootstrap-linux is the Linux one)"
+	@echo "test-exe: SKIPPED (--exe is the Mach-O direct-executable backend; Linux links with ld.lld)"
+	@echo "check-standalone: SKIPPED (its criterion is a signed Mach-O executable)"
+	@echo "check-surface: SKIPPED (its cases build taught compilers with --exe)"
+	@echo "check-build: SKIPPED (tests/proj targets macos/aarch64 through ld)"
+	@echo "check-minimal: SKIPPED (its ceilings are measured on the macOS backends)"
+	@echo "test-linux/test-linux-x86_64: SKIPPED (cross-compilation from macOS; here the suite is native)"
+	@echo "check-examples/check-lang/check-conc/check-desktop: SKIPPED (macOS dylibs and --exe)"
+	@echo "check-docs/site/check-site: SKIPPED (their samples are built with --exe)"
+
+ifeq ($(HOST),Linux)
+check: budget bootstrap-linux check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-limits check-skipped
+else
 check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-limits check-minimal test-linux test-linux-x86_64 check-examples check-lang check-conc check-desktop check-docs site check-site
+endif
 
 budget:
 	scripts/loc-budget.sh $(BUDGET)
@@ -190,6 +277,7 @@ budget:
 clean:
 	rm -rf build
 
+.PHONY: bootstrap-linux mc-linux mc-linux-x86_64 check-linux-host check-skipped
 .PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-limits sysroot-linux sysroot-linux-x86_64 test-linux test-linux-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal
 
 # M32: examples/desktop -- a GTK4 application written in mc, and the same

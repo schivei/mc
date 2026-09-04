@@ -102,7 +102,10 @@ if [ "$mode" != "build" ]; then
         echo "FAIL: ld.lld not in PATH (brew install lld)"
         exit 1
     fi
-    if [ "$mode" = "full" ] || [ "$native" = "0" ]; then
+    # M37: Docker is only needed when this machine cannot execute the binaries
+    # itself. On a Linux HOST of the target architecture -- which is where `make
+    # check` runs this script since M37 -- every test runs natively.
+    if [ "$native" = "0" ]; then
         if ! docker info >/dev/null 2>&1; then
             echo "FAIL: docker is not running"
             exit 1
@@ -117,6 +120,12 @@ if [ "$mode" != "build" ]; then
 fi
 
 root=$(pwd)
+# M37: MC_SYSROOT may be an absolute path outside the repository -- on Alpine
+# with musl-dev it is /usr/lib -- so it is not always root-relative.
+case "$sysroot" in
+    /*) sysabs="$sysroot" ;;
+    *)  sysabs="$root/$sysroot" ;;
+esac
 tmp="${TMPDIR:-/tmp}/test-linux.$$"
 mkdir -p "$tmp" "$outdir"
 fails=0
@@ -145,7 +154,7 @@ gen_toml() {
         echo "arch = \"$arch\""
         echo
         echo '[sysroot]'
-        echo "path = \"$root/$sysroot\""
+        echo "path = \"$sysabs\""
         echo
         echo '[linker]'
         echo 'cmd  = "ld.lld"'
@@ -205,8 +214,12 @@ run_one() {
     # non-executable binary, wrong architecture, docker/QEMU trouble) only says
     # "exit 127" or "exit 255" otherwise, which reads exactly like the program
     # itself returning the wrong code
-    got_out=$(docker run --rm --platform "$platform" -v "$root":/w -w /w "$img" \
-              "/w/$outdir/$name" 2>"$tmp/err")
+    if [ "$native" = "1" ]; then
+        got_out=$("$outdir/$name" 2>"$tmp/err")
+    else
+        got_out=$(docker run --rm --platform "$platform" -v "$root":/w -w /w "$img" \
+                  "/w/$outdir/$name" 2>"$tmp/err")
+    fi
     got_exit=$?
     if [ "$got_exit" != "$want_exit" ]; then
         echo "FAIL $name (exit $got_exit, expected $want_exit)"

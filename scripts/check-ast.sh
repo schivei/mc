@@ -19,7 +19,7 @@ if ! msg=$("$mc" src/astdump.mc -o "$obj" 2>&1); then
     echo "FAIL: compiling src/astdump.mc: $msg"
     exit 1
 fi
-if ! msg=$(scripts/link.sh "$astdump" "$obj" 2>&1); then
+if ! msg=$(scripts/link-host.sh "$astdump" "$obj" 2>&1); then
     echo "FAIL: linking $astdump: $msg"
     exit 1
 fi

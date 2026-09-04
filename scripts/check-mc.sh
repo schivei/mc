@@ -40,16 +40,23 @@ for f in tests/mc/*.mc; do
     if ! msg=$("$mc" "$f" -o "$obj" 2>&1); then
         echo "FAIL $name (compilation: $msg)"; fails=$((fails + 1)); continue
     fi
-    if ! msg=$(scripts/link.sh "$exe" "$obj" 2>&1); then
+    if ! msg=$(scripts/link-host.sh "$exe" "$obj" 2>&1); then
         echo "FAIL $name (link: $msg)"; fails=$((fails + 1)); continue
     fi
-    rm -f "$exe2"
-    if ! msg=$("$mc" --exe "$f" -o "$exe2" 2>&1); then
-        echo "FAIL $name (--exe: $msg)"; fails=$((fails + 1)); continue
+    # M37: `--exe` is the Mach-O direct-executable backend. On a Linux host it
+    # would cross-compile a macOS binary this machine cannot run, so the second
+    # half of each case is the .o + linker path only.
+    runs="$exe"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        rm -f "$exe2"
+        if ! msg=$("$mc" --exe "$f" -o "$exe2" 2>&1); then
+            echo "FAIL $name (--exe: $msg)"; fails=$((fails + 1)); continue
+        fi
+        runs="$exe $exe2"
     fi
 
     bad=0
-    for run in "$exe" "$exe2"; do
+    for run in $runs; do
         got_out=$("$run" 2>/dev/null)
         got_exit=$?
         if [ "$got_exit" != "$want_exit" ]; then
