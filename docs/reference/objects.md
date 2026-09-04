@@ -576,8 +576,26 @@ trampoline.
 content section — before the `.rela.*` block, which is indexed by variables computed at that point.
 Adding it moved no symbol: `llvm-readobj --symbols` of `src/mc_linux.mc`'s object is identical
 before and after, and the only difference in `--relocs` is that `.rela.text`/`.rela.data` are
-sections 6 and 7 instead of 5 and 6. `scripts/test-linux.sh` asserts the section's type, flags and
-size on every object and `PT_GNU_STACK` on every linked binary, for both architectures.
+sections 6 and 7 instead of 5 and 6.
+
+**What the two assertions in `scripts/test-linux.sh` are worth.** They are not the same kind of
+check, and the difference matters when reading a green run:
+
+| assertion | what it looks at | fails against a compiler that does not write the note? |
+|---|---|---|
+| `check_note` | the section's type, flags and size in **every object** | **yes** — this is the regression guard |
+| `check_stack` | `PT_GNU_STACK` present and not `X` in **every linked binary** | **no**, not with the linker this script uses |
+
+`scripts/test-linux.sh` and the CI legs link with `ld.lld`, which is one of the linkers in the third
+row of the table above: it writes `PT_GNU_STACK RW` whether or not the inputs carry the note.
+Measured here with `ld.lld` 22.1.7 on the same source compiled by the two compilers, one commit
+apart — the object without the section and the object with it — `llvm-readelf -lW` of the two
+linked binaries is **byte-identical**, `GNU_STACK ... RW`. So `check_stack` is an **end-state**
+assertion: it states, on whatever linker is in use, the property that actually matters (nothing mc
+links has an executable stack). Only `check_note` regresses if the backend stops emitting the
+section. The linkers where the note changes the outcome are the older binutils in the first two
+rows, which is where the exposure was measured and which this suite does not run against — the
+baseline here is the newest toolchains, and old binutils is a reproduction, not a supported target.
 
 ### No `.pdata`/`.xdata` (accepted M19 gap, M20 included)
 

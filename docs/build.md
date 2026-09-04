@@ -771,8 +771,9 @@ Section order in the file is null, the module's sections in creation order, `.no
 one `.rela.X` per section that has relocations, `.symtab`, `.strtab`, `.shstrtab` — so a module
 section's index is its ELF section index minus one, which is what lets `st_shndx` be `sym_sect`
 unchanged. `.note.GNU-stack` is empty, `SHT_PROGBITS` with `sh_flags = 0`, and comes after every
-module section for exactly that reason; without it a linker assumes the object needs an executable
-stack (`docs/reference/objects.md` § `.note.GNU-stack` has the measurements). Symbols
+module section for exactly that reason; without it an older linker assumes the object needs an
+executable stack — the newest ones no longer infer anything from its absence
+(`docs/reference/objects.md` § `.note.GNU-stack` has the measurements, linker by linker). Symbols
 come out in `macho.mc`'s stable partition (locals, defined globals, undefined), which is also
 what ELF requires (`sh_info` = index of the first non-local). Relocation entries are sorted by
 ascending offset, the ELF convention. On aarch64 every `r_addend` is 0 — the encoder leaves the

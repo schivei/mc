@@ -141,10 +141,12 @@ notes=0                                  # objects whose .note.GNU-stack is righ
 stacks=0                                 # binaries whose PT_GNU_STACK is not X
 
 # post-M41 review: every ELF object mc writes carries an empty `.note.GNU-stack`
-# with sh_flags = 0. An object WITHOUT it tells the toolchain nothing, and the
-# toolchain then assumes the worst: GNU ld drops PT_GNU_STACK entirely from a
-# link whose inputs all lack the section, and the kernel falls back to its own
-# default for the architecture. Asserted per object, on both architectures.
+# with sh_flags = 0. An object WITHOUT it tells the toolchain nothing, and an
+# older toolchain then assumes the worst: GNU ld 2.35 answers PT_GNU_STACK RWE
+# and GNU ld 2.38 drops the header entirely, leaving the kernel's own default
+# (docs/reference/objects.md has the table). This is THE REGRESSION GUARD for
+# that fix: it fails against a compiler whose ELF backend does not write the
+# section. Asserted per object, on both architectures.
 check_note() {                           # object, test name
     if [ -n "$readobj" ]; then           # the whole claim: type, flags and size
         got=$("$readobj" --sections "$1" 2>/dev/null | awk '
@@ -169,8 +171,13 @@ check_note() {                           # object, test name
     return 0
 }
 
-# and the consequence, on the linked program: the header has to be there and it
-# has to be RW, never RWE.
+# and the END STATE, on the linked program: the header has to be there and it has
+# to be RW, never RWE. This one is NOT a regression guard for the note. Both this
+# script and CI link with ld.lld, which writes PT_GNU_STACK RW whether or not the
+# inputs carry the section -- measured with ld.lld 22.1.7, where the program
+# headers of the same program built by the two compilers, one commit apart, are
+# byte-identical. It asserts the property that matters on the linker actually in
+# use; check_note above is what catches the backend dropping the section.
 check_stack() {                          # binary, test name
     [ -n "$readelf" ] || return 0
     got=$("$readelf" -lW "$1" 2>/dev/null | awk '$1 == "GNU_STACK" { print $(NF - 1) }')
