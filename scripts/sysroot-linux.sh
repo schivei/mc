@@ -20,7 +20,11 @@ arch="aarch64"
 dir=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --arch)   arch="$2"; shift 2 ;;
+        --arch)
+            [ -n "$2" ] && [ "${2#-}" = "$2" ] \
+                || { echo "sysroot-linux: --arch needs a value (aarch64 | x86_64)" >&2; exit 1; }
+            arch="$2"; shift 2
+            ;;
         --arch=*) arch="${1#--arch=}"; shift ;;
         -f)       FORCE=1; shift ;;
         *)        dir="$1"; shift ;;

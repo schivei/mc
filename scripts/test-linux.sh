@@ -58,7 +58,11 @@ arch="aarch64"
 mc=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --arch)   arch="$2"; shift 2 ;;
+        --arch)
+            [ -n "$2" ] && [ "${2#-}" = "$2" ] \
+                || { echo "FAIL: --arch needs a value (aarch64 | x86_64)" >&2; exit 1; }
+            arch="$2"; shift 2
+            ;;
         --arch=*) arch="${1#--arch=}"; shift ;;
         --build-only|--run-only)
             [ -n "$2" ] || { echo "FAIL: $1 needs a directory" >&2; exit 1; }

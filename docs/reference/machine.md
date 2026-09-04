@@ -243,7 +243,7 @@ carry a `// skip-x86_64:` header with the reason, which `scripts/test-linux.sh -
 prints.
 
 **Verification.** Every distinct instruction the machine emitted while compiling `src/mc.mc` for
-x86-64 — 974 of them — was fed back through `llvm-mc -triple=x86_64-linux-musl` and came out
+x86-64 — 948 of them — was fed back through `llvm-mc -triple=x86_64-linux-musl` and came out
 byte-identical; the relocation shapes (`R_X86_64_PC32` at instruction + 3 with addend −4,
 `R_X86_64_PLT32` at instruction + 1 with addend −4) match `clang --target=x86_64-linux-musl -c` of
 equivalent C, field for field. The suite itself runs: `make test-linux-x86_64`.
@@ -264,7 +264,7 @@ On arm64 these map to `fmov/fadd/fsub/fmul/fdiv/fcmp/fcvt/scvtf/ucvtf/fcvtzs/fcv
 d/fneg/fabs/fsqrt`; a constant materialises through `movz`/`movk` into an `x` register and then
 `fmov d, x`, so there are no literal pools and no relocations. On x86-64 they map to SSE2
 (`addsd`, `mulsd`, `ucomisd`, `cvtsi2sd`, `cvttsd2si`, `sqrtsd`). Adding them appends slots and
-makes the contract version 2.
+makes the contract version 3.
 
 ## 4. `#machine` — naming the instruction for a task — specified, not implemented
 

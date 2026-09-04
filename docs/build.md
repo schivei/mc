@@ -744,7 +744,7 @@ Verified field by field against `clang --target=aarch64-linux-musl -c` of equiva
 The addend is −4 because a `rel32` counts from the **end** of its own field, which is four bytes
 past `r_offset`; that is exactly what `clang --target=x86_64-linux-musl -c` emits for the same
 constructs, offsets and addends included. Every distinct instruction the machine produced while
-compiling `src/mc.mc` for x86-64 — 974 of them — re-assembles byte-identically under
+compiling `src/mc.mc` for x86-64 — 948 of them — re-assembles byte-identically under
 `llvm-mc -triple=x86_64-linux-musl`.
 
 Sections, symbol names and the symbol partition are unchanged: `.text`/`.rodata`/`.data`/`.bss`,
