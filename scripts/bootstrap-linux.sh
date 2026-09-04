@@ -138,8 +138,11 @@ fails=0
 
 step() {
     desc="$1"; shift
-    if ! out=$("$@" 2>&1); then
-        echo "FAIL: $desc (exit $?)" >&2
+    # rc is read straight after the command: inside an `if ! cmd` branch `$?` is
+    # the status of the negated test (always 0), never the command's own
+    out=$("$@" 2>&1); rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "FAIL: $desc (exit $rc)" >&2
         echo "--- command: $* ---" >&2
         printf '%s\n' "$out" >&2
         exit 1
