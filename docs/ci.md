@@ -4,10 +4,11 @@ Five workflows live in `.github/workflows/`. Two constraints shape them.
 
 **The C seed is macOS-first, and only the seed.** `stage0/*.c` emits Mach-O and only Mach-O, so
 everything that compares the `.mc` compiler against that frozen oracle has to run on `macos-15`.
-Since M37 the compiler *itself* runs on Linux too: `ci.yml` cross-builds `mc` for
-`linux/arm64` and `linux/x86_64` on the macOS job and two more jobs bootstrap each of those
-binaries to its own fixed point on a real Linux CPU. That is why `ci.yml` is five jobs and why the
-compiling job is still `macos-15`.
+Since M37 the compiler *itself* runs on Linux too: `ci.yml` cross-*compiles* `mc` for
+`linux/arm64` and `linux/x86_64` on the macOS job — as far as an ELF object, which is all a
+runner with no linker can do — and two more jobs link each object and bootstrap the result to its
+own fixed point on a real Linux CPU. That is why `ci.yml` is five jobs and why the compiling job
+is still `macos-15`.
 
 **Development happens on pull requests, and every merged pull request cuts a version.** There is
 no `VERSION` file and no release day: merging is what creates the tag, and the tag is what builds
@@ -19,7 +20,7 @@ the release. The contributor-facing half of that is
 | `ci.yml` | pull requests to `main`, push to `main` | `macos-15` + `ubuntu-24.04-arm` + `ubuntu-latest` | `make check`, the Linux suite — once per architecture — in two halves, and `mc` bootstrapped on each Linux host |
 | `autotag.yml` | push to `main` | `ubuntu-24.04` | if the push is a merged pull request: computes the next version from its labels, pushes the annotated tag `vX.Y.Z` and starts `release.yml` |
 | `tag.yml` | manual | `ubuntu-24.04` | the escape hatch: validates `X.Y.Z` against the newest tag, pushes the tag and starts `release.yml` |
-| `release.yml` | dispatched by `autotag.yml`/`tag.yml`, tag `v*`, or manual | `macos-15` | builds `mc` for macOS and cross-builds it for the two Linux hosts, verifies, packages all three, publishes the GitHub Release |
+| `release.yml` | dispatched by `autotag.yml`/`tag.yml`, tag `v*`, or manual | `macos-15` + `ubuntu-24.04-arm` + `ubuntu-latest` | builds `mc` for macOS, cross-compiles the two Linux objects, links and bootstraps each on its own architecture, packages all three, publishes the GitHub Release |
 | `site.yml` | push to `main` touching `site/**` or `docs/**`, or manual | `macos-15` + `ubuntu-24.04` | renders `docs/` with `mcsite` and deploys it to GitHub Pages (<https://minicompiler.dev>) |
 
 All five set `concurrency` groups and per-job `timeout-minutes`, and each declares the narrowest
@@ -102,13 +103,18 @@ still have no Docker to run a Linux binary in; and the half of the Linux work th
 here — cross-compiling to ELF — needs no linker at all. The Linux suite runs for real on the job
 below.
 
-Two artifacts come out:
+Five artifacts come out:
 
 - `mc-macos-arm64` — `build/mc-exe`, the self-hosted, `ld`-free compiler `make check` already
   builds for `check-standalone`. GitHub's artifact zip does not carry the executable bit, so a
   download needs `chmod +x mc-exe` (and, off a browser download, `xattr -d com.apple.quarantine`).
-- `linux-arm64-objects` and `linux-x86_64-objects` — the inputs to the two jobs below. The
+- `linux-arm64-objects` and `linux-x86_64-objects` — the inputs to the two suite jobs below. The
   cross-compilation runs twice, once per `--arch`, and neither run needs a linker or Docker.
+- `mc-linux-hosts` — `build/mc-linux-arm64.o` and `build/mc-linux-x86_64.o`, `mc` itself
+  cross-compiled for each Linux host by `make mc-linux-obj` / `make mc-linux-x86_64-obj`. Objects,
+  not executables, for the same reason: no linker and no sysroot here (§ M37).
+- `mc2-macos-arm64` — `build/mc2.o`, the reference the Linux host jobs compare their own Mach-O
+  output against.
 
 ### The two-stage Linux design
 
@@ -324,8 +330,9 @@ summary says to start `release.yml` by hand (Actions -> Release -> Run workflow 
 
 Triggered by pushing a tag matching `v*`, or manually with the tag as an input.
 
-Job `build` is a matrix with a single `include` entry today, `{ os: macos-15, target:
-macos-arm64 }`. It checks out the tag and **derives the version from the tag name**: `v0.1.1`
+Job `build` is a matrix with a single `include` entry, `{ os: macos-15, target:
+macos-arm64 }` — the only runner with a `mc` on it, and therefore the only one that compiles
+anything. It checks out the tag and **derives the version from the tag name**: `v0.1.1`
 becomes `0.1.1`, and the shape is validated by `scripts/next-version.sh`, the one place that knows
 what a version looks like. There is nothing to cross-check it against — the tag *is* the version.
 Then:
@@ -342,17 +349,24 @@ The output is built directly as `dist/mc` on purpose: the identifier inside an a
 the output file's basename (`docs/bootstrap.md` § M11), so the binary a user installs as `mc` has
 to have been *written* as `mc`.
 
-Job `build-future-hosts` is `if: false`. It holds the four **host** builds that are not possible
-yet — `linux-arm64`, `linux-x86_64`, `windows-arm64`, `windows-x86_64` — and turns on when **`mc`
-itself runs on Linux and Windows**. What blocks each one is written next to it: `mc` is a macOS
-arm64 program (`src/driver.mc` uses `_NSGetEnviron`, which is libSystem-only — `docs/build.md`
-§ Limits of M14, M15 and M16), and Windows additionally waits for the COFF writer of M19/M20. Note
-what these are not: M16 and M17 gave Linux arm64 and Linux x86-64 *targets*, which `ci.yml`
-already runs; a *host* is a different milestone. The milestone that flips `if: false` to `if: true` is
-**"mc hosted on Linux/Windows"** — that one name covers all four entries, and until it lands the
-job is skipped without allocating a runner.
+The same job then cross-compiles `mc` for the two Linux hosts — `make mc-linux-obj` and `make
+mc-linux-x86_64-obj`, two ELF objects — and uploads them as `mc-linux-objects`. It stops at the
+object because linking needs `ld.lld` and a musl sysroot, and this runner has neither (§ M37).
 
-Job `publish` collects the artifacts, takes the **tag's annotation as the release body**, appends
+Job `build-linux` is the other half, a two-entry matrix on `ubuntu-24.04-arm` and `ubuntu-latest`.
+Each entry downloads the object for its architecture, installs `lld` and `musl-dev`, links with
+`scripts/link-linux.sh` under `MC_SYSROOT=/usr/lib/<arch>-linux-musl`, checks that `mc --host`
+says `linux/<arch>`, and then runs `scripts/bootstrap-linux.sh` with the binary being shipped:
+seed → `mc1l` → `mc2l` → `mc3l`, `cmp`, the golden, and the whole suite natively. That is the
+Linux equivalent of the macOS job's `scripts/test.sh dist/mc`, and stronger — the artifact is only
+packaged once it has reproduced itself. It uploads `release-linux-arm64` / `release-linux-x86_64`.
+
+Job `build-future-hosts` is `if: false`. Since M37 it holds only the two Windows **host** builds —
+`windows-arm64`, `windows-x86_64` — and turns on when **`mc` itself runs on Windows**. Note what
+these are not: M19 gave a Windows arm64 *target*, which is a different thing from a *host*.
+
+Job `publish` needs both `build` and `build-linux`, collects the three `release-*` artifacts,
+takes the **tag's annotation as the release body**, appends
 an install snippet and the checksums, and calls `gh release create --verify-tag`. A version with a
 `-` suffix (`0.2.0-rc1`) is published as a pre-release. Only this job has `contents: write`.
 
@@ -499,9 +513,11 @@ There is no procedure. **Merging a pull request is the procedure.**
 2. The owner merges it, by squash.
 3. `autotag.yml` finds the pull request behind the squash commit, reads its labels, computes the
    next version from the newest reachable tag, pushes `vX.Y.Z`, and dispatches `release.yml`.
-4. `release.yml` builds `mc`, verifies the signature, runs the whole suite with the binary being
-   shipped, packages it, and publishes the Release with `mc-X.Y.Z-macos-arm64.tar.gz` and its
-   `.sha256`.
+4. `release.yml` builds `mc` on macOS, verifies the signature and runs the whole suite with the
+   binary being shipped; cross-compiles the two Linux objects and, on a runner of each
+   architecture, links them and bootstraps each to its fixed point. It publishes the Release with
+   `mc-X.Y.Z-macos-arm64.tar.gz`, `mc-X.Y.Z-linux-arm64.tar.gz`, `mc-X.Y.Z-linux-x86_64.tar.gz`
+   and a `.sha256` for each.
 
 If step 3's dispatch fails, its job summary says so — the tag is pushed either way, and
 Actions -> Release -> Run workflow -> the tag finishes the job.
@@ -583,8 +599,8 @@ object was produced" but "the compiler ran here and reproduced itself".
 
 | job | runner | what it does |
 |---|---|---|
-| `mc on linux/arm64 host` | `ubuntu-24.04-arm` | downloads the cross-built `build/mc-linux-arm64` and the macOS `build/mc2.o`, installs `lld` + `musl-dev`, runs `make check SEED=…` and the cross proof |
-| `mc on linux/x86_64 host` | `ubuntu-latest` | the same with `build/mc-linux-x86_64` |
+| `mc on linux/arm64 host` | `ubuntu-24.04-arm` | downloads the cross-compiled `build/mc-linux-arm64.o` and the macOS `build/mc2.o`, installs `lld` + `musl-dev`, **links** the object, runs `make check SEED=…` and the cross proof |
+| `mc on linux/x86_64 host` | `ubuntu-latest` | the same with `build/mc-linux-x86_64.o` |
 
 `make check` on a Linux host starts with `scripts/bootstrap-linux.sh` — seed → `mc1l` → `mc2l` →
 `mc3l`, `cmp`, the golden — and then runs the portable cross-check subset; `check-skipped` prints
@@ -597,13 +613,56 @@ The **cross proof** is the last step of each job: the Linux-hosted compiler comp
 and the Mach-O object it writes is `cmp`-equal to `build/mc2.o`, the artifact the macOS job
 uploaded. Same compiler, different host, byte-identical output.
 
-The macOS job gained one step to feed them — `Cross-build mc for linux/arm64 and linux/x86_64`,
-which installs `lld` from Homebrew, populates the two musl sysroots and runs `mc build` on
-`src/mc.linux-aarch64.toml` and `src/mc.linux-x86_64.toml` — and two artifacts:
-`mc-linux-hosts` and `mc2-macos-arm64`.
+### Why the macOS job ships an object and not a binary
 
-`release.yml` packages the same two binaries with `scripts/release-assets.sh`, so a release now
-carries three tarballs and three checksums:
+The obvious shape — cross-**build** both executables on `macos-15` and hand the Linux runners a
+ready binary — does not work, and the reason is worth writing down because it cost a red CI run
+(run `33835720493`, job `make check (macOS arm64)`):
+
+```
+sysroot-linux: docker is not running; cannot populate build/sysroot/linux-aarch64
+make: *** [sysroot-linux] Error 1
+```
+
+Linking an `os = "linux"` target needs `ld.lld` and a musl sysroot. The sysroot is
+`crt1.o crti.o crtn.o libc.a` copied out of an `alpine:3` container by
+`scripts/sysroot-linux.sh`, and **GitHub's `macos-15` runners have no Docker**. There is no
+Homebrew formula that ships those files either, so there is nothing to install instead.
+
+So the macOS job stops one step earlier, where nothing but `mc` is needed. `src/driver.mc`'s
+`drv_entry` returns immediately for `kind = "obj"` — before the `[linker]` requirement and before
+`{sysroot}` is ever substituted — which is why
+`src/mc.linux-aarch64-obj.toml` and `src/mc.linux-x86_64-obj.toml` have neither section:
+
+```sh
+make mc-linux-obj             # build/mc-linux-arm64.o    ELF64 relocatable, aarch64
+make mc-linux-x86_64-obj      # build/mc-linux-x86_64.o   ELF64 relocatable, x86-64
+```
+
+and each Linux job links its own object, against its own distribution's musl, with one command:
+
+```sh
+MC_SYSROOT=/usr/lib/aarch64-linux-musl \
+    scripts/link-linux.sh build/mc-linux-arm64 build/mc-linux-arm64.o
+```
+
+`scripts/link-linux.sh` only reaches for `scripts/sysroot-linux.sh`, and therefore Docker, when
+one of the four files is missing; under `MC_SYSROOT` they are all there, so it runs `ld.lld` and
+nothing else. This is the same split `scripts/test-linux.sh --build-only` / `--run-only` already
+uses for the suite, applied to the compiler itself. **Nothing is installed on the macOS runner**,
+which is what the paragraph about job `check` claims and is now true again.
+
+The object is not a different artifact from the executable's: `src/mc.linux-aarch64.toml` writes
+exactly the same `build/mc-linux-arm64.o` on its way to the link step — same entry, same backend,
+same compiler — and `cmp` says so. The `-obj` configs are the CI half; the executable configs
+stay for local use, where Docker is available and `make mc-linux` does the whole thing.
+
+### The release
+
+`release.yml` has the same split: `build` (macOS) cross-compiles the two objects and uploads
+`mc-linux-objects`; `build-linux`, a two-entry matrix on `ubuntu-24.04-arm` and `ubuntu-latest`,
+links each one, proves it with `scripts/bootstrap-linux.sh`, and packages it with
+`scripts/release-assets.sh`. A release therefore carries three tarballs and three checksums:
 
 ```
 mc-<VER>-macos-arm64.tar.gz
@@ -612,7 +671,7 @@ mc-<VER>-linux-x86_64.tar.gz
 ```
 
 `build-future-hosts` still exists with `if: false`, now holding only the two Windows entries,
-which wait for the COFF writer of M19/M20.
+which wait for a Windows *host* build of `mc` (M19 gave the Windows arm64 *target*).
 
 `scripts/bootstrap-linux.sh` downloads exactly those assets when a Linux machine has no seed: the
 release is not just a convenience, it is the entry point of the Linux chain

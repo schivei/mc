@@ -232,12 +232,25 @@ build/mc1l: build/mc2l
 	@:
 
 # M37: cross-building `mc` itself for a Linux host, from macOS. Two configs,
-# two ELF executables, both statically linked against musl by ld.lld.
+# two ELF executables, both statically linked against musl by ld.lld. The
+# sysroot prerequisite is what needs Docker: scripts/sysroot-linux.sh copies the
+# four musl files out of alpine:3.
 mc-linux: build/mc1 sysroot-linux
 	build/mc1 build src --config src/mc.linux-aarch64.toml
 
 mc-linux-x86_64: build/mc1 sysroot-linux-x86_64
 	build/mc1 build src --config src/mc.linux-x86_64.toml
+
+# M37: the same cross-build stopped one step earlier -- `kind = "obj"`, so no
+# [linker], no sysroot, no Docker and no ld.lld. This is what CI runs on the
+# macOS runner (docs/ci.md § M37); the object is linked on the Linux runner,
+# which has its own musl files. The object is byte for byte the one the two
+# targets above write on their way to the executable.
+mc-linux-obj: build/mc1
+	build/mc1 build src --config src/mc.linux-aarch64-obj.toml
+
+mc-linux-x86_64-obj: build/mc1
+	build/mc1 build src --config src/mc.linux-x86_64-obj.toml
 
 # M37: the Linux HOST proof, run from macOS. Cross-builds both compilers and,
 # for each architecture, runs the whole Linux chain inside a container of that
@@ -277,7 +290,8 @@ budget:
 clean:
 	rm -rf build
 
-.PHONY: bootstrap-linux mc-linux mc-linux-x86_64 check-linux-host check-skipped
+.PHONY: bootstrap-linux mc-linux mc-linux-x86_64 mc-linux-obj mc-linux-x86_64-obj
+.PHONY: check-linux-host check-skipped
 .PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-limits sysroot-linux sysroot-linux-x86_64 test-linux test-linux-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal
 
 # M32: examples/desktop -- a GTK4 application written in mc, and the same

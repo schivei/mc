@@ -995,11 +995,21 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
      `mc.toml` vs the new `mc.linux.toml` -- and by `--include=` for the single-file CLI.
      `examples/api/mc.linux.toml` links SQLite statically and is documented as NOT exercised
      (the musl sysroot is `apk add musl-dev`, four files, no SQLite).
-  5. **CI/releases.** `ci.yml`: the macOS job cross-builds both Linux compilers and uploads them
-     with `build/mc2.o`; two new jobs, `mc on linux/arm64 host` (ubuntu-24.04-arm) and
-     `mc on linux/x86_64 host` (ubuntu-latest), run `make check SEED=...` plus the cross proof.
-     `release.yml` packages the two Linux tarballs alongside the macOS one; `build-future-hosts`
-     keeps `if: false` with only the Windows entries.
+  5. **CI/releases**, in the same "compile here, link there" shape the suite legs already use --
+     GitHub's `macos-15` runners have **no Docker**, so the musl sysroot (four files out of
+     `alpine:3`) cannot exist there and neither can a link. `ci.yml`: the macOS job cross-COMPILES
+     both Linux compilers to ELF objects (`make mc-linux-obj` / `mc-linux-x86_64-obj`, the new
+     `src/mc.linux-{aarch64,x86_64}-obj.toml` with `kind = "obj"` -- `drv_entry` returns before
+     the `[linker]` requirement, so neither config has one) and uploads them with `build/mc2.o`;
+     the two jobs `mc on linux/arm64 host` (ubuntu-24.04-arm) and `mc on linux/x86_64 host`
+     (ubuntu-latest) link the object under `MC_SYSROOT=/usr/lib/<arch>-linux-musl` with
+     `scripts/link-linux.sh` (which runs `ld.lld` and nothing else when the four files are there),
+     then run `make check SEED=...` plus the cross proof. The object is byte-identical to the one
+     the executable configs write, so `make mc-linux` stays the local road. `release.yml` has the
+     same split: `build` (macOS) uploads `mc-linux-objects`, `build-linux` (a two-entry matrix on
+     the two Ubuntu runners) links each object, proves it with `scripts/bootstrap-linux.sh` and
+     packages it, and `publish` needs both -- three tarballs. `build-future-hosts` keeps
+     `if: false` with only the Windows entries.
   — Acceptance, measured here: macOS `make check` green end to end (RC 0) -- `test` 32/32,
   `check-lex`/`check-ast`/`check-asm` 80/80, `check-obj` **32/32 identical to the frozen seed**,
   `bootstrap` at a fixed point (`mc2.o == mc3.o`, `--dump-asm` diff empty), `check-surface` 32/32,

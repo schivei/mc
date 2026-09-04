@@ -1,0 +1,43 @@
+# mc.linux-aarch64-obj.toml — the CI half of src/mc.linux-aarch64.toml (M37,
+# docs/ci.md § M37, docs/guide/90-linux-host.md § 4).
+#
+#   build/mc1 build src --config src/mc.linux-aarch64-obj.toml
+#   -> build/mc-linux-arm64.o        an ELF64 relocatable object for aarch64
+#
+# This config stops one step earlier than its sibling: `kind = "obj"` means the
+# driver compiles and returns, so there is no [linker] and no [sysroot] and
+# nothing but `mc` itself has to be installed. That is exactly what a GitHub
+# macOS runner can do -- it has no Docker to populate a musl sysroot out of
+# alpine:3 and no ld.lld to link with. The object is uploaded as an artifact and
+# LINKED on the Linux runner, which has its distribution's own musl files
+# (`apt-get install musl-dev`) and its own lld:
+#
+#   MC_SYSROOT=/usr/lib/aarch64-linux-musl \
+#       scripts/link-linux.sh build/mc-linux-arm64 build/mc-linux-arm64.o
+#
+# It is the same split the test suite already uses (scripts/test-linux.sh
+# --build-only on macOS, --run-only on Linux), and the object is byte for byte
+# the one src/mc.linux-aarch64.toml writes on the way to its executable: same
+# entry, same backend, same compiler.
+#
+# Use src/mc.linux-aarch64.toml locally, where Docker is available and the whole
+# executable comes out in one command (`make mc-linux`).
+#
+# Every path below is relative to THIS FILE's directory (src/), which is why
+# they all start with `../`.
+
+[project]
+name  = "mc-linux-arm64"
+entry = "mc_linux.mc"
+out   = "../build/mc-linux-arm64.o"
+kind  = "obj"
+
+[target]
+os   = "linux"
+arch = "aarch64"
+
+# The compiler compiling itself is the biggest source in the repository; at the
+# default 0.25 several tables double mid-build. 1.0 keeps the whole build inside
+# the first reserve (`mc limits src --config src/mc.linux-aarch64-obj.toml`).
+[limits]
+tolerance = 1.0

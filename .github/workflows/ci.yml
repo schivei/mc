@@ -72,29 +72,34 @@ jobs:
       - name: Cross-compile the suite for linux/x86_64
         run: scripts/test-linux.sh --arch x86_64 --build-only build/linux-objs-x86_64 build/mc1
 
-      # M37: `mc` hosted on Linux. The two binaries are CROSS-BUILT here -- the
-      # ELF writers and the two machines are the same compiler -- and the jobs
-      # below run them on real Linux CPUs: bootstrap to a fixed point and the
-      # Linux `make check` subset. ld.lld and the musl sysroot are the only
-      # extra ingredients, and Homebrew has both (the sysroot needs Docker,
-      # which these runners do not have, so it comes from `brew install musl`
-      # when it is there and the job self-skips otherwise).
-      - name: Cross-build mc for linux/arm64 and linux/x86_64
+      # M37: `mc` hosted on Linux. What is cross-built HERE is the two ELF
+      # OBJECTS, not the executables: `kind = "obj"` in the two `*-obj.toml`
+      # configs makes the driver compile and return, so no [linker], no musl
+      # sysroot and no `ld.lld` take part -- which is the point, because this
+      # runner has none of them. The sysroot is four musl files copied out of
+      # an `alpine:3` container by scripts/sysroot-linux.sh, and GitHub's macOS
+      # runners have no Docker to run that container in; there is no Homebrew
+      # formula that ships those files either. So the split is the same one the
+      # test suite above already uses: compile on macOS, link and run on the
+      # Linux runner, which has its distribution's own musl (`apt-get install
+      # musl-dev`) and its own lld.
+      - name: Cross-compile mc for linux/arm64 and linux/x86_64
         run: |
           set -eu
-          if ! command -v ld.lld >/dev/null 2>&1; then
-            brew install lld || true
-            for cand in /opt/homebrew/opt/lld/bin/ld.lld /usr/local/opt/lld/bin/ld.lld; do
-              [ -x "$cand" ] && sudo ln -sf "$cand" /usr/local/bin/ld.lld && break
-            done
+          make mc-linux-obj
+          make mc-linux-x86_64-obj
+          ls -l build/mc-linux-arm64.o build/mc-linux-x86_64.o
+          for obj in build/mc-linux-arm64.o build/mc-linux-x86_64.o; do
+            [ -s "$obj" ] || { echo "::error::$obj was not produced"; exit 1; }
+          done
+          # A wrong machine here would only surface on the Linux runner, far
+          # from its cause. `file` is not essential, so its absence is not a
+          # failure -- a missing object above already is.
+          if command -v file >/dev/null 2>&1; then
+            file build/mc-linux-arm64.o build/mc-linux-x86_64.o
+            file build/mc-linux-arm64.o  | grep -q 'ELF 64-bit.*aarch64'
+            file build/mc-linux-x86_64.o | grep -q 'ELF 64-bit.*x86-64'
           fi
-          ld.lld --version
-          make sysroot-linux
-          make sysroot-linux-x86_64
-          build/mc1 build src --config src/mc.linux-aarch64.toml
-          build/mc1 build src --config src/mc.linux-x86_64.toml
-          ls -l build/mc-linux-arm64 build/mc-linux-x86_64
-          file build/mc-linux-arm64 build/mc-linux-x86_64 || true
 
       - name: Upload the self-hosted compiler
         uses: actions/upload-artifact@v4
@@ -112,13 +117,16 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # The two objects the Linux host jobs link. Named for what they become,
+      # not for what they are: `mc-linux-hosts` holds the compiler for each
+      # Linux host, one `ld.lld` invocation short of being runnable.
       - name: Upload the cross-built Linux compilers
         uses: actions/upload-artifact@v4
         with:
           name: mc-linux-hosts
           path: |
-            build/mc-linux-arm64
-            build/mc-linux-x86_64
+            build/mc-linux-arm64.o
+            build/mc-linux-x86_64.o
           if-no-files-found: error
           retention-days: 14
 
@@ -263,8 +271,8 @@ jobs:
         run: scripts/test-linux.sh --arch x86_64 --run-only build/linux-objs-x86_64
 
   # M37: `mc` HOSTED on Linux. Not "a Linux target built from macOS" -- the
-  # binary downloaded here is the compiler, and it compiles itself to a fixed
-  # point on this machine before anything else runs. See
+  # object downloaded here is the compiler; this job links it and it compiles
+  # itself to a fixed point on this machine before anything else runs. See
   # docs/guide/90-linux-host.md.
   linux-arm64-host:
     name: mc on linux/arm64 host
@@ -275,7 +283,7 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
-      - name: Download the cross-built Linux compilers
+      - name: Download the cross-compiled Linux objects
         uses: actions/download-artifact@v4
         with:
           name: mc-linux-hosts
@@ -302,6 +310,19 @@ jobs:
           ld.lld --version
           ls -l /usr/lib/aarch64-linux-musl/crt1.o /usr/lib/aarch64-linux-musl/libc.a
 
+      # The half the macOS runner could not do. With the four musl files already
+      # in MC_SYSROOT, scripts/link-linux.sh runs `ld.lld` and nothing else --
+      # it only calls scripts/sysroot-linux.sh (and therefore Docker) when one
+      # of them is missing.
+      - name: Link the cross-compiled object into the Linux compiler
+        env:
+          MC_SYSROOT: /usr/lib/aarch64-linux-musl
+        run: |
+          set -eu
+          scripts/link-linux.sh build/mc-linux-arm64 build/mc-linux-arm64.o
+          chmod 755 build/mc-linux-arm64
+          ls -l build/mc-linux-arm64
+
       - name: What this binary says it is
         run: |
           chmod 755 build/mc-linux-arm64
@@ -326,8 +347,8 @@ jobs:
           echo "ok: the Mach-O object written on linux/arm64 is the one macOS writes"
 
   # M37: `mc` HOSTED on Linux. Not "a Linux target built from macOS" -- the
-  # binary downloaded here is the compiler, and it compiles itself to a fixed
-  # point on this machine before anything else runs. See
+  # object downloaded here is the compiler; this job links it and it compiles
+  # itself to a fixed point on this machine before anything else runs. See
   # docs/guide/90-linux-host.md.
   linux-x86-64-host:
     name: mc on linux/x86_64 host
@@ -338,7 +359,7 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
-      - name: Download the cross-built Linux compilers
+      - name: Download the cross-compiled Linux objects
         uses: actions/download-artifact@v4
         with:
           name: mc-linux-hosts
@@ -364,6 +385,19 @@ jobs:
           fi
           ld.lld --version
           ls -l /usr/lib/x86_64-linux-musl/crt1.o /usr/lib/x86_64-linux-musl/libc.a
+
+      # The half the macOS runner could not do. With the four musl files already
+      # in MC_SYSROOT, scripts/link-linux.sh runs `ld.lld` and nothing else --
+      # it only calls scripts/sysroot-linux.sh (and therefore Docker) when one
+      # of them is missing.
+      - name: Link the cross-compiled object into the Linux compiler
+        env:
+          MC_SYSROOT: /usr/lib/x86_64-linux-musl
+        run: |
+          set -eu
+          scripts/link-linux.sh --arch x86_64 build/mc-linux-x86_64 build/mc-linux-x86_64.o
+          chmod 755 build/mc-linux-x86_64
+          ls -l build/mc-linux-x86_64
 
       - name: What this binary says it is
         run: |

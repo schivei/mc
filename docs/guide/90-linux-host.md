@@ -158,6 +158,37 @@ build/mc1 build src --config src/mc.linux-x86_64.toml        # -> build/mc-linux
 or `make mc-linux` / `make mc-linux-x86_64`, which run the sysroot step first. Both are ELF64
 executables statically linked against musl by `ld.lld`, around 730 KB.
 
+### Without Docker: stop at the object
+
+The sysroot step is the one that needs Docker — `scripts/sysroot-linux.sh` copies
+`crt1.o crti.o crtn.o libc.a` out of an `alpine:3` container — and the link step is the one that
+needs `ld.lld`. A machine with neither can still do the compiler's half, because `kind = "obj"`
+makes `mc build` compile and return before either is consulted:
+
+```sh
+make mc-linux-obj             # build/mc-linux-arm64.o    ELF64 relocatable, aarch64
+make mc-linux-x86_64-obj      # build/mc-linux-x86_64.o   ELF64 relocatable, x86-64
+```
+
+`src/mc.linux-aarch64-obj.toml` and `src/mc.linux-x86_64-obj.toml` are the two configs, and they
+differ from their siblings only in `kind` and in having no `[linker]` and no `[sysroot]`. The
+object then travels to a Linux machine, which links it with its own musl:
+
+```sh
+MC_SYSROOT=/usr/lib/aarch64-linux-musl \
+    scripts/link-linux.sh build/mc-linux-arm64 build/mc-linux-arm64.o
+chmod 755 build/mc-linux-arm64
+build/mc-linux-arm64 --host          # os linux / arch aarch64 / sys sys_linux
+```
+
+With the four files already in `MC_SYSROOT`, `scripts/link-linux.sh` runs `ld.lld` and nothing
+else; it only falls back to `scripts/sysroot-linux.sh` when one of them is missing. The object is
+byte for byte the one the executable config writes on its way to the link step.
+
+This is exactly what CI does — GitHub's macOS runners have no Docker, so the compiling job ships
+objects and the two Linux jobs link them ([../ci.md](../ci.md) § M37). Locally, where Docker is
+usually there, `make mc-linux` is the shorter road.
+
 `make check-linux-host` is the proof, run from macOS. For each architecture it cross-builds the
 compiler and then, inside `docker run --platform linux/<arch> alpine:3`:
 
@@ -260,7 +291,9 @@ seed and the Mach-O-only checks. Clone, `scripts/bootstrap-linux.sh`, `make chec
 bootstrap again. The macOS machine stays the place where `mc0` proves the .mc compiler still
 agrees with the frozen C oracle (`check-lex`, `check-ast`, `check-asm`, `check-obj` against
 `build/mc0`), and CI runs both: `make check (macOS arm64)` plus `mc on linux/arm64 host` and
-`mc on linux/x86_64 host` (see [../ci.md](../ci.md)).
+`mc on linux/x86_64 host` — the macOS job cross-compiling the objects, each Linux job linking its
+own and bootstrapping it on real hardware, with no Docker anywhere in CI (see
+[../ci.md](../ci.md) § M37).
 
 ---
 
