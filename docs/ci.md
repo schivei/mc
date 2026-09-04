@@ -17,7 +17,7 @@ the release. The contributor-facing half of that is
 
 | workflow | trigger | machine | what it does |
 |---|---|---|---|
-| `ci.yml` | pull requests to `main`, push to `main` | `macos-15` + `ubuntu-24.04-arm` + `ubuntu-latest` | `make check`, the Linux suite — once per architecture — in two halves, and `mc` bootstrapped on each Linux host |
+| `ci.yml` | pull requests to `main`, push to `main` | `macos-15` + `ubuntu-24.04-arm` + `ubuntu-latest` | `make check`, the Linux suite — once per architecture — in two halves, `mc` bootstrapped on each Linux host, and (M39) the bare-metal RISC-V kernel booted under QEMU |
 | `autotag.yml` | push to `main` | `ubuntu-24.04` | if the push is a merged pull request: computes the next version from its labels, pushes the annotated tag `vX.Y.Z` and starts `release.yml` |
 | `tag.yml` | manual | `ubuntu-24.04` | the escape hatch: validates `X.Y.Z` against the newest tag, pushes the tag and starts `release.yml` |
 | `release.yml` | dispatched by `autotag.yml`/`tag.yml`, tag `v*`, or manual | `macos-15` + `ubuntu-24.04-arm` + `ubuntu-latest` | builds `mc` for macOS, cross-compiles the two Linux objects, links and bootstraps each on its own architecture, packages all three, publishes the GitHub Release |
@@ -73,7 +73,8 @@ new push to a pull request cancels its previous run.
 
 **The job names are the required status checks on `main`** — `make check (macOS arm64)`,
 `Link and run the suite (linux/arm64)`, `Link and run the suite (linux/x86_64)`, `Link and run
-the suite (windows/arm64)` and `Link and run the suite (windows/x86_64)`. Renaming a job means updating the branch protection in the same
+the suite (windows/arm64)`, `Link and run the suite (windows/x86_64)` and, since M39,
+`Boot the kernel (bare-metal riscv64)`. Renaming a job means updating the branch protection in the same
 breath, or `main` starts requiring a check that no longer exists and nothing can merge.
 
 ### Job `check` — `macos-15`
@@ -207,6 +208,26 @@ This job is what `docs/plan.md` § "Rule for every new target" asks for: an arch
 supported until something links and runs its suite on real hardware of that kind, and that job is
 a required status check on `main`. `make test-linux-x86_64` is the same suite locally, in an
 emulated `linux/amd64` container.
+
+### Job `baremetal-riscv64` — `ubuntu-latest`
+
+M39's runtime oracle, and the shape `docs/plan.md` § "Rule for every new target" asks for once
+more: `examples/kernel`'s image is **cross-built on the macOS job** — nothing but `mc` is needed
+to produce it — travels as the `kernel-riscv64` artifact, and boots here under
+`qemu-system-riscv64 -machine virt -bios none -nographic`, which `apt-get install qemu-system-misc`
+provides. There is no bare-metal RISC-V runner and there is no need for one: QEMU's `virt` board
+is the contract the milestone was written against.
+
+Two images travel, and both halves of the oracle are asserted: `kernel.bin` must print the exact
+four-line transcript and exit **0**, and `kernel42.bin` — the same kernel with `halt(42)` — must
+exit **42**. The exit code is the guest's own verdict, passed straight through by the SiFive test
+device at `0x100000`, and discarding it would make the transcript check the only thing left.
+`timeout 60` distinguishes a hang from a wrong answer; it exists on this runner, which is why
+`examples/kernel/test.sh` carries its own POSIX watchdog instead (macOS has no `timeout`).
+
+The macOS job's `make check` runs `check-kernel` too, but that runner has no QEMU, so `test.sh`
+self-skips the two runs there and everything else in it — the build, determinism, the refusals,
+the nine ABI assertions and the `llvm-mc` encoder sweep — still runs.
 
 ### Job `windows-arm64` — `windows-11-arm`
 
@@ -513,8 +534,9 @@ directly. Four decisions:
 - **required checks**: `make check (macOS arm64)`, `Link and run the suite (linux/arm64)`,
   `Link and run the suite (linux/x86_64)`, `Link and run the suite (windows/arm64)`, since M20
   `Link and run the suite (windows/x86_64)`, since M37 `mc on linux/arm64 host` and
-  `mc on linux/x86_64 host`, and, since M38, `mc on windows/arm64 host` and
-  `mc on windows/x86_64 host` — nine of the job names in `ci.yml`;
+  `mc on linux/x86_64 host`, since M38 `mc on windows/arm64 host` and
+  `mc on windows/x86_64 host`, and since M39 `Boot the kernel (bare-metal riscv64)` — ten of the
+  job names in `ci.yml`;
 - **strict (up to date before merging) is off**: `mc` builds are minutes long and the project is
   one person's; requiring every pull request to re-run against a moved `main` buys little and
   costs a rebase loop. `release.yml` rebuilds and re-runs the whole suite from the tag anyway;
@@ -542,7 +564,8 @@ gh api -X PUT repos/schivei/mc/branches/main/protection --input - <<'JSON'
                  "Link and run the suite (windows/arm64)",
                  "Link and run the suite (windows/x86_64)",
                  "mc on linux/arm64 host", "mc on linux/x86_64 host",
-                 "mc on windows/arm64 host", "mc on windows/x86_64 host"]
+                 "mc on windows/arm64 host", "mc on windows/x86_64 host",
+                 "Boot the kernel (bare-metal riscv64)"]
   },
   "enforce_admins": false,
   "required_pull_request_reviews": {

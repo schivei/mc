@@ -26,6 +26,7 @@ nothing to a running signed binary in about two minutes.
 | [Footprint](guide/80-footprint.md) | what the smallest program costs per target, floor by floor, and the ceilings that guard it |
 | [`mc` on a Linux host](guide/90-linux-host.md) | the host layer, the Linux bootstrap chain, cross-building the compiler, what `make check` skips on Linux and why |
 | [`mc` on a Windows host](guide/95-windows-host.md) | the same for Windows: no C runtime at all, the kernel32 runtime object, the `.exe` suffix, CRLF, and the Windows `make check` subset |
+| [A new architecture](guide/97-a-new-architecture.md) | adding an instruction set and an output format from OUTSIDE the compiler: the three registrations, how to prove the encoder, and which families the data model excludes today |
 
 ## The reference — exhaustive, read by lookup
 
@@ -38,7 +39,7 @@ nothing to a running signed binary in about two minutes.
 | [hooks.md](reference/hooks.md) | every public function of the parser and hook API |
 | [sysroot.md](reference/sysroot.md) | where a cross link finds its files: the resolution chain, the cache, the messages |
 | [objects.md](reference/objects.md) | the object model (`sec_*`, `sym_*`, `reloc_add`) and the codegen accessors (`gen_*`) |
-| [machine.md](reference/machine.md) | the machine task contract — **specified, not yet implemented** |
+| [machine.md](reference/machine.md) | the machine task contract: the 31 tasks, and the three instruction sets side by side |
 | [diagnostics.md](reference/diagnostics.md) | every message the compiler emits, with cause and fix |
 | [bundle.md](reference/bundle.md) | every `#include <name>` the binary carries |
 

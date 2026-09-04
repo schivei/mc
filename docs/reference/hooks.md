@@ -142,8 +142,32 @@ registered ones; an unknown name is `unknown machine`.
 registers it from `void machine_arm64_init()`; `src/machine_x86_64.mc` does the same with
 `void x86_task(i64 task, uptr fn)` and `void machine_x86_64_init()`. `main()` calls both before
 any backend can lower, and then `machine_use("arm64")`, because each registration also makes its
-machine current and the host's is the default. A module that wants to replace one task copies the
-table, overwrites the slot with `machine_task`, and registers the copy under its own name.
+machine current and the host's is the default.
+
+**A module writes its own setter.** `machine_task` is not a general helper: it writes into
+`m_arm64` **by name**, and `x86_task` writes into `m_x86_64`. Until M39 this page told a module
+author to "copy the table, overwrite the slot with `machine_task`, and register the copy" —
+following that recipe corrupts AArch64's table instead of filling the module's own
+(`docs/specs/M39.md` § G9, decision D7). The shape that works is two lines, and every machine in
+the repository has its own:
+
+```c
+uptr m_mine[MTASK_COUNT];
+void my_task(i64 task, uptr fn) { st64(m_mine + task * 8, fn); }
+
+void my_machine_init() {
+    i64 t = 0;
+    while (t < MTASK_COUNT) {                    // start from an existing machine, if you like
+        st64(m_mine + t * 8, ld64(m_arm64 + t * 8));
+        t = t + 1;
+    }
+    my_task(MTASK_ENCODE, &my_encode);           // ...and replace what you mean to replace
+    machine("mine", m_mine);
+}
+```
+
+`examples/kernel/machine_riscv64.mc` is the worked case: 31 slots of its own, `rv_task` as the
+setter, registered from a module under `examples/` with no line added to `src/`.
 
 Who calls `machine_use` in a normal build: **the object backend**, once, as its first statement.
 That keeps `target()`'s four columns (below) — `[target].arch` is a *file format* question, and
@@ -155,15 +179,22 @@ reach a backend.
 
 Registers an `(os, arch)` pair `mc build` accepts, with the backend it writes objects with and the
 one it writes direct executables with. `exe = 0` says the target has no direct executable and
-always goes through `[linker]` — which is what `os = "linux"` and `os = "windows"` do. Four are
-registered before `user_init()` runs:
+always goes through `[linker]` — which is what `os = "linux"` and `os = "windows"` do. **Five** are
+registered before `user_init()` runs (`src/main.mc`):
 
 ```c
 target("macos", "aarch64", "macho", "macho-exe");
 target("linux", "aarch64", "elf-obj", 0);
 target("linux", "x86_64", "elf-obj-x86_64", 0);
 target("windows", "aarch64", "coff-obj-arm64", 0);
+target("windows", "x86_64", "coff-obj-x86_64", 0);
 ```
+
+A module can add a sixth, but `mc build` will not reach it yet: `drv_run` resolves `[target]`
+**before** `user_init()` has run, so the parent process refuses a pair only the taught compiler
+knows. That is gap G1 of `docs/specs/M39.md`, deferred to M39.5; until then a module-defined
+target is reached through the single-file CLI, where `--backend=` and `--machine=` are resolved
+after `user_init()` (`examples/kernel`).
 
 `src/driver.mc` reads nothing but this table: `target_find(os, arch)` gives the row,
 `tgt_obj_at(i)` / `tgt_exe_at(i)` the two backends, `target_os_known(os)` whether the operating

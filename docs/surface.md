@@ -537,9 +537,21 @@ architecture-specific, and the ELF writer is shared down to the section table �
 difference is a register partition, an ABI and thirty-odd encoders
 (`docs/reference/machine.md` § The x86-64 implementation).
 
-### The five built-in backends: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64` and `coff-obj-arm64`
+**M39 is the seam's real test, because the machine is not in the compiler.**
+`examples/kernel/machine_riscv64.mc` registers `riscv64` from a module under `examples/`, and
+`examples/kernel/image.mc` registers `rv-image`, a writer that lays a flat bare-metal image out
+itself — no linker, no object format, no header. Together with four Tier 3 words they make
+`build/mc-kernel`, a compiler that turns `examples/kernel/main.mc` into an image that boots under
+QEMU, prints, takes a trap, switches between two stacks and exits with a code of its own choosing.
+`src/`, `stage0/`, `lib/` and `tests/` gained **zero lines**: `git diff --stat` over those four is
+the milestone's headline. Two ways in and out of the compiler — a machine and a backend — plus
+`syntax`/`syntax_stmt`/`syntax_expr` are enough for an architecture the language had never heard
+of. [`docs/guide/97-a-new-architecture.md`](guide/97-a-new-architecture.md) is the path for
+somebody doing it again.
 
-`src/main.mc` registers four backends before calling `user_init()`:
+### The six built-in backends: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64`, `coff-obj-arm64` and `coff-obj-x86_64`
+
+`src/main.mc` registers six backends before calling `user_init()`:
 
 | name | writes | alias |
 |---|---|---|
@@ -548,6 +560,7 @@ difference is a register partition, an ABI and thirty-odd encoders
 | `elf-obj` (M16) | ELF64 `ET_REL` for `EM_AARCH64` — the `.o` a Linux linker takes | — |
 | `elf-obj-x86_64` (M17) | the same file for `EM_X86_64` | — |
 | `coff-obj-arm64` (M19) | COFF `IMAGE_FILE_MACHINE_ARM64` — the `.obj` a Windows linker takes | — |
+| `coff-obj-x86_64` (M20) | COFF `IMAGE_FILE_MACHINE_AMD64` over the `x86_64-win` machine — the `.obj` for Windows x64 | — |
 
 ```
 $ build/mc1 --exe tests/001-return42.mc -o tmp/t1 && tmp/t1; echo $?

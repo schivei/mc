@@ -1427,6 +1427,7 @@ make -C examples/api test        # test-oop + tests/lib_test.sh + test.sh
 | `test-linux` | `scripts/test-linux.sh`: every `tests/*.mc` without `// skip-linux` cross-compiled with `elf-obj`, linked by `ld.lld` against musl and run in `docker --platform linux/arm64`, plus the no-libc case. Guarded: skipped with a message when Docker or `ld.lld` is missing |
 | `test-linux-x86_64` | the same with `--arch x86_64`: the `elf-obj-x86_64` backend, an amd64 musl sysroot and `docker --platform linux/amd64`. Also skips the tests that carry `// skip-x86_64`. Guarded the same way |
 | `test-windows` | `scripts/test-windows.sh`: every `tests/*.mc` without `// skip-windows` cross-compiled with `coff-obj-arm64`, every object's COFF header checked with `llvm-readobj` and three of them linked with `lld-link`. Nothing is executed — the `windows-11-arm` CI leg runs them. Guarded: skipped when `lld-link` or `llvm-dlltool` is missing |
+| `check-kernel` | `examples/kernel/test.sh`: the taught compiler out of `mc.toml`, the flat RISC-V image, both QEMU runs (transcript **and** exit code, 0 and 42), determinism, the two refusals by the default compiler, seven ABI assertions over `--dump-asm --machine=riscv64`, and the `llvm-mc` encoder sweep. Guarded: without `qemu-system-riscv64` the two runs are skipped, without `llvm-mc` the sweep is |
 | `check-limits` | `scripts/check-limits.sh`: `mc limits src/mc.mc` against the fixed `MAX*` constants still in `stage0/mc.h` and `stage0/*.c`, plus the seed's `HEAP_SIZE` against the max RSS of a real `build/mc0` run; fails when any of them is over 90% used |
 
 ```
@@ -1446,6 +1447,46 @@ $ scripts/test-linux.sh --arch x86_64 build/mc1
 ...
 29/29 tests passed on linux/x86_64
 ```
+
+---
+
+## M39 — a target `mc build` cannot drive yet
+
+`examples/kernel` is a bare-metal RISC-V 64 board: no operating system, no linker, no object
+format. Its compiler is taught the same way every other example's is —
+`[compiler] modules` in `mc.toml`, assembled by `mc build DIR --compiler-only` — but the **second**
+step is not `mc build`:
+
+```sh
+../../build/mc1 build examples/kernel --compiler-only     # -> build/mc-kernel
+cd examples/kernel
+./build/mc-kernel --backend=rv-image --include=lib main.mc -o build/kernel.bin
+```
+
+The reason is worth writing down, because it is the one place `mc build` is less capable than the
+single-file CLI. `drv_run` validates and resolves `[target].os`/`.arch` against the registry
+**before** `drv_compile` calls `user_init()`, so the parent process refuses a pair that only the
+taught compiler it is about to build knows about. A second entry point (`user_targets()`) is not
+the fix — `mc` has no weak definitions, so every existing taught compiler would have to grow an
+empty body. The fix is a **deferral**: keep the two values as strings in `drv_run`, have
+`drv_entry` pass a role (object or executable) instead of a backend name, and resolve once
+immediately after `user_init()`. That is gap G1 of `docs/specs/M39.md`, deferred to M39.5.
+
+Until then, `examples/kernel/mc.toml` carries **no `[target]` section**, so `mc build` uses the
+host pair (M37) and its `[project].entry`/`.out` describe a host object of the same source — good
+for type-checking it and nothing else. `--backend=` and `--machine=` on the single-file CLI are
+resolved *after* `user_init()` (`src/main.mc`), which is why step 2 above works.
+
+Everything else about the project is ordinary: `[compiler].modules`, `[limits].tolerance = 1.0`
+and `[include].paths = ["lib"]` mean exactly what they mean everywhere else, and
+`mc limits examples/kernel` reports both halves — **exit 3 cold and exit 0 remembered**, the shape
+recorded for `examples/api` above. `tolerance = 1.0` is what keeps the *compiler* half at `grow 0`
+from a clean checkout. The *entry* half cannot be covered by a tolerance at all: `main.mc` is 90
+lines, and the taught words plus the six `#rule stmt:` of `<prelude>` expand into about five times
+the nodes a byte-count estimate predicts (401 estimated, 1914 used), so it grows once and the
+usage remembered in `build/.mc-usage.toml` is what makes the next run exit 0.
+`examples/kernel/test.sh` step 8 asserts both phases, and fails on a `grew` line in the compiler
+half or on anything but exit 0 remembered.
 
 ---
 

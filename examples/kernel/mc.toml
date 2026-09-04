@@ -1,0 +1,62 @@
+# mc.toml — the taught compiler for examples/kernel, assembled by `mc build`:
+#
+#   ../../build/mc1 build examples/kernel --compiler-only   # from the root
+#   ../../build/mc1 build --compiler-only                   # from inside here
+#
+# It prints the path of `build/mc-kernel`, and THAT binary is what compiles the
+# kernel:
+#
+#   build/mc-kernel --backend=rv-image --include=lib main.mc -o build/kernel.bin
+#
+# There is deliberately no `[target]` key. A bare-metal RISC-V board is not a
+# registered (os, arch) pair, and it could not be one from here anyway: `mc
+# build` resolves `[target]` BEFORE `user_init()` has run, so the parent process
+# would refuse a pair only the taught compiler knows. That is gap G1 of
+# docs/specs/M39.md, deferred to M39.5 in the deferral form the spec writes
+# down. Until then the second step is the single-file CLI above, where
+# `--backend=` is resolved AFTER `user_init()`.
+#
+# With no `[target]`, `mc build` uses the HOST pair (M37) -- so the two keys
+# below describe a host object, not the kernel image. `mc build examples/kernel`
+# with no flag will happily write `build/kernel-host.o`: an AArch64 Mach-O
+# object of the same source, which type-checks it and is good for nothing else.
+# The keys are here because [project].entry and [project].out are required, and
+# because `mc limits examples/kernel` needs both halves to have somewhere to go.
+
+[project]
+name  = "kernel"
+entry = "main.mc"
+out   = "build/kernel-host.o"
+kind  = "obj"
+
+# The compiler that compiles the kernel is not the one running: a RISC-V 64
+# machine, a flat-image backend and four bare-metal words come from
+# mc-kernel.mc, which pulls the core out of the running binary's own bundle
+# (`#include <mc/core>`). There is no path into src/ anywhere in this directory.
+[compiler]
+modules = ["mc-kernel.mc"]
+out     = "build/mc-kernel"
+
+# The reserve `mc build` takes from the estimate, before any table exists. The
+# static estimate is a function of source BYTES and a taught compiler this size
+# lands about twice its prediction, so the default 0.25 makes the `nodes` and
+# `ins` tables double mid-build. At 1.0 nothing grows in THAT half -- `mc limits
+# examples/kernel` is what reports it.
+#
+# The entry half is a different story and it is not a defect. main.mc is 90
+# lines, and `mmio`/`csrw`/`yield` plus the six `#rule stmt:` of <prelude>
+# expand into about five times the nodes those bytes predict -- a factor no
+# tolerance in [0, 1] can cover. So a COLD `mc limits examples/kernel` reports
+# `grew` for the entry and exits 3, and the usage `mc build` remembers in
+# build/.mc-usage.toml is what makes the next one exit 0 with grow 0 everywhere:
+# exit 3 cold and exit 0 remembered, the shape M23 recorded for examples/api.
+# examples/kernel/test.sh step 8 asserts both phases.
+[limits]
+tolerance = 1.0
+
+# The bare-metal layer lives in lib/. `#include "sys_bare.mc"` already resolves
+# against main.mc's own directory; this root is what lets the same three files
+# be included by bare name from anywhere in the project, and it is the
+# `--include=lib` of the direct CLI above.
+[include]
+paths = ["lib"]
