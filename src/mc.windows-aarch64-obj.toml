@@ -1,0 +1,40 @@
+# mc.windows-aarch64-obj.toml — the CI half of src/mc.windows-aarch64.toml
+# (M38, docs/ci.md, docs/guide/95-windows-host.md § 4).
+#
+#   build/mc1 build src --config src/mc.windows-aarch64-obj.toml
+#   -> build/mc-windows-arm64.obj    a COFF object for windows/aarch64
+#
+# This config stops one step earlier than its sibling: `kind = "obj"` means the
+# driver compiles and returns, so there is no [linker] and no [sysroot] and
+# nothing but `mc` itself has to be installed. The object is uploaded as an
+# artifact and LINKED on the windows-11-arm runner, which has lld-link.
+#
+# Three more objects go into that link and none of them is this one:
+# winstart.obj (lib/sys_windows_start.mc, the entry point), mcrt-windows-aarch64.obj
+# (lib/sys_windows_host.mc, the POSIX shims over kernel32) and kernel32.lib (the
+# import library scripts/sysroot-windows.sh builds with llvm-dlltool). They
+# travel in the same artifact; scripts/link-windows.sh writes the line.
+#
+# It is the same split the test suite already uses (scripts/test-windows.sh
+# --build-only on macOS, --run-only on Windows), and the object is byte for byte
+# the one src/mc.windows-aarch64.toml writes on its way to the executable: same
+# entry, same backend, same compiler.
+#
+# Every path below is relative to THIS FILE's directory (src/), which is why
+# they all start with `../`.
+
+[project]
+name  = "mc-windows-arm64"
+entry = "mc_windows.mc"
+out   = "../build/mc-windows-arm64.obj"
+kind  = "obj"
+
+[target]
+os   = "windows"
+arch = "aarch64"
+
+# The compiler compiling itself is the biggest source in the repository; at the
+# default 0.25 several tables double mid-build. 1.0 keeps the whole build inside
+# the first reserve (`mc limits src --config src/mc.windows-aarch64-obj.toml`).
+[limits]
+tolerance = 1.0

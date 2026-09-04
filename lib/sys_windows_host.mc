@@ -1,6 +1,8 @@
 // sys_windows_host.mc — the POSIX-shaped shims the COMPILER's own `extern`s
 // need, over kernel32 (M38, docs/guide/95-windows-host.md).
 //
+// seed-skip: CreateProcessA takes ten parameters and the frozen stage0 keeps MAXPARAMS at 8
+//
 // It is lib/sys_windows.mc's second half, and a file of its own for the reason
 // Decision 2 gives: lib/sys_windows.mc is the SYSTEM LAYER a Windows program
 // includes for its I/O, and is compiled into `winrt.obj` next to every test.

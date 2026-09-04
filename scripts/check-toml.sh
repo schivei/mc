@@ -12,6 +12,10 @@
 mc="${1:-build/mc1}"
 tomldump="${2:-build/tomldump}"
 
+# M38: on Windows a program that is not called *.exe cannot be launched, so the
+# name is written with the suffix here, where it is chosen (docs/guide/95-windows-host.md).
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) tomldump="$tomldump.exe" ;; esac
+
 if [ ! -x "$mc" ]; then
     echo "FAIL: compiler '$mc' not found or not executable"
     exit 1
