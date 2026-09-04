@@ -7,13 +7,18 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
 
-# One run per branch or pull request; a new push cancels the previous run.
+# One run per pull request (or per branch, for the push to main); a new push
+# cancels the previous run. The two job names below are the required status
+# checks on `main` -- "make check (macOS arm64)" and "Link and run the suite
+# (linux/arm64)" -- so they must not be renamed without updating the branch
+# protection (docs/ci.md § Branch protection).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:

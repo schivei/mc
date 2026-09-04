@@ -1,12 +1,15 @@
-# Tag — creates the annotated tag a release is cut from. Run by hand from the
-# Actions tab after the VERSION bump has been merged into main. See docs/ci.md.
+# Tag — the manual escape hatch. Every ordinary release is cut by autotag.yml
+# when a pull request is merged; this workflow exists for the cases that are not
+# ordinary: a version that has to skip a number, a re-release after a tag was
+# deleted, or a release for a commit that reached main without a pull request.
+# Run it by hand from the Actions tab. See docs/ci.md.
 name: Tag
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to tag, X.Y.Z (must equal the VERSION file at HEAD)"
+        description: "Version to tag, X.Y.Z (must be newer than the newest existing tag)"
         required: true
         type: string
       notes:
@@ -20,7 +23,9 @@ permissions:
   actions: write
 
 concurrency:
-  group: tag
+  # The same group as autotag.yml: a hand-made tag and a merge-made tag must
+  # never race for the same version number.
+  group: autotag
   cancel-in-progress: false
 
 jobs:
@@ -32,35 +37,39 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
         with:
-          # Full history and tags: the tag must not already exist, and the
-          # annotation is written against this commit.
+          # Full history and tags: the version has to beat the newest tag, and
+          # the annotation is written against this commit.
           fetch-depth: 0
 
       # The input is read from the environment, never interpolated into the
-      # script: a workflow input is untrusted text.
-      - name: Validate the version and match it against VERSION
+      # script: a workflow input is untrusted text. There is no VERSION file to
+      # agree with -- since the move to pull-request releases the tags are the
+      # only source of truth (docs/ci.md § Versioning).
+      - name: Validate the version against the newest tag
         env:
           VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -eu
           v="$VERSION_INPUT"
-          if ! printf '%s' "$v" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
-            echo "::error::'$v' is not a semantic version (X.Y.Z, optionally X.Y.Z-suffix)"
+          if ! scripts/next-version.sh "$v" patch > /dev/null 2>&1; then
+            echo "::error::'$v' is not a plain semantic version X.Y.Z"
+            echo "::error::pre-release suffixes and leading zeros are not accepted (docs/ci.md)"
             exit 1
           fi
-          if [ ! -f VERSION ]; then
-            echo "::error::there is no VERSION file at this commit"
-            exit 1
-          fi
-          file=$(tr -d ' \t\r\n' < VERSION)
-          if [ "$v" != "$file" ]; then
-            echo "::error::the VERSION file says '$file', the workflow was asked for '$v'."
-            echo "::error::Edit VERSION, merge it into main, and run this workflow again."
-            exit 1
-          fi
-          if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then
+          v="${v#v}"
+          if git rev-parse -q --verify "refs/tags/v$v" > /dev/null; then
             echo "::error::the tag v$v already exists"
             exit 1
+          fi
+          latest=$(git tag -l 'v*' --sort=-v:refname | head -n 1 || true)
+          if [ -n "$latest" ]; then
+            if ! scripts/next-version.sh --gt "$v" "$latest"; then
+              echo "::error::'$v' is not newer than the newest tag '$latest'"
+              exit 1
+            fi
+            echo "$v is newer than $latest"
+          else
+            echo "no v* tag exists yet: $v is the first"
           fi
           echo "VERSION=$v" >> "$GITHUB_ENV"
 
