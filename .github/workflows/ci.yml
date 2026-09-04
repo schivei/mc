@@ -82,6 +82,16 @@ jobs:
       - name: Cross-compile the suite for linux/x86_64
         run: scripts/test-linux.sh --arch x86_64 --build-only build/linux-objs-x86_64 build/mc1
 
+      # M24 step 1: the float suite goes into the SAME artifact, in the same
+      # shape, so the `--run-only` half of test-linux.sh links and runs it with
+      # no change. It has to come after the step above, which truncates the
+      # manifest.
+      - name: Cross-compile the float suite for linux/arm64
+        run: scripts/check-float.sh --build-only build/linux-objs --os linux --arch aarch64 build/mc1
+
+      - name: Cross-compile the float suite for linux/x86_64
+        run: scripts/check-float.sh --build-only build/linux-objs-x86_64 --os linux --arch x86_64 build/mc1
+
       # M37: `mc` hosted on Linux. What is cross-built HERE is the two ELF
       # OBJECTS, not the executables: `kind = "obj"` in the two `*-obj.toml`
       # configs makes the driver compile and return, so no [linker], no musl
@@ -226,6 +236,14 @@ jobs:
             examples/kernel/build/kernel42.bin
           if-no-files-found: error
           retention-days: 7
+
+      # M24 step 1, as above: the same artifact, the same shape, and the
+      # windows-11-arm / windows-2025 legs are what actually RUNS the float tests
+      - name: Cross-compile the float suite for windows/arm64
+        run: scripts/check-float.sh --build-only build/windows-objs --os windows --arch aarch64 build/mc1
+
+      - name: Cross-compile the float suite for windows/x86_64
+        run: scripts/check-float.sh --build-only build/windows-objs-x86_64 --os windows --arch x86_64 build/mc1
 
       - name: Upload the self-hosted compiler
         uses: actions/upload-artifact@v4

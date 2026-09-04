@@ -126,6 +126,14 @@ Seven artifacts come out:
   `kernel32.lib` (the import library `scripts/sysroot-windows.sh` generates with `llvm-dlltool`).
   If this runner has no `llvm-dlltool`, the import library is simply absent and the Windows job
   rebuilds it there. Nothing is shared between the two architectures.
+
+  Since M24 each of the four artifacts also carries the **float suite**: `scripts/check-float.sh
+  --build-only` writes `tests/float/*.mc` into the same directory, in the same shape
+  (`<name>.o`/`.obj`, `<name>.expect`, one manifest line), so the `--run-only` half of
+  `test-linux.sh` / `test-windows.sh` links and runs them with no change at all. It runs *after*
+  the suite's own `--build-only`, which truncates the manifest. That is what makes the two Windows
+  jobs the runtime oracle for `<float>` too — macOS can build those objects but cannot execute
+  them.
 - `mc-linux-hosts` — `build/mc-linux-arm64.o` and `build/mc-linux-x86_64.o`, `mc` itself
   cross-compiled for each Linux host by `make mc-linux-obj` / `make mc-linux-x86_64-obj`. Objects,
   not executables, for the same reason: no linker and no sysroot here (§ M37).

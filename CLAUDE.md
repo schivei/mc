@@ -1538,6 +1538,237 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   point) and the Windows pair cross-computed per `tests/golden/README.md`.
 - Next: M18 or M24 (`docs/plan.md`); M40 (the word-size sweep AVR/PIC need) is
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
+- M24 step A ✔ (`docs/specs/M24.md` § M1-M6, M8 and decision D5): **Tier 4 -- the inert half.
+  A primitive the core has never heard of.** All in `src/`; `stage0/` untouched (2848/3000).
+  A primitive the core has never heard of.** All in `src/`; `stage0/` untouched (2848/3000, byte for byte what main has).
+  The rule the whole milestone rests on is a number: **a type id below `TY_MAX` (7) is a core type
+  and behaves exactly as it always has, byte for byte; an id at or above it was registered by a
+  module, and every core decision about it is delegated.**
+  * **M1, the type registry** (`src/ast.mc`, `src/hooks.mc`): `type_new(name, width, align, kind)
+    -> ty`, with `type_count`/`type_width`/`type_align`/`type_kind`/`type_name` falling through to
+    it above `TY_MAX` and unchanged below. `TK_INT/TK_FLOAT/TK_WIDE/TK_OPAQUE` is what a MACHINE
+    dispatches on; the core reads only width and align. A growable arena block (`T_TYPES`) holding
+    only the registered types, so the core ladder is untouched. The word is reserved through the
+    same `word_add` and entered in the same table `type_alias` writes, so `type_of_token` needed
+    NO line and the name is valid in all seven type positions at once; `type_alias`'s guard
+    widened from `TY_MAX` to `type_count()`. No keyword and no directive: `tok_init` is untouched,
+    `K_U8..K_EXTERN` do not shift, `check-lex` keeps comparing the two lexers.
+  * **M2, the literal's type survives resolve** (`src/gen_resolve.mc`): `res_expr`'s `N_INT` arm
+    answered `TY_I64` unconditionally and threw a taught literal's type away before the walker or
+    any machine could see it.
+  * **M3, the three fold guards** (`src/parse.mc`): `fold_unary`, `fold_binary` and `fold_cast`
+    return early on a type at or above `TY_MAX`. Without them `1.5 + 2.5` would fold to an INTEGER
+    add of two bit patterns and produce an infinity at compile time, silently.
+  * **M4, the depth type** (`src/gen_walk.mc`): `walk_depth_type(d)` and `walk_ret_type()`, a
+    `MAXDEPTH` array reset per function. **Not a task slot** -- no signature moves, and a machine
+    that never reads it emits byte for byte what it emitted before. The five re-announcement sites
+    the spec lists are covered in ONE place instead: `gen_expr` became a wrapper that writes
+    `res_type(n)` into the depth before the dispatch and again after, and saves/restores
+    `walk_ret` around each child, so a comparison, `gen_logic`'s shortcut, `MUN_LNOT`, a cast, an
+    intrinsic load and a call are all handled by the same two lines.
+  * **M5, the frame slot is the type's width** (`src/gen_walk.mc`, 2 lines): `slot_new(8)` ->
+    `slot_new(type_width(ty))` for a scalar local and for a parameter. Provably byte-identical for
+    the seven core types, since `slot_new` rounds `(size + 7) & ~7`.
+  * **M6, `syntax_lit(&f)`** (`src/hooks.mc`, `src/parse.mc`): the one grammar position Tier 3
+    cannot reach, short-circuited by `nonlit == 0`. The handler returns a node or 0 ("the core
+    handles this one"). The decimal-to-binary conversion lives in the MODULE, so `lex_number` and
+    therefore `--dump-tokens` are exactly what the frozen `stage0/lex.c` produces. **Deviation,
+    +8 lines over the spec's M6:** the handler also needs to say where its literal ended, so
+    `p_take_lit(q)` and `p_src_end()` were added beside `p_resplit_punct`, under the same "a token
+    just lexed from the source being read" guard.
+  * **M8, deriving a machine** (`src/gen_walk.mc` for `machine_slot`, `src/hooks.mc` for
+    `machine_tab`): `machine_task` writes the GLOBAL `m_arm64` by name, so the recipe
+    `docs/reference/hooks.md` published corrupted arm64's own table. Both are built and the doc is
+    corrected with them, including the one trap: delegate through a PRISTINE second copy, never
+    through the table you patched. `machine_slot` lives in `gen_walk.mc` beside the `MTASK_*` list
+    it bounds-checks, and because `src/astdump.mc` includes `hooks.mc` without `gen_walk.mc`.
+  * **D5**: a `machine()` registration that shadows an existing name reuses that name's slot.
+  Proofs, all in `scripts/check-surface.sh`: a taught `fix` (16.16 fixed point) and `pair`
+  (16 bytes) in `lib/user_syntax_demo.mc` with a `syntax_lit` handler reading `1.5` out of the raw
+  source -- a parameter, a cast and the literal in one program (exit 42); two `pair` locals
+  reserving 32 bytes of frame where two `i64` reserve 16; the fold guards through `+`, `-`, `~`,
+  `!` and a cast measured on `--dump-asm` (`fold()` runs after `--dump-ast`), with the control that
+  core literals still fold; `type_new("if", ...)` refused with `cannot redefine core keyword: if`
+  (`lib/user_dupty.mc`); `lib/user_lit_nop.mc` -- a module whose only registration is `syntax_lit`
+  and whose handler answers 0 -- producing byte-identical `--dump-ast` AND objects over the whole
+  `tests/` corpus; and `lib/machine_probe.mc`, a machine derived from `arm64` that changes no
+  instruction and asserts the depth-type contract on every task over the whole of `src/mc.mc`:
+  **32137 tasks, 40238 depths, object byte-identical to the bundled machine's**.
+  `scripts/check-lex.sh` gained the `seed-skip` escape `check-asm.sh`/`check-ast.sh` already had
+  (risk 6 / D6), unused today. New `scripts/check-inert.sh`: the M17-step-A proof as a script.
+  — core cost, measured (`git diff --numstat`, added lines / added lines that are neither a
+  comment nor blank): `ast.mc` +58/37, `hooks.mc` +117/45, `parse.mc` +41/15, `gen_resolve.mc`
+  +11/5, `gen_walk.mc` +73/34 = **300 added lines, 136 of code**, against the spec's 132 for this
+  half. The 164 lines of comment are this repository's density, not extra mechanism.
+  `stage0/` untouched, 2848/3000 -- `git diff` against the base commit is empty.
+  **The gate is that nothing moves, and it held.** `make check` green end to end (RC 0):
+  `test` 32/32, `check-lex` 93/93 (1 skipped), `check-ast` 93/93, `check-asm` 93/93, `check-obj`
+  **32/32 identical to the frozen seed**, `check-bundle` (52 files), `bootstrap` at a fixed point
+  (`mc2.o == mc3.o`, `--dump-asm` diff between `mc1` and `mc2` empty), `check-surface` 32/32 plus
+  every M24 case, `test-exe` 32/32, `check-mc` 7/7, `check-standalone`, `check-toml`,
+  `check-build`, `check-limits` **17/17 under 90%**, `check-minimal`, `test-linux` 33/33,
+  `test-linux-x86_64` 30/30, `test-windows`, `test-windows-x86_64`, `check-examples`,
+  `check-lang`, `check-conc`, `check-desktop`, `check-docs` (155 symbols, 17 flags, 16 TOML keys,
+  10 directives, 47 samples, 196 links), `site` 75 pages, `check-site` 0 link problems.
+  Plus `scripts/check-inert.sh`: the compiler from before the step and the one after produce
+  **byte-identical objects for all 32 `tests/*.mc`, for `src/mc.mc`, and -- through the taught
+  compiler each of them builds -- for `examples/api`, `examples/lang`, `examples/conc` and
+  `examples/desktop`**. All five goldens rewritten once.
+  Docs: `docs/reference/machine.md` (contract **version 3**, § 3 and § 4 rewritten -- the old
+  thirteen `mf_*` float slots and `#machine` are DROPPED, with the three reasons recorded),
+  `docs/reference/hooks.md` (§ 3 is now six word registrations and three node hooks; the
+  derivation recipe corrected), `docs/reference/language.md` § 2 and § 11,
+  `docs/reference/diagnostics.md`, `docs/reference/bundle.md`, `docs/build.md`, and the new
+  `docs/guide/96-a-new-primitive.md`.
+- M24 step B ✔ (`docs/specs/M24.md` § M7, M9 and decisions D1-D3): **`intrinsic` and
+  `--dump-machine`.** Still all in `src/`; `stage0/` untouched (2848/3000, byte for byte what main has), and still inert -- no
+  test in the corpus registers anything, so `check-obj` stays 32/32 against the frozen seed and the
+  pre/post compilers produce byte-identical objects everywhere.
+  * **M7, `intrinsic(name, nargs, ty, &f)`** (`src/gen_resolve.mc` +74/45 code, `src/gen_walk.mc`
+    +32/22, `src/arena.mc` +7): a NAMED HARDWARE INSTRUCTION applied to values the allocator
+    placed. One row inserted between `opc_find` and `func_find` in the dispatch `res_call` and
+    `gen_call` already run in that order, so a core intrinsic can never be shadowed
+    (`cannot shadow a core intrinsic: ld64`, refused at registration) and every existing
+    diagnostic keeps its order; an ordinary function of the same name IS shadowed, which is
+    written down. The handler gets `(d, nargs)` with the arguments already lowered to depths
+    `d..d+nargs-1` and `walk_depth_type` filled in. The registry lives in `src/gen_resolve.mc`
+    beside `intrin_id` and the `IN_*` list it must refuse to shadow -- the same reason
+    `machine_slot` lives in `gen_walk.mc`, and because `src/astdump.mc` includes `hooks.mc`
+    without either.
+    **D2**: `val_reg(d, scratch)`, `dst_reg(d)` and `dst_done(d, reg)` are published as contract
+    **version 3** and are the only three names of a machine's internals that are; delegation to a
+    built-in task goes through the copied table pointer, so no `a64_*` name is frozen.
+  * **M9, `--dump-machine`** (`src/main.mc` +59/43, `src/hooks.mc` +28/15): per registered
+    machine, one line per task with the ORIGIN of the slot -- `bundled <machine>` or `taught`, and
+    `(current)` on the one the walker would drive. There is no runtime symbol table, so the origin
+    is read from a SNAPSHOT (`machine_freeze()`, taken by `main()` before `user_init`) and not
+    from a symbol name; a snapshot and not just a count, because a module that re-registers
+    `arm64` reuses that name's registry slot (D5) and the registry no longer remembers what was
+    there. It stops right after `user_init()`: a machine table is not a function of the source.
+  * **D3/`#machine` stays dropped**, with the three reasons in `docs/reference/machine.md` § 4.
+  Proofs (`scripts/check-surface.sh`): `rbit(x)` -- AArch64 bit reversal registered as an
+  intrinsic in `lib/user_syntax_demo.mc` -- on an arbitrary expression AND at a spilled depth
+  (two programs, exit 42 each); `intrinsic("ld64", ...)` refused (`lib/user_dupintrin.mc`); and the
+  observable-override proof the old § 4 asked of `#machine`, delivered without the directive:
+  `lib/user_badmach.mc` replaces ONE slot so that `+` lowers as a subtraction, `v(50) + v(8)`
+  answers **42 instead of 58**, and `--dump-machine` reports exactly one `taught` slot, on the
+  `arm64` row, across three machines -- while the stock compiler reports none.
+  — core cost: **200 added lines, 130 of code** (`gen_resolve.mc` +74/45, `main.mc` +59/43,
+  `gen_walk.mc` +32/22, `hooks.mc` +28/15, `arena.mc` +7/5), against the spec's 55 + 40 = 95.
+  The excess is the `--dump-machine` snapshot (D5 made a counter insufficient), the four
+  registration guards, and the `mtask_names[]` table the dump prints from.
+  `make check` green end to end (RC 0), same numbers as step A plus `check-docs` at 162 symbols
+  and 18 CLI flags; `scripts/check-inert.sh` identical everywhere; all five goldens rewritten once.
+  Docs: `docs/reference/hooks.md` (`intrinsic` and the lookup family, `machine_freeze`),
+  `docs/reference/cli.md` (§ "the six dumps", with the `--dump-machine` example),
+  `docs/reference/machine.md` § 3 and § 4, `docs/reference/diagnostics.md`,
+  `docs/reference/bundle.md`, `docs/guide/96-a-new-primitive.md`.
+- M24 step 1 ✔ (`docs/specs/M24.md` § "Step 1 -- `<float>`, the first library"):
+  **`f32` and `f64`, taught to `mc` from outside the compiler.** `git diff src/` for this step is
+  **empty** apart from the generated `src/bundle_data.mc`; `stage0/` untouched, 2848/3000 -- `git diff` against the base commit is empty.
+  * `lib/float.mc` (432): `type_new` for `f64` (8, 8, TK_FLOAT), `f32` (4, 4) and `f64raw` (8, 8,
+    TK_INT -- the same bytes as an integer, so `(f64raw) x` is one `fmov`/`movq` and a NaN can be
+    written down in a language with no NaN literal); the `syntax_lit` handler; and eight
+    `intrinsic` registrations (`ldf32 ldf64 stf32 stf64 sqrt_f64 fabs fmin fmax`).
+    **The decimal-to-binary conversion is correctly rounded and written in integers**, because the
+    compiler that runs it has no floats: the literal is the exact rational `U/V`, and a 2048-bit
+    big integer in fixed arrays takes the quotient with one guard bit and lets the remainder decide
+    the tie. `f32` is produced by running the same routine with a 24-bit significand, never by
+    narrowing an `f64`, so there is no double rounding. Verified bit for bit on `0.1 + 0.2`
+    (...334, not ...333), pi to fifteen digits, `1e308`, the smallest **subnormal** `5e-324`,
+    `1e20` and an exact value.
+  * `lib/machine_arm64_float.mc` (669) and `lib/machine_x86_64_float.mc` (775): two derived
+    machines, 21 slots each, everything else delegating through a pristine copy. Float depths in
+    `v16..v23` (never the callee-saved `v8..v15`) / `xmm8..xmm13` on SysV / `xmm0..xmm5` on Win64,
+    where `xmm6..xmm15` are callee-saved. The **whole ABI comes out of `walk_depth_type`**: two
+    counters on AAPCS64 and SysV, one shared position on Win64, and the overflow in argument order.
+    `walk_ret_type()` is what tells `MTASK_CALL` what the call returns, since by then depth `d`
+    holds argument 0.
+    Two things worth keeping: the AArch64 float conditions are `mi/ls/gt/ge/eq`, never `lt/le`, so
+    a NaN makes all six ordered predicates false; on x86-64 `<` and `<=` SWAP their operands and
+    use `a`/`ae` for the same reason, and only `==`/`!=` need the parity mask.
+  * `lib/user_float.mc` (17) is the `[compiler] modules` entry, `lib/mc_float.mc` (12) the
+    standalone one, and `lib/float_rt.mc` (71) the RUN-TIME half a program includes -- `putf64`
+    (fixed precision, half-up, `nan`/`inf` by bit pattern, a hex fallback past 2^63),
+    `fmt_f64` and `puthexf`. It is a separate include and NOT a source the module pushes:
+    pushing it would put a call to `write` into every program the taught compiler compiles,
+    including `lib/sys_windows_start.mc`, which has no system layer at all. It is the first user of
+    the `seed-skip` escape step A added to `scripts/check-lex.sh` -- it spells float literals, so
+    the frozen seed cannot lex it, and it says so in its own header.
+  * `tests/float/` (12 files) and `scripts/check-float.sh` (369), inside `make check`. Every test
+    is **bit-exact**: it stores with `stf64`, reads back with `ld64` and prints sixteen hex digits
+    against a value recorded in its header (produced once by `python3`, so the suite has no python3
+    dependency).
+  Results, the same twelve sources on every leg: **macos/aarch64 12/12, linux/aarch64 12/12,
+  linux/x86_64 12/12** (run for real in Docker), **windows/aarch64 11/11 and windows/x86_64 11/11
+  objects linked** with `lld-link` (1 skipped: `extern f64 sqrt` -- there is no C runtime on that
+  target). `.github/workflows/ci.yml` puts the float objects into the SAME four artifacts the
+  suites use, so the two Windows jobs and the two Linux jobs RUN them.
+  **The llvm-mc sweep**, mandatory for a machine that lands in `lib/`: every distinct float
+  instruction the two machines emit over the whole corpus, fed back through the assembler --
+  **37 (mach-o arm64), 37 (elf aarch64), 181 (elf x86_64), 166 (coff x86_64), 0 mismatches**.
+  `sqrt(2.0)` through `extern f64 sqrt(f64)` -- the case that is flatly unreachable without M24,
+  because `MTASK_CALL` could not be told an argument was a double -- comes back
+  `0x3ff6a09e667f3bcd`, bit for bit what the `sqrt_f64` intrinsic produces and what libm produces.
+  `make check` green end to end (RC 0), with `check-float` added: `test` 32/32, `check-lex`
+  101/101 (2 skipped), `check-ast` 101/101, `check-asm` 101/101, `check-obj` **32/32 identical to
+  the frozen seed**, `check-bundle` (61 files), `bootstrap` at a fixed point, `check-surface`
+  32/32, `test-exe` 32/32, `check-limits` 17/17 under 90%, `test-linux` 33/33,
+  `test-linux-x86_64` 30/30, `check-float` ok, `check-examples`, `check-lang`, `check-conc`,
+  `check-desktop`, `check-docs`, `site` + `check-site`. `scripts/check-inert.sh` between the
+  step-B compiler and this one: identical everywhere. All five goldens rewritten once.
+  Docs: `docs/guide/96-a-new-primitive.md` § 5 (`<float>`, worked), `docs/build.md`,
+  `docs/reference/bundle.md` § `<float>`, `docs/reference/language.md`, `docs/ci.md`.
+- M24 step 2 ✔ (`docs/specs/M24.md` § Generality, and the architect's addition (a)):
+  **the three modules that prove the principle.** For all three, `git diff src/` is **empty**
+  apart from the generated `src/bundle_data.mc`; `stage0/` untouched, 2848/3000 -- `git diff` against the base commit is empty. The gate is
+  `make check-wide` (`scripts/check-wide.sh`, 170 lines), inside `make check`.
+  * **`lib/i128.mc` (438)** -- a 128-bit integer. `type_new("i128", 16, 16, TK_WIDE)`, and the
+    value lives in **ONE depth backed by a 16-byte slot**: a value spanning two depths would
+    collide with `gen_binary`'s `depth + 1` and `gen_call`'s `depth + i`, which is the walker's own
+    arithmetic and what `MTASK_DEPTH_SPAN` would be for. Carry survives memory residency because
+    neither `ldr` nor `str` touches NZCV: `adds`/`adc`, `subs`/`sbc`, `mul`/`umulh`. The compare is
+    the one place a 128-bit operation is not "the 64-bit one twice" -- `subs`/`sbcs` leave N and V
+    right but Z reflects only the high half, so equality is computed separately and
+    `gt = ge && !eq`, `le = lt || eq`. The literal `123i` goes through a **module-private global
+    with an `N_BLOB` initializer** (`MTASK_CONST` and `N_INT`'s val are one `i64` each) whose name
+    carries `$`, so it cannot collide with anything a program wrote. A 16-byte argument arrives in
+    an AAPCS64 **even register pair**. AArch64 only, and it says so.
+  * **`lib/f16.mc` (240)** -- half precision as a STORAGE type, on top of `<float>`'s machine:
+    four slots (`ldr h`/`str h` and the two `fcvt`s), two intrinsics and two accessors, and
+    nothing else. That is only possible because `<float>`'s `fa_is_float` was generalised in the
+    same commit from `t == ty_f64 || t == ty_f32` to **`type_kind(t) == TK_FLOAT`** -- which is
+    what `kind` is for, and what lets one float machine carry f64, f32 and somebody else's half
+    with the same register file, spill, ABI and return position. `f32` became `type_width(t) == 4`
+    for the same reason, and `fa_need_ds` refuses arithmetic on a width this machine has no
+    instructions for instead of doing it quietly.
+    The acceptance case is round-to-nearest-**ties-to-even**: 1 + 2^-11 is exactly halfway between
+    the halves `0x3c00` and `0x3c01` and goes to the even one; a round-half-up conversion would
+    answer `0x3c01`. `f16 tbl[8]` is **16 bytes of `__bss`**, checked in the object.
+    Deviation on record: the spec asks for the software fallback to be exercised "by building
+    x86-64 without F16C". `mc`'s x86-64 machine never had F16C -- VEX encoding is `examples/avx`'s
+    subject -- so what is delivered is the ARM64 hardware path, with the module stating that on a
+    machine without the instruction the identically-named ordinary functions are called instead
+    (an intrinsic shadows a function of the same name and nothing else does).
+  * **`examples/avx/` (avx.mc 300, main.mc 45, README.md)** -- ONE AVX instruction named by its
+    encoding. `type_new("v8f32", 32, 32, TK_OPAQUE)`, `intrinsic("vaddps", 2, ...)` whose two
+    operands arrive at depths the core chose, `val_reg`/`dst_reg`/`dst_done` to find them, and the
+    module's own **VEX bytes** -- two-byte `C5` when nothing outside the low eight registers is
+    named and three-byte `C4` otherwise, which is the rule `llvm-mc` follows and what makes the
+    re-assembly an equality: **11 distinct VEX instructions, byte for byte**. Depths 0..5 in
+    `ymm0..ymm5`, spilled from 6 into 32-byte slots with `vmovups`, because the frame is 16-byte
+    aligned and a 32-byte aligned spill is unreachable. It is NOT executed here: this host has no
+    AVX machine and no emulator guaranteed to have it; the README says which VEX forms are
+    reachable and which are not, and that is the open problem only a real x86-64 CI leg can close.
+  `check-wide` output: i128 and f16 both run and exit 0 with their expected stdout, the default
+  compiler refuses both sources, 5 literal globals each an `N_BLOB` of 16 bytes and 16 bytes apart
+  in the object, the `adds`/`adc` pair in `--dump-asm`, the even register pair, the 16-byte array,
+  `fcvt h16, s16`, the AVX object, and the sweep.
+  `make check` green end to end (RC 0) with `check-wide` added; `check-float` still ok on all five
+  legs after the kind-based generalisation (12/12, 12/12, 12/12, 11/11, 11/11 and the four sweeps).
+  All five goldens rewritten once. Docs: `docs/guide/96-a-new-primitive.md` § 5,
+  `docs/reference/bundle.md` § "The generality proofs", `examples/avx/README.md` (new).
+- Next: M18 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
   sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is
   one more motivating case).
   Update this section when each milestone closes.

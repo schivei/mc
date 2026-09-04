@@ -35,7 +35,7 @@ root in order.
 
 ## The catalogue
 
-The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 47 entries,
+The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 65 entries,
 plus `mc/bundle_data`, which is regenerated on demand (see below). Those are the names `<...>`
 accepts.
 
@@ -126,6 +126,35 @@ That is a complete compiler, and it is exactly what `mc build` generates for a `
 section ([../build.md](../build.md)). See [../guide/90-linux-host.md](../guide/90-linux-host.md)
 for what the host layer answers.
 
+### `<float>` — f32 and f64 (M24)
+
+A LIBRARY, not a compiler feature. The stock `mc` has no floats: nothing here is in
+`lib/user_default.mc`, and a float program is built by a taught compiler the way `examples/api`
+and `examples/lang` are.
+
+| name | file | what it gives you |
+|---|---|---|
+| `<float>` | `lib/float.mc` | the compiler half: `type_new` for `f64`, `f32` and `f64raw`, the `syntax_lit` handler with a correctly-rounded decimal-to-binary conversion in integers, and the eight `intrinsic` registrations |
+| `<machine_arm64_float>` | `lib/machine_arm64_float.mc` | the AArch64 machine, derived from `arm64` |
+| `<machine_x86_64_float>` | `lib/machine_x86_64_float.mc` | the SSE2 machine, derived from `x86_64` **and** `x86_64-win` |
+| `<user_float>` | `lib/user_float.mc` | the three of them plus the `user_init` that registers them — this is what `[compiler] modules` names |
+| `<mc_float>` | `lib/mc_float.mc` | the same as a standalone compiler entry, for `mc --exe` |
+| `<float_rt>` | `lib/float_rt.mc` | the RUN-TIME half, which a **program** includes: `putf64`, `fmt_f64`, `puthexf`. It is the one bundled file the frozen seed cannot lex (it spells float literals) and it carries a `seed-skip` header saying so |
+
+### The generality proofs (M24 step 2)
+
+Three modules the core has never heard of, each with an empty `git diff src/`.
+
+| name | file | what it gives you |
+|---|---|---|
+| `<i128>` | `lib/i128.mc` | a 128-bit integer: `type_new(..., 16, 16, TK_WIDE)`, memory-resident in ONE depth, `adds`/`adc`, `subs`/`sbc`, `mul`/`umulh`, a compare that is not just the 64-bit one twice, and a literal through a module-private global with an `N_BLOB` initializer. AArch64 only |
+| `<mc_i128>` | `lib/mc_i128.mc` | the compiler that carries it |
+| `<f16>` | `lib/f16.mc` | half precision as a STORAGE type, on top of `<float>`'s machine: four slots and two `fcvt`s, because `<float>` dispatches on the KIND and not on the id. AArch64 only |
+| `<mc_f16>` | `lib/mc_f16.mc` | `<float>` plus `<f16>`, in one compiler |
+
+`examples/avx/` is the third and is not bundled: it is an example directory with
+its own README, and it teaches one AVX instruction by its encoding.
+
 ### The demonstrations
 
 Everything `make check-surface` wires up is bundled too, so the demos can be reproduced from a
@@ -137,11 +166,19 @@ downloaded binary with no checkout:
 | `<pass_demo>` | `lib/pass_demo.mc` — the `x * 1` → `x` pass |
 | `<user_default>` | `lib/user_default.mc` — an empty `user_init()` |
 | `<user_demo>` | `lib/user_demo.mc` — registers the backend and the pass |
-| `<user_syntax_demo>` | `lib/user_syntax_demo.mc` — the nine Tier 3 registrations |
+| `<user_syntax_demo>` | `lib/user_syntax_demo.mc` — the Tier 3 registrations, plus M24's `type_new`, `syntax_lit` and `intrinsic` |
 | `<mc_syntax_demo>` | `lib/mc_syntax_demo.mc` — the taught compiler that wires them in |
 | `<syntax_demo_test>` | `lib/syntax_demo_test.mc` — the program only that compiler accepts |
 | `<user_dupop>` | `lib/user_dupop.mc` — the duplicate `syntax_infix` refusal |
 | `<user_tokadd>` | `lib/user_tokadd.mc` — the `tok_add`-before-`tok_init` guard |
+| `<user_dupty>` | `lib/user_dupty.mc` — a `type_new` on a core keyword, refused at `user_init` |
+| `<user_lit_nop>` | `lib/user_lit_nop.mc` — a `syntax_lit` that answers 0 for every literal |
+| `<mc_lit_nop>` | `lib/mc_lit_nop.mc` — the compiler that carries it, for the M24 inertness proof |
+| `<machine_probe>` | `lib/machine_probe.mc` — a derived machine that changes no instruction and asserts the depth-type contract |
+| `<user_badmach>` | `lib/user_badmach.mc` — a derived machine with ONE slot deliberately wrong, the observable-override proof |
+| `<mc_badmach>` | `lib/mc_badmach.mc` — the compiler that carries it |
+| `<user_dupintrin>` | `lib/user_dupintrin.mc` — an `intrinsic` that tries to shadow `ld64` |
+| `<mc_probe>` | `lib/mc_probe.mc` — the compiler that carries it |
 | `<embed_demo>` | `tests/mc/bundle/embed_demo.mc` — `#embed` inside a bundled file |
 | `<embed_demo.txt>` | `tests/mc/bundle/embed_demo.txt` — its payload |
 

@@ -26,6 +26,15 @@ if ! msg=$(scripts/link-host.sh "$lexdump" "$obj" 2>&1); then
     exit 1
 fi
 
+# M24 (risk 6 / decision D6): a source the FROZEN SEED cannot LEX has nothing to
+# compare, the same escape scripts/check-asm.sh and scripts/check-ast.sh have
+# carried since M38. It exists here as insurance for the modules Tier 4 puts
+# under lib/: the seed's lex_number stops a literal at the `.`, so a file that
+# spells one out is not comparable. No file uses it today -- lib/float.mc and
+# every other bundled module write bit patterns for exactly this reason -- and
+# a skip is REPORTED here rather than silently dropped.
+seed_skip() { sed -n 's|^// seed-skip: *||p' "$1" | head -1; }
+
 tmp="${TMPDIR:-/tmp}/check-lex.$$"
 # Under Git Bash on Windows, MSYS hands TMPDIR to this shell in /d/... form, a
 # path the native mc cannot open; cygpath -m gives D:/... which both accept.
@@ -33,9 +42,16 @@ case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) tmp=$(cygpath -m "$tmp") ;; esac
 mkdir -p "$tmp"
 fails=0
 total=0
+skipped=0
 
 for f in tests/*.mc tests/lib/*.mc lib/*.mc src/*.mc; do
     [ -f "$f" ] || continue
+    why=$(seed_skip "$f")
+    if [ -n "$why" ]; then
+        echo "skip $f ($why)"
+        skipped=$((skipped + 1))
+        continue
+    fi
     total=$((total + 1))
 
     "$mc" --dump-tokens "$f" > "$tmp/a" 2> "$tmp/ae"; ra=$?
@@ -60,5 +76,9 @@ for f in tests/*.mc tests/lib/*.mc lib/*.mc src/*.mc; do
 done
 
 rm -rf "$tmp"
-echo "$((total - fails))/$total files identical"
+if [ "$skipped" -gt 0 ]; then
+    echo "$((total - fails))/$total files identical ($skipped skipped)"
+else
+    echo "$((total - fails))/$total files identical"
+fi
 [ "$fails" -eq 0 ]

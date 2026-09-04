@@ -57,7 +57,8 @@ Punctuation is matched by **longest prefix**, scanning the table linearly. `>>=`
 
 ## 2. Types
 
-Seven words, and no way to make an eighth without `type_alias`.
+Seven words in the core. An eighth is `type_alias` (a second name for one of the seven) or, since
+M24, `type_new` — a **primitive the core has never heard of**, registered by a module.
 
 | type | width | signedness of `/ % >>` | notes |
 |---|---|---|---|
@@ -79,6 +80,33 @@ documented, not enforced.
 A cast is C-shaped, `(u32) x`, and unambiguous because a type keyword always follows the `(`. It
 narrows through a mask (`u8`/`u16`/`u32`) and is otherwise a no-op. `(void) x` is
 `cast to void`.
+
+### Types a module registers (M24)
+
+`type_new(name, width, align, kind)` ([hooks.md](hooks.md) § 3) appends an eighth id, a ninth, and
+so on. The rule that keeps the core honest is a number: **an id below `TY_MAX` (7) is a core type
+and behaves exactly as it always has; an id at or above it was registered, and every core decision
+about it is delegated.** The core consumes exactly two of the four columns —
+
+- `width` sizes a global, an array element and a **frame slot** (`slot_new(type_width(ty))`), so a
+  16-byte type gets 16 bytes of frame where an `i64` gets 8;
+- `align` is the alignment `glob_place` places it at;
+- `name` is what `--dump-ast` prints (`type=f64`, not `?`);
+- `kind` — `TK_INT`, `TK_FLOAT`, `TK_WIDE`, `TK_OPAQUE` — is for the **machine**, which dispatches
+  on it when it does not know the exact id. The core never reads it.
+
+Everything else about such a type belongs to the module that registered it: its literals
+(`syntax_lit`), its arithmetic and its ABI (a derived machine table, [machine.md](machine.md)) and
+its named hardware instructions (`intrinsic`). In particular the core **does not fold** `+`, `-`,
+`~`, `!` or a cast over a literal of a registered type — it has no arithmetic for a representation
+it did not define, so the node reaches the module's machine untouched.
+
+`type_new` reserves the word for the whole program, exactly as `type_alias` does: a compiler that
+loads `<float>` has no identifier called `f32`. That is why `<float>` is not in
+`lib/user_default.mc` — nobody gets it by accident.
+
+The name is valid in all seven type positions at once (global, local, parameter, `extern`, cast,
+array element, `p_type()`), because they all end in the same lookup.
 
 ---
 
@@ -135,6 +163,13 @@ i64 main() {
 same signedness rule as the runtime. A `#define` is folded at *definition* time and is therefore
 a constant, never a textual macro. Folding `x / 0` where both sides are constants is
 `division by zero` at compile time.
+
+Folding stops at a **type the core did not define** (§ 2): `fold_unary`, `fold_binary` and
+`fold_cast` each return early when an operand — or, for a cast, the destination — carries an id at
+or above `TY_MAX`. Without that, a float literal carried as its IEEE bit pattern would make
+`1.5 + 2.5` an integer add of two bit patterns and produce an infinity at compile time with no
+diagnostic. `--dump-ast` shows the tree *before* `fold()` runs, so the observable difference is in
+`--dump-asm`: a taught `-1.5` leaves a `neg` behind where a core `-1` leaves one `movz`.
 
 ### Division by zero at run time is the target's answer, not the language's
 
@@ -418,8 +453,11 @@ varargs, `+=` and `++`, multiple assignment, the ternary operator, operator over
 namespaces, generics, classes, and a standard library.
 
 Most of them are reachable **through the surface** instead: `while`/`for`/`+=`/`++` from the
-prelude, `bool` from `type_alias`, classes and generics from `syntax`/`syntax_expr`
-(`examples/lang` teaches all of the last row). What is genuinely absent is `struct` — it would
+prelude, `bool` from `type_alias`, `f32`/`f64` from `<float>` — a library, not a keyword, with its
+literals, its four ABIs and its instructions in `lib/` and nothing in `src/` — over
+M24's `type_new`/`syntax_lit`/`intrinsic` and a derived machine ([hooks.md](hooks.md) § 3,
+[../guide/96-a-new-primitive.md](../guide/96-a-new-primitive.md)), classes and generics from
+`syntax`/`syntax_expr` (`examples/lang` teaches all of the last row). What is genuinely absent is `struct` — it would
 need a `type $t` hole in `#rule` and a layout model, which is more than `#rule` delivers; the
 answer in this codebase is `#define` offsets plus accessor functions, which is also what makes
 the compiler's own data flat and portable.

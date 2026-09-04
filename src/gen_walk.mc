@@ -94,6 +94,21 @@
 #define MTASK_RELOC_OFF    30            // (e) -> bytes          where inside it the field sits
 #define MTASK_COUNT        31
 
+// M24 (M9): the task names --dump-machine prints, in MTASK_* order. They live
+// here because the vocabulary is the walker's; the dump itself is in main.mc,
+// which is the one file that has both this list and the machine registry.
+uptr mtask_names[] = {
+    "prologue", "param", "epilogue", "frame_fix", "const", "bin", "cmp", "un",
+    "bool", "cast", "load", "store", "local_addr", "local_load", "local_store",
+    "sym_addr", "global_load", "global_store", "call", "callp", "ret", "jump",
+    "jz", "jnz", "label", "word", "ins_size", "encode", "dump", "reloc_kind",
+    "reloc_off" };
+
+uptr mtask_name(i64 t) {
+    if (t >= 0 && t < MTASK_COUNT) return ld64(mtask_names + t * 8);
+    return "?";
+}
+
 // ---- the operator vocabulary the tasks speak ----
 #define MOP_ADD   0
 #define MOP_SUB   1
@@ -292,6 +307,21 @@ uptr mach(i64 task) {
     return ld64(mach_tab + task * 8);
 }
 
+// M24 (M8): the write side, for a module DERIVING a machine. It is here and not
+// in src/hooks.mc because the bound it checks is the MTASK_* list above -- the
+// walker's own vocabulary. Its companion, machine_tab(name), is in the registry
+// with machine()/machine_find()/machine_use().
+//
+// The recipe, and the one trap in it: copy machine_tab("arm64") into TWO blocks
+// of MTASK_COUNT entries, patch the slots you are replacing in one of them,
+// register that one, and delegate through the OTHER -- reading the patched
+// table from inside a wrapper makes every wrapper call itself
+// (lib/machine_probe.mc is the worked example).
+void machine_slot(uptr tab, i64 task, uptr fn) {
+    if (task < 0 || task >= MTASK_COUNT) die("machine_slot outside the task table");
+    st64(tab + task * 8, fn);
+}
+
 // ---- buffer ----
 void ins_add(i64 op, i64 rd, i64 rn, i64 rm, i64 imm, i64 label, i64 sym) {
     // the pending relocation only sticks to the raw word that gen_word puts in the
@@ -321,6 +351,49 @@ void em(i64 op, i64 rt, i64 rn, i64 off) { ins_add(op, rt, rn, 0, off, 0, 0); }
 i64 slot_new(i64 size) {              // returns the positive offset from the frame base
     frame_off = frame_off + ((size + 7) & ~7);
     return frame_off;
+}
+
+// ---- M24: the type of each depth ----
+// The walker says "the value is at depth 2"; a machine that has more than one
+// register file has to know WHAT is at depth 2 to pick the file, the
+// instruction and the ABI register. MTASK_PARAM has carried `ty` since M17, so
+// the callee side of a float ABI was already reachable; MTASK_BIN/CMP/UN/BOOL/
+// CALL/RET carry no type at all, and that asymmetry is exactly this array.
+//
+// NOT a task slot: no signature moves, the contract stays additive, and a
+// machine that never reads it emits byte for byte what it emitted before.
+//
+// dtype[d] is written by gen_expr around every node it lowers -- res_type(n)
+// before the children run, and again after, because the value that ACTUALLY
+// lands at d is the node's own type and not the last child's. That post-write
+// is what covers, in one place, the five sites the type changes under the
+// walker's feet: a comparison (i64 out of two floats), gen_logic's shortcut
+// constant, MUN_LNOT, an intrinsic load and a call -- where depth d is
+// overwritten by argument 0 before the result comes back.
+//
+// walk_ret_type() is that same node's type while its own task runs, which is
+// what a MTASK_CALL handler needs: by then dtype[d] holds ARGUMENT 0's type.
+i64 dtype[MAXDEPTH];
+i64 walk_ret = TY_I64;
+
+i64  walk_depth_type(i64 d) {
+    if (d < 0 || d >= MAXDEPTH) return TY_I64;
+    return ld64(dtype + d * 8);
+}
+void set_walk_depth_type(i64 d, i64 t) {
+    if (d >= 0 && d < MAXDEPTH) st64(dtype + d * 8, t);
+}
+i64  walk_ret_type() { return walk_ret; }
+
+// every depth back to TY_I64: a function starts with nothing announced
+void depth_types_reset() {
+    i64 i = 0;
+    loop {
+        if (i >= MAXDEPTH) break;
+        st64(dtype + i * 8, TY_I64);
+        i = i + 1;
+    }
+    walk_ret = TY_I64;
 }
 
 // ---- locals (flat stack, size mark per block) ----
@@ -620,6 +693,22 @@ void gen_reloc(i64 n) {
     pend_node = n;
 }
 
+// M24: the arguments of a taught intrinsic, then its handler. The handler is
+// the module's; what it may rely on is contract version 3 -- walk_depth_type on
+// every one of those depths, and val_reg/dst_reg/dst_done from the machine in
+// effect (docs/reference/machine.md § 3).
+void lower_uintrin(i64 n, i64 depth, i64 ui) {
+    i64 i = 0;
+    i64 a = nd_a(n);
+    loop {
+        if (a == 0) break;
+        gen_value(a, depth + i);
+        i = i + 1;
+        a = nd_next(a);
+    }
+    callp(intrinsic_fn_at(ui), depth, i);
+}
+
 // callp(p, a1..a11): the pointer is argument 0; the machine says where each one
 // goes and saves whatever it has live, exactly as it does for a direct call.
 void gen_callp(i64 n, i64 depth) {
@@ -645,6 +734,10 @@ void gen_call(i64 n, i64 depth) {
         return;
     }
     if (res_kind(n) == RK_OPCODE) { gen_opcode(n, res_decl(n)); return; }
+    // M24 (M7): a taught intrinsic. Its arguments are lowered exactly like a
+    // call's -- depths d .. d+nargs-1, with walk_depth_type filled in -- and
+    // then the module's handler runs INSTEAD of the call sequence.
+    if (res_kind(n) == RK_UINTRIN) { lower_uintrin(n, depth, res_decl(n)); return; }
     i64 fi = res_decl(n);
     i64 i = 0;
     i64 a = nd_a(n);
@@ -657,8 +750,22 @@ void gen_call(i64 n, i64 depth) {
     callp(mach(MTASK_CALL), depth, i, sym_ref(usym(fs_name(fs_at(fi)))));
 }
 
+// M24: the announcement wrapper around the dispatch. `walk_ret` is saved and
+// restored so a child's type does not leak into the parent's task, and dtype[d]
+// is written twice -- before, so a task the dispatch issues over its OWN depth
+// sees the right thing, and after, so the value that landed is described by the
+// node that produced it.
 void gen_expr(i64 n, i64 depth) {
     if (depth >= MAXDEPTH) err_node(n, "expression too deep");
+    i64 save = walk_ret;
+    walk_ret = res_type(n);
+    set_walk_depth_type(depth, walk_ret);
+    lower_expr(n, depth);
+    set_walk_depth_type(depth, res_type(n));
+    walk_ret = save;
+}
+
+void lower_expr(i64 n, i64 depth) {
     i64 k = nd_kind(n);
     if (k == N_INT) {
         callp(mach(MTASK_CONST), depth, nd_val(n));
@@ -690,7 +797,10 @@ void gen_var(i64 n) {
         return;
     }
     if (nd_a(n)) gen_value(nd_a(n), 0);          // initializer before the name exists
-    i64 off = slot_new(8);
+    // M24: the slot is the TYPE's width, not 8. Provably byte-identical for all
+    // seven core types -- slot_new rounds (size + 7) & ~7, so 1..8 give the same
+    // offset -- and a 16-byte taught type gets 16.
+    i64 off = slot_new(type_width(ty));
     local_add(nd_name(n), ty, off, 0);
     if (nd_a(n)) callp(mach(MTASK_LOCAL_STORE), ty, 0, off);
 }
@@ -869,6 +979,7 @@ void gen_encode_one(i64 f) {
 void gen_func(i64 f, i64 text) {
     ins_base = nins; nlabels = 0; nlocals = 0; nloops = 0; frame_off = 0;
     prel_base = nprel; pend_type = -1;
+    depth_types_reset();                          // M24: nothing announced yet
     if ((sec_flags(sec_at(text)) & 0xff) == S_ZEROFILL) err_node(f, "function in a zerofill section");
     nlabels = nlabels + 1;
     i64 lepi = nlabels;
@@ -878,7 +989,8 @@ void gen_func(i64 f, i64 text) {
     i64 p = nd_a(f);
     loop {                                       // params: the ABI registers go to the frame
         if (p == 0) break;
-        i64 off = slot_new(8);
+        i64 off = slot_new(type_width(nd_type(p)));   // M24, as in gen_var
+
         local_add(nd_name(p), nd_type(p), off, 0);
         callp(mach(MTASK_PARAM), nd_type(p), i, off);
         i = i + 1;

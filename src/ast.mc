@@ -68,6 +68,54 @@
 #define TY_UPTR 6
 #define TY_MAX  7
 
+// ---- M24 (Tier 4): the type registry ----
+// A type id BELOW TY_MAX is a core type and behaves exactly as it always has,
+// byte for byte. An id at or above TY_MAX was registered by a module with
+// type_new() (src/hooks.mc) and every core decision about it -- its width, its
+// alignment, the name --dump-ast prints -- is delegated to the four parallel
+// arrays below. The core never learns what such a type MEANS: `kind` is what a
+// machine dispatches on when it does not know the exact id, and the walker
+// consumes only width and align.
+//
+// Growable under M23's rule: the table scales with what a module teaches. The
+// seven core types are NOT in it -- they keep their own ladder, which is what
+// makes "nothing moves for an untaught program" a structural fact.
+#define TK_INT    0                   // an integer the core's own operators fit
+#define TK_FLOAT  1                   // a floating-point value
+#define TK_WIDE   2                   // wider than a register; lives in a slot
+#define TK_OPAQUE 3                   // the core knows nothing but its size
+
+uptr ty_name;                         // parallel arrays, index = t - TY_MAX
+uptr ty_w;
+uptr ty_a;
+uptr ty_k;
+i64  tycap  = 0;
+i64  ntypes = 0;                      // registered types, NOT counting the core's
+
+// how many type ids exist: the seven core ones plus whatever a module taught
+i64 type_count() { return TY_MAX + ntypes; }
+
+// the append side; src/hooks.mc's type_new() is what a module calls, because
+// reserving the WORD is a lexer question and belongs with the other Tier 3
+// registrations.
+i64 ty_reg_add(uptr name, i64 width, i64 align, i64 kind) {
+    i64 oc = tycap;
+    ty_name = grow(T_TYPES, ty_name, ntypes, &tycap, 8);
+    if (tycap != oc) {
+        ty_w = grow_to(ty_w, ntypes, tycap, 8);
+        ty_a = grow_to(ty_a, ntypes, tycap, 8);
+        ty_k = grow_to(ty_k, ntypes, tycap, 8);
+    }
+    st64(ty_name + ntypes * 8, name);
+    st64(ty_w + ntypes * 8, width);
+    st64(ty_a + ntypes * 8, align);
+    st64(ty_k + ntypes * 8, kind);
+    ntypes = ntypes + 1;
+    return TY_MAX + ntypes - 1;
+}
+
+i64 ty_registered(i64 t) { return t >= TY_MAX && t < type_count(); }
+
 // ---- Node: { kind, op, type, val, name, a, b, c, d, next, sect, line, file } ----
 #define ND_KIND 0
 #define ND_OP   8
@@ -206,15 +254,31 @@ uptr type_names[] = { "void", "u8", "u16", "u32", "u64", "i64", "uptr" };
 
 uptr type_name(i64 t) {
     if (t >= 0 && t < TY_MAX) return ld64(type_names + t * 8);
+    if (ty_registered(t)) return ld64(ty_name + (t - TY_MAX) * 8);   // M24: --dump-ast prints `f64`
     return "?";
 }
 
-// width in bytes of a type; uptr/i64/u64 are 8
+// width in bytes of a type; uptr/i64/u64 are 8, a registered one says its own
 i64 type_width(i64 t) {
     if (t == TY_U8)  return 1;
     if (t == TY_U16) return 2;
     if (t == TY_U32) return 4;
+    if (ty_registered(t)) return ld64(ty_w + (t - TY_MAX) * 8);
     return 8;
+}
+
+// M24: alignment in bytes. A core type aligns to its own width, which is what
+// gen_globals already assumed by passing type_width as the alignment.
+i64 type_align(i64 t) {
+    if (ty_registered(t)) return ld64(ty_a + (t - TY_MAX) * 8);
+    return type_width(t);
+}
+
+// M24: TK_*, what a machine dispatches on when it does not know the exact id.
+// Every core type answers TK_INT: the core's own operators fit all seven.
+i64 type_kind(i64 t) {
+    if (ty_registered(t)) return ld64(ty_k + (t - TY_MAX) * 8);
+    return TK_INT;
 }
 
 uptr kind_name(i64 k) {

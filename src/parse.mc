@@ -703,6 +703,15 @@ i64 parse_primary() {
         return n;
     }
     if (tok_id(cur) == T_INT || tok_id(cur) == T_CHAR) {
+        // M24: the taught numeric literal. The handler reads the raw source at
+        // p_start(), consumes what the lexer left with p_take_lit(), and
+        // returns its node; 0 means "not mine" and the core builds the N_INT it
+        // always did. nonlit == 0 short-circuits, so an untaught compiler does
+        // not even make the callp.
+        if (nonlit) {
+            i64 t = run_syntax_lit();
+            if (t) return t;
+        }
         i64 n = node_new(N_INT, line, fl);
         set_nd_val(n, tok_val(cur));
         set_nd_type(n, TY_I64);
@@ -937,12 +946,22 @@ i64 const_bin(i64 op, i64 x, i64 y, i64 type, i64 n) {
     return 0;
 }
 
+// M24: the core has no arithmetic for a type it did not define. A taught literal
+// is an ordinary N_INT whose nd_type is the module's and whose val is the
+// representation -- for <float>, the IEEE-754 bit pattern -- so without these
+// three guards `1.5 + 2.5` would fold to an INTEGER add of two bit patterns and
+// produce an infinity at compile time with no diagnostic, and `-1.5` would
+// integer-negate one. The node is left alone and reaches the module's machine.
+// Inert today: no node the core builds carries a type at or above TY_MAX.
+i64 fold_taught(i64 n) { return nd_type(n) >= TY_MAX; }
+
 // type: a literal is i64; a binary inherits the left operand's; a cast sets its own
 void fold_unary(i64 n) {
     i64 a = fold(nd_a(n));
     set_nd_a(n, a);
     set_nd_type(n, nd_type(a));
     if (nd_kind(a) != N_INT) return;
+    if (fold_taught(a)) return;                    // M24
     u64 v = nd_val(a);
     u64 r = 0;
     i64 op = nd_op(n);
@@ -961,6 +980,7 @@ void fold_binary(i64 n) {
     i64 b = fold(nd_b(n)); set_nd_b(n, b);
     set_nd_type(n, nd_type(a));
     if (nd_kind(a) != N_INT || nd_kind(b) != N_INT) return;
+    if (fold_taught(a) || fold_taught(b)) return;  // M24
     i64 r = const_bin(nd_op(n), nd_val(a), nd_val(b), nd_type(a), n);
     set_nd_kind(n, N_INT);
     set_nd_val(n, r);
@@ -973,6 +993,9 @@ void fold_cast(i64 n) {
     i64 a = fold(nd_a(n));
     set_nd_a(n, a);
     if (nd_kind(a) != N_INT) return;
+    // M24: neither a taught source nor a taught destination folds -- (i64) 1.5
+    // is a conversion the module's machine performs, not a mask
+    if (fold_taught(a) || fold_taught(n)) return;
     u64 v = nd_val(a);
     i64 t = nd_type(n);
     if (t == TY_U8)       v = v & 0xff;
@@ -1810,6 +1833,27 @@ void p_resplit_punct(i64 n) {
     set_tok_id(cur, id);
     set_tok_len(cur, n);
 }
+
+// M24: the other half of a syntax_lit handler. The lexer stops a number where
+// its own grammar ends -- `1.5` is the token `1` with the cursor left on the
+// `.` -- so a handler that scanned further says WHERE its literal ends, and the
+// next token is lexed from there. The token's own length grows with it, which
+// is what keeps err_at, p_start and --dump-tokens honest about the span.
+//
+// Guarded exactly like p_resplit_punct, and for the same reason: `cp ==
+// tok_start(cur) + tok_len(cur)` holds only for a token just lexed from the
+// source being read -- never a string, never a substituted identifier. `q` has
+// to be at or past the cursor (a handler may not un-read) and inside the file.
+void p_take_lit(uptr q) {
+    if (q < cp || q > cend || cp != tok_start(cur) + tok_len(cur))
+        err_at(tok_file(cur), tok_line(cur), "p_take_lit outside the source token");
+    cp = q;
+    set_tok_len(cur, cp - tok_start(cur));
+}
+
+// where the source being lexed ends: what a handler scanning raw bytes forward
+// from p_start() has to stop at
+uptr p_src_end() { return cend; }
 
 // ---- M31 (2.1): asking the core about a declaration it already parsed ----
 // A module that lowers `await r = f(a)` -- or that generates FFI glue, or an

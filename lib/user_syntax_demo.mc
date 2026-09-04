@@ -599,7 +599,85 @@ i64 sd_retcount() {
     return sd_int(sd_nret, line, fl);
 }
 
+// ---- M24 (Tier 4): a PRIMITIVE the core has never heard of ----
+// Two registered types and one literal syntax, deliberately unrelated to
+// floats: `fix` is 16.16 signed fixed point in eight bytes and `pair` is a
+// sixteen-byte opaque value, which is all it takes to exercise every core
+// decision M24 delegates -- the width of a frame slot, the width of a global,
+// the name --dump-ast prints, the type a cast and a parameter may name, and the
+// three folding guards.
+//
+// `1.5` is written in the source and read HERE, not in lex_number: the lexer
+// stops the number at the `.` (its token is `1`), the handler rescans the raw
+// bytes from p_start() and says where its literal ended with p_take_lit(). That
+// is what keeps --dump-tokens byte for byte what the frozen stage0/lex.c
+// produces and scripts/check-lex.sh meaningful over the whole tree.
+//
+// The node it returns is an ORDINARY N_INT whose val is the representation and
+// whose type is the module's. Everything downstream follows from that: an
+// initializer list accepts it, glob_place writes type_width bytes of it, and
+// MTASK_CONST carries it to a machine -- no new node kind and no new task.
+i64 sd_ty_fix  = 0;
+i64 sd_ty_pair = 0;
+
+i64 sd_dig(i64 c) { return c >= '0' && c <= '9'; }
+
+i64 sd_lit() {
+    uptr s = p_start();
+    uptr e = p_src_end();
+    if (s >= e || !sd_dig(ld8(s))) return 0;     // a char literal, or 0x...
+    uptr q = s;
+    i64 ip = 0;
+    loop {
+        if (q >= e || !sd_dig(ld8(q))) break;
+        ip = ip * 10 + (ld8(q) - '0');
+        q = q + 1;
+    }
+    // the `.` has to be there AND be followed by a digit: `50 .+ 60` is the
+    // taught operator, not a literal, and `x.y` is nothing of ours either
+    if (q + 1 >= e || ld8(q) != '.' || !sd_dig(ld8(q + 1))) return 0;
+    q = q + 1;
+    i64 num = 0;
+    i64 den = 1;
+    loop {
+        if (q >= e || !sd_dig(ld8(q))) break;
+        if (den < 1000000) {                     // six digits is all 16.16 can carry
+            num = num * 10 + (ld8(q) - '0');
+            den = den * 10;
+        }
+        q = q + 1;
+    }
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_take_lit(q);                               // the cursor moves past the literal
+    i64 n = node_new(N_INT, line, fl);
+    set_nd_val(n, ip * 65536 + (num * 65536 + den / 2) / den);
+    set_nd_type(n, sd_ty_fix);
+    p_next();
+    return n;
+}
+
+// ---- M24 (M7): a NAMED HARDWARE INSTRUCTION, on values the allocator placed ----
+// `rbit(x)` is AArch64's bit-reversal, which the core's operator set does not
+// have and `#opcode` cannot reach for an arbitrary expression: #opcode folds
+// constants and names fixed registers, so an operand would have to HAPPEN to
+// sit in one, inside a whole leaf function.
+//
+// The handler receives its argument already lowered to depth `d`, asks the
+// machine in effect where the allocator put it -- val_reg/dst_reg/dst_done, the
+// three names contract version 3 publishes -- and emits one word.
+void sd_rbit(i64 d, i64 nargs) {
+    i64 rn = val_reg(d, REG_S1);                 // loads a spilled depth first
+    i64 rd = dst_reg(d);
+    ei(I_EMIT, 0, 0, 0xDAC00000 | (rn << 5) | rd);   // rbit xd, xn
+    dst_done(d, rd);                             // ...and spills it back if it has to
+}
+
 void user_init() {
+    sd_ty_fix  = type_new("fix",  8,  8,  TK_INT);    // M24: two taught primitives
+    sd_ty_pair = type_new("pair", 16, 16, TK_WIDE);
+    syntax_lit(&sd_lit);                         // M24: the literal position
+    intrinsic("rbit", 1, TY_I64, &sd_rbit);      // M24: one instruction, by name
     syntax("enum", &sd_enum);                    // M12: top-level position
     syntax_stmt("unless", &sd_unless);           // M12: statement position
     type_alias("bool", TY_U8);                   // M12: new type, no new syntax

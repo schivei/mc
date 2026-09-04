@@ -6,7 +6,7 @@
 prints exactly this and exits 1:
 
 ```
-usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] source.mc [-o out]
+usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules|--dump-machine] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] source.mc [-o out]
        mc --host
 usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits] [--sysroot-dir DIR]
        mc limits [DIR|FILE.mc]
@@ -55,11 +55,12 @@ unknown backend: xyz
 registered: macho macho-exe elf-obj
 ```
 
-### Modes: the five dumps
+### Modes: the six dumps
 
 A dump writes deterministic text to **stdout** and produces no object. Only one mode is in
-effect — the last one on the command line wins. All five exist in the C seed too, which is what
-`make check-lex`, `check-ast` and `check-asm` compare across the two compilers.
+effect — the last one on the command line wins. Five of the six exist in the C seed too, which is
+what `make check-lex`, `check-ast` and `check-asm` compare across the two compilers;
+`--dump-machine` is the self-hosted compiler's own, because the seed has no machine table.
 
 | flag | prints | stops after |
 |---|---|---|
@@ -68,6 +69,7 @@ effect — the last one on the command line wins. All five exist in the C seed t
 | `--dump-rules` | the `#rule` table, then every infix and prefix operator with precedence and associativity | the parse |
 | `--dump-asm` | one function per label, one instruction per line, `gen_lower` only (nothing is encoded) | lowering |
 | `--dump-syms` | one line per section, then one line per symbol | encoding |
+| `--dump-machine` | every registered machine, one line per task, with the **origin** of the slot | `user_init()` |
 
 ```
 $ mc --dump-tokens prog.mc
@@ -137,6 +139,28 @@ prefix &
 The `$N` in a rule line is the hole's index in the template, and `=> N nodes` is the size of the
 parsed template. `--dump-rules` is the one dump whose `.mc` version says more than the C seed's:
 only the self-hosted compiler has the handler column that `syntax_infix` fills in.
+
+`--dump-machine` (M24) is the audit of the other seam. It stops right after `user_init()` — a
+machine table is not a function of the source — and reports, per registered machine, which
+implementation is behind each task:
+
+```
+$ mc-badmach --dump-machine prog.mc
+machine arm64 (current)
+  prologue          bundled arm64
+  const             bundled arm64
+  bin               taught
+  ...
+machine x86_64
+  ...
+```
+
+`bundled <name>` means the slot's pointer is the one that bundled machine had for that task before
+`user_init()` ran, and `taught` means a module replaced it. `(current)` marks the machine the
+walker would drive. It is the cheapest test that an override took effect, and it is what makes a
+derived machine reviewable — which slots a module actually replaced, and on top of what. There is
+no runtime symbol table, so the answer is read from a snapshot of the registry rather than from a
+symbol name; the source file is required only because `user_init()` runs after `lex_init`.
 
 ---
 
