@@ -1,0 +1,44 @@
+# mc.linux-aarch64.toml — cross-building `mc` itself for a linux/aarch64 HOST
+# (M37, docs/guide/90-linux-host.md).
+#
+#   build/mc1 build src --config src/mc.linux-aarch64.toml
+#   -> build/mc-linux-arm64          an ELF64 executable, musl, statically linked
+#
+# The entry is src/mc_linux.mc: the same core and the same extension point as
+# src/mc.mc, with the Linux host layer instead of the macOS one. Nothing else
+# about the compiler changes -- the object it writes for a given input is the
+# same object src/mc.mc writes.
+#
+# Every path below is relative to THIS FILE's directory (src/), which is why
+# they all start with `../`.
+#
+# The sysroot is the four musl files scripts/sysroot-linux.sh copies out of
+# alpine:3; `make sysroot-linux` populates it. There is no [compiler] section:
+# this is the plain compiler, not a taught one.
+
+[project]
+name  = "mc-linux-arm64"
+entry = "mc_linux.mc"
+out   = "../build/mc-linux-arm64"
+kind  = "exe"
+
+[target]
+os   = "linux"
+arch = "aarch64"
+
+[sysroot]
+path = "../build/sysroot/linux-aarch64"
+
+# `os = "linux"` has no direct executable backend, so [linker] is required. The
+# argument list is the one scripts/test-linux.sh uses for every test, plus
+# nothing: crt1/crti, the object, libc.a, crtn.
+[linker]
+cmd  = "ld.lld"
+args = ["-o", "{out}", "{sysroot}/crt1.o", "{sysroot}/crti.o", "{obj}",
+        "{sysroot}/libc.a", "{sysroot}/crtn.o"]
+
+# The compiler compiling itself is the biggest source in the repository; at the
+# default 0.25 several tables double mid-build. 1.0 keeps the whole build inside
+# the first reserve (`mc limits src --config src/mc.linux-aarch64.toml`).
+[limits]
+tolerance = 1.0

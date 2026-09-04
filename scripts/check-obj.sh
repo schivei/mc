@@ -16,14 +16,39 @@ for mc in "$mc0" "$mc1"; do
     fi
 done
 
+# M37: on a Linux host the object being compared is an ELF object for THIS
+# machine, so a test that is not portable to it has nothing to compare. The
+# headers are the ones scripts/test-linux.sh already reads -- `// skip-linux:`
+# for the whole system, `// skip-<arch>:` for one instruction set -- and a
+# skipped test is reported, not counted as a failure. On macOS nothing is
+# skipped: the Mach-O objects are what the frozen seed writes for every test.
+host_skip() {
+    [ "$(uname -s)" = "Linux" ] || return 1
+    r=$(sed -n 's|^// skip-linux: *||p' "$1" | head -1)
+    [ -n "$r" ] && { echo "$r"; return 0; }
+    case "$(uname -m)" in
+        aarch64|arm64) a=aarch64 ;;
+        x86_64|amd64)  a=x86_64 ;;
+        *)             a=none ;;
+    esac
+    r=$(sed -n "s|^// skip-$a: *||p" "$1" | head -1)
+    [ -n "$r" ] && { echo "$r"; return 0; }
+    return 1
+}
+
 tmp="${TMPDIR:-/tmp}/check-obj.$$"
 mkdir -p "$tmp/a" "$tmp/b"
 fails=0
 total=0
+skipped=0
 
 for f in tests/*.mc; do
     [ -f "$f" ] || continue
     name=$(basename "$f" .mc)
+    if why=$(host_skip "$f"); then
+        echo "skip $name ($why)"
+        skipped=$((skipped + 1)); continue
+    fi
     total=$((total + 1))
     a="$tmp/a/$name.o"
     b="$tmp/b/$name.o"
@@ -65,4 +90,5 @@ done
 
 rm -rf "$tmp"
 echo "$((total - fails))/$total objects identical"
+[ "$skipped" -gt 0 ] && echo "$skipped skipped (not portable to this host)"
 [ "$fails" -eq 0 ]

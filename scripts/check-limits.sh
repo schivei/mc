@@ -112,9 +112,17 @@ check prel     MAXPREL
 check_heap() {
     total=$((total + 1))
     c=$(heap_bytes)
-    if [ ! -x build/mc0 ] || [ -z "$c" ]; then
-        echo "FAIL heap: build/mc0 is missing, or HEAP_SIZE is not in stage0/arena.c"
+    if [ -z "$c" ]; then
+        echo "FAIL heap: HEAP_SIZE is not in stage0/arena.c"
         fails=$((fails + 1)); return
+    fi
+    # M37: the seed is a macOS program and there is no build/mc0 on a Linux
+    # host. The row measures the SEED's arena, so on a host that cannot run it
+    # the honest answer is that it was not measured, not a failure -- the macOS
+    # job in CI is what guards this ceiling.
+    if [ ! -x build/mc0 ]; then
+        echo "ok   heap      SKIPPED (no build/mc0 on this host: the C seed is macOS-only)"
+        return
     fi
     u=$(seed_rss)
     if [ -z "$u" ]; then

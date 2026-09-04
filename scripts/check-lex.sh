@@ -17,7 +17,7 @@ if ! msg=$("$mc" src/lexdump.mc -o "$obj" 2>&1); then
     echo "FAIL: compiling src/lexdump.mc: $msg"
     exit 1
 fi
-if ! msg=$(scripts/link.sh "$lexdump" "$obj" 2>&1); then
+if ! msg=$(scripts/link-host.sh "$lexdump" "$obj" 2>&1); then
     echo "FAIL: linking $lexdump: $msg"
     exit 1
 fi

@@ -23,9 +23,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # The targets that exist today. `mc` runs on macOS arm64 only, so this is a
-  # one-entry matrix -- the shape is a matrix because the other hosts plug in
-  # here unchanged (see build-future-hosts below).
+  # The macOS host, and the job that compiles everything: it is the only runner
+  # with a `mc` on it. It builds and packages the macOS asset, and cross-compiles
+  # the two Linux hosts as far as an ELF object -- `build-linux` below links,
+  # proves and packages those. A one-entry matrix, because the shape is what the
+  # remaining hosts plug into unchanged (see build-future-hosts below).
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -91,6 +93,30 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: scripts/release-assets.sh "$VERSION" "$TARGET" dist/mc dist
 
+      # M37: the two Linux hosts. `mc` is one program with a host layer
+      # (src/host_linux.mc), not a port, so the compiler that has just
+      # bootstrapped is what cross-compiles them -- but only as far as the
+      # OBJECT. Linking needs `ld.lld` and a musl sysroot, and this runner has
+      # neither (the sysroot is four files copied out of an `alpine:3`
+      # container, and GitHub's macOS runners have no Docker). The two jobs
+      # below link each object on a real Linux CPU of that architecture,
+      # bootstrap it to its own fixed point and package it
+      # (docs/ci.md § M37, docs/guide/90-linux-host.md).
+      - name: Cross-compile mc for the Linux hosts
+        run: |
+          set -eu
+          make mc-linux-obj
+          make mc-linux-x86_64-obj
+          ls -l build/mc-linux-arm64.o build/mc-linux-x86_64.o
+          for obj in build/mc-linux-arm64.o build/mc-linux-x86_64.o; do
+            [ -s "$obj" ] || { echo "::error::$obj was not produced"; exit 1; }
+          done
+          if command -v file >/dev/null 2>&1; then
+            file build/mc-linux-arm64.o build/mc-linux-x86_64.o
+            file build/mc-linux-arm64.o  | grep -q 'ELF 64-bit.*aarch64'
+            file build/mc-linux-x86_64.o | grep -q 'ELF 64-bit.*x86-64'
+          fi
+
       - name: Upload the packaged artifact
         uses: actions/upload-artifact@v4
         with:
@@ -100,13 +126,142 @@ jobs:
             dist/mc-*.tar.gz.sha256
           if-no-files-found: error
 
-  # Placeholders, deliberately disabled. They turn on when `mc` itself runs on
-  # Linux and Windows -- today it is a macOS arm64 program (docs/plan.md
-  # § Phase 2: "mc itself keeps running on macOS arm64 for now; cross-hosting
-  # comes later with CI", and docs/build.md § Limits: the driver needs
-  # `_NSGetEnviron`, which is libSystem-only). M16 gave Linux arm64 *targets*;
-  # hosting mc there is the milestone that flips `if: false` to `if: true`, and
-  # Windows waits for the COFF work of M19/M20.
+      - name: Upload the cross-compiled Linux objects
+        uses: actions/upload-artifact@v4
+        with:
+          name: mc-linux-objects
+          path: |
+            build/mc-linux-arm64.o
+            build/mc-linux-x86_64.o
+          if-no-files-found: error
+
+  # M37: the Linux half of the release. One job per architecture, each on real
+  # hardware of that architecture, because the proof that the shipped binary IS
+  # the compiler is that it reproduces itself here: scripts/bootstrap-linux.sh
+  # runs seed -> mc1l -> mc2l -> mc3l, `cmp mc2l.o mc3l.o`, the golden, and then
+  # the whole suite natively. Only then is the seed packaged.
+  #
+  # These jobs also produce the `release-linux-*` artifacts the publish job
+  # collects, so a release carries three tarballs (docs/ci.md § M37).
+  build-linux:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    needs: build
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            obj: build/mc-linux-arm64.o
+            bin: build/mc-linux-arm64
+            larch: aarch64
+            linkarch: ""
+          - os: ubuntu-latest
+            target: linux-x86_64
+            obj: build/mc-linux-x86_64.o
+            bin: build/mc-linux-x86_64
+            larch: x86_64
+            linkarch: "--arch x86_64"
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      # The shape of the tag was already validated by the `build` job, which
+      # this one needs: if it were malformed nothing here would run. So this is
+      # the same derivation without the re-validation.
+      - name: Derive the version from the tag
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          set -eu
+          tag="${TAG_INPUT:-$GITHUB_REF_NAME}"
+          echo "VERSION=${tag#v}" >> "$GITHUB_ENV"
+          echo "releasing $tag on ${{ matrix.target }}"
+
+      - name: Download the cross-compiled Linux objects
+        uses: actions/download-artifact@v4
+        with:
+          name: mc-linux-objects
+          path: build
+
+      - name: Install ld.lld and the musl development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lld musl-dev musl-tools
+          if ! command -v ld.lld >/dev/null 2>&1; then
+            # Debian ships ld.lld under the versioned llvm prefix on some
+            # releases; either shape is fine, it just has to be on PATH.
+            for cand in /usr/bin/ld.lld-* /usr/lib/llvm-*/bin/ld.lld; do
+              if [ -x "$cand" ]; then
+                sudo ln -sf "$cand" /usr/local/bin/ld.lld
+                break
+              fi
+            done
+          fi
+          ld.lld --version
+          ls -l /usr/lib/${{ matrix.larch }}-linux-musl/crt1.o \
+                /usr/lib/${{ matrix.larch }}-linux-musl/libc.a
+
+      # MC_SYSROOT points at the distribution's own musl files, so
+      # scripts/link-linux.sh runs `ld.lld` and nothing else -- it reaches for
+      # scripts/sysroot-linux.sh (and Docker) only when one of the four is
+      # missing.
+      - name: Link the compiler
+        env:
+          MC_SYSROOT: /usr/lib/${{ matrix.larch }}-linux-musl
+        run: |
+          set -eu
+          # shellcheck disable=SC2086
+          scripts/link-linux.sh ${{ matrix.linkarch }} ${{ matrix.bin }} ${{ matrix.obj }}
+          chmod 755 ${{ matrix.bin }}
+          ls -l ${{ matrix.bin }}
+
+      - name: What this binary says it is
+        run: |
+          set -eu
+          ${{ matrix.bin }} --host
+          os=$(${{ matrix.bin }} --host | sed -n 's|^os *||p')
+          arch=$(${{ matrix.bin }} --host | sed -n 's|^arch *||p')
+          if [ "$os" != "linux" ] || [ "$arch" != "${{ matrix.larch }}" ]; then
+            echo "::error::the binary says it is hosted on '$os/$arch', not linux/${{ matrix.larch }}"
+            exit 1
+          fi
+
+      # The release gate: the binary being shipped compiles itself to a fixed
+      # point on this machine and then runs the whole suite. It is the Linux
+      # equivalent of the macOS job's `scripts/test.sh dist/mc`, and stronger.
+      - name: Bootstrap to a fixed point with the binary being shipped
+        env:
+          MC_SYSROOT: /usr/lib/${{ matrix.larch }}-linux-musl
+        run: scripts/bootstrap-linux.sh ${{ matrix.bin }}
+
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+          BIN: ${{ matrix.bin }}
+        run: |
+          set -eu
+          scripts/release-assets.sh "$VERSION" "$TARGET" "$BIN" dist
+          ls -l dist
+
+      - name: Upload the packaged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            dist/mc-*.tar.gz
+            dist/mc-*.tar.gz.sha256
+          if-no-files-found: error
+
+  # Placeholders, deliberately disabled. The Linux entries are gone from here:
+  # M37 hosts `mc` on Linux, `build` cross-compiles both objects and
+  # `build-linux` links and packages them on real Linux hardware. Windows still
+  # waits for the COFF work of M19/M20.
   build-future-hosts:
     name: Build ${{ matrix.target }} (not enabled yet)
     if: false
@@ -116,10 +271,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04-arm
-            target: linux-arm64
-          - os: ubuntu-24.04
-            target: linux-x86_64
           - os: windows-11-arm
             target: windows-arm64
           - os: windows-2025
@@ -132,7 +283,10 @@ jobs:
 
   publish:
     name: Publish the release
-    needs: build
+    # Three tarballs: the macOS one from `build`, the two Linux ones from
+    # `build-linux`. `download-artifact` below globs `release-*`, so both
+    # producers have to be finished.
+    needs: [build, build-linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -173,10 +327,15 @@ jobs:
             echo "## Install"
             echo
             echo '```sh'
+            echo "# macOS (arm64)"
             echo "tar xzf mc-$version-macos-arm64.tar.gz"
             echo "cd mc-$version-macos-arm64"
             echo "xattr -d com.apple.quarantine mc     # ad-hoc signed, not notarized"
             echo "install -m 755 mc /usr/local/bin/mc"
+            echo
+            echo "# Linux (arm64 or x86_64), statically linked against musl"
+            echo "tar xzf mc-$version-linux-arm64.tar.gz"
+            echo "install -m 755 mc-$version-linux-arm64/mc /usr/local/bin/mc"
             echo '```'
             echo
             echo "## Checksums"

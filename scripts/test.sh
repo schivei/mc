@@ -25,7 +25,7 @@ for f in tests/*.mc; do
     if ! msg=$("$mc" "$f" -o "$obj" 2>&1); then
         echo "FAIL $name (compilation: $msg)"; fails=$((fails + 1)); continue
     fi
-    if ! msg=$(scripts/link.sh "$exe" "$obj" 2>&1); then
+    if ! msg=$(scripts/link-host.sh "$exe" "$obj" 2>&1); then
         echo "FAIL $name (link: $msg)"; fails=$((fails + 1)); continue
     fi
 

@@ -579,3 +579,46 @@ that `tests/err/064-expr-noadvance.mc` and `tests/err/065-expr-nonode.mc` can pr
 `scripts/check-surface.sh` runs every case, plus the one that matters most: with nothing
 registered, every object and every `--dump-ast` is byte-identical to what the frozen C seed
 produces. The mechanism is **inert by construction**.
+
+---
+
+## 6. The host layer
+
+Everything above is about the program being compiled. This section is about the compiler itself:
+which operating system it is *running on*. `src/core.mc` says nothing about that — one small file,
+included before the core by the entry point, answers all of it (M37,
+[../guide/90-linux-host.md](../guide/90-linux-host.md)):
+
+| entry point | host file |
+|---|---|
+| `src/mc.mc` | `src/host_macos.mc` |
+| `src/mc_linux.mc` | `src/host_linux_aarch64.mc` (+ `src/host_linux.mc`) |
+| `src/mc_linux_x86_64.mc` | `src/host_linux_x86_64.mc` (+ `src/host_linux.mc`) |
+
+A taught compiler gets one from the bundle: `mc build` writes `#include <mc/host>` above
+`#include <mc/core>`, and `<mc/host>` is the host file of the compiler that is running
+([bundle.md](bundle.md)).
+
+| function | returns |
+|---|---|
+| `host_os()` | the operating system this binary runs on, in `[target].os` vocabulary: `"macos"` or `"linux"` |
+| `host_arch()` | its architecture, in `[target].arch` vocabulary: `"aarch64"` or `"x86_64"` |
+| `host_machine()` | the machine name the walker drives for it (`machine_use`): `"arm64"` or `"x86_64"` |
+| `host_sys()` | the bundled system layer a program on this host includes for its I/O: `"sys"` or `"sys_linux"` |
+| `host_include()` | the bundle name `<mc/host>` resolves to for this host |
+| `host_environ()` | the environment block, ready for `posix_spawnp` — `ld64(_NSGetEnviron())` on macOS, the `envp` `main` was called with on Linux |
+| `host_init(envp)` | called by `main` before anything else, with the third argument the C runtime passed. macOS ignores it; Linux stores it |
+| `host_has_sdk()` | 1 when `xcrun --show-sdk-path` exists, which is what the `{sdk}` placeholder of `[linker].args` runs. 0 makes `{sdk}` a config error instead of a failed spawn |
+| `host_bundle_open(name, base, pcanon, plen)` | the lexer's one door into the bundle (`src/main.mc`): resolves `mc/host` to `host_include()` and passes everything else through to `bundle_open` |
+
+The host file also declares `posix_spawnp`, `posix_spawn_file_actions_*`, `waitpid`, `mkdir` and
+`unlink` — identical on both systems, because musl has them under the same names — and the two
+`O_*` values that differ (`O_CREAT`, `O_TRUNC`).
+
+What the host layer decides, in the driver and the CLI:
+
+* an `mc.toml` with no `[target]` targets the host (`host_os()`, `host_arch()`);
+* `mc x.mc -o x.o` with no `--backend` uses the host's object backend;
+* `--dump-asm` with no `--machine=` lowers for `host_machine()`;
+* `mc build` links the taught compiler with the host's executable backend when it has one, and
+  with `[linker]` when it does not.

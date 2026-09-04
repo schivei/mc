@@ -21,7 +21,7 @@ mkdir -p build
 # rm before writing: overwriting a signed executable on the same inode makes the
 # kernel kill its next execution with SIGKILL (cached signature)
 rm -f "$tomldump"
-if ! msg=$("$mc" --exe src/tomldump.mc -o "$tomldump" 2>&1); then
+if ! msg=$(scripts/build-exe.sh "$mc" "$tomldump" src/tomldump.mc 2>&1); then
     echo "FAIL: compiling src/tomldump.mc: $msg"
     exit 1
 fi

@@ -209,3 +209,12 @@ The two cross-checks in the middle are the ones worth internalising: `check-asm`
 compare a compiler written in C against a compiler written in `mc`, over the same corpus. As long
 as they agree, the transliteration is honest — and every new feature that lands only in `src/`
 has to explain why the two are allowed to differ.
+
+---
+
+## The other chain
+
+This page is the macOS chain, the one that starts at `clang` and the frozen C seed. A Linux host
+has no seed — `stage0/*.c` emits Mach-O only — so it starts from a published `mc` binary instead
+and runs the same argument from there: [90-linux-host.md](90-linux-host.md) and
+[../bootstrap.md](../bootstrap.md) § The Linux chain.

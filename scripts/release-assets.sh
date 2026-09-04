@@ -87,6 +87,18 @@ chmod 755 "$stage/mc"
         echo "  codesign --verify --verbose=4 mc"
         echo
         ;;
+    linux-*)
+        echo "Linux"
+        echo "-----"
+        echo "The binary is statically linked against musl: it has no shared-library"
+        echo "dependencies and runs on any distribution of this architecture. There is no"
+        echo "direct-executable backend on Linux, so a program is an object plus a linker:"
+        echo
+        echo "  mc hello.mc -o hello.o && ld.lld -o hello /usr/lib/crt1.o hello.o -lc"
+        echo
+        echo "or, the usual way, 'mc build .' with a [linker] section in mc.toml."
+        echo
+        ;;
     esac
     echo "Verify the download"
     echo "-------------------"
@@ -95,9 +107,10 @@ chmod 755 "$stage/mc"
     echo
     echo "Use it"
     echo "------"
-    echo "  mc hello.mc -o hello.o && ld -lSystem -o hello hello.o   # object + system linker"
-    echo "  mc --exe hello.mc -o hello                               # signed executable, no ld"
+    echo "  mc hello.mc -o hello.o                                   # an object for this host"
+    echo "  mc --exe hello.mc -o hello                               # signed Mach-O, no ld (macOS)"
     echo "  mc build .                                               # a project, from mc.toml"
+    echo "  mc --host                                                # what this binary is"
     echo
     echo "The standard library travels inside the binary: #include <sys>, <prelude>, <io>"
     echo "and <mc/core> need no checkout. Documentation: docs/ in the repository."

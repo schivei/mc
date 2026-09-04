@@ -1,0 +1,48 @@
+# mc.linux.toml — the same example, built for and ON a Linux host (M37,
+# docs/guide/90-linux-host.md).
+#
+#   mc build examples/conc --config examples/conc/mc.linux.toml
+#
+# Three things differ from mc.toml and nothing else does:
+#
+#   [target]    linux + the host's architecture instead of macos/aarch64
+#   [linker]    Linux has no direct-executable backend, so ld.lld links both
+#               the TAUGHT COMPILER and the program it compiles (M37: when the
+#               host has no `--exe`, `mc build` links the compiler it just wrote
+#               with this same section)
+#   [include]   `lib/linux` instead of `lib/macos` -- the platform layer with
+#               POSIX unnamed semaphores and the Linux pthread initializers
+#
+# ARCH: this file names aarch64. For x86_64 change [target].arch and the two
+# sysroot paths; the `#opcode` LSE atomics in lib/atomic.mc are AArch64 words,
+# so an x86-64 build takes the runtime's mutex fallback (conc_has_lse() answers
+# 0 through getauxval, which is the right answer on that machine).
+
+[project]
+name  = "conc"
+entry = "main.lx"
+out   = "build/conc-demo"
+kind  = "exe"
+
+[target]
+os   = "linux"
+arch = "aarch64"
+
+[compiler]
+modules = ["../lang/lang.mc", "conc.mc"]
+out     = "build/mc-conc"
+
+[sysroot]
+path = "../../build/sysroot/linux-aarch64"
+
+# -lpthread does not exist in musl: the pthread implementation is libc.a itself.
+[linker]
+cmd  = "ld.lld"
+args = ["-o", "{out}", "{sysroot}/crt1.o", "{sysroot}/crti.o", "{obj}",
+        "{sysroot}/libc.a", "{sysroot}/crtn.o"]
+
+[limits]
+tolerance = 1.0
+
+[include]
+paths = ["lib", "lib/linux"]

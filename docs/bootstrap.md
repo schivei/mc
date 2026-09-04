@@ -276,3 +276,60 @@ file and then by function:
 3. Usual causes of divergence in a self-hosted fixed point (not seen here, but the suspect list
    from `docs/specs/M6-M7.md` § Determinism): unstable table/symbol ordering, unzeroed padding, a
    short file read, some uninitialized-state dependency in the arena.
+
+## The Linux chain (M37)
+
+`stage0/*.c` emits Mach-O and only Mach-O. Porting it would mean writing a second seed and having
+two oracles, so a Linux host does not start from `clang` at all — it starts from a `mc` binary
+that already exists. Everything after that first binary is the same argument as the macOS chain:
+the compiler compiles itself until one generation is byte-identical to the next.
+
+```
+SEED src/mc_linux.mc          -> build/mc1l.o   (+ link -> build/mc1l)
+build/mc1l  src/mc_linux.mc   -> build/mc2l.o   (+ link -> build/mc2l)
+build/mc2l  src/mc_linux.mc   -> build/mc3l.o
+cmp build/mc2l.o build/mc3l.o                   <- the criterion
+SHA-256 of build/mc2l.o vs tests/golden/mc2-linux-<target>.sha256
+```
+
+`scripts/bootstrap-linux.sh [SEED]` runs it (on x86-64 the entry is `src/mc_linux_x86_64.mc` and
+the golden `tests/golden/mc2-linux-x86_64.sha256`). Linking is `scripts/link-linux.sh` — `ld.lld`
+against the musl sysroot, `MC_SYSROOT` to point it at one the system already has. Three things it
+does that the macOS script does not have to:
+
+1. **Find a seed.** An argument, else `build/mc-linux-<target>` (cross-built on macOS, § below),
+   else a release asset — `gh release download` when the GitHub CLI is present, otherwise `curl`
+   of `mc-<VER>-linux-<arch>.tar.gz` plus its `.sha256`. **The tarball is unpacked only after the
+   checksum matches.**
+2. **Check the seed is for this host.** `mc --host` prints `os`, `arch` and `sys`; a binary that
+   answers anything but `linux/<this machine>` is refused before the chain starts. A macOS `mc`
+   cross-compiling Linux objects is not a seed — it cannot run here.
+3. **Compare what the two self-hosted stages say.** The seed may legitimately be an older
+   compiler, so `mc1l.o` is allowed to differ from `mc2l.o`; what must not differ is
+   `mc1l --dump-asm` against `mc2l --dump-asm`.
+
+It ends by running the whole `tests/*.mc` suite with the compiler it just produced
+(`scripts/test-linux.sh`, native mode — no Docker, no emulation).
+
+### Cross-building the seed on macOS
+
+```sh
+make mc-linux            # build/mc-linux-arm64,  from src/mc.linux-aarch64.toml
+make mc-linux-x86_64     # build/mc-linux-x86_64, from src/mc.linux-x86_64.toml
+```
+
+`make check-linux-host` then proves both, from macOS, inside `docker run --platform linux/<arch>
+alpine:3`: `make check SEED=<binary>` (which starts with the chain above) and the **cross proof** —
+the Linux-hosted compiler compiles `src/mc.mc` and the Mach-O object it writes is `cmp`-equal to
+`build/mc2.o`, the object macOS wrote for itself. Same compiler, different host.
+
+### Two goldens, two vocabularies
+
+`tests/golden/mc2.sha256` is the macOS chain; `tests/golden/mc2-linux-arm64.sha256` and
+`tests/golden/mc2-linux-x86_64.sha256` are the Linux ones. The file names use the *release target*
+vocabulary (`arm64`, matching `mc-<VER>-linux-arm64.tar.gz` and `build/mc-linux-arm64`), while
+`[target].arch`, `mc --host` and the sysroot directories use the *architecture* vocabulary
+(`aarch64`). Both spellings mean the same machine.
+
+See [guide/90-linux-host.md](guide/90-linux-host.md) for the host layer itself and for what
+`make check` does and does not cover on Linux.

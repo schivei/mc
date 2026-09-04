@@ -35,7 +35,7 @@ root in order.
 
 ## The catalogue
 
-The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 36 entries,
+The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 40 entries,
 plus `mc/bundle_data`, which is regenerated on demand (see below). Those are the names `<...>`
 accepts.
 
@@ -66,6 +66,11 @@ and supplying that function *is* a taught compiler ([hooks.md](hooks.md)).
 | name | file |
 |---|---|
 | `<mc/core>` | `src/core.mc` — the include list that pulls in everything below |
+| `<mc/host>` | **not a file**: the host layer of the compiler that is *running*. See below |
+| `<mc/host_macos>` | `src/host_macos.mc` |
+| `<mc/host_linux>` | `src/host_linux.mc` — the operating-system half, shared by both architectures |
+| `<mc/host_linux_aarch64>` | `src/host_linux_aarch64.mc` |
+| `<mc/host_linux_x86_64>` | `src/host_linux_x86_64.mc` |
 | `<mc/arena>` | `src/arena.mc` |
 | `<mc/ast>` | `src/ast.mc` |
 | `<mc/lex>` | `src/lex.mc` |
@@ -85,6 +90,29 @@ and supplying that function *is* a taught compiler ([hooks.md](hooks.md)).
 | `<mc/bundle>` | `src/bundle.mc` |
 | `<mc/main>` | `src/main.mc` |
 | `<mc/bundle_data>` | `src/bundle_data.mc` — see below |
+
+#### `<mc/host>`, the one name that is not an entry
+
+`<mc/core>` is host-neutral: it says nothing about `posix_spawnp`, the environment, the `O_*`
+values or which `(os, arch)` pair the binary is. That comes from a host file, and a compiler needs
+exactly one of them, included **before** the core.
+
+`<mc/host>` is how a source asks for "the one that matches whichever `mc` is compiling me". It is
+resolved in `src/main.mc` (`host_bundle_open`) to `host_include()`, which each host file answers
+for itself — `mc/host_macos`, `mc/host_linux_aarch64` or `mc/host_linux_x86_64` — and the entry it
+lands on is what the once-only include list records, so writing `<mc/host>` and
+`<mc/host_macos>` in the same program includes the file once, not twice.
+
+```mc
+#include <mc/host>
+#include <mc/core>
+
+void user_init() { }
+```
+
+That is a complete compiler, and it is exactly what `mc build` generates for a `[compiler]`
+section ([../build.md](../build.md)). See [../guide/90-linux-host.md](../guide/90-linux-host.md)
+for what the host layer answers.
 
 ### The demonstrations
 

@@ -6,5 +6,8 @@
 // (see docs/surface.md § Tier 3 and examples/api/mc-api.mc). src/user.mc remains
 // the seam for those who prefer to teach the default compiler instead.
 
+// M37: the host layer comes first and is the ONE file that differs between
+// src/mc.mc, src/mc_linux.mc and src/mc_linux_x86_64.mc (docs/guide/90-linux-host.md).
+#include "host_macos.mc"
 #include "core.mc"
 #include "user.mc"

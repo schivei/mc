@@ -27,7 +27,7 @@ tmp="${TMPDIR:-/tmp}/check-bundle.$$"
 mkdir -p "$tmp"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-if ! msg=$("$mc" --exe tools/bundle.mc -o build/bundle 2>&1); then
+if ! msg=$(scripts/build-exe.sh "$mc" build/bundle tools/bundle.mc 2>&1); then
     echo "FAIL: compiling tools/bundle.mc: $msg"
     exit 1
 fi
@@ -83,7 +83,7 @@ echo "ok <mc/bundle_data> is one #embed node plus the $want-value index"
 # src/lz.mc on its own: synthetic buffers from a deterministic LCG (pure random
 # bytes, runs, a 4-letter alphabet, a repeating pattern; sizes 0 to 256 KiB) and
 # every file of the manifest, read from disk. Deflate, inflate, compare.
-if ! msg=$("$mc" --exe tools/lz_test.mc -o build/lz_test 2>&1); then
+if ! msg=$(scripts/build-exe.sh "$mc" build/lz_test tools/lz_test.mc 2>&1); then
     echo "FAIL: compiling tools/lz_test.mc: $msg"
     exit 1
 fi

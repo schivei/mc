@@ -24,6 +24,7 @@ nothing to a running signed binary in about two minutes.
 | [Two worked examples](guide/60-examples.md) | `examples/api` and `examples/lang`, walked through |
 | [How `mc` compiles itself](guide/70-bootstrap.md) | the bootstrap chain, the fixed point, and the determinism rules for contributors |
 | [Footprint](guide/80-footprint.md) | what the smallest program costs per target, floor by floor, and the ceilings that guard it |
+| [`mc` on a Linux host](guide/90-linux-host.md) | the host layer, the Linux bootstrap chain, cross-building the compiler, what `make check` skips on Linux and why |
 
 ## The reference — exhaustive, read by lookup
 

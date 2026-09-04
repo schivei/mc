@@ -1,6 +1,10 @@
 // thread.mc -- the platform layer: what libSystem gives this runtime, declared
 // as ordinary `extern`s. One file per system, exactly as lib/sys.mc and
-// lib/sys_linux.mc split the I/O; this one is macOS/arm64.
+// lib/sys_linux.mc split the I/O; this one is macOS/arm64 and its Linux
+// sibling is lib/linux/thread.mc (M37). Which of the two is compiled is
+// [include].paths in mc.toml (`lib/macos`) or mc.linux.toml (`lib/linux`):
+// lib/rt.mc writes `#include "thread.mc"` and its own directory no longer has
+// one, so the roots decide.
 //
 // An mc `uptr f(uptr)` IS a C `void *(*)(void *)` -- one integer in, one out --
 // so `&f` (M10) is a valid thread entry with no shim. The opaque structs are
@@ -60,3 +64,15 @@ i64 conc_has_lse() {
     if (sysctlbyname("hw.optional.arm.FEAT_LSE", val, len, 0, 0) != 0) return 0;
     return ld32(val);
 }
+
+// ---- the counting semaphore ----
+// POSIX unnamed semaphores are stubbed out on macOS, so this is libdispatch's.
+// The three names are the whole interface lib/conc_rt.mc uses.
+uptr gate_new(i64 value) {
+    uptr s = dispatch_semaphore_create(value);
+    if (s == 0) conc_die("dispatch_semaphore_create failed");
+    return s;
+}
+
+void gate_wait(uptr s) { dispatch_semaphore_wait(s, DISPATCH_FOREVER); }
+void gate_post(uptr s) { dispatch_semaphore_signal(s); }

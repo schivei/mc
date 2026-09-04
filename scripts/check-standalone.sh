@@ -12,7 +12,7 @@
 #   3. that compiler compiling <syntax_demo_test>, which uses `unless`, `enum`
 #      and `bool` — and the copied `mc` refusing the same source, because the
 #      syntax belongs to the module;
-#   4. `#include <mc/core>` + `#include <user_default>` compiled to an object
+#   4. `#include <mc/host>` + `<mc/core>` + `<user_default>` compiled to an object
 #      and compared byte for byte against build/mc2.o. That is the strongest
 #      statement available: the core inside the bundle is the core in src/,
 #      down to the last byte, INCLUDING the `mc/bundle_data` that core.mc
@@ -53,6 +53,7 @@ i64 main() {
 EOF
 
 cat > "$tmp/mymc.mc" <<'EOF'
+#include <mc/host>
 #include <mc/core>
 #include <user_syntax_demo>
 EOF
@@ -62,6 +63,7 @@ cat > "$tmp/t.mc" <<'EOF'
 EOF
 
 cat > "$tmp/def.mc" <<'EOF'
+#include <mc/host>
 #include <mc/core>
 #include <user_default>
 EOF
@@ -120,7 +122,7 @@ if ! msg=$(./mc def.mc -o def.o 2>&1); then
 elif ! cmp def.o ref.o; then
     step_fail "the object from <mc/core> differs from the one from src/mc.mc"
 else
-    echo "ok <mc/core> + <user_default> == src/mc.mc, byte for byte"
+    echo "ok <mc/host> + <mc/core> + <user_default> == src/mc.mc, byte for byte"
 fi
 
 # 5. a name that is not in the bundle

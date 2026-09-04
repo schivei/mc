@@ -11,6 +11,9 @@
 // `type expected at top level` at the first `interface` line: the syntax
 // belongs to this file, not to the language. See docs/surface.md § Tier 3.
 
+// M37: `<mc/host>` is the host file of whichever `mc` compiles this line -- the
+// one thing in a compiler that cannot come from a portable core.
+#include <mc/host>
 #include <mc/core>
 #include "oop.mc"
 

@@ -5,7 +5,8 @@ Everything below is read off `src/main.mc` (the single-file CLI) and `src/driver
 subcommands). Running `mc` with no argument prints exactly this and exits 1:
 
 ```
-usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NAME|--exe] source.mc [-o out]
+usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] source.mc [-o out]
+       mc --host
 usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits]
        mc limits [DIR|FILE.mc]
 ```
@@ -26,8 +27,22 @@ Arguments are read left to right. The first non-flag argument is the source; a s
 |---|---|
 | `-o OUT` | output path. Default `out.o`. `-o` with nothing after it is `mc: -o requires an argument`. |
 | `--exe` | alias for `--backend=macho-exe`: write a signed Mach-O executable directly, no `ld`. |
-| `--backend=NAME` | pick a registered backend. Built in: `macho` (default), `macho-exe`, `elf-obj`, `elf-obj-x86_64`. A taught compiler adds its own with `backend("name", &f)`. An unknown name lists what exists and exits 1. |
+| `--backend=NAME` | pick a registered backend. Built in: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64`. The default is the HOST's object backend — `macho` on macOS, `elf-obj`/`elf-obj-x86_64` on Linux (M37). A taught compiler adds its own with `backend("name", &f)`. An unknown name lists what exists and exits 1. |
+| `--include=DIR` | add one `#include "…"` search root, exactly like a `[include].paths` entry does for `mc build`. Repeatable; roots are tried in the order given, after the includer's own directory. It is what lets one source tree carry two platform layers in different directories and pick one without a `mc.toml` (`examples/conc/lib/macos`, `lib/linux`). |
+| `--host` | print what this binary is and exit 0 — three lines, no source needed. |
 | `--machine=NAME` | pick the instruction set the `--dump-*` modes lower with: `arm64` (default) or `x86_64`. A compile does **not** need it — an object backend names its own machine, because the file records the architecture — so this flag exists for looking at what a machine selects (`--dump-asm --machine=x86_64`). An unknown name is `mc: unknown machine: NAME`. |
+
+```
+$ mc --host
+os macos
+arch aarch64
+sys sys
+```
+
+`os` and `arch` are the `[target]` pair an `mc.toml` with no `[target]` gets, and the pair that
+picks the default backend (`macho` on macOS, `elf-obj` / `elf-obj-x86_64` on Linux); `sys` is the
+bundled system layer a program on this host includes for its I/O (`<sys>` or `<sys_linux>`). The
+same binary built for a Linux host answers `linux`, its architecture, and `sys_linux` — see [../guide/90-linux-host.md](../guide/90-linux-host.md).
 
 Backends are documented in [objects.md](objects.md) and in [../guide/40-backends.md](../guide/40-backends.md).
 

@@ -1,4 +1,4 @@
-# build.md — `mc build` and `mc.toml` (M14), the bundle and `#embed` (M15), Linux targets (M16), limits (M23)
+# build.md — `mc build` and `mc.toml` (M14), the bundle and `#embed` (M15), Linux targets (M16), limits (M23), a Linux host (M37)
 
 Through M13 the only way to compile was one file at a time:
 
@@ -368,6 +368,13 @@ extern i64 waitpid(i64 pid, uptr status, i64 options);
 extern uptr _NSGetEnviron();
 ```
 
+**M37: those declarations moved into the host layer.** `src/driver.mc` names no operating system
+any more — it calls `host_environ()`, and the host file behind it is `src/host_macos.mc`
+(`_NSGetEnviron`) or `src/host_linux.mc` (the `envp` `main` was called with, since musl has no
+`_NSGetEnviron`). `posix_spawnp` and `waitpid` themselves are declared identically on both, because
+musl has them under the same names; `lib/sys.mc` is unchanged and is still what a *program* uses.
+See [guide/90-linux-host.md](guide/90-linux-host.md).
+
 ```c
 u8 pid[8]; st64(pid, 0);
 u8 av[3 * 8]; st64(av + 0, "ls"); st64(av + 8, "-l"); st64(av + 16, 0);
@@ -383,6 +390,13 @@ attributes into a struct and calls `__posix_spawn(2)` with a layout this languag
 describe. Reproducing it would mean hand-laying-out an undocumented kernel struct, which is a much
 worse bargain than the five wrappers. A program that wants to spawn without libSystem has to
 `fork`/`exec` by hand, which the core does not offer either.
+
+`xcrun` only exists on macOS, so on any other host `{sdk}` is a config error rather than a spawn
+that fails halfway through a build:
+
+```
+mc.toml:31:8: {sdk} needs xcrun: it exists only on macos [linker.args]
+```
 
 `xcrun`'s stdout is captured with a spawn file action
 (`posix_spawn_file_actions_addopen` on fd 1) into `<out>.sdk`, which is read back and `unlink`ed —
@@ -1153,22 +1167,28 @@ $ scripts/test-linux.sh --arch x86_64 build/mc1
 
 ## Limits of M14, M15, M16 and M23
 
+- **`[target]` defaults to the host.** With no `[target]` section at all, `os` and `arch` are what
+  `mc --host` prints — `macos`/`aarch64` when a macOS binary reads the file, `linux`/`aarch64` or
+  `linux`/`x86_64` when a Linux one does. Every config in this repository still pins the pair
+  explicitly; a config that omits it is portable, and one that pins `macos` means it.
 - **Two architectures, and for Linux only through an external linker.** `[target].arch` other than
   `aarch64` (macOS, Linux) or `x86_64` (Linux) is a clear error, and so is `[target].os` other than
   `macos`/`linux`; COFF and wasm are later milestones. A Linux `exe` without `[linker]` is refused —
   there is no ELF equivalent
   of `macho-exe`, so `ld.lld` (or any linker named in the config) does the layout.
-- **The taught compiler is always built for the host.** `[compiler]` compiles with `macho-exe`
-  even when `[target].os = "linux"`: it is a tool that has to run here, not part of the artifact.
-- **`mc` itself does not cross-compile yet.** `build/mc1 --backend=elf-obj src/mc.mc -o mc.o`
-  produces a valid object, but the link stops at exactly one symbol: `src/driver.mc` uses
-  `_NSGetEnviron`, which is libSystem's way of reaching `environ` and has no musl equivalent
-  (`posix_spawnp`, `waitpid` and `chmod` are all in `libc.a`).
-
-  ```
-  ld.lld: error: undefined symbol: _NSGetEnviron
-  >>> referenced by build/elf/mc.o:(.text+0x2ac58)
-  ```
+- **The taught compiler is always built for the host, never for `[target]`.** It is a tool that
+  has to run here, not part of the artifact. Which backend that is comes from the target registry,
+  looked up with the *host's* pair: on macOS `macho-exe`, one step. On a host with no
+  direct-executable backend — Linux — it is the host's object backend plus `[linker]`, the same
+  section the entry uses, and a project that teaches the compiler there without one gets
+  `a taught compiler on this host needs [linker]: there is no direct executable`.
+- ~~**`mc` itself does not cross-compile yet**~~ — done in M37. `_NSGetEnviron` was the single
+  blocker (libSystem's way of reaching `environ`, with no musl equivalent), and it now lives in
+  the host layer: `src/mc_linux.mc` and `src/mc_linux_x86_64.mc` are the same core with
+  `src/host_linux*.mc` instead of `src/host_macos.mc`. `build/mc1 build src --config
+  src/mc.linux-aarch64.toml` cross-builds it, `scripts/bootstrap-linux.sh` bootstraps it on the
+  Linux machine, and the object it writes for `src/mc.mc` is byte for byte the one macOS writes.
+  See [guide/90-linux-host.md](guide/90-linux-host.md).
 - **Static linking and the names in `lib/io.mc`.** A program that includes `<sys>` defines
   `strlen` and `puts` as ordinary global symbols. Against `libc.a` that is fine — an archive
   member is only pulled in for a symbol that is still undefined — but it does mean the program's

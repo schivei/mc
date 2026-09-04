@@ -900,8 +900,11 @@ void exe_write(uptr path) {
 }
 
 // the backend itself: the same lowering and the same encoder as the `macho`
-// backend, only the writing differs
+// backend, only the writing differs. M37: it names its machine first, like
+// every backend since M17 -- a Mach-O executable is arm64, whatever machine the
+// host that is running the compiler uses by default.
 void backend_exe(i64 root, uptr out) {
+    machine_use("arm64");
     gen_lower(root);
     gen_encode_all();
     exe_write(out);
