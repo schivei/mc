@@ -325,12 +325,20 @@ jobs:
           - os: windows-11-arm
             target: windows-arm64
             larch: aarch64
+            # The directory the `build` job cross-compiled the suite into and
+            # packed in the `mc-windows-objects` artifact. Spelled out per entry
+            # rather than derived from `larch`: the arm64 tree is the unsuffixed
+            # one, and a name that does not exist would silently degrade into
+            # rebuilding the whole suite here (scripts/bootstrap-windows.sh
+            # falls back when $MC_WINTESTS/manifest is missing).
+            objs: build/windows-objs
             llvmkey: woa64
             llvmtriple: aarch64-pc-windows-msvc
             llvminst: woa64
           - os: windows-2025
             target: windows-x86_64
             larch: x86_64
+            objs: build/windows-objs-x86_64
             llvmkey: win64
             llvmtriple: x86_64-pc-windows-msvc
             llvminst: win64
@@ -339,7 +347,7 @@ jobs:
       # MSYS rewrites an argument that looks like a path -- and every dash-form
       # lld-link option does (docs/specs/M38.md § 7).
       MSYS2_ARG_CONV_EXCL: "*"
-      MC_WINTESTS: build/windows-objs-${{ matrix.larch }}
+      MC_WINTESTS: ${{ matrix.objs }}
     steps:
       # This job COMPILES .mc sources and RUNS shell scripts out of the
       # checkout, and GitHub's Windows images ship core.autocrlf=true, where a

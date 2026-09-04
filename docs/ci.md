@@ -794,7 +794,12 @@ cause.
 `release.yml` has the same split: `build` (macOS) cross-compiles the two objects, the two sysroots
 and the two suites and uploads `mc-windows-objects`; `build-windows`, a two-entry matrix on
 `windows-11-arm` and `windows-2025`, links each one, proves it with
-`scripts/bootstrap-windows.sh`, and packages it. A release therefore carries **five** tarballs and
+`scripts/bootstrap-windows.sh`, and packages it. Both suites travel in that one artifact, so each
+leg has to name its own tree: the matrix carries an `objs` column (`build/windows-objs` for arm64,
+`build/windows-objs-x86_64` for x86_64) and `MC_WINTESTS` is that column. A name that does not
+exist would not fail -- `scripts/bootstrap-windows.sh` re-cross-compiles the suite with the seed
+it just linked when `$MC_WINTESTS/manifest` is missing -- so the column is spelled out per entry
+rather than derived from the architecture, whose two spellings do not agree. A release therefore carries **five** tarballs and
 five checksums:
 
 ```
