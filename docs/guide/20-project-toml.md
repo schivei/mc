@@ -50,19 +50,19 @@ signature is cached against the inode.
 
 ```toml
 [target]
-os   = "macos"         # macos (default) | linux
-arch = "aarch64"       # aarch64 only
+os   = "macos"         # macos (default) | linux | windows
+arch = "aarch64"       # aarch64; x86_64 when os = "linux"
 ```
 
 Anything else is refused at the exact position of the offending value:
 
 ```
-$ mc build tests/proj --config /tmp/windows.toml
-/tmp/windows.toml:6:6: only macos and linux (see docs/build.md): target.os
+$ mc build tests/proj --config /tmp/haiku.toml
+/tmp/haiku.toml:6:6: only macos, linux and windows (see docs/build.md): target.os
 ```
 
-`os = "linux"` swaps the object writer for ELF64 and makes `[linker]` required — that is
-[50-cross-compile.md](50-cross-compile.md).
+`os = "linux"` swaps the object writer for ELF64 and `os = "windows"` for COFF; both make
+`[linker]` required — that is [50-cross-compile.md](50-cross-compile.md).
 
 ## `[include]` — extra roots for `#include "x"`
 

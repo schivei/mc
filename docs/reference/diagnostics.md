@@ -16,7 +16,7 @@ says why it did not.
 | `mc: MESSAGE: DETAIL` | `die2` | `mc: cannot open: sys.mc` |
 | `FILE:LINE: MESSAGE` | `err_at` / `err_node` — the position of the token or node at fault | `prog.mc:7: type expected` |
 | `FILE:LINE: MESSAGE: DETAIL` | `err_at2` | `prog.mc:3: the rule expected: )` |
-| `FILE:LINE:COL: MESSAGE[: KEY]` | `toml_err*` | `mc.toml:6:6: only macos and linux (see docs/build.md): target.os` |
+| `FILE:LINE:COL: MESSAGE[: KEY]` | `toml_err*` | `mc.toml:6:6: only macos, linux and windows (see docs/build.md): target.os` |
 
 `FILE` is whatever the token's source is called: a real path, or a **bundled name** when the code
 came from inside the binary (`syntax_demo_test:10: type expected at top level`). A missing file is
@@ -279,8 +279,8 @@ does not:
 |---|---|---|
 | `missing key` | `project.entry`, `project.out`, `compiler.modules`, `compiler.out`, `sysroot.path` | add it. `compiler.out` is only required when there is no `project.name` to default from; `sysroot.path` only when `{sysroot}` is actually used |
 | `must be exe or obj` | `project.kind` | those are the two values |
-| `only macos and linux (see docs/build.md)` | `target.os` | those are the two values |
-| `only aarch64 and x86_64 (see docs/build.md)` | `target.arch` | the architectures that operating system was registered with (macOS has only `aarch64`) |
+| `only macos, linux and windows (see docs/build.md)` | `target.os` | the list is built from the `target()` registry, so a target a module registers appears in it |
+| `only aarch64 and x86_64 (see docs/build.md)` | `target.arch` | the architectures that operating system was registered with (macOS and Windows have only `aarch64`) |
 | `linux requires [linker]: there is no direct executable` | `target.os` | add a `[linker]` section: there is no `--exe` equivalent for ELF |
 | `must be a relative path` | `compiler.out` | the generated compiler source lives next to it and includes by relative path |
 | `must not contain ..` | `compiler.out` | same reason; the `..` check runs on the string as written |

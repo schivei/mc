@@ -153,19 +153,20 @@ reach a backend.
 
 Registers an `(os, arch)` pair `mc build` accepts, with the backend it writes objects with and the
 one it writes direct executables with. `exe = 0` says the target has no direct executable and
-always goes through `[linker]` — which is what `os = "linux"` does. Three are registered before
-`user_init()` runs:
+always goes through `[linker]` — which is what `os = "linux"` and `os = "windows"` do. Four are
+registered before `user_init()` runs:
 
 ```c
 target("macos", "aarch64", "macho", "macho-exe");
 target("linux", "aarch64", "elf-obj", 0);
 target("linux", "x86_64", "elf-obj-x86_64", 0);
+target("windows", "aarch64", "coff-obj-arm64", 0);
 ```
 
 `src/driver.mc` reads nothing but this table: `target_find(os, arch)` gives the row,
 `tgt_obj_at(i)` / `tgt_exe_at(i)` the two backends, `target_os_known(os)` whether the operating
 system exists at all, and `target_os_list()` / `target_arch_list(os)` build the diagnostics
-(`only macos and linux (see docs/build.md)`, and per operating system
+(`only macos, linux and windows (see docs/build.md)`, and per operating system
 `only aarch64 and x86_64 (see docs/build.md)` for Linux) **from the registry**, so a target a module registers appears in them. Registering one is how a new operating
 system or architecture becomes reachable from `mc.toml` without editing the driver.
 

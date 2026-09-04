@@ -1028,7 +1028,103 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `check-desktop`, `check-docs`, `site` and `check-surface` are skipped with a printed reason --
   each builds `--exe` binaries or macOS dylibs -- and `check-lex`/`check-ast` there compare the
   compiler against itself rather than against the frozen C oracle.
-- Next: M18/M19/M20 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
+- M19 done (`docs/specs/M19.md`, `docs/build.md` § Windows targets,
+  `docs/guide/50-cross-compile.md` § Windows on ARM): **Windows on ARM — COFF objects, a kernel32
+  system layer, `lld-link`**. `stage0/` untouched (2846/3000): the COFF writer is a backend in
+  `.mc`, and the machine is the same `arm64` macOS uses — this is a new file FORMAT, not a new
+  instruction set.
+  New: `src/backend_coff.mc` (375 lines, backend `coff-obj-arm64`) — the third writer over
+  `gen_lower` + `gen_encode_all`. One COFF section per module section in creation order, so the
+  1-based `SectionNumber` **is** the module's `sym_sect` and nothing is renumbered
+  (`__TEXT,__text` -> `.text` `CODE|EXECUTE|READ`, `__TEXT,__cstring` -> `.rdata` `INIT|READ`,
+  `__DATA,__data` -> `.data` `INIT|READ|WRITE`, `__DATA,__bss` -> `.bss` `UNINIT` with
+  `SizeOfRawData` = zsize and `PointerToRawData` = 0, `#section SEG SECT` -> `.seg.sect` with the
+  ELF writer's lowercasing). Alignment is not a field: it is `(log2 + 1) << 20` inside
+  `Characteristics`. Symbols are 18 bytes with **no auxiliary records**, no leading underscore
+  (`_main` -> `main`, like ELF), `l_strN` -> `$str.N` (STATIC), `Type 0x20` in a pure-instructions
+  section, EXTERNAL for globals and undefined, and macho.mc's `sym_order` reused so the three
+  writers stay comparable. Relocations are 10 bytes with **no addend field** — COFF is Mach-O's
+  shape here, not ELF's — sorted by ascending offset (`elf_rel_order`, which has nothing ELF in
+  it): `BRANCH26` 0x0003, `PAGEBASE_REL21` 0x0004, `PAGEOFFSET_12A` 0x0006 on an `add` /
+  `PAGEOFFSET_12L` 0x0007 on an ldr/str (the same classifier `elf_pageoff12` and
+  `exe_fix_pageoff12` use), `ADDR64` **0x000E**. `TimeDateStamp` is 0, never the clock, and a
+  section with more than 65535 relocations is refused with a message instead of written wrong.
+  Two long-name encodings, and they are NOT the same: a section name past 8 bytes is `/` plus the
+  decimal offset as text, a symbol name past 8 bytes is four zero bytes plus that offset as a
+  u32 — using the section form for a symbol makes `llvm-readobj` print `/17` where a name belongs
+  (found and fixed during the work).
+  `lib/sys_windows.mc` (190): `open`/`creat`/`read`/`write`/`close`/`exit` over seven kernel32
+  `extern`s (`GetStdHandle`, `WriteFile`, `ReadFile`, `CreateFileA`, `CloseHandle`,
+  `ExitProcess`, `GetCommandLineA`), all non-variadic. There is **no syscall instruction anywhere**
+  — Windows has no stable system-call numbers and the documented boundary is the DLL — so unlike
+  `lib/sys_svc.mc`/`lib/sys_linux.mc` this layer is ordinary mc code. Descriptors 0/1/2 go through
+  `GetStdHandle`; `open`/`creat` hand back the HANDLE and the others take it back unchanged (safe:
+  a real handle is never 0, 1 or 2). It provides the entry point too, `mc_start`, which splits
+  `GetCommandLineA()` into argc/argv (spaces and tabs separate, `"` toggles) and calls `main`
+  through a raw `bl` in a two-parameter shim — x0/x1 are already right and the prologue does not
+  touch them (`docs/reference/objects.md` § 4) — so the link carries no crt object at all.
+  **It deliberately does not `#include "io.mc"`**, the one divergence from `sys_linux.mc`: on Linux
+  the wrappers come out of `libc.a`, an archive the linker takes members from; here they come out
+  of an object linked NEXT TO the program, and a second copy of `strlen`/`puts`/`putnum` would be a
+  duplicate symbol for every test that includes `lib/sys.mc`. A program that includes the layer
+  directly adds `#include <io>` (`tests/windows/070-kernel32.mc` does).
+  `scripts/sysroot-windows.sh` (81): writes `kernel32.def` and builds `kernel32.lib` with
+  `llvm-dlltool -m arm64`. An import library is a list of names, so there is **no download, no
+  mingw and no Windows SDK**; cached like the musl one, `make sysroot-windows` runs it.
+  `scripts/test-windows.sh` (346): the same split shape as `test-linux.sh`. `--build-only OUTDIR`
+  writes one `.obj` per test (`kind = "obj"`), the `.expect`, the `manifest`, the `skipped` list
+  and the two files the other half cannot make — `winrt.obj` (the compiled layer) and
+  `kernel32.lib`; `--run-only OUTDIR` needs `lld-link` and nothing else. Two link modes:
+  `kernel32` (test + winrt.obj + kernel32.lib, the way musl resolves the same externs) and `self`
+  (the source already includes `<sys_windows>`). The default mode is what `make test-windows` runs:
+  cross-compile everything, assert every object is an arm64 COFF with TimeDateStamp 0, and link
+  three of them with `lld-link`; nothing is executed here.
+  Driver: `target("windows", "aarch64", "coff-obj-arm64", 0)` in `src/main.mc` and **nothing else**
+  — M17's registry already made `[target].os = "windows"` require `[linker]` and already builds
+  both diagnostics from the table. `src/hooks.mc` (+36/-33) only changed to make the list read as
+  English with three entries: `tgt_word` became `tgt_walk`/`tgt_list`, a two-pass walk that knows
+  the total before the first word, so the message is `only macos, linux and windows (see
+  docs/build.md)` and not `macos and linux and windows`. `scripts/check-build.sh` gained the
+  windows-without-`[linker]` case and its old "invalid os" example moved from `windows` to `haiku`
+  (12/12).
+  CI: `Cross-compile the suite for windows/arm64` + the `windows-arm64-objects` artifact on the
+  macOS job, and the leg `Link and run the suite (windows/arm64)` on `windows-11-arm` — a tool-facts
+  step that looks for a preinstalled `lld-link` first, then a cached download of the LLVM
+  Windows-on-ARM release (tarball, falling back to the `woa64.exe` installer), then
+  `test-windows.sh --run-only` under bash. It fails loudly rather than skipping: it is the only
+  place a Windows binary is ever executed. After merge the architect adds it to the required checks
+  (`docs/plan.md` § Rule for every new target).
+  Deviations from the spec text, on record: `IMAGE_REL_ARM64_ADDR64` is **0x000E**, not the 0x0001
+  the spec wrote (0x0001 is ADDR32) — verified against clang's own objects; `SetFilePointer` is not
+  declared, because nothing in `lib/io.mc` or the suite seeks, and an unused `extern` would only be
+  an undefined symbol; `os = "windows"` needs no `{sysroot}` work in the driver because M17 already
+  generalised it. Not skipped, against the spec's guess: `031-opcode` and `033-reloc` are AArch64
+  words and BRANCH26 and this target is AArch64, so they cross-compile and link like everything
+  else — `032-svc` is the only `// skip-windows:`.
+  Validation on this host: `llvm-readobj --file-headers --sections --symbols --relocs` of
+  `013-putnum.obj` against `clang --target=aarch64-windows-msvc -c` of equivalent C agrees on
+  Machine, SizeOfOptionalHeader, Characteristics, the four section characteristic words, storage
+  classes, `ComplexType: Function`, `IMAGE_SYM_UNDEFINED` and every relocation type;
+  `lld-link /machine:arm64 /subsystem:console /entry:mc_start /nodefaultlib` produces
+  `001-return42.exe`, `013-putnum.exe` and `070-kernel32.exe`, each an
+  `IMAGE_FILE_MACHINE_ARM64` PE with `Subsystem: IMAGE_SUBSYSTEM_WINDOWS_CUI` and the seven
+  kernel32 imports; a full `mc build` with `[linker] cmd = "lld-link"` produces the same thing
+  through the driver.
+  — `stage0/` untouched, 2846/3000; `src/*.mc` 17511 lines. `make bundle` re-run (38 files, raw
+  511899 -> LZ 232981, blob 233396 B; `tools/bundle.list` gained `mc/backend_coff` and
+  `sys_windows`). `make check` green end to end (RC 0): `test` 32/32, `check-lex` 76/76,
+  `check-ast` 76/76, `check-bundle` (lz round trip 62 cases), `check-asm` 76/76, **`check-obj`
+  32/32 identical to the frozen seed**, `bootstrap` at a fixed point (`mc2.o == mc3.o`, 644680
+  bytes; the `--dump-asm` diff between `mc1` and `mc2` is empty), `check-surface` 32/32 + inert,
+  `test-exe` 32/32, `check-mc` 6/6, `check-standalone`, `check-toml` 10/10, `check-build` 12/12,
+  `check-limits` 17/17 under 90%, `check-minimal`, `test-linux` 32/32 on linux/aarch64,
+  `test-linux-x86_64` 29/29 on linux/x86_64, **`test-windows` 32/32 objects + 3 linked
+  executables** (1 skipped), `check-examples`, `check-lang`, `check-conc`, `check-desktop`,
+  `check-docs` (130 symbols, 15 flags, 16 TOML keys, 10 directives, 45 samples, 139 links),
+  `site` + `check-site`. Golden rewritten once to
+  `be65caca70bd805edd91ed366792591e869f3ff8d3b4def5c75ebf97ca80197e`, only after the empty asm diff
+  and `cmp build/mc2.o build/mc3.o`.
+- Next: M18/M20 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
   sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is
   one more motivating case).
   Update this section when each milestone closes.

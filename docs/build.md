@@ -1,4 +1,4 @@
-# build.md — `mc build` and `mc.toml` (M14), the bundle and `#embed` (M15), Linux targets (M16), limits (M23), a Linux host (M37)
+# build.md — `mc build` and `mc.toml` (M14), the bundle and `#embed` (M15), Linux targets (M16), Windows targets (M19), limits (M23), a Linux host (M37)
 
 Through M13 the only way to compile was one file at a time:
 
@@ -82,15 +82,16 @@ paths = ["lib"]            # extra roots for #include "x"
 
 ### `[target]`
 
-`os` defaults to `macos` and takes `linux` since M16; `arch` defaults to `aarch64`, and since M17
-`os = "linux"` also takes `x86_64`. What is accepted is exactly the `(os, arch)` pairs the
-`target()` registry holds ([reference/hooks.md](reference/hooks.md)) — `macos/aarch64`,
-`linux/aarch64`, `linux/x86_64` — and a module may register more. Any other value is an error at
-the position of the offending value, and the message is built from the registry:
+`os` defaults to `macos`, takes `linux` since M16 and `windows` since M19; `arch` defaults to
+`aarch64`, and since M17 `os = "linux"` also takes `x86_64`. What is accepted is exactly the
+`(os, arch)` pairs the `target()` registry holds ([reference/hooks.md](reference/hooks.md)) —
+`macos/aarch64`, `linux/aarch64`, `linux/x86_64`, `windows/aarch64` — and a module may register
+more. Any other value is an error at the position of the offending value, and the message is
+built from the registry:
 
 ```
-$ build/mc1 build tests/proj --config /tmp/windows.toml
-/tmp/windows.toml:6:6: only macos and linux (see docs/build.md): target.os
+$ build/mc1 build tests/proj --config /tmp/haiku.toml
+/tmp/haiku.toml:6:6: only macos, linux and windows (see docs/build.md): target.os
 $ build/mc1 build tests/proj --config /tmp/riscv.toml
 /tmp/riscv.toml:7:8: only aarch64 and x86_64 (see docs/build.md): target.arch
 ```
@@ -99,6 +100,10 @@ $ build/mc1 build tests/proj --config /tmp/riscv.toml
 (the `elf-obj` / `elf-obj-x86_64` backends, `src/backend_elf.mc`) instead of a Mach-O, and
 `[linker]` becomes **required** — there is no direct-executable backend for Linux. `arch` then
 picks which instruction set the object holds. See § Linux targets below.
+
+`os = "windows"` says the same two things in COFF's spelling: the object is an
+`IMAGE_FILE_MACHINE_ARM64` `.obj` (`coff-obj-arm64`, `src/backend_coff.mc`) and `[linker]` is
+required. See § Windows targets.
 
 ### `[compiler]` — building the compiler that will compile `entry`
 
@@ -833,6 +838,182 @@ architecture (`docs/ci.md`), which is what `docs/plan.md` § Rule for every new 
 
 ---
 
+## M19 — Windows targets (`os = "windows"`, `arch = "aarch64"`)
+
+`os = "windows"` makes `mc build` write a **COFF object** for Windows on ARM instead of a Mach-O
+and hand it to the linker named in `[linker]`. Nothing else in the file changes, and nothing in
+`stage0/` changes: the COFF writer is `src/backend_coff.mc`, a backend registered like any other
+(`--backend=coff-obj-arm64` also works from the single-file CLI). The machine behind it is the
+same `arm64` one macOS uses — this is a new *file format*, not a new instruction set.
+
+```toml
+[project]
+entry = "hello.mc"
+out   = "build/hello.exe"
+
+[target]
+os   = "windows"
+arch = "aarch64"
+
+[sysroot]
+path = "build/sysroot/windows-aarch64"   # what {sysroot} expands to
+
+[linker]
+cmd  = "lld-link"
+args = ["/machine:arm64", "/subsystem:console", "/entry:mc_start", "/nodefaultlib",
+        "/out:{out}", "{obj}", "{sysroot}/kernel32.lib"]
+```
+
+```
+$ build/mc1 build . --config windows.toml
+compile hello.mc -> build/hello.exe.o
+link build/hello.exe.o -> build/hello.exe
+```
+
+`[linker]` is **required**, for the same reason it is on Linux, and asking for a direct executable
+says so:
+
+```
+$ build/mc1 build tests/proj --config /tmp/w.toml
+/tmp/w.toml:6:8: windows requires [linker]: there is no direct executable: target.os
+```
+
+`/entry:mc_start /nodefaultlib` is not a stylistic choice: the entry point comes from
+`lib/sys_windows.mc` and there is no C runtime in the link at all.
+
+### The sysroot: an import library, not a download
+
+A Windows program does not link against a copy of `kernel32.dll`. It links against an **import
+library** — a small archive holding one thunk per exported name and no code from the DLL — and
+that archive can be generated from a plain list of names. So `scripts/sysroot-windows.sh
+[--arch aarch64] [DIR]` writes `kernel32.def` (the seven entry points `lib/sys_windows.mc`
+declares) and builds `kernel32.lib` from it with `llvm-dlltool -m arm64`. No network, no Windows
+SDK, no mingw. Like the musl one it is a cache: with `kernel32.lib` already there it does nothing.
+`make sysroot-windows` runs it, and `scripts/test-windows.sh` runs it by itself.
+
+A program that needs more than those seven names — a whole SDK, other DLLs — is what
+`mc sysroot fetch windows-*` will be for; this is the toolchain the test suite needs.
+
+### What the COFF writer says
+
+`src/backend_coff.mc` is the third writer over one lowering. `gen_lower` and `gen_encode_all`
+produce sections, symbols and relocations; the writer only spells them in COFF:
+
+| the module says | the object says |
+|---|---|
+| `__TEXT,__text` | `.text`, `CNT_CODE \| MEM_EXECUTE \| MEM_READ` |
+| `__TEXT,__cstring` | `.rdata`, `CNT_INITIALIZED_DATA \| MEM_READ` |
+| `__DATA,__data` | `.data`, `CNT_INITIALIZED_DATA \| MEM_READ \| MEM_WRITE` |
+| `__DATA,__bss` (zerofill) | `.bss`, `CNT_UNINITIALIZED_DATA`, `SizeOfRawData` = the size, `PointerToRawData` = 0 |
+| `#section __TEXT __hot` | `.text.hot`, flags derived the same way the ELF writer derives them |
+| section alignment | three bits of `Characteristics` (`IMAGE_SCN_ALIGN_<2^n>BYTES` is `(n + 1) << 20`), not a field |
+| `_main` | `main` — Windows on ARM has **no** leading underscore, exactly like ELF |
+| `l_str0` | `$str.0`, `IMAGE_SYM_CLASS_STATIC` |
+| `R_BRANCH26` | `IMAGE_REL_ARM64_BRANCH26` (0x0003) |
+| `R_PAGE21` | `IMAGE_REL_ARM64_PAGEBASE_REL21` (0x0004) |
+| `R_PAGEOFF12` on an `add` | `IMAGE_REL_ARM64_PAGEOFFSET_12A` (0x0006) |
+| `R_PAGEOFF12` on an `ldr`/`str` | `IMAGE_REL_ARM64_PAGEOFFSET_12L` (0x0007) — the linker reads the scale off the instruction |
+| `R_UNSIGNED` | `IMAGE_REL_ARM64_ADDR64` (0x000E) |
+
+`PAGEOFFSET_12L` is in the table but the suite never produces one: the arm64 machine always
+materialises a global address with `adrp` + `add`, so every `R_PAGEOFF12` it emits lands on an
+`add` and comes out `12A` — the same divergence from clang the ELF writer records. The `ldr`/`str`
+form is reachable from hand-written code (`reloc(PAGEOFF12, …)` before an `#opcode` load), and the
+classifier is the one `elf_pageoff12` and `exe_fix_pageoff12` already use.
+
+Three things are worth naming because they are easy to get wrong:
+
+* **A COFF section is numbered from 1 in table order**, which is exactly the module's `sym_sect`.
+  Emitting the sections in creation order is what makes the renumbering a no-op.
+* **The two long-name encodings are different.** A *section* name longer than eight bytes is `/`
+  and the decimal offset into the string table, as text inside the eight bytes; a *symbol* name
+  longer than eight bytes is four zero bytes followed by that offset as a 32-bit number. Using the
+  section form for a symbol makes `llvm-readobj` print `/17` where a name should be.
+* **There is no addend field.** COFF is Mach-O's shape here, not ELF's: the addend lives in the
+  instruction, and the encoder already leaves it zeroed.
+
+`TimeDateStamp` is `0`, never the clock — the same determinism rule as everywhere else
+([determinism.md](determinism.md)). `NumberOfRelocations` is 16 bits, and a section with more than
+65535 relocations is refused with a message rather than written wrong.
+
+Every field above was checked against `clang --target=aarch64-windows-msvc -c` of equivalent C
+with `llvm-readobj --file-headers --sections --symbols --relocs` and `llvm-objdump -dr`.
+
+### No C runtime at all: `<sys_windows>`
+
+`lib/sys_windows.mc` is `lib/sys_linux.mc`'s Windows sibling, with one difference of substance:
+there is no syscall instruction. Windows has no stable system-call numbers, and the documented
+boundary is `kernel32.dll` — so the layer is ordinary mc code over seven `extern`s
+(`GetStdHandle`, `WriteFile`, `ReadFile`, `CreateFileA`, `CloseHandle`, `ExitProcess`,
+`GetCommandLineA`), all non-variadic. `write(fd, …)` translates the descriptors 0, 1 and 2 through
+`GetStdHandle`; `open`/`creat` hand back the `HANDLE` `CreateFileA` returned and the other
+wrappers take it back unchanged, which is safe because a real handle is never 0, 1 or 2.
+
+It also provides the entry point, `mc_start`: it splits `GetCommandLineA()` into `argc`/`argv`
+(runs of spaces and tabs separate, a double quote toggles a region where they do not) and calls
+`main` through a raw `bl`, the way `lib/sys_linux.mc`'s `_start` does — the two parameters are
+already in `x0`/`x1` and the prologue does not touch them
+([reference/objects.md](reference/objects.md) § 4).
+
+**It deliberately does not include `io.mc`**, and that is the one place it differs from
+`lib/sys_linux.mc`. On Linux the wrappers come out of `libc.a`, an archive the linker takes
+members from; here they come out of an ordinary object linked *next to* the program, and an object
+carries everything it holds. If this file also carried `strlen`/`puts`/`putnum`, every program
+that already has them — anything that includes `lib/sys.mc`, which ends in `io.mc` — would fail
+the link with a duplicate symbol. A program that includes the layer directly writes:
+
+```mc-no-run
+#include <sys_windows>
+#include <io>
+```
+
+`tests/windows/070-kernel32.mc` is that case, the counterpart of `tests/linux/070-nolibc.mc`.
+
+The `O_RDONLY`/`O_WRONLY`/`O_CREAT`/`O_TRUNC` constants live here too, for the same per-system
+reason they live in each of the other layers.
+
+### Running the suite
+
+`mc` runs on macOS arm64 and a Windows binary runs on Windows, so the suite is split in two and
+`scripts/test-windows.sh` has a mode for each half:
+
+```
+scripts/test-windows.sh [MC]                     cross-compile + validate (here)
+scripts/test-windows.sh --build-only OUTDIR [MC] cross-compile only
+scripts/test-windows.sh --run-only OUTDIR        link OUTDIR and run it (Windows)
+```
+
+`--build-only` writes one `<name>.obj` per test (`kind = "obj"`, so the driver stops at the
+object), a `<name>.expect` with the header values, a `manifest`, a `skipped` list, and the two
+files the other half cannot make for itself: `winrt.obj` — `lib/sys_windows.mc` compiled the same
+way — and `kernel32.lib`. `--run-only` needs `lld-link` and nothing else: no `mc`, no compiler, no
+SDK. The manifest records a link mode per object:
+
+| mode | link |
+|---|---|
+| `kernel32` | `<name>.obj winrt.obj kernel32.lib` — the test's `extern` `write`/`open`/`read`/`close` resolve against the layer, exactly as they resolve against `libc.a` on Linux |
+| `self` | `<name>.obj kernel32.lib` — the source already includes `<sys_windows>` and carries the layer and `mc_start` itself |
+
+The default mode is what `make test-windows` runs on the development machine: cross-compile
+everything, assert every object is an arm64 COFF with `TimeDateStamp` 0, and link three of them
+with `lld-link`. Nothing is executed here — there is no Windows host — and the `windows-11-arm` CI
+leg is the runtime oracle, which is what `docs/plan.md` § Rule for every new target requires.
+
+```
+32/32 objects cross-compiled for windows/aarch64 in build/tests-windows-aarch64
+skipped (not portable to this target):
+  032-svc — lib/sys_svc.mc enters the Darwin kernel directly; Windows has no stable system-call numbers at all, its boundary is kernel32 (lib/sys_windows.mc)
+```
+
+`// skip-windows: REASON` is the header, and `032-svc` is the only test that carries it. Everything
+else is portable as written — `030-section` (custom sections), `031-opcode` and `033-reloc`
+included: those two write AArch64 words by hand, and this target is AArch64.
+
+`make test-windows` is inside `make check` and guarded like `test-linux`: without `lld-link` or
+`llvm-dlltool` it prints `SKIPPED (...)` and the build stays green.
+
+---
+
 ## M23 — limits: one estimate, one tolerance, no ceilings
 
 Until M22 every table in the compiler was a static array with a `MAX*` ceiling, and a program that
@@ -1143,6 +1324,7 @@ make -C examples/api test        # test-oop + tests/lib_test.sh + test.sh
 | `check-standalone` | `scripts/check-standalone.sh`: `build/mc-exe` copied alone into a temporary directory, compiling `<sys>`/`<prelude>`, a taught compiler from `<mc/core>`, and the byte-for-byte comparison against `build/mc2.o` |
 | `test-linux` | `scripts/test-linux.sh`: every `tests/*.mc` without `// skip-linux` cross-compiled with `elf-obj`, linked by `ld.lld` against musl and run in `docker --platform linux/arm64`, plus the no-libc case. Guarded: skipped with a message when Docker or `ld.lld` is missing |
 | `test-linux-x86_64` | the same with `--arch x86_64`: the `elf-obj-x86_64` backend, an amd64 musl sysroot and `docker --platform linux/amd64`. Also skips the tests that carry `// skip-x86_64`. Guarded the same way |
+| `test-windows` | `scripts/test-windows.sh`: every `tests/*.mc` without `// skip-windows` cross-compiled with `coff-obj-arm64`, every object's COFF header checked with `llvm-readobj` and three of them linked with `lld-link`. Nothing is executed — the `windows-11-arm` CI leg runs them. Guarded: skipped when `lld-link` or `llvm-dlltool` is missing |
 | `check-limits` | `scripts/check-limits.sh`: `mc limits src/mc.mc` against the fixed `MAX*` constants still in `stage0/mc.h` and `stage0/*.c`, plus the seed's `HEAP_SIZE` against the max RSS of a real `build/mc0` run; fails when any of them is over 90% used |
 
 ```

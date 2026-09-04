@@ -2,9 +2,9 @@
 
 Between the AST and the file on disk there is one format-neutral layer: sections, symbols and
 relocations in `src/macho.mc`, and a per-function buffer of `Ins` records in `src/gen_walk.mc`.
-Four backends are built on nothing but this — `macho`, `macho-exe`, `elf-obj` and
-`elf-obj-x86_64` — and so is `lib/backend_arm64.mc`, which reimplements the whole AArch64 encoder
-from outside and produces byte-identical objects.
+Five backends are built on nothing but this — `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64`
+and `coff-obj-arm64` — and so is `lib/backend_arm64.mc`, which reimplements the whole AArch64
+encoder from outside and produces byte-identical objects.
 
 Everything here is an ordinary function. There is no plugin ABI: a backend is a `.mc` module
 compiled into the compiler, registered with `backend("name", &f)` ([hooks.md](hooks.md)).
@@ -442,6 +442,8 @@ The other two backends are the same idea with a different envelope:
 | `macho` | `MH_OBJECT` for `ld` | the default |
 | `macho-exe` | ad-hoc signed `MH_EXECUTE` | does what `ld` did: segment layout on 16 KiB pages, its own resolution of the four relocations, `__TEXT,__stubs` + `__DATA,__got` per imported symbol with bind opcodes, rebase entries for every `UNSIGNED`, 13 load commands, and a `CS_CodeDirectory` with SHA-256 per 4 KiB page |
 | `elf-obj` | ELF64 `ET_REL`, `EM_AARCH64` | section names mapped (`__TEXT,__text` → `.text`, `__TEXT,__cstring` → `.rodata`, …), the leading `_` dropped from symbols, `l_strN` → `.LstrN`, and the four relocations mapped to `CALL26`/`ADR_PREL_PG_HI21`/`ADD_ABS_LO12_NC`/`LDST*_ABS_LO12_NC`/`ABS64` |
+| `elf-obj-x86_64` | the same file, `EM_X86_64` | `R_X86_64_64` / `PC32` / `PLT32`, addend −4 on both pc-relative kinds because a `rel32` counts from the end of its field |
+| `coff-obj-arm64` | COFF, `IMAGE_FILE_MACHINE_ARM64` | `src/backend_coff.mc` (M19): `.text`/`.rdata`/`.data`/`.bss`, alignment as three bits of `Characteristics`, no leading `_` on a symbol, `l_strN` → `$str.N`, and the four relocations mapped to `BRANCH26`/`PAGEBASE_REL21`/`PAGEOFFSET_12A`/`PAGEOFFSET_12L`/`ADDR64`. `TimeDateStamp` is 0 |
 
 Two things `--exe` does that `.o` + `ld` does not: `&name` for a dylib `extern` works (it points
 the `adrp`/`add` at the symbol's stub), and the binary comes out `0755` and signed, ready to run.
@@ -464,6 +466,12 @@ void user_init() {
     backend("mine", &my_write);      // mc --backend=mine prog.mc -o prog.o
 }
 ```
+
+The three writers the core registers itself have exactly this shape and no other: `backend_exe(root, out)`,
+`backend_elf(root, out)` / `backend_elf_x86(root, out)` and `backend_coff(root, out)` each name
+their machine with `machine_use`, call `gen_lower` and `gen_encode_all`, and then write. An object
+backend picks the machine because the file format already records the architecture; a backend that
+consumes the AST directly needs none.
 
 `lib/backend_arm64.mc` is the worked proof: it registers `arm64-surface`, calls `gen_lower`, and
 then reimplements the entire AArch64 encoder in `.mc` — its own opcode tables, its own label

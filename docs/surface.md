@@ -528,7 +528,7 @@ generator, keeps producing **identical** objects (`check-obj` 32/32) and identic
 (`check-asm` 73/73).
 
 The other half of M17's step A is `target(os, arch, obj_backend, exe_backend)`: `src/driver.mc`
-used to carry the whitelist itself (`only macos and linux`, `only aarch64`), and now reads a
+used to carry the whitelist itself (`only macos, linux and windows`, `only aarch64`), and now reads a
 registry filled in `src/main.mc`, with those same messages generated from it.
 
 M17's **step B** is the payoff: `src/machine_x86_64.mc`, a second machine behind the same walker,
@@ -537,7 +537,7 @@ architecture-specific, and the ELF writer is shared down to the section table �
 difference is a register partition, an ABI and thirty-odd encoders
 (`docs/reference/machine.md` § The x86-64 implementation).
 
-### The four built-in backends: `macho`, `macho-exe`, `elf-obj` and `elf-obj-x86_64`
+### The five built-in backends: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64` and `coff-obj-arm64`
 
 `src/main.mc` registers four backends before calling `user_init()`:
 
@@ -547,6 +547,7 @@ difference is a register partition, an ABI and thirty-odd encoders
 | `macho-exe` (M11) | ad-hoc signed arm64 `MH_EXECUTE`, no `ld` | `--exe` |
 | `elf-obj` (M16) | ELF64 `ET_REL` for `EM_AARCH64` — the `.o` a Linux linker takes | — |
 | `elf-obj-x86_64` (M17) | the same file for `EM_X86_64` | — |
+| `coff-obj-arm64` (M19) | COFF `IMAGE_FILE_MACHINE_ARM64` — the `.obj` a Windows linker takes | — |
 
 ```
 $ build/mc1 --exe tests/001-return42.mc -o tmp/t1 && tmp/t1; echo $?
@@ -554,7 +555,7 @@ $ build/mc1 --exe tests/001-return42.mc -o tmp/t1 && tmp/t1; echo $?
 $ build/mc1 --backend=macho-exe tests/001-return42.mc -o tmp/t1    # the same thing
 $ build/mc1 --backend=xyz tests/001-return42.mc -o x.o
 unknown backend: xyz
-registered: macho macho-exe elf-obj elf-obj-x86_64
+registered: macho macho-exe elf-obj elf-obj-x86_64 coff-obj-arm64
 ```
 
 `elf-obj` lives in `src/backend_elf.mc` and is built the same way `macho-exe` is: `gen_lower` +
@@ -563,6 +564,11 @@ registered: macho macho-exe elf-obj elf-obj-x86_64
 format-neutral — see `docs/build.md` § Linux targets for the whole mapping, and
 `scripts/test-linux.sh` for the suite it passes. `elf-obj-x86_64` is the same file: it names its
 machine (`machine_use("x86_64")`), sets `e_machine`, and shares every other line.
+
+`coff-obj-arm64` (M19) is the third writer over the same lowering, in `src/backend_coff.mc`: same
+machine as macOS, a different envelope — `.text`/`.rdata`/`.data`/`.bss`, alignment as three bits
+of `Characteristics`, no leading underscore on a symbol, and the four relocations in COFF's
+numbering. `docs/build.md` § Windows targets has the whole mapping.
 
 `macho-exe` lives in `src/backend_exe.mc` and is **part of the compiler**, not a user module: it's
 M11's answer, not a Tier 2 demo. But it's written exactly the way a surface backend would be — it

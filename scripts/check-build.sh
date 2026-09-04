@@ -129,9 +129,9 @@ entry = "app.mc"
 out   = "build/x"
 
 [target]
-os = "windows"
+os = "haiku"
 ' \
-    'CFG:6:6: only macos and linux (see docs/build.md): target.os'
+    'CFG:6:6: only macos, linux and windows (see docs/build.md): target.os'
 
 # M16: os = "linux" is valid, but there is no direct executable for it -- a
 # Linux build always hands the object to [linker].
@@ -144,6 +144,18 @@ out   = "build/x"
 os = "linux"
 ' \
     'CFG:6:6: linux requires [linker]: there is no direct executable: target.os'
+
+# M19: the same for Windows -- valid os, no direct executable, and the message
+# names the operating system the file asked for.
+diag "diag [target].os windows without [linker]" "$tmp/d.toml" \
+    '[project]
+entry = "app.mc"
+out   = "build/x"
+
+[target]
+os = "windows"
+' \
+    'CFG:6:6: windows requires [linker]: there is no direct executable: target.os'
 
 diag "diag missing project.entry" "$tmp/d.toml" \
     '[project]

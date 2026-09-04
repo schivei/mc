@@ -463,57 +463,60 @@ i64 target_os_known(uptr os) {
 }
 
 // the diagnostic for an unrecognised [target] value, built FROM the registry so
-// that a target a module registers appears in it. With macos and linux
-// registered this is exactly `only macos and linux (see docs/build.md)`, the
-// message the driver printed when the list was written out by hand.
-void tgt_word(uptr b, uptr w, i64 n) {
-    if (n) buf_put(b, " and ", 5);
-    buf_put(b, w, cstrlen(w));
-}
-
-uptr target_os_list() {
-    u8 b[BUF_SIZE];
-    buf_init(b);
-    buf_put(b, "only ", 5);
+// that a target a module registers appears in it. With macos, linux and windows
+// registered this is exactly `only macos, linux and windows (see
+// docs/build.md)` -- a comma between every pair but the last, which is why the
+// walk below has to know the total before it writes the first word.
+//
+// `os == 0` walks the distinct operating systems, otherwise the distinct
+// architectures registered for that one; `b == 0` counts them without writing.
+i64 tgt_walk(uptr b, uptr os, i64 total) {
     i64 n = 0;
     i64 i = 0;
     loop {
         if (i >= ntargets) break;
+        uptr w = tgt_os_at(i);
         i64 seen = 0;
+        if (os) {
+            w = tgt_arch_at(i);
+            seen = !str_eq(tgt_os_at(i), os);
+        }
         i64 j = 0;
         loop {                                   // first occurrence only
             if (j >= i) break;
-            if (str_eq(tgt_os_at(j), tgt_os_at(i))) seen = 1;
+            if (os) {
+                if (str_eq(tgt_os_at(j), os) && str_eq(tgt_arch_at(j), w)) seen = 1;
+            } else {
+                if (str_eq(tgt_os_at(j), w)) seen = 1;
+            }
             j = j + 1;
         }
-        if (!seen) { tgt_word(b, tgt_os_at(i), n); n = n + 1; }
+        if (!seen) {
+            if (b) {
+                if (n) {
+                    if (n == total - 1) buf_put(b, " and ", 5);
+                    else                buf_put(b, ", ", 2);
+                }
+                buf_put(b, w, cstrlen(w));
+            }
+            n = n + 1;
+        }
         i = i + 1;
     }
+    return n;
+}
+
+uptr tgt_list(uptr os) {
+    u8 b[BUF_SIZE];
+    buf_init(b);
+    buf_put(b, "only ", 5);
+    tgt_walk(b, os, tgt_walk(0, os, 0));
     buf_put(b, " (see docs/build.md)", 20);
     buf_u8(b, 0);
     return buf_p(b);
 }
 
+uptr target_os_list() { return tgt_list(0); }
+
 // the same, restricted to the architectures one os was registered with
-uptr target_arch_list(uptr os) {
-    u8 b[BUF_SIZE];
-    buf_init(b);
-    buf_put(b, "only ", 5);
-    i64 n = 0;
-    i64 i = 0;
-    loop {
-        if (i >= ntargets) break;
-        i64 seen = !str_eq(tgt_os_at(i), os);
-        i64 j = 0;
-        loop {
-            if (j >= i) break;
-            if (str_eq(tgt_os_at(j), os) && str_eq(tgt_arch_at(j), tgt_arch_at(i))) seen = 1;
-            j = j + 1;
-        }
-        if (!seen) { tgt_word(b, tgt_arch_at(i), n); n = n + 1; }
-        i = i + 1;
-    }
-    buf_put(b, " (see docs/build.md)", 20);
-    buf_u8(b, 0);
-    return buf_p(b);
-}
+uptr target_arch_list(uptr os) { return tgt_list(os); }
