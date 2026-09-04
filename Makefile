@@ -213,7 +213,7 @@ test-windows: build/mc1
 
 # M20: the same suite for windows/x86_64 -- the `coff-obj-x86_64` backend over
 # the Win64 half of the x86-64 machine. Nothing is EXECUTED here either; the
-# windows-latest CI leg is the runtime oracle. Guarded exactly like test-windows.
+# windows-2025 CI leg is the runtime oracle. Guarded exactly like test-windows.
 test-windows-x86_64: build/mc1
 	@if ! sh -c 'command -v lld-link || [ -x /opt/homebrew/opt/llvm/bin/lld-link ]' > /dev/null 2>&1; then \
 	    echo "test-windows-x86_64: SKIPPED (lld-link not found; brew install lld llvm)"; \
@@ -401,7 +401,7 @@ check-skipped:
 	@echo "check-minimal: SKIPPED (its ceilings are measured on the macOS backends)"
 	@echo "test-linux/test-linux-x86_64: SKIPPED (cross-compilation from macOS; here the suite is native)"
 	@echo "test-windows: SKIPPED (cross-compilation from macOS; the windows-11-arm CI leg is the runtime oracle)"
-	@echo "test-windows-x86_64: SKIPPED (cross-compilation from macOS; the windows-latest CI leg is the runtime oracle)"
+	@echo "test-windows-x86_64: SKIPPED (cross-compilation from macOS; the windows-2025 CI leg is the runtime oracle)"
 	@echo "check-examples/check-lang/check-conc/check-desktop: SKIPPED (macOS dylibs and --exe)"
 	@echo "check-docs/site/check-site: SKIPPED (their samples are built with --exe)"
 endif

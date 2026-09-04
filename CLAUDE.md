@@ -1257,6 +1257,87 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `mc2-linux-arm64.sha256` `017325eb2de7548f32fea83caad8383db0d813c9094cd23644bee3c6af826ff8`,
   `mc2-linux-x86_64.sha256` `3b93e1887585e8d38d62421a1451bd66a9f4752c7006fb2e67b6bb300852dfce`.
   `build/mc-exe` 600211 B.
+- M38 done (`docs/specs/M38.md`, `docs/guide/95-windows-host.md`, `docs/bootstrap.md` § The
+  Windows chain, `docs/ci.md` § M38): **`mc` hosted on Windows, arm64 and x64**. `stage0/`
+  untouched (2848/3000). Four steps, one commit each.
+  1. **Stack parameters 9..12, `MAXPARAMS` 8 -> 12 in `src/`** (Decision 1). `CreateProcessA`
+     takes ten parameters, so the host layer could not even be declared. The arm64 machine gained
+     the caller half (`a64_stack_args`: arguments 9..12 at `[sp, #0..#24]`, written BEFORE
+     `x0..x7` so the stores can still read the depth registers and use `x16` for a spilled one)
+     and the callee half (`a64_param` reads `[x29 + 16 + 8*(i-8)]`, since the frame record moved
+     sp by 16). **Deviation from the spec's sketch, on record:** the outgoing area is NOT a
+     `sub sp` around the call the way `x86_push_args` does it — every frame slot is addressed
+     through the fictitious `REG_FRAME` base that `fix_frame()` only turns into `sp + (frame -
+     off)` at the END of the function, so an sp that moved inside the body would make every
+     spilled depth read the wrong address. It is reserved at the bottom of the FRAME instead
+     (`a64_frame_fix` adds 16 or 32 bytes, `die("frame too large")` guards the 12-bit immediate)
+     and the stores name `REG_SP`, which `fix_frame` leaves alone. `a64_callp` spreads its
+     arguments over `x0..x7` and the stack for the same reason. `src/machine_x86_64.mc` needed
+     nothing: `x86_push_args`/`x86_param` were already general (SysV 7th+, Win64 5th+ above the
+     shadow space). The seed keeps 8 — `stage0` only compiles `src/mc.mc`, which has no function
+     with more than eight parameters — a documented divergence like `MAXSTRS`/`MAXGLOBALS`.
+     `tests/mc/080-twelve-params.mc` (sum12/pick12 direct, sum11/pick11 through `callp`, sum10
+     with two CALLS in stack positions, `u8`/`u16`/`u32` on the stack path, a nested 12-argument
+     call) runs on **all five targets**; `scripts/check-surface.sh` gained the callee-side and
+     caller-side ABI assertions. Inertness proved: `--dump-asm` diffs EMPTY for `arm64`,
+     `x86_64` and `x86_64-win` over `src/mc.mc` and the whole `tests/*.mc` + `lib/*.mc` corpus,
+     and `check-obj` 32/32 identical to `mc0`.
+  2. **The host layer.** `src/host_windows.mc` (58) + `host_windows_{aarch64,x86_64}.mc` +
+     `mc_windows{,_x86_64}.mc`, the Linux pair's shape. `lib/sys_windows_host.mc` (244, bundled
+     as `sys_windows_host`, compiled into `mcrt.obj`) is the fifteen POSIX names the compiler
+     declares `extern`, over kernel32: `posix_spawnp` (MSVCRT quoting, `STARTUPINFOA` 104 B and
+     `PROCESS_INFORMATION` 24 B in `u8` arrays through `st*`/`ld*`, `CreateProcessA` with
+     `lpApplicationName = 0` so PATH and `.exe` are searched for us), `waitpid`
+     (`WaitForSingleObject` + `GetExitCodeProcess`, `(code & 255) << 8` — Windows has no signals,
+     so the shape `drv_spawn` reads is exact), `mmap` over `VirtualAlloc` (`src/arena.mc`
+     untouched: `arena_map` already rounds to 64 KiB, `VirtualAlloc`'s granularity),
+     `mkdir`/`unlink`/`_exit`, `chmod` returning 0, and the three
+     `posix_spawn_file_actions_*` stubs. `host_exe_suffix()` joined the host interface
+     (`""` / `".exe"`) and `drv_teach` uses it at every site where `[compiler].out` names a
+     BINARY. `lib/sys_windows_start.mc` passes 0 as `main`'s third argument.
+     `scripts/sysroot-windows.sh`'s `.def` went from seven names to thirteen. Because
+     `check-ast`/`check-asm` compile every `lib/*.mc` with the seed AND with `mc1` and compare,
+     `lib/sys_windows_host.mc` carries a `// seed-skip:` header with the reason and both scripts
+     report it — the same argument that put `tests/mc/` in a directory of its own.
+  3. **The chain.** `src/mc.windows-{aarch64,x86_64}{,-obj}.toml`, `scripts/link-windows.sh`
+     (105) and `scripts/bootstrap-windows.sh` (280). The sysroot holds all three files a link
+     needs and the program does not provide — `kernel32.lib`, `winstart.obj`, `mcrt.obj` — because
+     a literal `[linker].args` path is resolved against the working directory and not against the
+     config. The Makefile's host switch is three-way (`WINHOST` is a `findstring` over
+     MINGW/MSYS/CYGWIN), `REF`/`MC` become `build/mc1w.exe`/`build/mc2w.exe`, `check` is the
+     subset `budget bootstrap-windows check-lex check-ast check-asm check-obj check-bundle
+     check-mc check-toml check-limits check-skipped`, and every check script that had a Linux
+     branch got a Windows one. `.gitattributes` with `* -text` (Decision 11).
+  4. **CI and releases.** The macOS job cross-compiles the two COFF compiler objects and the two
+     sysroots and uploads `mc-windows-hosts`; the jobs `mc on windows/arm64 host`
+     (`windows-11-arm`) and `mc on windows/x86_64 host` (`windows-2025`) link, ask `--host`, run
+     `make check SEED=…` and the cross proof against `build/mc2.o`. `core.autocrlf=false` before
+     the checkout, `MSYS2_ARG_CONV_EXCL='*'`, `choco install make`. The M20 x64 suite leg moved to
+     `windows-2025` (Decision 9). `release.yml`: `build-future-hosts` deleted, `build-windows`
+     (a two-entry matrix) in its place, `publish` needs all three producers — **five** assets,
+     `mc.exe` inside the two Windows tarballs (`scripts/release-assets.sh`).
+  — `stage0/` untouched, 2848/3000; bundle 47 files (raw 552780 -> LZ 257678, blob 258262 B).
+  `make check` green end to end on macOS; `make check-linux-host` green on both architectures
+  (RC 0), 33/33 on linux/aarch64 and 30/30 on linux/x86_64 with `080-twelve-params` included;
+  `make test-windows` 35/35 and `make test-windows-x86_64` 33/33 objects cross-compiled and
+  linked here. Cross-built and LINKED on this Mac with `lld-link`, no undefined symbols:
+  `build/mc-windows-arm64.exe` 542208 B (`IMAGE_FILE_MACHINE_ARM64`) and
+  `build/mc-windows-x86_64.exe` 589312 B (`IMAGE_FILE_MACHINE_AMD64`).
+  **Five goldens rewritten in one commit**, each only after its own criterion: `mc2.sha256`
+  `6deafb02…ef3bad` -> `28550e3912ed5012a16b7d6e5bad5ba3032a90e66364ed1a0954653bb94fd4a8`
+  (empty `--dump-asm` diff between mc1 and mc2, `cmp mc2.o mc3.o`, 676560 B); the two Linux ones
+  deleted and re-recorded by `make check-linux-host` —
+  `mc2-linux-arm64.sha256` `113261108524194371c66e31257caa841ca01f9e396b4f53257e4a89a2fa5d78`,
+  `mc2-linux-x86_64.sha256` `542893ebbd9f0da7f1ad4a77aeebb42e80884dc46f99a12d4956ce7781ea8934`;
+  and the two NEW Windows ones computed on macOS as the SHA-256 of the cross-compiled object,
+  which is by construction the object the Windows-hosted compiler must write —
+  `mc2-windows-arm64.sha256` `b652e5d5db7177ee9b34938ba6400342c1479ffee86cdc3bbc60c1440e0d75ef`
+  (689869 B), `mc2-windows-x86_64.sha256`
+  `db21c424ebb68e8805ad8229f1e493377fd25e626c9b7609df762cfef467e4c6` (708729 B), and `build/mc2`
+  produces both byte for byte as `build/mc1` does.
+  **What only the Windows runners can prove**: that the kernel32 shims BEHAVE — a spawn, a wait,
+  an exit code, a `VirtualAlloc`ed arena — and therefore the fixed point, the suite and the cross
+  proof on a real Windows machine. Nothing Windows executes on this Mac.
 - Next: M18 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
   sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is
   one more motivating case).

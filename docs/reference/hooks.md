@@ -623,7 +623,7 @@ shape between hosts — and the two `O_*` values that differ (`O_CREAT`, `O_TRUN
 on macOS, `0x40`/`0x200` on Linux, `0x100`/`0x200` on Windows). On macOS and Linux those seven
 names are in libSystem and in musl; on Windows none of them exists, and they are shims over
 kernel32 in `lib/sys_windows_host.mc`, compiled once into `build/mcrt-windows-<arch>.obj` and
-linked next to the compiler ([../specs/M38.md](../specs/M38.md) § 2).
+linked next to the compiler ([../guide/95-windows-host.md](../guide/95-windows-host.md) § 3).
 
 What the host layer decides, in the driver and the CLI:
 

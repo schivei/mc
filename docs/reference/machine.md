@@ -278,7 +278,7 @@ while compiling `src/mc.mc` for `windows/x86_64` re-assemble byte-identically un
 against `target - (address + length)`. The relocation shapes match
 `clang --target=x86_64-windows-msvc -c` of equivalent C: `IMAGE_REL_AMD64_REL32` at instruction + 1
 for a `call` and at instruction + 3 for a `lea r, [rip+d32]`, with the in-place field zero and no
-addend anywhere ([objects.md](objects.md) § 8). The suite itself runs on the `windows-latest` CI
+addend anywhere ([objects.md](objects.md) § 8). The suite itself runs on the `windows-2025` CI
 leg: `make test-windows-x86_64` cross-compiles it.
 
 ---

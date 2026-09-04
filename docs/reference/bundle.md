@@ -35,7 +35,7 @@ root in order.
 
 ## The catalogue
 
-The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 43 entries,
+The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 47 entries,
 plus `mc/bundle_data`, which is regenerated on demand (see below). Those are the names `<...>`
 accepts.
 
@@ -48,6 +48,7 @@ accepts.
 | `<sys_linux>` | `lib/sys_linux.mc` | the Linux syscall layer (`svc #0`, number in `x8`) and a `_start`, for `-nostdlib` |
 | `<sys_windows>` | `lib/sys_windows.mc` | the Windows layer: the same five calls over seven kernel32 `extern`s, plus `win_setup`/`win_argv`, for `/nodefaultlib`. It is the one layer that does **not** pull in `<io>` — add `#include <io>` after it (see [../build.md](../build.md) § Windows targets) |
 | `<sys_windows_start>` | `lib/sys_windows_start.mc` | the Windows entry point, `mc_start`, on its own: it is compiled alone into `winstart.obj` and linked next to every Windows program, never included. It is where `main` is named as an `extern`, which is why it cannot live in the layer a program includes |
+| `<sys_windows_host>` | `lib/sys_windows_host.mc` | `<sys_windows>` **plus** the nine POSIX names only a compiler needs — `_exit`, `chmod`, `mkdir`, `unlink`, `mmap`, `posix_spawnp`, `waitpid` and the three `posix_spawn_file_actions_*` — over kernel32. It is compiled alone into `mcrt.obj` and linked next to a Windows-hosted `mc` (M38, [../guide/95-windows-host.md](../guide/95-windows-host.md) § 3); a program may include it to spawn a process |
 | `<io>` | `lib/io.mc` | `strlen`, `puts`, `putnum` — written in the language, on top of whatever `write` the includer declared. **Never include it alone** |
 
 `O_RDONLY`/`O_WRONLY`/`O_CREAT`/`O_TRUNC` live in each system layer, not in `<io>`, because they
@@ -74,6 +75,9 @@ and supplying that function *is* a taught compiler ([hooks.md](hooks.md)).
 | `<mc/host_linux>` | `src/host_linux.mc` — the operating-system half, shared by both architectures |
 | `<mc/host_linux_aarch64>` | `src/host_linux_aarch64.mc` |
 | `<mc/host_linux_x86_64>` | `src/host_linux_x86_64.mc` |
+| `<mc/host_windows>` | `src/host_windows.mc` — the operating-system half, shared by both architectures |
+| `<mc/host_windows_aarch64>` | `src/host_windows_aarch64.mc` |
+| `<mc/host_windows_x86_64>` | `src/host_windows_x86_64.mc` |
 | `<mc/arena>` | `src/arena.mc` |
 | `<mc/ast>` | `src/ast.mc` |
 | `<mc/lex>` | `src/lex.mc` |
@@ -103,7 +107,8 @@ exactly one of them, included **before** the core.
 
 `<mc/host>` is how a source asks for "the one that matches whichever `mc` is compiling me". It is
 resolved in `src/main.mc` (`host_bundle_open`) to `host_include()`, which each host file answers
-for itself — `mc/host_macos`, `mc/host_linux_aarch64` or `mc/host_linux_x86_64` — and the entry it
+for itself — `mc/host_macos`, `mc/host_linux_aarch64`, `mc/host_linux_x86_64`,
+`mc/host_windows_aarch64` or `mc/host_windows_x86_64` — and the entry it
 lands on is what the once-only include list records, so writing `<mc/host>` and
 `<mc/host_macos>` in the same program includes the file once, not twice.
 

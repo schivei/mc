@@ -372,7 +372,7 @@ regenerated from `docs/` on merge. A change without documentation is not finishe
 ## Rule for every new target (owner, 2026-09-03)
 A milestone that adds an OS or an architecture ships, in the same PR, its CI leg (a job that links
 and RUNS the suite on a runner of that platform: `ubuntu-latest` for linux/x86_64, `windows-11-arm`
-and `windows-latest` for Windows, node for wasm) and the architect adds that job to the `main`
+and `windows-2025` for Windows, node for wasm) and the architect adds that job to the `main`
 branch protection as a required status check at merge time. No target is "supported" without a
 gate.
 
@@ -399,7 +399,7 @@ gate.
 | **M35** | Benchmark and memory tooling as bundled `.mc` modules activated by flags: `<bench>` (`--bench`, CSV history, CI job, numbers page) and `<memcheck>` (`--paranoid` / `[profile] mem = "paranoid"`: shadow arena, red zones, poisoning, use-after-free, double free, leaks, UBSan-style checks via a Tier 2 pass; the seed keeps `stage0-san`) (`docs/specs/M35.md`) | `tests/mem/*` each caught with the right message; clean program reports nothing; overhead documented; CSV rows deterministic except timings |
 | **M36** | Multi-target builds (owner, 2026-09-03, last): `[[targets]]` in `mc.toml`, `mc build` producing every output in one run (`--target=NAME`, `--list-targets`, `--keep-going`), per-target overrides of linker/sysroot/libs/limits/run, taught compiler built once, byte-identical outputs alone or in batch (`docs/specs/M36.md`) | `examples/minimal` and `examples/wasm` build all available targets in one command; CI covers macOS, wasm and Linux entries |
 | **M37** | `mc` hosted on Linux (owner, 2026-09-04, promoted: the cloud runs only Linux; releases must ship `mc` for every landed OS/arch, and a target alone does not make a host): host layer (`host_macos`/`host_linux`), `mc-linux-<arch>` cross-built and released, `scripts/bootstrap-linux.sh` fixed point on Linux from a published seed, Linux `make check` subset, CI jobs on both Linux runners, Linux release assets (`docs/specs/M37.md`) | fixed point on linux/x86_64 and linux/arm64; `mc-linux src/mc.mc` == macOS `mc2.o`; CI green |
-| **M38** | `mc` hosted on Windows (owner's rule, 2026-09-04: every landed OS/arch gets a release asset of `mc` itself): `host_windows.mc` over kernel32 (spawn via `CreateProcessA`, environment, file API), cross-built `mc-windows-{arm64,x64}.exe` verified on the Windows runners, release matrix entries enabled (`docs/specs/M38.md`) | fixed point on the Windows runners; release assets for both Windows targets |
+| **M38** | `mc` hosted on Windows (owner's rule, 2026-09-04: every landed OS/arch gets a release asset of `mc` itself): `MAXPARAMS 12` with stack parameters 9..12 on all three machines (`CreateProcessA` takes ten), `src/host_windows*.mc` + `lib/sys_windows_host.mc` over kernel32 (spawn via `CreateProcessA`/`WaitForSingleObject`, `VirtualAlloc` for the arena, `CreateDirectoryA`/`DeleteFileA`), `host_exe_suffix()`, `scripts/{link,bootstrap}-windows.sh`, the Windows `make check` subset, two CI host jobs and two release assets (`docs/specs/M38.md`) | fixed point on the Windows runners; release assets for both Windows targets |
 
 ---
 
