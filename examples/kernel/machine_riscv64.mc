@@ -571,6 +571,19 @@ i64 rv_target(uptr lab, i64 l) {
     return ivec_at(lab, l);
 }
 
+// jal's immediate is a SIGNED 21-bit displacement with its low bit implied: it
+// reaches 1 MiB backwards and 1 MiB minus two bytes forwards, and rv_put_j masks
+// whatever it is given into the field. A jump past that would come out silently
+// truncated -- a plausible image that boots and lands in the middle of an
+// instruction, which is the exact failure src/machine_arm64.mc spends br_off()
+// on. Only the ENCODE pass can check it: MTASK_INS_SIZE runs with no label
+// vector, so `real` is `lab != 0` and the measuring pass sees a placeholder 0.
+i64 rv_jal_off(i64 target, i64 pc, i64 real) {
+    i64 d = target - pc;
+    if (real && (d > 1048574 || d < 0 - 1048576)) die("riscv jal out of range");
+    return d;
+}
+
 // THE encoder. MTASK_ENCODE calls it with the section buffer, MTASK_INS_SIZE
 // with a scratch one, so the size the label pass reserves is by construction
 // the number of bytes that will be written. RV64 is fixed width almost
@@ -619,12 +632,12 @@ void rv_put(uptr e, i64 pc, uptr lab, uptr o) {
     }
     if (op == V_JALR) { rv_put_i(o, 0x67, 0, rd, 0, RV_RA); return; }
     if (op == V_RET)  { rv_put_i(o, 0x67, 0, RV_RA, 0, RV_ZERO); return; }
-    if (op == V_J)    { rv_put_j(o, rv_target(lab, ins_label(e)) - pc, RV_ZERO); return; }
+    if (op == V_J)    { rv_put_j(o, rv_jal_off(rv_target(lab, ins_label(e)), pc, lab != 0), RV_ZERO); return; }
     if (op == V_JZ || op == V_JNZ) {
         i64 f3 = 1;                              // bne: skip the jal when non-zero
         if (op == V_JNZ) f3 = 0;                 // beq: skip it when zero
         rv_put_b(o, 8, RV_ZERO, rd, f3);
-        rv_put_j(o, rv_target(lab, ins_label(e)) - (pc + 4), RV_ZERO);
+        rv_put_j(o, rv_jal_off(rv_target(lab, ins_label(e)), pc + 4, lab != 0), RV_ZERO);
         return;
     }
     if (op == V_FRAME) {

@@ -1341,8 +1341,8 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
 - M39 done (`docs/specs/M39.md`, `docs/guide/95-a-new-architecture.md`): **an architecture taught
   from the surface** -- `examples/kernel`, a bare-metal RISC-V 64 micro-kernel compiled by a taught
   compiler and booted under QEMU. **`git diff --stat src/ stage0/ lib/ tests/` is empty**: that is
-  the milestone. Everything is under `examples/kernel/` (2450 lines):
-  `machine_riscv64.mc` (767) fills the same 31 slots `src/machine_arm64.mc` and
+  the milestone. Everything is under `examples/kernel/` (2563 lines):
+  `machine_riscv64.mc` (780) fills the same 31 slots `src/machine_arm64.mc` and
   `src/machine_x86_64.mc` fill -- depths 0..3 in `t3..t6`, scratch `t0`/`t1` and `t2` reserved for
   address materialisation, arguments `a0..a7` with 9..12 at `[s0 + 16 + 8*(i-8)]`, locals at
   `[s0 - off]`, an epilogue that starts with `mv sp, s0` and is therefore NEVER patched, and two
@@ -1359,7 +1359,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `_data_start`/`_data_end`/`_data_lma`/`_stack_top`) and raw bytes out -- no header, no
   signature. `kernel_syntax.mc` (117) teaches `mmio` / `csrw` / `csrr(...)` / `yield`.
   `lib/sys_bare.mc` (148), `lib/trap.mc` (95), `lib/sched.mc` (90), `main.mc` (90),
-  `tests/sweep.mc` (177), `mc-kernel.mc` (30), `mc.toml` (53), `test.sh` (432), `README.md` (205).
+  `tests/sweep.mc` (177), `mc-kernel.mc` (30), `mc.toml` (62), `test.sh` (502), `README.md` (226).
   **Two deviations from the spec's sketch, both on record.** (1) The reset stub is
   `li sp, _stack_top` + `j _start`, padded to a fixed 32 bytes, not `jal x0, _start` alone: a
   RISC-V hart comes out of reset with every register zero and the compiler's frame record is
@@ -1383,11 +1383,40 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   purpose). G9 taken as documentation only (D7): `docs/reference/hooks.md`'s recipe told a module
   to call `machine_task`, which writes `m_arm64` BY NAME -- corrected, along with "Four are
   registered" -> five.
+  Post-M39 review, two confirmed findings, both fixed inside `examples/kernel/` (`src/`, `lib/`,
+  `tests/` and `stage0/` still untouched -- acceptance 11 holds).
+  1. **A jump the machine could not encode was truncated, not refused.** `rv_put_j` masks its
+     argument into `jal`'s SIGNED 21-bit field, and `V_J` plus the `jal` half of the `V_JZ`/`V_JNZ`
+     pair handed it `target - pc` unchecked -- so a jump past 1 MiB came out silently wrong, the
+     one class `src/machine_arm64.mc` spends `br_off` (`branch too far`) on and the one class no
+     later gate catches. `rv_jal_off(target, pc, real)` (+13 lines in
+     `examples/kernel/machine_riscv64.mc`) dies with `riscv jal out of range`; `real` is
+     `lab != 0`, so only the ENCODE pass checks -- `MTASK_INS_SIZE` measures with no label vector
+     and both forms are fixed width. Reproduced first: one `if` over 40 000 statements (1.4 MiB of
+     code) built a 1442680-byte image whose jump disassembles as `j -657148` where the target is
+     +1440004, and QEMU stopped it with `unexpected trap, mcause=2`, exit 2; with the guard the
+     same source is `mc: riscv jal out of range`, exit 1. `build/kernel.bin` is byte-identical
+     before and after (`cmp`), and still boots to `ok`, exit 0. `test.sh` step 6b asserts it (the
+     source generated with `awk`, 0.7 s), and fails with the pre-fix compiler.
+  2. **`test.sh`'s `mc limits` step accepted exit 3 as a pass.** Exit 3 is M23's code for "a table
+     grew OR is tight", so the one automated check of acceptance 9 could not fail. It is now two
+     phases, the shape M23 recorded for `examples/api`: **cold**, where the COMPILER half must show
+     no `grew` line (that is what `[limits] tolerance = 1.0` buys) and the exit code must be 0 or
+     3; then `mc build` to record the usage, and **remembered**, where both halves must be exit 0
+     with `grow 0` in every table. Verified to fail on both paths by setting `tolerance = 0.0`.
+     On record, because acceptance 9's literal "grow 0" holds only in the remembered form: the
+     ENTRY half's static estimate is a function of source BYTES, and `main.mc` is 90 lines whose
+     taught words and `#rule` prelude expand into about five times the nodes those bytes predict
+     (nodes 401 estimated, 1914 used) -- a factor no tolerance in `[0, 1]` covers.
+     `examples/kernel/mc.toml`, `examples/kernel/README.md` § Limits and `docs/build.md` § M39 all
+     say so now instead of "at 1.0 nothing grows".
   -- `stage0/` untouched, 2846/3000; goldens NOT rewritten (`src/` untouched, so nothing can
   move); `make bundle` not needed (`lib/` untouched). Docs: `docs/guide/95-a-new-architecture.md`
   (new), `docs/reference/machine.md` (the riscv64 column, the third division answer, the G7
-  obligation), `docs/reference/hooks.md` (the two corrections), `docs/build.md` § M39,
-  `docs/surface.md`, `docs/README.md`, `docs/ci.md`, `examples/kernel/README.md`.
+  obligation, and -- from the review -- the jump-range row and the rule that a machine whose field
+  is too small says so with a diagnostic), `docs/reference/hooks.md` (the two corrections),
+  `docs/build.md` § M39, `docs/surface.md`, `docs/README.md`, `docs/ci.md`,
+  `examples/kernel/README.md`.
 - Next: M18 or M24 (`docs/plan.md`); M39.5 (G1) and M40 (the word-size sweep AVR/PIC need) are
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
   sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is

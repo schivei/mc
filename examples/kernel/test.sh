@@ -27,12 +27,18 @@
 #   6. the frame edge case: a 3 KB local array, between RV's signed 2047 and the
 #      walker's 4095, is inside the kernel and its checksum is asserted at run
 #      time -- if the t2 fallback were wrong the transcript would say so.
+#  6b. the jump the machine CANNOT encode: one `if` over 1.4 MiB of code, past
+#      `jal`'s signed 21-bit displacement, has to be refused with a diagnostic
+#      rather than truncated into an image that boots and then lands in the
+#      middle of an instruction.
 #   7. the encoder oracle: every distinct instruction the machine emits, over
 #      main.mc, over tests/sweep.mc and over a large generated source, is fed
 #      back through `llvm-mc -triple=riscv64 -mattr=+m` and must come out
 #      byte-identical; every pc-relative displacement is recomputed from an
 #      independent placement of the sections and checked against its target.
-#   8. `mc limits examples/kernel` reports both halves.
+#   8. `mc limits examples/kernel` reports both halves, twice: cold, where the
+#      compiler half must be `grow 0`, and again after `mc build` has remembered
+#      the usage, where BOTH halves must be exit 0 with `grow 0`.
 #
 # Self-skipping: without qemu-system-riscv64 steps 2 and 6 are skipped and the
 # rest still runs; without llvm-mc step 7 is skipped. THERE IS NO `timeout` ON
@@ -259,6 +265,38 @@ else
     fail "no frame offset past 2047 in the kernel: the t2 fallback is not exercised"
 fi
 
+# ---- 6b. the jump the machine cannot encode ----
+# `jal`'s immediate is a signed 21-bit displacement: it reaches 1 MiB and no
+# further, and rv_put_j masks whatever it is given into that field. A jump past
+# it would come out TRUNCATED -- an image that builds, boots and then lands in
+# the middle of an instruction -- so rv_jal_off() refuses it, the way
+# src/machine_arm64.mc's br_off() refuses a branch too far. The source below is
+# one `if` over forty thousand statements: about 1.4 MiB of code between the
+# jal and its target. (Built by hand without the guard it gives `j -657148`
+# where the target is +1440004, and QEMU stops with `mcause=2`.)
+echo "== the jal range =="
+{ echo '#include <prelude>'
+  echo '#include "sys_bare.mc"'
+  echo '#include "trap.mc"'
+  echo '#include "sched.mc"'
+  awk 'BEGIN { print "i64 far(i64 n) { if (n > 0) {"
+               for (i = 0; i < 40000; i++) print "    n = n + 0x123456789abc;"
+               print "} return n; }" }'
+  echo 'void kmain() { uart_init(); uart_puts("boot\n"); halt(far(0)); }'
+} > "$dir/build/farjump.mc"
+( cd "$dir" && ./build/mc-kernel --backend=rv-image --include=lib \
+    build/farjump.mc -o build/farjump.bin ) > "$tmp/far.out" 2> "$tmp/far.err"
+rc=$?
+if [ "$rc" = "0" ]; then
+    fail "a 1.4 MiB jump was encoded instead of refused" \
+         "$(wc -c < "$dir/build/farjump.bin" | tr -d ' ') bytes written"
+elif grep -q "riscv jal out of range" "$tmp/far.err"; then
+    ok "a jump past jal's 1 MiB is refused, not truncated (exit $rc)"
+else
+    fail "the far jump failed for another reason (exit $rc)" "$(head -3 "$tmp/far.err")"
+fi
+rm -f "$dir/build/farjump.mc" "$dir/build/farjump.bin"
+
 # ---- 7. the encoder against llvm-mc ----
 # One awk program does the pc-relative half: it re-derives the section
 # placement and every symbol's absolute address from --dump-syms, by the same
@@ -413,15 +451,47 @@ else
 fi
 
 # ---- 8. limits ----
+# Two phases, the shape M23 recorded for `examples/api`: exit 3 cold, exit 0
+# remembered. Exit 3 alone is NOT a pass -- it is M23's code for "a table grew
+# OR is tight", so accepting it unconditionally would accept the regression this
+# step exists to catch.
+#
+# `[limits] tolerance = 1.0` is a claim about the COMPILER half, and that half
+# has to be `grow 0` even cold: it is asserted on its own below. The ENTRY half
+# is different, and the difference is not a defect. The static estimate is a
+# function of source BYTES; main.mc is 90 lines, and `mmio`/`csrw`/`yield` plus
+# the six `#rule stmt:` of <prelude> expand into about five times the nodes
+# those bytes predict, which no tolerance in [0, 1] can cover. What covers it is
+# the usage `mc build` remembers in build/.mc-usage.toml -- so the cold report
+# is allowed to say `grew` for the entry, and the remembered one is required to
+# say `ok` for both.
 echo "== mc limits =="
-if "$mc" limits "$dir" > "$tmp/lim" 2>&1; then ok "mc limits examples/kernel: ok"
+rm -f "$dir/build/.mc-usage.toml"
+"$mc" limits "$dir" > "$tmp/lim" 2>&1
+rc=$?
+awk '/^limits /{ half = $2 }
+     half ~ /mc-kernel/ && / grew$/ { print; n++ }
+     END { exit n > 0 }' "$tmp/lim" > "$tmp/limg" 2>&1 \
+    && ok "cold: nothing grows in the compiler half, which is what tolerance 1.0 buys" \
+    || fail "cold: a table grew in the compiler half; tolerance 1.0 should prevent it" \
+            "$(cat "$tmp/limg")"
+if [ "$rc" = "0" ] || [ "$rc" = "3" ]; then
+    ok "cold: exit $rc ($(grep -c ' grew$' "$tmp/lim") grown, $(grep -c ' tight$' "$tmp/lim") tight, over both halves)"
 else
-    rc=$?
-    if [ "$rc" = "3" ]; then ok "mc limits examples/kernel: exit 3 (a table grew or is tight)"
-    else fail "mc limits exited $rc" "$(tail -5 "$tmp/lim")"
-    fi
+    fail "cold: mc limits exited $rc, expected 0 or 3" "$(tail -5 "$tmp/lim")"
 fi
-grep -E '^(compiler|entry|report|== )' "$tmp/lim" 2>/dev/null | head -4
+
+"$mc" build "$dir" > "$tmp/build2" 2>&1 || fail "mc build examples/kernel failed" "$(tail -3 "$tmp/build2")"
+"$mc" limits "$dir" > "$tmp/lim2" 2>&1
+rc=$?
+if [ "$rc" != "0" ]; then
+    fail "remembered: mc limits exited $rc, expected 0" "$(grep -E ' (grew|tight)$' "$tmp/lim2" | head -5)"
+elif grep -qE ' grew$' "$tmp/lim2"; then
+    fail "remembered: a table still grew" "$(grep -E ' grew$' "$tmp/lim2")"
+else
+    ok "remembered: $(grep -c '^tolerance ' "$tmp/lim2") reports, exit 0, grow 0 in every table"
+fi
+grep '^tolerance ' "$tmp/lim2" 2>/dev/null | sed 's/^/        | /'
 
 echo
 if [ "$fails" -eq 0 ]; then

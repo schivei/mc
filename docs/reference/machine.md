@@ -188,6 +188,17 @@ is what makes `V_ADDI`, the eight memory forms and the frame reserve variable-le
 therefore what makes running the real encoder for `MTASK_INS_SIZE` mandatory rather than tidy. A
 machine that cannot encode the whole 0..4095 range has to say so on this page.
 
+**The same rule covers jump range.** The walker has no limit on how much code a function may
+contain, and the three machines disagree by two orders of magnitude on how far one jump reaches:
+AArch64's `b` 128 MiB, x86-64's `rel32` ±2 GiB, RISC-V's `jal` 1 MiB. A machine whose field is too
+small must **say so with a diagnostic**, never mask the displacement into it — a truncated jump
+gives an image that builds, boots and lands in the middle of an instruction, which no later gate
+catches. `src/machine_arm64.mc` does it in `br_off` (`branch too far`, checked against the
+smallest of its three fields), and `examples/kernel/machine_riscv64.mc` in `rv_jal_off`
+(`riscv jal out of range`). Both check on the ENCODE pass only: `MTASK_INS_SIZE` runs before any
+label address exists, and both machines' jump forms are fixed width, so the size does not depend
+on the answer.
+
 ### The AArch64 implementation
 
 The thirty-one slots are filled by `a64_prologue`, `a64_param`, `a64_epilogue`, `a64_frame_fix`,
@@ -298,6 +309,7 @@ writer that consumes it. Nothing in `src/` changed to make it possible.
 | result | `x0` | `rax` | `a0` |
 | `callp` pointer | `x16`, moved first | `rax`, moved first | `t0`, moved **last** — its source cannot be an argument register |
 | instruction width | 4 bytes | 1..10 bytes | 4 bytes, except `li`, the frame reserve and the offset fallbacks |
+| jump range, and who checks it | 128 MiB (`b`), `br_off` checks against the smallest field, 1 MiB | ±2 GiB (`rel32`), no check needed | 1 MiB (`jal`), `rv_jal_off` checks on the encode pass |
 | `x / 0`, `x % 0`, `INT64_MIN / -1` | `0`, `x`, `INT64_MIN`, no trap | `SIGFPE`, the process dies | `-1`, `x`, `INT64_MIN`, no trap |
 | relocations | `BRANCH26` `PAGE21` `PAGEOFF12` `UNSIGNED` | `R_X86_64_PLT32` `PC32` `64` | two module-private kinds, 32 and 33 |
 | relocation offset | 0 | 1 (`call`), 3 (`lea [rip+d32]`) | 0 |

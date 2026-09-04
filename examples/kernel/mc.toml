@@ -40,8 +40,17 @@ out     = "build/mc-kernel"
 # The reserve `mc build` takes from the estimate, before any table exists. The
 # static estimate is a function of source BYTES and a taught compiler this size
 # lands about twice its prediction, so the default 0.25 makes the `nodes` and
-# `ins` tables double mid-build. At 1.0 nothing grows -- `mc limits
+# `ins` tables double mid-build. At 1.0 nothing grows in THAT half -- `mc limits
 # examples/kernel` is what reports it.
+#
+# The entry half is a different story and it is not a defect. main.mc is 90
+# lines, and `mmio`/`csrw`/`yield` plus the six `#rule stmt:` of <prelude>
+# expand into about five times the nodes those bytes predict -- a factor no
+# tolerance in [0, 1] can cover. So a COLD `mc limits examples/kernel` reports
+# `grew` for the entry and exits 3, and the usage `mc build` remembers in
+# build/.mc-usage.toml is what makes the next one exit 0 with grow 0 everywhere:
+# exit 3 cold and exit 0 remembered, the shape M23 recorded for examples/api.
+# examples/kernel/test.sh step 8 asserts both phases.
 [limits]
 tolerance = 1.0
 

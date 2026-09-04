@@ -27,7 +27,7 @@ that, the exit code, and a good deal more.
 
 | file | lines | what |
 |---|---|---|
-| `machine_riscv64.mc` | 767 | the RV64IM machine: all 31 tasks of [the contract](../../docs/reference/machine.md), registered as `riscv64` |
+| `machine_riscv64.mc` | 780 | the RV64IM machine: all 31 tasks of [the contract](../../docs/reference/machine.md), registered as `riscv64` |
 | `image.mc` | 246 | the `rv-image` backend: place, rebase, resolve, synthesize a reset stub, write raw bytes |
 | `kernel_syntax.mc` | 117 | Tier 3: `mmio`, `csrw`, `csrr(…)`, `yield` |
 | `mc-kernel.mc` | 30 | `#include <mc/core>` + the three modules + `user_init` |
@@ -36,7 +36,7 @@ that, the exit code, and a good deal more.
 | `lib/sched.mc` | 90 | two tasks and the context switch |
 | `main.mc` | 90 | the kernel |
 | `tests/sweep.mc` | 177 | a source that makes the machine emit everything it knows |
-| `mc.toml` · `test.sh` | 53 · 432 | the build, and the oracle |
+| `mc.toml` · `test.sh` | 62 · 502 | the build, and the oracle |
 
 `user_init()` is the entire seam, and it is three lines:
 
@@ -169,6 +169,16 @@ offset in `t2` and adds. `main.mc`'s `big_frame_sum()` has a 3000-byte local arr
 exercise it, and checks its own checksum at run time — if the fallback were wrong the transcript
 would say `frame FAIL`.
 
+The other thing the machine pays for itself is **range**. `jal`'s immediate is a signed 21-bit
+displacement, so an unconditional jump — which is what every `if`, `loop`, `break` and `continue`
+becomes — reaches 1 MiB and no further, where AArch64's `b` reaches 128 MiB. `rv_put_j` would mask
+a larger one into the field and produce a jump to the wrong place, so `rv_jal_off()` refuses it
+with `riscv jal out of range`, the way `src/machine_arm64.mc`'s `br_off()` refuses a branch too
+far. The check runs on the ENCODE pass only: `MTASK_INS_SIZE` measures with no label vector, and
+both jump forms are fixed width, so the size does not depend on the answer. `test.sh` step 6b
+builds one `if` over 1.4 MiB of code and asserts the diagnostic — without it that source compiles,
+boots and stops at `mcause=2`, having jumped 1440004 bytes forward as `j -657148`.
+
 That is also why `MTASK_INS_SIZE` runs the real encoder over a scratch buffer instead of a
 `switch` on the opcode. RV64 is fixed width almost everywhere, which makes a switch tempting; but
 `li`, the frame reserve and the four big-offset fallbacks are not, and a one-byte disagreement
@@ -186,6 +196,17 @@ that jumps into the middle of an instruction.
 * **No `linux/riscv64` ELF.** That needs a second relocation against a local label
   (`%pcrel_lo` naming the `auipc`) and a third branch in the ELF writer's relocation map — gaps G3
   and G8, ~52 core lines and contract version 3.
+* **A function's code is bounded by 1 MiB.** Not the image, not the program: the distance from a
+  jump to its target, which is inside one function. Past it the machine refuses to encode rather
+  than truncating (`riscv jal out of range`). Lifting it means a two-instruction long jump —
+  `auipc`+`jalr` — chosen by the encode pass, and the label pass would have to know the size
+  before the address is final. No source in this repository comes near it.
+* **`mc limits examples/kernel` is exit 3 cold and exit 0 remembered**, the shape M23 recorded for
+  `examples/api`. `[limits] tolerance = 1.0` is what keeps the COMPILER half at `grow 0`; the
+  ENTRY half is 90 lines of source whose taught words and `#rule` prelude expand into about five
+  times the nodes a byte-count estimate predicts, which no tolerance in `[0, 1]` covers. The
+  usage `mc build` remembers in `build/.mc-usage.toml` is what does. `test.sh` step 8 asserts both
+  phases.
 * **One hart, no interrupts.** `mcause == 11` and nothing else: no CLINT, no timer, no PMP, no
   S-mode, no MMU.
 * **The scheduler is two tasks and no policy.** The point is the switch.

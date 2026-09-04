@@ -1479,7 +1479,14 @@ resolved *after* `user_init()` (`src/main.mc`), which is why step 2 above works.
 
 Everything else about the project is ordinary: `[compiler].modules`, `[limits].tolerance = 1.0`
 and `[include].paths = ["lib"]` mean exactly what they mean everywhere else, and
-`mc limits examples/kernel` reports both halves.
+`mc limits examples/kernel` reports both halves — **exit 3 cold and exit 0 remembered**, the shape
+recorded for `examples/api` above. `tolerance = 1.0` is what keeps the *compiler* half at `grow 0`
+from a clean checkout. The *entry* half cannot be covered by a tolerance at all: `main.mc` is 90
+lines, and the taught words plus the six `#rule stmt:` of `<prelude>` expand into about five times
+the nodes a byte-count estimate predicts (401 estimated, 1914 used), so it grows once and the
+usage remembered in `build/.mc-usage.toml` is what makes the next run exit 0.
+`examples/kernel/test.sh` step 8 asserts both phases, and fails on a `grew` line in the compiler
+half or on anything but exit 0 remembered.
 
 ---
 
