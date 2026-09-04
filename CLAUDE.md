@@ -2081,6 +2081,109 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `mc2-windows-x86_64.sha256`
   `0163654105ea20cf13faf88203a7fecefa7ff41664f20ed5f0d5b8737fdd5e73` (898911 B), both also
   produced byte for byte by `build/mc2`.
+- M42 done (`docs/specs/M42.md`, incl. its new § Implementation notes): **`elf-exe` and
+  `elf-exe-x86_64` -- a dynamic ELF64 `ET_EXEC` writer, so `--exe` works on Linux and a Linux
+  `mc build` needs no `[linker]` and no sysroot.** `stage0/` untouched (2848/3000).
+  `src/backend_elf_exe.mc` (956 lines, ~500 of them code) is to `src/backend_elf.mc` what
+  `src/backend_exe.mc` is to `src/macho.mc`: the same `gen_lower` + `gen_encode_all` in front,
+  the same sections/symbols/relocations behind, and then instead of handing the relocations to
+  `ld.lld` it lays out the segments, resolves everything in place and writes the loader's tables.
+  `ET_EXEC` at `0x400000` (not PIE: no `R_*_RELATIVE`, and no ASLR -- documented, priced as a
+  follow-up); `DT_BIND_NOW` + `DF_1_NOW` (no lazy binding, no PLT0, no resolver); `PT_PHDR`,
+  `PT_INTERP`, one `PT_LOAD` per Mach-O segment name (the grouping `backend_exe.mc` already uses,
+  so a `#section` with its own segment gets its own load), `PT_DYNAMIC`, `PT_GNU_STACK` **RW and
+  never X**; `p_align` 64 KiB on aarch64 and 4 KiB on x86-64 (§ Risks 3). One PLT stub
+  (`adrp x16 / ldr x17 / br x17 / nop`, or `jmp qword ptr [rip+got] / int3 / int3`) and exactly
+  one 8-byte GOT slot per import; a real SysV `DT_HASH` (`nbucket = nchain = 1 + imports`).
+  **`JUMP_SLOT` is the only dynamic relocation kind in the file**: a reference to an import -- a
+  call, and equally `&write` -- resolves in place to its stub, which is the canonical address a
+  linker gives an imported function in a non-PIE executable, so no `GLOB_DAT` is needed (mc
+  imports functions, never data). Relocations are patched with `backend_exe.mc`'s four patchers:
+  they encode instructions, and an instruction has no file format.
+  **The static case is the degenerate case, decided by COUNTING imports and never by a flag**:
+  with none there is no `PT_INTERP`, no `PT_DYNAMIC`, no `.dynsym`/`.dynstr`/`.hash`/`.rela.plt`,
+  no PLT and no GOT.
+  Deviations, all in § Implementation notes: **section headers ARE written** (plus a full
+  `.symtab`/`.strtab` with final addresses -- no loader reads them, but `llvm-readelf`, `llvm-nm`,
+  `llvm-objdump -d` and a debugger do); the **entry point** is the program's own `_start` when it
+  has one (`<sys_linux>`) and otherwise a synthesized `.text.mcstart` -- 7 AArch64 instructions
+  (28 B) or 34 x86-64 bytes -- that reads argc/argv/envp off the entry stack, calls `main` and
+  exits by **raw `exit_group` syscall**, so it costs no import; both segments are page-padded in
+  the file so `p_offset == p_vaddr (mod p_align)` holds by construction; `DT_NEEDED` is emitted
+  for the default library even when every import is claimed by a `#dylib`, as `macho-exe` always
+  emits `LC_LOAD_DYLIB` for libSystem.
+  **Two TOML keys, not one** (decision 6 asked for the interpreter path; glibc needs a second
+  name): `[target].interp` and `[target].libc`, musl by default
+  (`/lib/ld-musl-<arch>.so.1`, `libc.so`), glibc one config line away
+  (`/lib/ld-linux-aarch64.so.1` or `/lib64/ld-linux-x86-64.so.2`, `libc.so.6`). `src/driver.mc`
+  reads them into two globals declared in `src/objmodel.mc` and NOT in the writer, because
+  `<mc/core_build>` may be assembled without `<mc/core_writers>` and must still compile
+  (`scripts/check-parts.sh` § 1b).
+  Two more core edits, both forced: `src/cli.mc`'s `--exe` was the literal `macho-exe` and now
+  resolves the host pair through the `target()` registry (`--exe: this host has no direct
+  executable backend: windows` when the slot is 0) -- without it `mc --exe` on Linux would have
+  said `unknown backend: macho-exe`; and `lim_seeds[T_BACKENDS]` 8 -> 16 in `src/arena.mc`,
+  because that table is full before the pre-scan can size it (every built-in is registered from
+  `main()`) and `<mc/core_writers>` now registers eight, so `examples/kernel` reported `grew`.
+  Capacity only.
+  Gates: `scripts/test-linux.sh` gained an **`--exe` mode** beside the object+link mode -- same
+  corpus, same Docker oracle, both architectures, both split halves (`--build-only` writes
+  executables, `--run-only` just runs them) -- which **moves `~/.mc/sysroots/linux-*` and
+  `build/sysroot/linux-*` aside for the duration and puts them back**, so the no-sysroot claim is
+  proved by the script and not by the report. It adds four assertions the object mode cannot make:
+  `013-putnum` shows `PT_INTERP` + `DT_NEEDED` + a `JUMP_SLOT` and `001-return42` shows none of
+  the three, `GNU_STACK` is RW and never E on every binary, and two builds are `cmp`-identical.
+  `tests/linux/071-errno-malloc.mc` goes past the § 0 probe: a failing libc call whose `errno` it
+  reads (TLS) plus `malloc` and stdio, run under **musl (alpine:3) AND glibc
+  (debian:bookworm-slim) on both architectures -- `errno=2 malloc ok`, exit 0, four for four**.
+  It uses `fopen` and not `open` on purpose: `open` returns an `int` and AAPCS64 leaves the top
+  32 bits of `x0` unspecified, so glibc's -1 arrives as `0x00000000ffffffff` and `fd >= 0` is TRUE
+  in a language with no narrow return types -- a pre-existing mc-wide question, recorded in the
+  test's header, not something this milestone decides.
+  `scripts/test-exe.sh` is host-aware (`codesign` only on macOS, `// skip-<host>` honoured), so
+  **`make check` on a Linux host runs `test-exe`** -- the whole suite through `mc --exe`, natively.
+  `scripts/check-build.sh` lost the `linux requires [linker]` diagnostic (it is gone for Linux and
+  still there for Windows) and gained `tests/proj/linux-exe.toml` / `linux-exe-x86.toml`: both
+  architectures asserted down to `e_type`/`e_machine` with `od`, plus determinism -- **23/23**.
+  `Makefile`: `test-linux-exe` and `test-linux-x86_64-exe` inside `make check`, guarded on Docker
+  alone. `.github/workflows/ci.yml`: the macOS job cross-compiles both `--exe` suites into the new
+  `linux-arm64-exes` / `linux-x86_64-exes` artifacts and each Linux leg runs them with nothing
+  linked.
+  **The self-hosting proof**: `src/mc.linux-aarch64.toml` and `src/mc.linux-x86_64.toml` DROPPED
+  their `[linker]` and `[sysroot]`, and `make mc-linux` / `mc-linux-x86_64` no longer depend on
+  `sysroot-linux` -- cross-building `mc` for a Linux host from macOS now needs nothing installed.
+  `make check-linux-host` is green for both architectures (RC 0): fixed point
+  `mc2l.o == mc3l.o` (1144720 B on aarch64, 1060936 B on x86_64), `31/31` and `29/29` through
+  `test-exe`, `34/34` and `31/31` native suites, and the **cross proof** -- the Linux-hosted
+  compiler's Mach-O object for `src/mc.mc` is byte for byte the macOS `build/mc2.o`.
+  `scripts/bootstrap-linux.sh` keeps `ld.lld` for `mc1l`/`mc2l` on purpose: the SEED may be a
+  published release older than M42.
+  Windows is untouched and still refuses `--exe`; this milestone filled two of the four zero slots.
+  -- `stage0/` untouched, 2848/3000; `make bundle` re-run before bootstrapping (76 files, raw
+  815130 -> LZ 380546, blob 381471 B; `tools/bundle.list` gained `mc/backend_elf_exe`).
+  `make check` RC 0, zero FAIL: `test` 32/32, `check-lex`/`check-ast`/`check-asm` 121/121,
+  `check-obj` **32/32 identical to the frozen seed**, `bootstrap` at a fixed point
+  (`mc2.o == mc3.o`, 902776 B; the `--dump-asm` diff between `mc1` and `mc2` is **empty**),
+  `check-surface` 32/32, `test-exe` 32/32, `check-mc` 7/7, `check-standalone`, `check-parts`,
+  `check-toml` 10/10, `check-build` 23/23, `check-stubs`, `check-limits` 17/17 under 90%,
+  `check-minimal`, `test-linux` 33/33 + **`test-linux-exe` 37/37**, `test-linux-x86_64` 30/30 +
+  **`test-linux-x86_64-exe` 34/34**, `test-windows`, `test-windows-x86_64`, `check-examples`,
+  `check-lang`, `check-conc`, `check-desktop`, `check-float`, `check-wide`, `check-kernel`,
+  `check-docs`, `site` + `check-site`. `scripts/check-inert.sh` between the pre-M42 compiler and
+  this one: identical everywhere (33 objects, `src/mc.mc`, and the five taught examples).
+  All five goldens rewritten, each only after its own criterion: `mc2.sha256`
+  `d73a2861...e849b79b` -> `34808174a0fae02c671961709f35af0ab419f1461ae88da524dd8030541d23c7`;
+  the Linux pair deleted and re-recorded by `make check-linux-host` --
+  `mc2-linux-arm64.sha256` `3bdd5761436c9a668c342ecd79c71ab781c0d81babb4b7e6699c2d687b3f8969`,
+  `mc2-linux-x86_64.sha256` `5f7d511099e8b7dd3b5f04e4d3b8a07c1a66944a36e0475d15486292fd782e82`;
+  the Windows pair cross-computed per `tests/golden/README.md` --
+  `mc2-windows-arm64.sha256` `3cd46c345205c71e4329bcd3e61638b3af137f2ecd7b27e28cfad3aafdac4760`,
+  `mc2-windows-x86_64.sha256` `0a454a97105ac338d3573c58d901637f86ef8d9b80edc9b41589f289cda086a1`.
+  Docs: `docs/reference/objects.md` § 8b (new, the layout field by field with the `llvm-readelf`
+  cross-check), `docs/reference/toml.md` § `[target]`, `docs/reference/cli.md`,
+  `docs/reference/bundle.md`, `docs/build.md` § Linux targets (rewritten),
+  `docs/guide/50-cross-compile.md`, `docs/guide/90-linux-host.md` § 3 (rewritten),
+  `docs/bootstrap.md` (the standalone claim now says on which hosts it holds), `docs/ci.md`.
 - Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
   `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
   from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:

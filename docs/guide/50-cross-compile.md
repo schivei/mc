@@ -14,12 +14,13 @@ knows about any of it.
 | Windows arm64 (COFF) | **works**: `[target] os = "windows"` |
 | Windows x64 (COFF) | **works**: `[target] os = "windows"`, `arch = "x86_64"` |
 | WebAssembly | planned |
-| `mc` *hosted* on Linux or Windows | not yet: the project driver uses `posix_spawnp` and `_NSGetEnviron` |
+| `mc` *hosted* on Linux or Windows | **works** since M37/M38 ([90-linux-host.md](90-linux-host.md), [95-windows-host.md](95-windows-host.md)) |
 
 ## Linux arm64
 
-Two things change and nothing else: the object comes out as an ELF64 `ET_REL` instead of a
-Mach-O, and `[linker]` becomes **required** — there is no direct-executable backend for Linux.
+One thing changes: the file format. Since M42 `mc` writes the **executable** too, so the whole
+config is six lines and nothing outside the compiler is involved — no linker, no crt objects, no
+sysroot.
 
 ```toml
 [project]
@@ -29,32 +30,38 @@ out   = "build/hello"
 [target]
 os   = "linux"
 arch = "aarch64"
-
-[sysroot]
-path = "build/sysroot/linux-aarch64"   # what {sysroot} expands to
-
-[linker]
-cmd  = "ld.lld"
-args = ["-o", "{out}",
-        "{sysroot}/crt1.o", "{sysroot}/crti.o",
-        "{obj}", "{libs}",
-        "{sysroot}/libc.a", "{sysroot}/crtn.o"]
 ```
 
 ```
 $ mc build . --config linux.toml
-compile hello.mc -> build/hello.o
-link build/hello.o -> build/hello
+compile hello.mc -> build/hello
 $ docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w alpine:3 /w/build/hello
 hello
 ```
 
-Asking for a Linux executable without a linker says so, at the position of the offending value:
+What came out is a dynamic ELF64 `ET_EXEC` at `0x400000`, `DT_BIND_NOW`, one PLT stub and one GOT
+slot per imported symbol, `PT_GNU_STACK` `RW`:
 
 ```
-$ mc build tests/proj --config /tmp/d.toml
-/tmp/d.toml:6:6: linux requires [linker]: there is no direct executable: target.os
+$ llvm-readelf -l -d build/hello | grep -E 'INTERP|NEEDED|GNU_STACK'
+  INTERP  ... [Requesting program interpreter: /lib/ld-musl-aarch64.so.1]
+  GNU_STACK 0x000000 ... RW  0x10
+  0x0000000000000001 (NEEDED)   Shared library: [libc.so]
 ```
+
+It targets musl by default. For glibc, name its two files:
+
+```toml
+[target]
+os     = "linux"
+arch   = "aarch64"
+interp = "/lib/ld-linux-aarch64.so.1"
+libc   = "libc.so.6"
+```
+
+A program that imports nothing — anything on `<sys_linux>`, which is raw `svc #0` syscalls —
+comes out **static**, with no `PT_INTERP` and no `PT_DYNAMIC` at all. That is not a switch: the
+writer counts imports.
 
 The object backend is also reachable from the single-file CLI, which is useful when you only want
 to look at what came out:
@@ -92,14 +99,15 @@ then the stack), and thirty-odd encoders. See [../reference/machine.md](../refer
 
 ```
 $ mc build . --config linux-x64.toml
-compile hello.mc -> build/hello.o
-link build/hello.o -> build/hello
+compile hello.mc -> build/hello
 $ docker run --rm --platform linux/amd64 -v "$PWD":/w -w /w alpine:3 /w/build/hello
 hello
 ```
 
-The sysroot is a separate directory (`build/sysroot/linux-x86_64`), because the crt objects and
-`libc.a` are x86-64 code:
+The executable backend follows the same swap: `elf-exe-x86_64` instead of `elf-exe`, with the
+x86-64 PLT stub (`jmp qword ptr [rip+got]`) and `R_X86_64_JUMP_SLOT`. If you *do* use `[linker]`
+for a static link, the sysroot is a separate directory (`build/sysroot/linux-x86_64`), because the
+crt objects and `libc.a` are x86-64 code:
 
 ```sh
 make sysroot-linux-x86_64
@@ -129,7 +137,29 @@ _main:
   ...
 ```
 
-## The sysroot
+## The sysroot — when you still need one
+
+**A dynamic Linux executable needs no sysroot.** That is the point of M42: a dynamic binary needs
+*names* — the interpreter path, the `DT_NEEDED` soname, the symbol names — and a name is not a
+file to download. `mc build` with no `[linker]` writes it, and nothing has to be installed.
+
+You need a sysroot when you want a **static** link against a real libc, which is the `[linker]`
+road and the only route to one:
+
+```toml
+[sysroot]
+path = "build/sysroot/linux-aarch64"   # what {sysroot} expands to
+
+[linker]
+cmd  = "ld.lld"
+args = ["-o", "{out}",
+        "{sysroot}/crt1.o", "{sysroot}/crti.o",
+        "{obj}", "{libs}",
+        "{sysroot}/libc.a", "{sysroot}/crtn.o"]
+```
+
+That is what `examples/api`-style projects use to bring a library in statically, and what a binary
+that has to run where no `ld-musl-*.so.1` exists needs.
 
 A Linux link needs musl's `crt1.o`, `crti.o`, `crtn.o` and `libc.a`.
 `scripts/sysroot-linux.sh [--arch aarch64|x86_64]` fills `build/sysroot/linux-<arch>` by running

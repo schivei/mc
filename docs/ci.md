@@ -113,11 +113,17 @@ still have no Docker to run a Linux binary in; and the half of the Linux work th
 here — cross-compiling to ELF — needs no linker at all. The Linux suite runs for real on the job
 below.
 
-Seven artifacts come out:
+Nine artifacts come out:
 
 - `mc-macos-arm64` — `build/mc-exe`, the self-hosted, `ld`-free compiler `make check` already
   builds for `check-standalone`. GitHub's artifact zip does not carry the executable bit, so a
   download needs `chmod +x mc-exe` (and, off a browser download, `xattr -d com.apple.quarantine`).
+- `linux-arm64-exes` and `linux-x86_64-exes` (M42) — the same corpus built with
+  `scripts/test-linux.sh --exe --build-only`: **executables**, not objects, written by `mc` with
+  no linker, no crt object and no sysroot. The two Linux jobs below download them and only have to
+  run them. That is what makes the ELF executable a supported format under
+  [plan.md § Rule for every new target](plan.md): the output is executed on real hardware of that
+  architecture.
 - `linux-arm64-objects`, `linux-x86_64-objects`, `windows-arm64-objects` and
   `windows-x86_64-objects` — the inputs to the four suite jobs below. The cross-compilation runs
   four times, once per target, and no run needs a linker or Docker. Each Windows artifact carries
@@ -195,6 +201,10 @@ modes that link.
 
 Downloads `linux-arm64-objects` and `musl-sysroot-aarch64`, installs `lld` from apt, and runs
 `scripts/test-linux.sh --run-only`. `ubuntu-24.04-arm` runners are free for public repositories.
+
+It then downloads `linux-arm64-exes` and runs `scripts/test-linux.sh --exe --run-only` (M42):
+the same corpus, executed with nothing linked here — no `ld.lld` and no sysroot are touched by
+that step.
 
 **Since M25 the sysroot is fetched by `mc` itself.** It is still the same four files
 (`crt1.o crti.o crtn.o libc.a`), but they come from `mc sysroot fetch linux-aarch64 --yes`, run in

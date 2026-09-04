@@ -29,8 +29,8 @@ Arguments are read left to right. The first non-flag argument is the source; a s
 | flag | meaning |
 |---|---|
 | `-o OUT` | output path. Default `out.o`. `-o` with nothing after it is `mc: -o requires an argument`. |
-| `--exe` | write a direct executable for the HOST, no linker. The backend is the exe slot of the host's `target()` registration, resolved after `user_init()` (post-M41 review) — `macho-exe` on macOS, a signed Mach-O binary. A host registered with 0 in that slot has no direct executable at all, and the flag is refused with `<os> requires a linker: there is no direct executable` instead of writing a binary for another operating system; that is the case on Linux and on Windows, where the road is an object plus `[linker]`. `--exe` and `--backend=` write the same decision, so the last one on the command line wins. |
-| `--backend=NAME` | pick a registered backend. Built in: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64`, `coff-obj-arm64`, `coff-obj-x86_64`. The default is the HOST's object backend — the object slot of the host's `target()` registration, `macho` on macOS and `elf-obj`/`elf-obj-x86_64` on Linux (M37) — resolved after `user_init()` like `--exe`'s (post-M41 review), so a module that re-registers the host pair is honoured here too. A host registered with 0 in that slot has no object step at all, and the default is refused with `<os>/<arch> has no object backend: use --exe`. A taught compiler adds its own with `backend("name", &f)`. An unknown name lists what exists and exits 1. |
+| `--exe` | write a direct executable for the HOST, no linker. The backend is the exe slot of the host's `target()` registration, resolved after `user_init()` (post-M41 review) — `macho-exe` on macOS, a signed Mach-O binary, and `elf-exe` / `elf-exe-x86_64` on Linux, a dynamic ELF64 `ET_EXEC` (M42). A host registered with 0 in that slot has no direct executable at all, and the flag is refused with `<os> requires a linker: there is no direct executable` instead of writing a binary for another operating system; that is the case on Windows, where the road is an object plus `[linker]`. `--exe` and `--backend=` write the same decision, so the last one on the command line wins. |
+| `--backend=NAME` | pick a registered backend. Built in: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64`, `elf-exe`, `elf-exe-x86_64`, `coff-obj-arm64`, `coff-obj-x86_64`. The default is the HOST's object backend — the object slot of the host's `target()` registration, `macho` on macOS and `elf-obj`/`elf-obj-x86_64` on Linux (M37) — resolved after `user_init()` like `--exe`'s (post-M41 review), so a module that re-registers the host pair is honoured here too. A host registered with 0 in that slot has no object step at all, and the default is refused with `<os>/<arch> has no object backend: use --exe`. A taught compiler adds its own with `backend("name", &f)`. An unknown name lists what exists and exits 1. |
 | `--include=DIR` | add one `#include "…"` search root, exactly like a `[include].paths` entry does for `mc build`. Repeatable; roots are tried in the order given, after the includer's own directory. It is what lets one source tree carry two platform layers in different directories and pick one without a `mc.toml` (`examples/conc/lib/macos`, `lib/linux`). |
 | `--host` | print what this binary is and exit 0 — three lines, no source needed. |
 | `--machine=NAME` | pick the machine the `--dump-*` modes lower with: `arm64` (the host's, default), `x86_64` (System V) or `x86_64-win` (Win64 — the same instruction set, the Windows calling convention). A compile does **not** need it — an object backend names its own machine, because the file records the architecture — so this flag exists for looking at what a machine selects (`--dump-asm --machine=x86_64-win`). An unknown name is `mc: unknown machine: NAME`. |
@@ -52,8 +52,21 @@ Backends are documented in [objects.md](objects.md) and in [../guide/40-backends
 ```
 $ mc --backend=xyz prog.mc -o x.o
 unknown backend: xyz
-registered: macho macho-exe elf-obj
+registered: macho macho-exe elf-obj elf-obj-x86_64 elf-exe elf-exe-x86_64 coff-obj-arm64 coff-obj-x86_64
 ```
+
+`--backend=elf-exe` and `--backend=elf-exe-x86_64` are what `--exe` resolves to on Linux, and
+naming one of them from macOS is how a Linux executable is cross-built with no `mc.toml` at all:
+
+```
+$ mc --backend=elf-exe hello.mc -o hello
+$ llvm-readelf -h hello | grep Type
+  Type:                              EXEC (Executable file)
+```
+
+The single-file CLI has no config, so those two always take the musl defaults for the interpreter
+path and the `DT_NEEDED` soname; glibc is `[target].interp` / `[target].libc` in an `mc.toml`
+([toml.md](toml.md#target-interp-and-target-libc-the-two-per-libc-names)).
 
 ### Modes: the six dumps
 

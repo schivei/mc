@@ -246,6 +246,22 @@ ok unknown name: bad.mc:1: unknown bundled include: no/such/module
 standalone: the binary alone is the toolchain
 ```
 
+### On which hosts "the binary alone" is literally true
+
+The claim has always been about the **compiler's** dependencies, and until M42 it was only fully
+true on macOS. Where it holds today:
+
+| host | source → executable | needs |
+|---|---|---|
+| macOS arm64 | `mc --exe` (`macho-exe`, M11) | nothing |
+| Linux aarch64 / x86_64 | `mc --exe` (`elf-exe`, M42) | nothing; the binary is dynamic and asks libc for what it calls |
+| Windows arm64 / x86_64 | `mc` writes a `.obj`, `lld-link` finishes | `lld-link` + `kernel32.lib` (a name list, `scripts/sysroot-windows.sh`) |
+
+On Linux the M42 executable is **dynamic** and therefore names a libc rather than containing one:
+it needs an `ld-musl-<arch>.so.1` (or a glibc loader, with `[target].interp` / `[target].libc`) on
+the machine that runs it — which every Linux system has. A **static** binary still goes through
+`[linker]` and a sysroot, and that road is unchanged.
+
 ## Binaries are not versioned
 
 `.gitignore` already ignores `build/` (and `*.o`, `*.dSYM`) — `mc0`, `mc1`, `mc2`, `mc3`, and
@@ -294,8 +310,12 @@ SHA-256 of build/mc2l.o vs tests/golden/mc2-linux-<target>.sha256
 
 `scripts/bootstrap-linux.sh [SEED]` runs it (on x86-64 the entry is `src/mc_linux_x86_64.mc` and
 the golden `tests/golden/mc2-linux-x86_64.sha256`). Linking is `scripts/link-linux.sh` — `ld.lld`
-against the musl sysroot, `MC_SYSROOT` to point it at one the system already has. Three things it
-does that the macOS script does not have to:
+against the musl sysroot, `MC_SYSROOT` to point it at one the system already has. **That link step
+is deliberately not `--exe`, even though a Linux `mc` has had one since M42**: the SEED may be a
+published release older than that milestone, and the chain must work with whatever seed it is
+handed. Everything the chain builds afterwards can use `--exe` — `make check` on a Linux host runs
+`test-exe`, which is the whole suite through it. Three things the script does that the macOS one
+does not have to:
 
 1. **Find a seed.** An argument, else `build/mc-linux-<target>` (cross-built on macOS, § below),
    else a release asset — `gh release download` when the GitHub CLI is present, otherwise `curl`
@@ -317,6 +337,12 @@ It ends by running the whole `tests/*.mc` suite with the compiler it just produc
 make mc-linux            # build/mc-linux-arm64,  from src/mc.linux-aarch64.toml
 make mc-linux-x86_64     # build/mc-linux-x86_64, from src/mc.linux-x86_64.toml
 ```
+
+**Since M42 those two commands need nothing installed.** Both configs lost their `[linker]` and
+their `[sysroot]`: `mc build` writes the dynamic ELF64 executable itself, so cross-building the
+compiler for a Linux host from macOS involves no `ld.lld`, no Docker and no musl files. The
+`-obj.toml` siblings still exist for CI, where the object is built on the macOS runner and linked
+on the Linux one.
 
 `make check-linux-host` then proves both, from macOS, inside `docker run --platform linux/<arch>
 alpine:3`: `make check SEED=<binary>` (which starts with the chain above) and the **cross proof** —

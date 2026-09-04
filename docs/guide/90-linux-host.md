@@ -119,39 +119,38 @@ each with one ignored bit. Both were measured: the mapping succeeds and is writa
 
 ---
 
-## 3. No direct executable
+## 3. The direct executable (M42)
 
-macOS has `--exe`: `mc` lays out the segments, resolves the relocations, writes the bind opcodes
-and signs the result itself (M11). There is no ELF equivalent — the ELF side of `mc` is an
-**object** writer — so on Linux every program is an object plus a linker:
+macOS has had `--exe` since M11: `mc` lays out the segments, resolves the relocations, writes the
+bind opcodes and signs the result itself. **Since M42 Linux has the same thing** — `src/backend_elf_exe.mc`,
+a dynamic ELF64 `ET_EXEC` with no linker, no crt object and no sysroot
+([../reference/objects.md § 8b](../reference/objects.md#8b-the-elf-executable-elf-exe-and-elf-exe-x86_64)):
 
 ```sh
-mc hello.mc -o hello.o
-scripts/link-linux.sh hello hello.o          # ld.lld + the musl sysroot
+mc --exe hello.mc -o hello
+./hello
 ```
 
-or, the usual way, `mc build` with a `[linker]` section. Two consequences worth knowing:
+`--exe` is not a Mach-O flag any more. It resolves the **host's** executable backend through the
+same `target()` registry the default object backend comes from, so on a Linux host it means
+`elf-exe` or `elf-exe-x86_64`, and on macOS it still means `macho-exe`. `make check` on a Linux
+host runs `test-exe`, which is the whole `tests/*.mc` corpus through it.
 
-* **`[linker]` is required** for `os = "linux"`, and the driver says so:
-  `linux requires [linker]: there is no direct executable`.
-* **A taught compiler is linked with that same `[linker]`.** `mc build` builds the compiler for the
-  *host*, not for `[target]` — it has to run here, right after it is written. On macOS that is one
-  step (`macho-exe`); on Linux it is an object plus `[linker]`, so a project that teaches the
-  compiler on a Linux host needs that section even if its `[target]` is something else. Without it:
-  `a taught compiler on this host needs [linker]: there is no direct executable`.
+Three consequences worth knowing:
 
-`--exe` exists on a Linux host and is **refused** there (post-M41 review):
+* **`[linker]` is no longer required** for `os = "linux"`. `mc build` with `kind = "exe"` and no
+  `[linker]` writes the binary. The section is still supported and is still the only route to a
+  **static** libc link, which is what needs a sysroot.
+* **A taught compiler is built the same way.** `mc build` builds the compiler for the *host*, not
+  for `[target]` — it has to run here, right after it is written — and the host now has a
+  direct-executable backend, so a project that teaches the compiler on a Linux host needs no
+  `[linker]` at all.
+* **The bootstrap chain still links.** `scripts/bootstrap-linux.sh` uses `scripts/link-linux.sh`
+  for `mc1l` and `mc2l` on purpose: the SEED may be a published release older than M42, and the
+  chain has to work with whatever seed it is handed.
 
-```
-$ mc --exe hello.mc -o hello
-mc: linux requires a linker: there is no direct executable
-```
-
-It used to write a signed Mach-O executable — a macOS binary this kernel refuses with `ENOEXEC`,
-produced with no warning, because the flag was the literal backend name `macho-exe` in
-`src/cli.mc`. It resolves the exe slot of the host's `target()` registration now, and `linux` is
-registered with 0 in that slot. To cross-compile to macOS from here, ask for it:
-`mc --backend=macho-exe hello.mc -o hello`.
+To cross-compile *to macOS* from a Linux host, name the backend: `--backend=macho-exe` writes the
+signed Mach-O executable, which will not run where it was built.
 
 ---
 
@@ -219,8 +218,11 @@ The Makefile switches on `uname -s`. On Linux `check` is:
 
 ```
 budget bootstrap-linux check-lex check-ast check-asm check-obj
-check-bundle check-mc check-toml check-limits check-skipped
+check-bundle check-mc test-exe check-toml check-sysroots check-limits check-skipped
 ```
+
+`test-exe` joined the list at M42: `--exe` on a Linux host writes a dynamic ELF64 executable, so
+the whole suite goes through it natively, with no linker.
 
 `bootstrap-linux` ends by running the whole `tests/*.mc` suite with the compiler it just
 bootstrapped (`scripts/test-linux.sh`, native mode — no Docker, no emulation), which is why `test`
@@ -248,7 +250,6 @@ Linux there is no C seed, so it is a build-and-run gate rather than a cross-chec
 
 ```
 bootstrap: SKIPPED (macOS chain: mc0 -> mc1 -> mc2 -> mc3; bootstrap-linux is the Linux one)
-test-exe: SKIPPED (--exe is refused on this host: linux has no direct executable; it links with ld.lld)
 check-standalone: SKIPPED (its criterion is a signed Mach-O executable)
 check-surface: SKIPPED (its cases build taught compilers with --exe)
 check-build: SKIPPED (tests/proj targets macos/aarch64 through ld)
