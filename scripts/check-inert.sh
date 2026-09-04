@@ -8,7 +8,12 @@
 # but nothing this milestone adds.
 #
 # PRE is a copy of build/mc1 taken before the first edit of the step
-# (`cp build/mc1 build/mc1.pre`), POST the one built from the edited tree.
+# (`rm -f build/mc1.pre && cp build/mc1 build/mc1.pre` -- the `rm -f` matters:
+# overwriting a SIGNED executable at the same inode makes the kernel kill the
+# next run with SIGKILL, and every test then "fails" for a reason that has
+# nothing to do with the change), POST the one built from the edited tree.
+# A copy taken too late can also be rebuilt from the previous commit:
+# `git worktree add /tmp/pre <commit> && make -C /tmp/pre stage0 mc1`.
 pre="$1"
 post="$2"
 if [ ! -x "$pre" ] || [ ! -x "$post" ]; then

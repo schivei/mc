@@ -1,8 +1,10 @@
 backend_arm64	lib/backend_arm64.mc
 embed_demo	tests/mc/bundle/embed_demo.mc
 embed_demo.txt	tests/mc/bundle/embed_demo.txt
+f16	lib/f16.mc
 float	lib/float.mc
 float_rt	lib/float_rt.mc
+i128	lib/i128.mc
 io	lib/io.mc
 lz	src/lz.mc
 machine_arm64_float	lib/machine_arm64_float.mc
@@ -39,7 +41,9 @@ mc/sysroot	src/sysroot.mc
 mc/sysroots	src/sysroots.mc
 mc/toml	src/toml.mc
 mc_badmach	lib/mc_badmach.mc
+mc_f16	lib/mc_f16.mc
 mc_float	lib/mc_float.mc
+mc_i128	lib/mc_i128.mc
 mc_lit_nop	lib/mc_lit_nop.mc
 mc_probe	lib/mc_probe.mc
 mc_syntax_demo	lib/mc_syntax_demo.mc

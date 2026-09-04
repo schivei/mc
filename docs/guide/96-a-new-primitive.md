@@ -138,7 +138,24 @@ hidden. Two mechanisms are deferred with a price written down in `docs/specs/M24
 `MTASK_BYTES` for naming a VEX3 instruction from a source file, and `MTASK_DEPTH_SPAN` for a value
 that lives in a register **pair** rather than in a 16-byte slot.
 
-## 5. `<float>`, worked
+## 5. Three that are not floats
+
+The point of the mechanisms is that the next primitive costs no core line either.
+Three modules say so, and the test for each of them is one sentence: **`git diff
+src/` is empty.**
+
+| module | what it teaches | what it needed that `<float>` did not |
+|---|---|---|
+| `lib/i128.mc` | a 128-bit integer, memory-resident in ONE depth backed by a 16-byte slot: `adds`/`adc`, `subs`/`sbc`, `mul`/`umulh`, and a comparison built from the flags plus a separate equality | nothing. `MTASK_CONST` carries one `i64`, so the literal goes through a module-private global with an `N_BLOB` initializer and the handler returns a load from it |
+| `lib/f16.mc` | half precision as a **storage** type, with `fcvt` in both directions | four slots on a copy of `<float>`'s machine and nothing else, because `<float>` dispatches on `type_kind` and not on the id |
+| `examples/avx` | one AVX instruction named by its encoding, applied to two values the allocator placed | nothing. It writes its own VEX bytes in its own machine, which is exactly what `emit()` cannot do — `emit()` is 32 bits and a VEX3 instruction is five bytes |
+
+A value that lives in a register **pair** rather than a 16-byte slot would need
+`MTASK_DEPTH_SPAN`, a real contract change, and is deferred with its price
+written down in `docs/specs/M24.md`; nothing has yet shown the memory form too
+slow.
+
+## 6. `<float>`, worked
 
 ```
 build/mc1 --exe lib/mc_float.mc -o build/mc-float     # the taught compiler
@@ -169,7 +186,7 @@ says so; `fmt_f64(buf, x, digits)` is the half that needs no `write`.
 
 What it cost in `src/`: nothing. What it cost in mechanism: the eight of M24, which is the point.
 
-## 6. Where to look
+## 7. Where to look
 
 - `lib/float.mc`, `lib/machine_arm64_float.mc`, `lib/machine_x86_64_float.mc`,
   `lib/user_float.mc`, `lib/float_rt.mc` — the first library built on all of this: `f32` and `f64`,
@@ -179,5 +196,7 @@ What it cost in `src/`: nothing. What it cost in mechanism: the eight of M24, wh
   asserts the depth-type contract on every task.
 - `lib/user_badmach.mc` — the same, with one slot deliberately wrong, so the override is visible
   in the program's answer and in `--dump-machine`.
+- `lib/i128.mc`, `lib/f16.mc`, `examples/avx/` — the three above, with
+  `scripts/check-wide.sh` as their gate.
 - `lib/user_syntax_demo.mc` — a fixed-point type and its literal, in about sixty lines, next to the
   Tier 3 toys.

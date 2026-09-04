@@ -171,8 +171,22 @@ i64  fa_pstk = 0;
 uptr fa_of(i64 task) { return ld64(fa_orig + task * 8); }
 
 // ---- the float half of the depth stack ----
-i64 fa_is_float(i64 t) { return t == ty_f64 || t == ty_f32; }
-i64 fa_single(i64 t)   { return t == ty_f32; }
+// The test is the KIND, not the id: that is what `kind` is for
+// (docs/reference/language.md § 2), and it is what lets this one machine carry
+// f64, f32 and a half somebody else registers -- the register file, the spill,
+// the ABI and the return position are the same for all three, and only the
+// widths that have their own instructions differ. lib/f16.mc is exactly that
+// module, and it adds four slots to a copy of this table and nothing else.
+i64 fa_is_float(i64 t) { return type_kind(t) == TK_FLOAT; }
+i64 fa_single(i64 t)   { return type_width(t) == 4; }
+
+// arithmetic exists for the two widths this machine has instructions for; a
+// third one is its module's business and says so rather than doing the wrong
+// thing quietly
+void fa_need_ds(i64 t) {
+    i64 w = type_width(t);
+    if (w != 4 && w != 8) die("this float width has no arithmetic here: use its module's own");
+}
 
 // the FI_* opcode of a widthed operation: `d` is the double one, and the single
 // one is a fixed distance away in the table above
@@ -296,6 +310,7 @@ void fa_const(i64 d, i64 imm) {
 void fa_bin(i64 op, i64 d, i64 d2) {
     i64 ty = walk_depth_type(d);
     if (!fa_is_float(ty)) { callp(fa_of(MTASK_BIN), op, d, d2); return; }
+    fa_need_ds(ty);
     i64 fop = 0 - 1;
     if (op == MOP_ADD) fop = FI_ADD_D;
     if (op == MOP_SUB) fop = FI_SUB_D;
@@ -320,6 +335,7 @@ i64 fa_cond_at(i64 i) { return ld64(fa_cond + i * 8); }
 void fa_cmp(i64 cond, i64 d, i64 d2) {
     i64 ty = walk_depth_type(d);
     if (!fa_is_float(ty)) { callp(fa_of(MTASK_CMP), cond, d, d2); return; }
+    fa_need_ds(ty);
     i64 rl = fa_val_reg(d, FREG_S1);
     i64 rr = fa_val_reg(d2, FREG_S2);
     e3(fa_w(FI_CMP_D, ty), 0, rl, rr);
@@ -331,6 +347,7 @@ void fa_cmp(i64 cond, i64 d, i64 d2) {
 void fa_un(i64 op, i64 d) {
     i64 ty = walk_depth_type(d);
     if (!fa_is_float(ty)) { callp(fa_of(MTASK_UN), op, d); return; }
+    fa_need_ds(ty);
     if (op == MUN_NOT) die("no bitwise complement on a float");
     if (op == MUN_NEG) {
         i64 r = fa_val_reg(d, FREG_S1);
@@ -360,6 +377,8 @@ void fa_cast(i64 ty, i64 d) {
     i64 src = walk_depth_type(d);
     if (!fa_is_float(src) && !fa_is_float(ty)) { callp(fa_of(MTASK_CAST), ty, d); return; }
     if (src == ty) return;
+    if (fa_is_float(src)) fa_need_ds(src);
+    if (fa_is_float(ty))  fa_need_ds(ty);
     if (fa_is_float(src) && fa_is_float(ty)) {           // f32 <-> f64
         i64 r = fa_val_reg(d, FREG_S1);
         i64 rd = fa_dst_reg(d);

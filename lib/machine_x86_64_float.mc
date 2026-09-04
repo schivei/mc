@@ -155,8 +155,14 @@ u8   fx_tmp[BUF_SIZE];
 
 uptr fx_of(i64 task) { return ld64(fx_cur + task * 8); }
 
-i64 fx_is_float(i64 t) { return t == ty_f64 || t == ty_f32; }
-i64 fx_single(i64 t)   { return t == ty_f32; }
+// the KIND, not the id -- see lib/machine_arm64_float.mc for why
+i64 fx_is_float(i64 t) { return type_kind(t) == TK_FLOAT; }
+i64 fx_single(i64 t)   { return type_width(t) == 4; }
+
+void fx_need_ds(i64 t) {
+    i64 w = type_width(t);
+    if (w != 4 && w != 8) die("this float width has no arithmetic here: use its module's own");
+}
 
 // the single-precision sibling of a double opcode
 i64 fx_w2(i64 dop, i64 ty) {
@@ -297,6 +303,7 @@ void fx_const(i64 d, i64 imm) {
 void fx_bin(i64 op, i64 d, i64 d2) {
     i64 ty = walk_depth_type(d);
     if (!fx_is_float(ty)) { callp(fx_of(MTASK_BIN), op, d, d2); return; }
+    fx_need_ds(ty);
     i64 fop = 0 - 1;
     if (op == MOP_ADD) fop = FX_ADD_D;
     if (op == MOP_SUB) fop = FX_SUB_D;
@@ -334,6 +341,7 @@ void fx_setcc(i64 rd, i64 cc) {
 void fx_cmp(i64 cond, i64 d, i64 d2) {
     i64 ty = walk_depth_type(d);
     if (!fx_is_float(ty)) { callp(fx_of(MTASK_CMP), cond, d, d2); return; }
+    fx_need_ds(ty);
     i64 rl = fx_val_reg(d, XF_S1);
     i64 rr = fx_val_reg(d2, XF_S2);
     if (cond == MCOND_LT || cond == MCOND_LE) { i64 t = rl; rl = rr; rr = t; }
@@ -364,6 +372,7 @@ void fx_mask(i64 ty, i64 rd, i64 op, u64 dm, u64 sm) {
 void fx_un(i64 op, i64 d) {
     i64 ty = walk_depth_type(d);
     if (!fx_is_float(ty)) { callp(fx_of(MTASK_UN), op, d); return; }
+    fx_need_ds(ty);
     if (op == MUN_NOT) die("no bitwise complement on a float");
     if (op == MUN_NEG) {
         i64 r = fx_val_reg(d, XF_S1);
@@ -428,6 +437,8 @@ void fx_cast(i64 ty, i64 d) {
     i64 src = walk_depth_type(d);
     if (!fx_is_float(src) && !fx_is_float(ty)) { callp(fx_of(MTASK_CAST), ty, d); return; }
     if (src == ty) return;
+    if (fx_is_float(src)) fx_need_ds(src);
+    if (fx_is_float(ty))  fx_need_ds(ty);
     if (fx_is_float(src) && fx_is_float(ty)) {
         i64 r = fx_val_reg(d, XF_S1);
         i64 rd = fx_dst_reg(d);

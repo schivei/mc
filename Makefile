@@ -250,6 +250,13 @@ check-stubs: build/mc1
 check-float: build/mc1
 	scripts/check-float.sh build/mc1
 
+# M24 step 2: the three modules that prove the principle -- i128 (a 16-byte
+# integer in one depth), f16 (half precision on top of <float>'s machine, four
+# slots and nothing else) and examples/avx (one AVX instruction named by its
+# encoding). `git diff src/` for all three is empty.
+check-wide: build/mc1
+	scripts/check-wide.sh build/mc1
+
 # M23: the seed guard -- `mc limits src/mc.mc` against the fixed MAX* constants
 # still in stage0/mc.h and stage0/*.c. Fails when any of them is over 90% used,
 # which is the early warning that the C seed has to be raised before it stops
@@ -452,7 +459,7 @@ else ifneq (,$(WINHOST))
 # Docker or python3 -- and `check-skipped` prints the reason for each one.
 check: budget bootstrap-windows check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-sysroots check-limits check-skipped
 else
-check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-sysroots check-stubs check-limits check-minimal test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-desktop check-float check-kernel check-docs site check-site
+check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-sysroots check-stubs check-limits check-minimal test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-desktop check-float check-wide check-kernel check-docs site check-site
 endif
 
 budget:
@@ -465,7 +472,7 @@ clean:
 .PHONY: check-linux-host check-skipped
 .PHONY: bootstrap-windows mc-windows mc-windows-x86_64 mc-windows-obj mc-windows-x86_64-obj
 .PHONY: mcrt-windows mcrt-windows-x86_64
-.PHONY: check-float
+.PHONY: check-float check-wide
 .PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-limits sysroot-linux sysroot-linux-x86_64 sysroot-windows sysroot-windows-x86_64 test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal
 
 .PHONY: check-kernel

@@ -35,7 +35,7 @@ root in order.
 
 ## The catalogue
 
-The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 61 entries,
+The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 65 entries,
 plus `mc/bundle_data`, which is regenerated on demand (see below). Those are the names `<...>`
 accepts.
 
@@ -140,6 +140,20 @@ and `examples/lang` are.
 | `<user_float>` | `lib/user_float.mc` | the three of them plus the `user_init` that registers them — this is what `[compiler] modules` names |
 | `<mc_float>` | `lib/mc_float.mc` | the same as a standalone compiler entry, for `mc --exe` |
 | `<float_rt>` | `lib/float_rt.mc` | the RUN-TIME half, which a **program** includes: `putf64`, `fmt_f64`, `puthexf`. It is the one bundled file the frozen seed cannot lex (it spells float literals) and it carries a `seed-skip` header saying so |
+
+### The generality proofs (M24 step 2)
+
+Three modules the core has never heard of, each with an empty `git diff src/`.
+
+| name | file | what it gives you |
+|---|---|---|
+| `<i128>` | `lib/i128.mc` | a 128-bit integer: `type_new(..., 16, 16, TK_WIDE)`, memory-resident in ONE depth, `adds`/`adc`, `subs`/`sbc`, `mul`/`umulh`, a compare that is not just the 64-bit one twice, and a literal through a module-private global with an `N_BLOB` initializer. AArch64 only |
+| `<mc_i128>` | `lib/mc_i128.mc` | the compiler that carries it |
+| `<f16>` | `lib/f16.mc` | half precision as a STORAGE type, on top of `<float>`'s machine: four slots and two `fcvt`s, because `<float>` dispatches on the KIND and not on the id. AArch64 only |
+| `<mc_f16>` | `lib/mc_f16.mc` | `<float>` plus `<f16>`, in one compiler |
+
+`examples/avx/` is the third and is not bundled: it is an example directory with
+its own README, and it teaches one AVX instruction by its encoding.
 
 ### The demonstrations
 

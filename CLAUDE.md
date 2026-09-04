@@ -1540,6 +1540,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
 - M24 step A ✔ (`docs/specs/M24.md` § M1-M6, M8 and decision D5): **Tier 4 -- the inert half.
   A primitive the core has never heard of.** All in `src/`; `stage0/` untouched (2848/3000).
+  A primitive the core has never heard of.** All in `src/`; `stage0/` untouched (2848/3000, byte for byte what main has).
   The rule the whole milestone rests on is a number: **a type id below `TY_MAX` (7) is a core type
   and behaves exactly as it always has, byte for byte; an id at or above it was registered by a
   module, and every core decision about it is delegated.**
@@ -1599,7 +1600,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   comment nor blank): `ast.mc` +58/37, `hooks.mc` +117/45, `parse.mc` +41/15, `gen_resolve.mc`
   +11/5, `gen_walk.mc` +73/34 = **300 added lines, 136 of code**, against the spec's 132 for this
   half. The 164 lines of comment are this repository's density, not extra mechanism.
-  `stage0/` untouched, 2846/3000.
+  `stage0/` untouched, 2848/3000 -- `git diff` against the base commit is empty.
   **The gate is that nothing moves, and it held.** `make check` green end to end (RC 0):
   `test` 32/32, `check-lex` 93/93 (1 skipped), `check-ast` 93/93, `check-asm` 93/93, `check-obj`
   **32/32 identical to the frozen seed**, `check-bundle` (52 files), `bootstrap` at a fixed point
@@ -1620,7 +1621,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `docs/reference/diagnostics.md`, `docs/reference/bundle.md`, `docs/build.md`, and the new
   `docs/guide/96-a-new-primitive.md`.
 - M24 step B ✔ (`docs/specs/M24.md` § M7, M9 and decisions D1-D3): **`intrinsic` and
-  `--dump-machine`.** Still all in `src/`; `stage0/` untouched (2846/3000), and still inert -- no
+  `--dump-machine`.** Still all in `src/`; `stage0/` untouched (2848/3000, byte for byte what main has), and still inert -- no
   test in the corpus registers anything, so `check-obj` stays 32/32 against the frozen seed and the
   pre/post compilers produce byte-identical objects everywhere.
   * **M7, `intrinsic(name, nargs, ty, &f)`** (`src/gen_resolve.mc` +74/45 code, `src/gen_walk.mc`
@@ -1664,7 +1665,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `docs/reference/bundle.md`, `docs/guide/96-a-new-primitive.md`.
 - M24 step 1 ✔ (`docs/specs/M24.md` § "Step 1 -- `<float>`, the first library"):
   **`f32` and `f64`, taught to `mc` from outside the compiler.** `git diff src/` for this step is
-  **empty** apart from the generated `src/bundle_data.mc`; `stage0/` untouched, 2846/3000.
+  **empty** apart from the generated `src/bundle_data.mc`; `stage0/` untouched, 2848/3000 -- `git diff` against the base commit is empty.
   * `lib/float.mc` (432): `type_new` for `f64` (8, 8, TK_FLOAT), `f32` (4, 4) and `f64raw` (8, 8,
     TK_INT -- the same bytes as an integer, so `(f64raw) x` is one `fmov`/`movq` and a NaN can be
     written down in a language with no NaN literal); the `syntax_lit` handler; and eight
@@ -1718,6 +1719,55 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   step-B compiler and this one: identical everywhere. All five goldens rewritten once.
   Docs: `docs/guide/96-a-new-primitive.md` § 5 (`<float>`, worked), `docs/build.md`,
   `docs/reference/bundle.md` § `<float>`, `docs/reference/language.md`, `docs/ci.md`.
+- M24 step 2 ✔ (`docs/specs/M24.md` § Generality, and the architect's addition (a)):
+  **the three modules that prove the principle.** For all three, `git diff src/` is **empty**
+  apart from the generated `src/bundle_data.mc`; `stage0/` untouched, 2848/3000 -- `git diff` against the base commit is empty. The gate is
+  `make check-wide` (`scripts/check-wide.sh`, 170 lines), inside `make check`.
+  * **`lib/i128.mc` (438)** -- a 128-bit integer. `type_new("i128", 16, 16, TK_WIDE)`, and the
+    value lives in **ONE depth backed by a 16-byte slot**: a value spanning two depths would
+    collide with `gen_binary`'s `depth + 1` and `gen_call`'s `depth + i`, which is the walker's own
+    arithmetic and what `MTASK_DEPTH_SPAN` would be for. Carry survives memory residency because
+    neither `ldr` nor `str` touches NZCV: `adds`/`adc`, `subs`/`sbc`, `mul`/`umulh`. The compare is
+    the one place a 128-bit operation is not "the 64-bit one twice" -- `subs`/`sbcs` leave N and V
+    right but Z reflects only the high half, so equality is computed separately and
+    `gt = ge && !eq`, `le = lt || eq`. The literal `123i` goes through a **module-private global
+    with an `N_BLOB` initializer** (`MTASK_CONST` and `N_INT`'s val are one `i64` each) whose name
+    carries `$`, so it cannot collide with anything a program wrote. A 16-byte argument arrives in
+    an AAPCS64 **even register pair**. AArch64 only, and it says so.
+  * **`lib/f16.mc` (240)** -- half precision as a STORAGE type, on top of `<float>`'s machine:
+    four slots (`ldr h`/`str h` and the two `fcvt`s), two intrinsics and two accessors, and
+    nothing else. That is only possible because `<float>`'s `fa_is_float` was generalised in the
+    same commit from `t == ty_f64 || t == ty_f32` to **`type_kind(t) == TK_FLOAT`** -- which is
+    what `kind` is for, and what lets one float machine carry f64, f32 and somebody else's half
+    with the same register file, spill, ABI and return position. `f32` became `type_width(t) == 4`
+    for the same reason, and `fa_need_ds` refuses arithmetic on a width this machine has no
+    instructions for instead of doing it quietly.
+    The acceptance case is round-to-nearest-**ties-to-even**: 1 + 2^-11 is exactly halfway between
+    the halves `0x3c00` and `0x3c01` and goes to the even one; a round-half-up conversion would
+    answer `0x3c01`. `f16 tbl[8]` is **16 bytes of `__bss`**, checked in the object.
+    Deviation on record: the spec asks for the software fallback to be exercised "by building
+    x86-64 without F16C". `mc`'s x86-64 machine never had F16C -- VEX encoding is `examples/avx`'s
+    subject -- so what is delivered is the ARM64 hardware path, with the module stating that on a
+    machine without the instruction the identically-named ordinary functions are called instead
+    (an intrinsic shadows a function of the same name and nothing else does).
+  * **`examples/avx/` (avx.mc 300, main.mc 45, README.md)** -- ONE AVX instruction named by its
+    encoding. `type_new("v8f32", 32, 32, TK_OPAQUE)`, `intrinsic("vaddps", 2, ...)` whose two
+    operands arrive at depths the core chose, `val_reg`/`dst_reg`/`dst_done` to find them, and the
+    module's own **VEX bytes** -- two-byte `C5` when nothing outside the low eight registers is
+    named and three-byte `C4` otherwise, which is the rule `llvm-mc` follows and what makes the
+    re-assembly an equality: **11 distinct VEX instructions, byte for byte**. Depths 0..5 in
+    `ymm0..ymm5`, spilled from 6 into 32-byte slots with `vmovups`, because the frame is 16-byte
+    aligned and a 32-byte aligned spill is unreachable. It is NOT executed here: this host has no
+    AVX machine and no emulator guaranteed to have it; the README says which VEX forms are
+    reachable and which are not, and that is the open problem only a real x86-64 CI leg can close.
+  `check-wide` output: i128 and f16 both run and exit 0 with their expected stdout, the default
+  compiler refuses both sources, 5 literal globals each an `N_BLOB` of 16 bytes and 16 bytes apart
+  in the object, the `adds`/`adc` pair in `--dump-asm`, the even register pair, the 16-byte array,
+  `fcvt h16, s16`, the AVX object, and the sweep.
+  `make check` green end to end (RC 0) with `check-wide` added; `check-float` still ok on all five
+  legs after the kind-based generalisation (12/12, 12/12, 12/12, 11/11, 11/11 and the four sweeps).
+  All five goldens rewritten once. Docs: `docs/guide/96-a-new-primitive.md` § 5,
+  `docs/reference/bundle.md` § "The generality proofs", `examples/avx/README.md` (new).
 - Next: M18 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
   sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is
   one more motivating case).
