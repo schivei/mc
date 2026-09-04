@@ -532,6 +532,8 @@ The other two backends are the same idea with a different envelope:
 | `macho-exe` | ad-hoc signed `MH_EXECUTE` | does what `ld` did: segment layout on 16 KiB pages, its own resolution of the four relocations, `__TEXT,__stubs` + `__DATA,__got` per imported symbol with bind opcodes, rebase entries for every `UNSIGNED`, 13 load commands, and a `CS_CodeDirectory` with SHA-256 per 4 KiB page |
 | `elf-obj` | ELF64 `ET_REL`, `EM_AARCH64` | section names mapped (`__TEXT,__text` → `.text`, `__TEXT,__cstring` → `.rodata`, …), the leading `_` dropped from symbols, `l_strN` → `.LstrN`, the four relocations mapped to `CALL26`/`ADR_PREL_PG_HI21`/`ADD_ABS_LO12_NC`/`LDST*_ABS_LO12_NC`/`ABS64`, and one section that is not a module section: `.note.GNU-stack` (below) |
 | `elf-obj-x86_64` | the same file, `EM_X86_64` | `R_X86_64_64` / `PC32` / `PLT32`, addend −4 on both pc-relative kinds because a `rel32` counts from the end of its field |
+| `elf-exe` | dynamic ELF64 `ET_EXEC`, `EM_AARCH64` | `src/backend_elf_exe.mc` (M42): [§ 8b](#8b-the-elf-executable-elf-exe-and-elf-exe-x86_64) |
+| `elf-exe-x86_64` | the same file, `EM_X86_64` | same writer, `ee_em` selects the machine, the page size, the PLT shape and the `JUMP_SLOT` number |
 | `coff-obj-arm64` | COFF, `IMAGE_FILE_MACHINE_ARM64` | `src/backend_coff.mc` (M19): `.text`/`.rdata`/`.data`/`.bss`, alignment as three bits of `Characteristics`, no leading `_` on a symbol, `l_strN` → `$str.N`, and the four relocations mapped to `BRANCH26`/`PAGEBASE_REL21`/`PAGEOFFSET_12A`/`PAGEOFFSET_12L`/`ADDR64`. `TimeDateStamp` is 0 |
 | `coff-obj-x86_64` | the same file, `IMAGE_FILE_MACHINE_AMD64` | M20: `coff_machine` selects the header value and the relocation table, the way `elf_em` does in the ELF writer. `R_X86_PLT32` and `R_X86_PC32` both become `IMAGE_REL_AMD64_REL32` (`0x0004`) and `R_UNSIGNED` becomes `IMAGE_REL_AMD64_ADDR64` (`0x0001`, **not** ARM64's `0x000E`). The backend names the `x86_64-win` machine as its first statement |
 
@@ -597,6 +599,166 @@ section. The linkers where the note changes the outcome are the older binutils i
 rows, which is where the exposure was measured and which this suite does not run against — the
 baseline here is the newest toolchains, and old binutils is a reproduction, not a supported target.
 
+## 8b. The ELF executable (`elf-exe` and `elf-exe-x86_64`)
+
+`src/backend_elf_exe.mc` writes a **dynamically linked ELF64 `ET_EXEC`** with no linker, no crt
+object and no sysroot — the ELF counterpart of what `macho-exe` did for Mach-O at M11. It is what
+fills the executable slot of `linux/aarch64` and `linux/x86_64` in the target registry, so
+`mc --exe prog.mc -o prog` works on a Linux host and `mc build` with `kind = "exe"` for a Linux
+target needs **no `[linker]` section and no sysroot at all**.
+
+The reason a dynamic executable needs no sysroot is that it needs *names*, not files: the
+interpreter path, the `DT_NEEDED` soname, and the symbol names. `scripts/sysroot-linux.sh` fetches
+`crt1.o`, `crti.o`, `crtn.o` and `libc.a`; all four exist only to serve a **static** external link,
+which `[linker]` still does ([`docs/build.md`](../build.md) § Linux targets).
+
+### The shape
+
+Two decisions, both refusing the optional half of the format:
+
+* **`ET_EXEC` at `0x400000`, not `ET_DYN`.** A PIE would need an `R_*_RELATIVE` dynamic relocation
+  for every absolute address in the image; a fixed base needs none, because the writer knows every
+  address when it places the segments. **The cost is no ASLR** — a real security property, named
+  here and priced as a follow-up, not hidden.
+* **`DT_BIND_NOW` + `DF_1_NOW`, no lazy binding.** Every `JUMP_SLOT` is resolved before the entry
+  point runs, so a PLT stub is a plain indirect jump through its GOT slot: no PLT0, no resolver
+  trampoline, no second GOT reservation, and an import that does not exist fails at load time
+  instead of at the first call.
+
+### The layout, in file order
+
+| region | segment | contents |
+|---|---|---|
+| ELF header, program headers | LOAD r-x | 64 bytes + 56 × `e_phnum` |
+| `.interp` | LOAD r-x | the loader path, NUL-terminated; **dynamic only** |
+| `.dynsym`, `.dynstr`, `.hash`, `.rela.plt` | LOAD r-x | **dynamic only** |
+| the module's `__TEXT` sections | LOAD r-x | `.text`, `.rodata`, and any `#section __TEXT ...` |
+| `.plt` | LOAD r-x | one stub per import; **dynamic only** |
+| `.text.mcstart` | LOAD r-x | the synthesized entry point; only when the program has no `_start` |
+| the module's writable sections | LOAD rw- | `.data`, and any `#section` outside `__TEXT` |
+| `.got` | LOAD rw- | exactly one 8-byte slot per import; **dynamic only** |
+| `.dynamic` | LOAD rw- | **dynamic only** |
+| the module's zerofill sections | LOAD rw- | `.bss`, as the gap between `p_filesz` and `p_memsz` |
+| `.symtab`, `.strtab`, `.shstrtab` | — | not loaded, and not read by any loader |
+| section headers | — | on 8 |
+
+One `PT_LOAD` per distinct Mach-O segment name, in order of first appearance, exactly as
+`macho-exe` groups them: `__TEXT` becomes `PF_R|PF_X` and everything else `PF_R|PF_W`. `#section`
+with a segment of its own therefore gets a `PT_LOAD` of its own. Each segment starts on a page in
+VM *and* in the file, which is what makes `p_offset ≡ p_vaddr (mod p_align)` hold by construction.
+
+Program headers, in order: `PT_PHDR`, `PT_INTERP`, one `PT_LOAD` per segment, `PT_DYNAMIC`,
+`PT_GNU_STACK`. **`PT_GNU_STACK` is `RW` and never `E`** — the executable-side counterpart of the
+`.note.GNU-stack` an object carries; without it a loader may fall back to an executable stack.
+
+`p_align` is **64 KiB on aarch64 and 4 KiB on x86-64**. An aarch64 kernel may be configured with
+64 KiB pages and would refuse a 4 KiB-aligned image; the M42 § 0 probe measured that a 64 KiB
+`p_align` loads and runs unchanged on the 4 KiB kernels available, so aarch64 pays the larger
+alignment (a file up to 64 KiB bigger) and x86-64, which has no such configuration, does not.
+
+### The static case is the degenerate case
+
+It is decided by **counting imports**, never by a flag. A program whose undefined-symbol set is
+empty — anything built on `lib/sys_linux.mc`, including `tests/linux/070-nolibc.mc` — gets no
+`PT_INTERP`, no `PT_DYNAMIC`, no `.dynsym`/`.dynstr`/`.hash`/`.rela.plt`, no PLT and no GOT, and
+what comes out is a static executable the kernel runs with no loader involved.
+
+### The entry point
+
+The kernel enters `_start`, not `main`, and there is no `crt1.o` here.
+
+* A program that defines `_start` itself keeps it: `e_entry` is that symbol and nothing is
+  synthesized. `#include <sys_linux>` is that case.
+* Otherwise the writer emits `.text.mcstart`, seven AArch64 instructions or 34 x86-64 bytes:
+  `argc` from `[sp]`, `argv` = `sp + 8`, `envp` = `sp + 16 + 8*argc`, a direct `bl`/`call` to
+  `main`, and `exit_group` by **raw syscall** — so the stub costs no import and works in the static
+  case too.
+* With neither `_start` nor `main`, the writer says
+  `no main and no _start: cannot generate an executable`.
+
+Both libcs initialise themselves inside the loader before transferring to the entry point, which is
+what makes a crt-less `_start` legitimate: `errno` (thread-local in both), `malloc` and stdio all
+work from the first instruction. That is measured, not assumed — `tests/linux/071-errno-malloc.mc`
+is the test, and it runs under musl and glibc on both architectures.
+
+### Imports, the PLT and the GOT
+
+Every undefined symbol is an import, in symbol-table creation order. Each gets
+
+* one `.dynsym` entry (`STB_GLOBAL`, `STT_FUNC`, `SHN_UNDEF`, index k + 1), with the compiler's
+  leading `_` dropped exactly as the object writer drops it;
+* one 8-byte `.got` slot, written zero;
+* one `R_AARCH64_JUMP_SLOT` (1026) / `R_X86_64_JUMP_SLOT` (7) in `.rela.plt`, addend 0, pointing at
+  that slot;
+* one PLT stub — `adrp x16, slot@page ; ldr x17, [x16, #slot@pageoff] ; br x17 ; nop` (16 bytes) or
+  `jmp qword ptr [rip + slot] ; int3 ; int3` (8 bytes).
+
+**`JUMP_SLOT` is the only dynamic relocation kind in the file.** A reference to an import resolves,
+in place, to its **PLT stub address** — a call, and equally `&write`, which is precisely the
+canonical address a linker gives an imported function in a non-PIE executable. There is no
+`GLOB_DAT` and no `COPY`: mc has no imported *data*, only imported functions.
+
+`DT_NEEDED` names come from the same two places Mach-O's `LC_LOAD_DYLIB` comes from — `#dylib`
+(M12) and `[libs]`/`[externs]` (M14) — with the default library first, the way libSystem is always
+ordinal 1. The default and the interpreter path are `[target].libc` and `[target].interp` in
+`mc.toml` ([`toml.md`](toml.md#target)), defaulting to musl.
+
+`DT_HASH` and not `DT_GNU_HASH`: the SysV table is nine lines and every loader accepts it, while
+`DT_GNU_HASH` is a bloom filter plus sorted buckets for a lookup speed that does not matter at
+these symbol counts. `nbucket = nchain = 1 + imports`, a real table rather than the legal
+single-bucket one, and the chains are built by prepending, so the arrays are a function of the
+names alone.
+
+The `.dynamic` vector, in this order: one `DT_NEEDED` per library, `DT_STRTAB`, `DT_SYMTAB`,
+`DT_STRSZ`, `DT_SYMENT`, `DT_HASH`, `DT_PLTGOT`, `DT_JMPREL`, `DT_PLTRELSZ`, `DT_PLTREL` (`DT_RELA`),
+`DT_FLAGS` (`DF_BIND_NOW`), `DT_FLAGS_1` (`DF_1_NOW`), `DT_NULL`.
+
+### Relocations, resolved in place
+
+Every reference to a **defined** symbol becomes a final address, with the same four patchers
+`macho-exe` uses — they encode instructions, and an instruction has no file format:
+`exe_fix_branch26`, `exe_fix_page21`, `exe_fix_pageoff12` (which classifies `add` versus `ldr`/`str`
+by the access width in bits 31:30, the same classification `elf_pageoff12` makes for the object) and
+a plain `st64` for `R_UNSIGNED`. On x86-64 `R_X86_PC32` and `R_X86_PLT32` are patched as
+`target - (field + 4)`, which is why the object writer's −4 addend has no counterpart here.
+
+### Section headers, and why they are written
+
+No loader reads them: `PT_LOAD` and `PT_DYNAMIC` are the whole contract, and the M42 § 0 probe ran
+with none. They are written anyway — including a full `.symtab`/`.strtab` with final addresses —
+because they cost a few kilobytes and they are what makes `llvm-readelf --sections`,
+`llvm-nm`, `llvm-objdump -d` and a debugger's backtrace read an mc binary, and what lets
+`--dump-syms` be compared against the file. An undefined symbol stays `SHN_UNDEF` with value 0 in
+`.symtab`: honest, rather than aliased to its stub.
+
+### The cross-check
+
+The same discipline as [`docs/macho-notes.md`](../macho-notes.md) § M11: every field was read back with LLVM's tools and
+compared against a `ld.lld`-produced binary of the same shape.
+
+```
+$ llvm-readelf -h -l -d -r --hash-table --dyn-syms build/t013
+Type:                              EXEC (Executable file)
+Machine:                           AArch64
+Entry point address:               0x4003c0
+  PHDR  0x000040 0x0000000000400040 ... R   0x8
+  INTERP 0x000190 0x0000000000400190 ... R   0x1
+      [Requesting program interpreter: /lib/ld-musl-aarch64.so.1]
+  LOAD  0x000000 0x0000000000400000 ... 0x0003dc 0x0003dc R E 0x10000
+  LOAD  0x010000 0x0000000000410000 ... 0x0000d8 0x0000d8 RW  0x10000
+  DYNAMIC 0x010008 0x0000000000410008 ...            RW  0x8
+  GNU_STACK 0x000000 0x0000000000000000 ...          RW  0x10
+  0x0000000000000001 (NEEDED)   Shared library: [libc.so]
+  0x000000000000001e (FLAGS)    BIND_NOW
+  0x000000006ffffffb (FLAGS_1)  NOW
+0000000000410000  0000000100000402 R_AARCH64_JUMP_SLOT  0000000000000000 write + 0
+HashTable { Num Buckets: 2  Num Chains: 2  Buckets: [0, 1]  Chains: [0, 0] }
+```
+
+`GNU_STACK` is `RW`, never `E`. The SysV hash arrays the writer computes are array-identical to
+what `ld.lld --hash-style=sysv` produces for a reference binary of the same shape, on both
+architectures.
+
 ### No `.pdata`/`.xdata` (accepted M19 gap, M20 included)
 
 Neither `coff-obj-arm64` nor `coff-obj-x86_64` writes unwind data. Windows on ARM64 has no frame-pointer-walking fallback: the
@@ -646,7 +808,8 @@ void user_init() {
 ```
 
 The writers the core registers itself have exactly this shape and no other: `backend_exe(root, out)`,
-`backend_elf(root, out)` / `backend_elf_x86(root, out)` and `backend_coff(root, out)` /
+`backend_elf(root, out)` / `backend_elf_x86(root, out)`,
+`backend_elf_exe(root, out)` / `backend_elf_exe_x86(root, out)` and `backend_coff(root, out)` /
 `backend_coff_x86(root, out)` each name their machine with `machine_use` — `arm64`, `x86_64`, or
 `x86_64-win` for the last — call `gen_lower` and `gen_encode_all`, and then write. An object
 backend picks the machine because the file format already records the architecture; a backend that

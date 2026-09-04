@@ -107,6 +107,19 @@
 #define S_ATTR_SOME_INSTRUCTIONS 0x400
 #define TEXT_FLAGS (S_REGULAR | S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS)
 
+// M42: the two names a DYNAMICALLY linked executable needs and no object ever
+// does -- the path of the program interpreter, and the library that symbol
+// ordinal 1 comes from. They are here, in the format-neutral half, for the same
+// reason the R_X86_* kinds are: the driver writes them (from [target].interp
+// and [target].libc in mc.toml) and a writer reads them, and the two live in
+// different parts -- <mc/core_build> may be assembled without <mc/core_writers>
+// and must still compile (scripts/check-parts.sh). 0 means "the writer's own
+// default for this target"; src/backend_elf_exe.mc answers musl.
+// Mach-O's counterparts are constants (`/usr/lib/dyld`,
+// `/usr/lib/libSystem.B.dylib`) and src/backend_exe.mc ignores both.
+uptr dyn_interp = 0;
+uptr dyn_libc = 0;
+
 uptr sections;
 i64  nsections = 0;
 i64  seccap = 0;

@@ -693,6 +693,15 @@ i64 drv_run(uptr dir, uptr cfg, i64 entry_only, i64 compiler_only) {
     if (arch == 0) arch = host_arch();
     drv_os = os;
     drv_arch = arch;
+    // M42: the two names a dynamic ELF executable needs and no object does.
+    // They are per-libc, not per-target, so they are keys and not constants:
+    // the writer's default is musl (`libc.so`, `/lib/ld-musl-<arch>.so.1`) and
+    // glibc is `interp = "/lib/ld-linux-aarch64.so.1"` (or
+    // "/lib64/ld-linux-x86-64.so.2") plus `libc = "libc.so.6"`. The globals
+    // live in src/objmodel.mc so that this file names no writer
+    // (docs/reference/toml.md § [target]).
+    dyn_interp = toml_get("target.interp");
+    dyn_libc = toml_get("target.libc");
 
     uptr entry = toml_get("project.entry");
     if (entry == 0) toml_err_key("project.entry", "missing key");

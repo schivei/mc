@@ -121,12 +121,19 @@ uptr lim_names[] = {
 
 // cold-start capacity: what a table gets when the pre-scan said nothing about
 // it. Never a ceiling -- doubling takes over from here.
+// M42: the value at T_BACKENDS (index 31, the fourth entry of the row that
+// starts at T_ONSTMT) is 16 and not 8. The backend table is the one table that
+// is FULL before the pre-scan can size it -- mc_writers_init() registers every
+// built-in from main(), before mc_main() runs on_plan -- so it only ever gets
+// its cold-start seed, and <mc/core_writers> now registers eight (the two
+// Linux executable writers joined). A taught compiler that adds one of its own
+// (examples/kernel) doubled the table on every build.
 i64 lim_seeds[] = {
     512, 64, 16, 8, 256, 128, 64,
     32, 32, 16, 8, 32, 16, 32,
     64, 64, 32, 64, 128, 16, 64,
     256, 64, 16, 32, 8, 64, 8,
-    8, 8, 8, 8, 16, 16, 128,
+    8, 8, 8, 16, 16, 16, 128,
     8, 8, 8, 0
 };
 

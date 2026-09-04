@@ -1,0 +1,13 @@
+# linux-exe.toml — M42: os = "linux" with NO [linker], NO [sysroot] and no
+# ld.lld anywhere. Before M42 this exact file was a diagnostic
+# (`linux requires [linker]: there is no direct executable`); the executable
+# slot of both Linux targets is filled now, so the same six lines write a
+# dynamic ELF64 ET_EXEC. scripts/check-build.sh only inspects the header here --
+# running it is scripts/test-linux.sh --exe, which has Docker.
+[project]
+entry = "lin.mc"
+out   = "build/lin-exe"
+
+[target]
+os   = "linux"
+arch = "aarch64"

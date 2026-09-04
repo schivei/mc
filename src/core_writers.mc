@@ -4,6 +4,8 @@
 //   macho.mc        the arm64 MH_OBJECT writer
 //   backend_exe.mc  `macho-exe`: a signed MH_EXECUTE, without `ld` (M11)
 //   backend_elf.mc  `elf-obj` / `elf-obj-x86_64`: ELF64 ET_REL (M16/M17)
+//   backend_elf_exe.mc `elf-exe` / `elf-exe-x86_64`: a dynamic ELF64
+//                   ET_EXEC, written with no linker and no sysroot (M42)
 //   backend_coff.mc `coff-obj-arm64` / `coff-obj-x86_64`: COFF (M19/M20)
 //
 // mc_writers_init() is the six backend() and the five target() calls that used
@@ -17,6 +19,7 @@
 #include "macho.mc"
 #include "backend_exe.mc"
 #include "backend_elf.mc"
+#include "backend_elf_exe.mc"
 #include "backend_coff.mc"
 
 // built-in backend `macho`: the two halves of gen plus writing the MH_OBJECT.
@@ -41,16 +44,19 @@ void mc_writers_init() {
     backend("macho-exe", &backend_exe);
     backend("elf-obj", &backend_elf);
     backend("elf-obj-x86_64", &backend_elf_x86);
+    backend("elf-exe", &backend_elf_exe);
+    backend("elf-exe-x86_64", &backend_elf_exe_x86);
     backend("coff-obj-arm64", &backend_coff);
     backend("coff-obj-x86_64", &backend_coff_x86);
     // M17/M33: the (os, arch) pairs `mc build` accepts, with the backend each
     // one writes objects and direct executables with. `0` as the executable
     // backend says the target has none and always goes through [linker] --
-    // which is what Linux and Windows do. src/driver.mc reads nothing but this
-    // table.
+    // which is what Windows still does. M42 filled the two Linux slots: a
+    // dynamic ELF executable needs no linker and no sysroot, only names.
+    // src/driver.mc reads nothing but this table.
     target("macos", "aarch64", "macho", "macho-exe");
-    target("linux", "aarch64", "elf-obj", 0);
-    target("linux", "x86_64", "elf-obj-x86_64", 0);
+    target("linux", "aarch64", "elf-obj", "elf-exe");
+    target("linux", "x86_64", "elf-obj-x86_64", "elf-exe-x86_64");
     target("windows", "aarch64", "coff-obj-arm64", 0);
     target("windows", "x86_64", "coff-obj-x86_64", 0);
 }
