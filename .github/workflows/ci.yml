@@ -92,6 +92,19 @@ jobs:
       - name: Cross-compile the suite for linux/x86_64
         run: scripts/test-linux.sh --arch x86_64 --build-only build/linux-objs-x86_64 build/mc1
 
+      # M42: the same corpus with the LINKER OUT OF THE PATH. `mc build` writes
+      # the dynamic ELF64 executable itself (`elf-exe` / `elf-exe-x86_64`) --
+      # no ld.lld, no crt1.o, no libc.a, and the mode moves the cached sysroots
+      # aside while it runs to prove it. What comes out of these two steps is
+      # ready to execute, so the linux legs below only have to run it.
+      # docs/plan.md § Rule for every new target: an executable format is not
+      # supported until a job RUNS its output on real hardware.
+      - name: Cross-compile the suite as linux/arm64 executables (--exe)
+        run: scripts/test-linux.sh --exe --build-only build/linux-exes build/mc1
+
+      - name: Cross-compile the suite as linux/x86_64 executables (--exe)
+        run: scripts/test-linux.sh --arch x86_64 --exe --build-only build/linux-exes-x86_64 build/mc1
+
       # M24 step 1: the float suite goes into the SAME artifact, in the same
       # shape, so the `--run-only` half of test-linux.sh links and runs it with
       # no change. It has to come after the step above, which truncates the
@@ -336,11 +349,29 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # M42: the executables, in their own artifact -- they need no linking, so
+      # the leg that downloads them only runs them.
+      - name: Upload the cross-built linux/arm64 executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64-exes
+          path: build/linux-exes
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload the cross-built linux/x86_64 objects
         uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64-objects
           path: build/linux-objs-x86_64
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the cross-built linux/x86_64 executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-exes
+          path: build/linux-exes-x86_64
           if-no-files-found: error
           retention-days: 7
 
@@ -411,6 +442,20 @@ jobs:
       - name: Link with ld.lld and run natively
         run: scripts/test-linux.sh --run-only build/linux-objs
 
+      # M42: the other half of the same corpus, built by `mc` alone. Nothing is
+      # linked here -- the artifact IS the executables -- so this step needs no
+      # ld.lld and no sysroot at all.
+      - name: Download the cross-built executables (--exe)
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-arm64-exes
+          path: build/linux-exes
+
+      - name: Run the --exe suite natively (no linker)
+        run: |
+          chmod +x build/linux-exes/* 2>/dev/null || true
+          scripts/test-linux.sh --exe --run-only build/linux-exes
+
   # M17 step B: the x86-64 half. Same shape as linux-arm64, on the x86-64
   # runner, with the amd64 musl sysroot. docs/plan.md § Rule for every new
   # target: an architecture is not supported until a job links and RUNS its
@@ -456,6 +501,18 @@ jobs:
 
       - name: Link with ld.lld and run natively
         run: scripts/test-linux.sh --arch x86_64 --run-only build/linux-objs-x86_64
+
+      # M42: as in linux-arm64 -- the executables `mc` wrote with no linker.
+      - name: Download the cross-built executables (--exe)
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64-exes
+          path: build/linux-exes-x86_64
+
+      - name: Run the --exe suite natively (no linker)
+        run: |
+          chmod +x build/linux-exes-x86_64/* 2>/dev/null || true
+          scripts/test-linux.sh --arch x86_64 --exe --run-only build/linux-exes-x86_64
 
   # M37: `mc` HOSTED on Linux. Not "a Linux target built from macOS" -- the
   # object downloaded here is the compiler; this job links it and it compiles

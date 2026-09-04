@@ -5,16 +5,34 @@
 # via the .o + ld path:
 #   // expect-exit: N        (required)
 #   // expect-stdout: TEXT   (optional)
-# It also checks that the binary is signed ad hoc (codesign --verify).
+# On macOS it also checks that the binary is signed ad hoc (codesign --verify).
 # Only the .mc compiler has --exe; stage0 in C does not (docs/surface.md § Tier 2).
+#
+# M42: `--exe` is no longer macOS-only. It resolves the HOST's direct-executable
+# backend through the target registry (src/cli.mc), and both Linux targets have
+# one now, so this script is what proves `mc --exe` on a Linux host -- the same
+# corpus, natively, with no linker. Two things are then host-dependent and both
+# are asked rather than assumed: `codesign` exists only on macOS, and a test
+# carrying a `// skip-<os>:` header for THIS host is not portable to it (that is
+# tests/032-svc.mc, whose syscalls are Darwin's).
 mc="${1:-build/mc1}"
 mkdir -p build/tests-exe
 fails=0
 total=0
+skipped=""
+host_os=$("$mc" --host | sed -n 's|^os ||p')
+host_arch=$("$mc" --host | sed -n 's|^arch ||p')
 
 for f in tests/*.mc; do
     [ -f "$f" ] || continue
     name=$(basename "$f" .mc)
+    why=$(sed -n "s|^// skip-$host_os: *||p" "$f" | head -1)
+    [ -n "$why" ] || why=$(sed -n "s|^// skip-$host_arch: *||p" "$f" | head -1)
+    if [ -n "$why" ]; then
+        skipped="$skipped
+  $name — $why"
+        continue
+    fi
     total=$((total + 1))
     exe="build/tests-exe/$name"
 
@@ -29,7 +47,7 @@ for f in tests/*.mc; do
     if ! msg=$("$mc" --exe "$f" -o "$exe" 2>&1); then
         echo "FAIL $name (compilation: $msg)"; fails=$((fails + 1)); continue
     fi
-    if ! msg=$(codesign --verify --verbose=4 "$exe" 2>&1); then
+    if [ "$host_os" = "macos" ] && ! msg=$(codesign --verify --verbose=4 "$exe" 2>&1); then
         echo "FAIL $name (signature: $msg)"; fails=$((fails + 1)); continue
     fi
 
@@ -45,4 +63,7 @@ for f in tests/*.mc; do
 done
 
 echo "$((total - fails))/$total tests passed via --exe"
+if [ -n "$skipped" ]; then
+    echo "skipped (not portable to this host):$skipped"
+fi
 [ "$fails" -eq 0 ]
