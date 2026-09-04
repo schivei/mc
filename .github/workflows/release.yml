@@ -1,6 +1,8 @@
 # Release — builds the downloadable `mc` for every enabled target and publishes
-# a GitHub Release for the tag. Started by pushing a `v*` tag (see tag.yml) or
-# by hand from the Actions tab. See docs/ci.md.
+# a GitHub Release for the tag. Started by autotag.yml when a pull request is
+# merged, by tag.yml when a tag is cut by hand, by pushing a `v*` tag, or from
+# the Actions tab with the tag as an input. The tag is the only source of
+# version truth: there is no VERSION file. See docs/ci.md.
 name: Release
 
 on:
@@ -41,20 +43,27 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
-      - name: The tag has to match the VERSION file
+      # The version IS the tag, minus the `v`. The only check left is that the
+      # tag has the shape a release tag must have; next-version.sh is the one
+      # place that knows what a version looks like, so it does the parsing.
+      - name: Derive the version from the tag
         env:
           TAG_INPUT: ${{ inputs.tag }}
         run: |
           set -eu
           tag="${TAG_INPUT:-$GITHUB_REF_NAME}"
+          case "$tag" in
+            v*) : ;;
+            *) echo "::error::'$tag' is not a release tag (it must start with 'v')"; exit 1 ;;
+          esac
           version="${tag#v}"
-          file=$(tr -d ' \t\r\n' < VERSION)
-          if [ "$version" != "$file" ]; then
-            echo "::error::tag '$tag' says version '$version', VERSION says '$file'"
+          if ! scripts/next-version.sh "$version" patch > /dev/null 2>&1; then
+            echo "::error::tag '$tag' does not carry a plain X.Y.Z version"
             exit 1
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
           echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "releasing $tag as version $version"
 
       # The seed compiles once (clang), mc1 compiles itself into the signed,
       # ld-free executable. The output's basename is the identifier of the
@@ -142,8 +151,9 @@ jobs:
           merge-multiple: true
           path: dist
 
-      # The release body is the tag's own annotation (tag.yml writes it), plus
-      # the checksums of everything being attached.
+      # The release body is the tag's own annotation -- autotag.yml writes the
+      # pull request's title and number into it, tag.yml writes the notes the
+      # operator typed -- plus the checksums of everything being attached.
       - name: Compose the release body
         env:
           TAG_INPUT: ${{ inputs.tag }}
@@ -151,11 +161,6 @@ jobs:
           set -eu
           tag="${TAG_INPUT:-$GITHUB_REF_NAME}"
           version="${tag#v}"
-          file=$(tr -d ' \t\r\n' < VERSION)
-          if [ "$version" != "$file" ]; then
-            echo "::error::tag '$tag' says version '$version', VERSION says '$file'"
-            exit 1
-          fi
           git fetch --force origin "refs/tags/$tag:refs/tags/$tag" || true
           annotation=$(git tag -l --format='%(contents)' "$tag")
           {
@@ -189,7 +194,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
-          # A version with a `-` suffix (0.2.0-rc1) is a pre-release.
+          # A version with a `-` suffix (0.2.0-rc1) is a pre-release. Neither
+          # autotag.yml nor tag.yml makes such a tag -- the project has no
+          # pre-releases (docs/ci.md § Versioning) -- but a hand-pushed one
+          # still publishes correctly.
           prerelease=""
           case "$VERSION" in
             *-*) prerelease="--prerelease" ;;

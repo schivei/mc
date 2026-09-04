@@ -7,13 +7,18 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
 
-# One run per branch or pull request; a new push cancels the previous run.
+# One run per pull request (or per branch, for the push to main); a new push
+# cancels the previous run. The two job names below are the required status
+# checks on `main` -- "make check (macOS arm64)" and "Link and run the suite
+# (linux/arm64)" -- so they must not be renamed without updating the branch
+# protection (docs/ci.md § Branch protection).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -213,3 +218,61 @@ jobs:
 
       - name: Link with ld.lld and run natively
         run: scripts/test-linux.sh --arch x86_64 --run-only build/linux-objs-x86_64
+
+  docs-updated:
+    name: Docs updated
+    # Owner's rule (2026-09-04): every PR that changes the compiler, the libraries or the
+    # examples must also update docs/ (the site is regenerated from docs/ on merge).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml==6.0.2
+      - name: Compare changed paths against the base
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import subprocess
+          import sys
+          import yaml
+
+          base = os.environ["BASE"]
+          head = os.environ["HEAD"]
+          changed = subprocess.check_output(
+              ["git", "diff", "--name-only", base, head], text=True
+          ).splitlines()
+          print("\n".join(changed))
+
+          cfg = yaml.safe_load("""
+          watched:
+            - src/
+            - lib/
+            - examples/
+            - stage0/
+            - tools/
+          docs: docs/
+          """)
+
+          touched_watched = any(
+              any(path.startswith(prefix) for prefix in cfg["watched"])
+              for path in changed
+          )
+          touched_docs = any(path.startswith(cfg["docs"]) for path in changed)
+
+          if touched_watched and not touched_docs:
+              print(
+                  "::error::this PR changes src/, lib/, examples/, stage0/ or tools/ "
+                  "but nothing under docs/ -- update the guide, the reference or the "
+                  "example pages (the site is generated from docs/)"
+              )
+              sys.exit(1)
+
+          print("ok: docs gate satisfied")
+          PY

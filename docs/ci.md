@@ -1,23 +1,76 @@
 # ci.md — the GitHub Actions workflows
 
-Four workflows live in `.github/workflows/`. They exist because the project has a hard
-constraint: **`mc` only builds and runs on macOS arm64 today** (`docs/plan.md` § Phase 2 — "mc
-itself keeps running on macOS arm64 for now; cross-hosting comes later with CI"), while part of
-what `make check` proves has to happen on a Linux machine. Everything below follows from that.
+Five workflows live in `.github/workflows/`. Two constraints shape them.
+
+**`mc` only builds and runs on macOS arm64 today** (`docs/plan.md` § Phase 2 — "mc itself keeps
+running on macOS arm64 for now; cross-hosting comes later with CI"), while part of what
+`make check` proves has to happen on a Linux machine. That is why `ci.yml` is two jobs and why
+every build job runs on `macos-15`.
+
+**Development happens on pull requests, and every merged pull request cuts a version.** There is
+no `VERSION` file and no release day: merging is what creates the tag, and the tag is what builds
+the release. The contributor-facing half of that is
+[CONTRIBUTING.md](https://github.com/schivei/mc/blob/main/CONTRIBUTING.md); the machinery is here.
 
 | workflow | trigger | machine | what it does |
 |---|---|---|---|
-| `ci.yml` | push to `main`, pull requests | `macos-15` + `ubuntu-24.04-arm` + `ubuntu-latest` | `make check`, then the Linux suite — once per architecture — in two halves |
-| `tag.yml` | manual | `ubuntu-24.04` | validates `X.Y.Z` against the `VERSION` file, pushes the annotated tag `vX.Y.Z` and starts `release.yml` |
-| `release.yml` | tag `v*`, or manual | `macos-15` | builds `mc`, verifies it, packages it, publishes the GitHub Release |
+| `ci.yml` | pull requests to `main`, push to `main` | `macos-15` + `ubuntu-24.04-arm` + `ubuntu-latest` | `make check`, then the Linux suite — once per architecture — in two halves |
+| `autotag.yml` | push to `main` | `ubuntu-24.04` | if the push is a merged pull request: computes the next version from its labels, pushes the annotated tag `vX.Y.Z` and starts `release.yml` |
+| `tag.yml` | manual | `ubuntu-24.04` | the escape hatch: validates `X.Y.Z` against the newest tag, pushes the tag and starts `release.yml` |
+| `release.yml` | dispatched by `autotag.yml`/`tag.yml`, tag `v*`, or manual | `macos-15` | builds `mc`, verifies it, packages it, publishes the GitHub Release |
 | `site.yml` | push to `main` touching `site/**` or `docs/**`, or manual | `macos-15` + `ubuntu-24.04` | renders `docs/` with `mcsite` and deploys it to GitHub Pages (<https://minicompiler.dev>) |
 
-All four set `concurrency` groups and per-job `timeout-minutes`, and each declares the narrowest
+All five set `concurrency` groups and per-job `timeout-minutes`, and each declares the narrowest
 `permissions` it needs.
+
+## Who touches what
+
+The workflows encode a division of labour, so it is worth writing down once:
+
+- the **architect** creates the branch (`mNN-name`) and opens the pull request; it never merges;
+- **implementer agents** commit on that branch, never on `main`;
+- the **owner** merges, and the only merge method is **squash**.
+
+"Ready for merge" is three things at once: CI green, the batch report in the pull request body,
+and the release label set when the change is not a patch. Everything after the merge button is
+`autotag.yml` and `release.yml`.
+
+## Versioning
+
+The **tags are the only source of truth**. `git tag -l 'v*' --merged HEAD --sort=-v:refname | head -1`
+is the current version, and nothing in the working tree records it — the `VERSION` file that used
+to exist was deleted when releases moved to pull requests, because two sources of truth is one too
+many. `release-assets.sh` takes the version from its first argument, which `release.yml` derives
+from the tag.
+
+Versions are plain semantic versions, `X.Y.Z`. **No pre-releases**: `release.yml` still marks a
+`-`-suffixed tag as a GitHub pre-release, but neither `autotag.yml` nor `tag.yml` will make one,
+and `scripts/next-version.sh` rejects `0.2.0-rc1` with a message that says so. If a pre-release is
+ever wanted it is a hand-pushed tag, deliberately outside the automation.
+
+The arithmetic lives in one place:
+
+```sh
+scripts/next-version.sh 0.1.9 minor    # -> 0.2.0
+scripts/next-version.sh v1.4.2 major   # -> 2.0.0
+scripts/next-version.sh --gt 0.2.0 0.1.99   # exit 0: strictly newer
+scripts/next-version.sh --test         # 40 assertions, no framework, no network
+```
+
+Three lines of arithmetic with no test is how a release ends up as `0.1.10` when `0.2.0` was
+meant, so the assertions are part of the script and `--test` runs them anywhere.
 
 ---
 
 ## `ci.yml`
+
+Triggers: `pull_request` against `main`, and `push` to `main`. The concurrency group is
+`ci-${{ github.event.pull_request.number || github.ref }}` with `cancel-in-progress: true`, so a
+new push to a pull request cancels its previous run.
+
+**The two job names are the required status checks on `main`** — `make check (macOS arm64)` and
+`Link and run the suite (linux/arm64)`. Renaming a job means updating the branch protection in the
+same breath, or `main` starts requiring a check that no longer exists and nothing can merge.
 
 ### Job `check` — `macos-15`
 
@@ -128,15 +181,112 @@ emulated `linux/amd64` container.
 
 ---
 
+## `autotag.yml`
+
+Runs on **every push to `main`**. Most of the time that push is a squash-merged pull request, and
+then this workflow is the whole release button.
+
+### 1. Which pull request is this?
+
+Three lookups, in order; the first that answers wins.
+
+```sh
+gh api "repos/$REPO/commits/$SHA/pulls" --jq '[.[] | select(.merged_at != null) | .number] | max // empty'
+gh pr list --state merged --search "$SHA" --limit 1 --json number --jq '.[0].number // empty'
+git log -1 --format=%s "$SHA"     # `Title (#12)`, or `Merge pull request #12 from ...`
+```
+
+The **API lookup is the primary method** because it is the one that works for a squash merge,
+which is the only merge method this repository allows. A squash produces a brand-new commit on
+`main` with no parent inside the pull request, so nothing about its ancestry names the pull
+request — but GitHub still associates the commit with it, and
+`GET /repos/{owner}/{repo}/commits/{sha}/pulls` returns it. The search index is a fallback for the
+seconds after a merge when the association may not be queryable yet. The commit subject is the
+last resort, and it handles both shapes: `(#12)` at the end of a squash subject, and
+`Merge pull request #12 from …` for a merge commit, which this repository does not produce but a
+fork might.
+
+Whatever number is found is then confirmed with `gh pr view`: the pull request has to be
+**MERGED**. A hand-written commit subject that happens to end in `(#12)` therefore cannot cut a
+release for an unrelated pull request.
+
+If no pull request is found the job stops with a notice — *"this push to main is not a
+pull-request merge — no tag, no release"* — and the run is green. **That path is deliberate and
+has to keep working**: `main` allows administrator pushes so the owner can fix a typo or a broken
+link without opening a pull request. Such a push simply does not get a version.
+
+### 2. Which bump?
+
+From the pull request's labels, highest first:
+
+| label | bump | `0.4.2` becomes |
+|---|---|---|
+| `release:skip` | none — merged, no tag, no release | `0.4.2` |
+| `release:major` | major | `1.0.0` |
+| `release:minor` | minor | `0.5.0` |
+| *(none)* | patch — the default | `0.4.3` |
+
+The label has to be on the pull request before it is merged; `autotag.yml` reads the labels of the
+pull request it just identified, at the moment the push arrives.
+
+### 3. Which version?
+
+```sh
+base=$(git tag -l 'v*' --merged HEAD --sort=-v:refname | head -n 1)
+version=$(scripts/next-version.sh "$base" "$BUMP")
+```
+
+With **no `v*` tag reachable at all**, there is nothing to bump: the first release is the
+`SEED_VERSION` written at the top of the workflow — `0.1.0`, the value the deleted `VERSION` file
+carried — cut exactly as written. That branch runs once in the life of the repository.
+
+The job then refuses to move a tag that already exists, creates the annotated tag on the merge
+commit, and pushes it with `GITHUB_TOKEN`:
+
+```
+mc v0.1.1
+
+#12 M12: structs, taught from the surface
+
+https://github.com/schivei/mc/pull/12
+```
+
+That annotation is the release body (`release.yml` reads it back), which is why the pull request's
+title is written as a release note. The title is untrusted text: it is passed between steps
+through a file in `$RUNNER_TEMP`, never interpolated into a script.
+
+### 4. Start the release
+
+The same `gh workflow run release.yml --ref "v$VERSION" -f tag="v$VERSION"` that `tag.yml` uses,
+with the same `continue-on-error` and the same job summary — see *Why the dispatch* below.
+
+### Concurrency, and what is not checked
+
+`concurrency: group: autotag, cancel-in-progress: false`, shared with `tag.yml`. Two merges landing
+seconds apart must produce two tags in order, not one tag and one lost release, so nothing here is
+ever cancelled.
+
+`autotag.yml` does **not** wait for `ci.yml` on `main`, and does not re-check that the tree is
+green. It does not have to: the required checks ran on the pull request before it could be merged,
+and `release.yml` builds `mc` from the tag and runs the entire suite with the binary it is about
+to ship. A tree that would fail fails there, loudly, before anything is published — the cost is a
+tag pointing at a commit with no release, which `tag.yml` can supersede with the next number.
+
+---
+
 ## `tag.yml`
 
-`workflow_dispatch` with two inputs: `version` (required, `X.Y.Z`, optionally `X.Y.Z-suffix`) and
+The **manual escape hatch**, for the cases the merge path cannot express: a version that has to
+skip a number, a re-release after a tag was deleted, or a release for a commit that reached `main`
+without a pull request. `workflow_dispatch` with two inputs: `version` (required, `X.Y.Z`) and
 `notes` (optional). It
 
-1. rejects anything that is not a semantic version;
-2. reads `VERSION` at `HEAD` and **fails with a message naming both values** if they differ —
-   the tag is never the source of truth, the file is;
-3. refuses to overwrite an existing tag;
+1. rejects anything that is not a plain `X.Y.Z` — `scripts/next-version.sh` does the parsing, so
+   the definition of a version lives in exactly one place;
+2. refuses to overwrite an existing tag;
+3. **fails unless the version is strictly newer than the newest existing tag**
+   (`scripts/next-version.sh --gt`) — with the `VERSION` file gone, the tags are what a new
+   version has to beat;
 4. creates the annotated tag `vX.Y.Z` whose annotation is `mc vX.Y.Z` plus `notes`, and pushes it.
 
 The input is read through an environment variable, never interpolated into the shell.
@@ -149,9 +299,12 @@ gh workflow run release.yml --ref "v$VERSION" -f tag="v$VERSION"
 
 ### Why the dispatch, and why it works with the default token
 
+*(The same reasoning applies to `autotag.yml`, which does the same thing.)*
+
 **A tag *pushed* with the default `GITHUB_TOKEN` does not start another workflow.** That is
 GitHub's guard against recursive runs, and it means `release.yml`'s `on: push: tags` trigger will
-*not* fire for a tag this workflow created. The guard has exactly two documented exceptions —
+*not* fire for a tag either of these workflows created. The guard has exactly two documented
+exceptions —
 `workflow_dispatch` and `repository_dispatch` — so **dispatching** the release explicitly, with
 the very same `GITHUB_TOKEN`, does start it. No personal access token and no extra secret are
 involved; the job just needs `actions: write`, which it declares.
@@ -170,8 +323,10 @@ summary says to start `release.yml` by hand (Actions -> Release -> Run workflow 
 Triggered by pushing a tag matching `v*`, or manually with the tag as an input.
 
 Job `build` is a matrix with a single `include` entry today, `{ os: macos-15, target:
-macos-arm64 }`. It checks out the tag, **verifies that the tag matches `VERSION` at that commit**,
-then:
+macos-arm64 }`. It checks out the tag and **derives the version from the tag name**: `v0.1.1`
+becomes `0.1.1`, and the shape is validated by `scripts/next-version.sh`, the one place that knows
+what a version looks like. There is nothing to cross-check it against — the tag *is* the version.
+Then:
 
 ```sh
 make mc1
@@ -245,23 +400,110 @@ re-created repository, knows what the workflows assume.
    *Applied.*
 4. **Workflow permissions = Read and write** — Settings -> Actions -> General -> Workflow
    permissions. *Applied.* Each workflow still narrows its own token (`contents: read` by default,
-   `contents: write` only where a tag or a release is created, `actions: write` only in `tag.yml`),
-   so the repository-wide setting is a ceiling, not what any job actually runs with.
+   `contents: write` only where a tag or a release is created, `actions: write` only in
+   `autotag.yml` and `tag.yml`, `pull-requests: read` only in `autotag.yml`), so the
+   repository-wide setting is a ceiling, not what any job actually runs with.
+5. **Squash is the only merge method**, and the branch is deleted on merge. `autotag.yml` handles
+   merge commits too, but allowing exactly one method means exactly one commit shape to reason
+   about, and the squash subject is the one that carries `(#N)`.
+
+   ```sh
+   gh api -X PATCH repos/schivei/mc \
+     -F allow_squash_merge=true \
+     -F allow_merge_commit=false \
+     -F allow_rebase_merge=false \
+     -F delete_branch_on_merge=true
+   ```
 
 No repository secret is needed. `scripts/release-assets.sh` writes into `dist/`, which is in
 `.gitignore`.
 
 ---
 
+## Branch protection
+
+`main` is protected so that the required checks are what gate a merge, and so that a merge is the
+only way ordinary work reaches it — while leaving the owner able to push a documentation hotfix
+directly. Four decisions:
+
+- **required checks**: `make check (macOS arm64)` and `Link and run the suite (linux/arm64)`, the
+  two job names in `ci.yml`;
+- **strict (up to date before merging) is off**: `mc` builds are minutes long and the project is
+  one person's; requiring every pull request to re-run against a moved `main` buys little and
+  costs a rebase loop. `release.yml` rebuilds and re-runs the whole suite from the tag anyway;
+- **zero required approvals**: there is no second reviewer to wait for. The `reviewer` and
+  `verifier` agents do that job before the pull request is opened, and their findings are in the
+  batch report;
+- **administrators are not enforced**: this is what keeps direct pushes possible for the owner,
+  and `autotag.yml` handles them by not releasing them;
+- **no force pushes, no deletions**: history on `main` is append-only.
+
+`required_pull_request_reviews` is present with a count of **0**. That combination is what says
+"a pull request is required, but nobody has to approve it" — and because `enforce_admins` is
+`false`, the owner can still push a documentation fix straight to `main`. Both halves of the
+design are in that one pair of settings.
+
+The exact call, for the architect to run:
+
+```sh
+gh api -X PUT repos/schivei/mc/branches/main/protection --input - <<'JSON'
+{
+  "required_status_checks": {
+    "strict": false,
+    "contexts": ["make check (macOS arm64)", "Link and run the suite (linux/arm64)"]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+JSON
+```
+
+`required_status_checks`, `enforce_admins`, `required_pull_request_reviews` and `restrictions` are
+all **required** keys of that endpoint — `null` is how the last one says "nobody is restricted",
+and omitting any of the four is an error, not a default.
+
+Two more keys are available and deliberately not set: `"required_linear_history": true` (squash-only
+merging already produces one, so it would only add a way to fail) and
+`"required_conversation_resolution": true` (there is no second reviewer leaving comments to
+resolve). Add them if the project ever gains outside contributors.
+
+Verify it took, and read it back later, with:
+
+```sh
+gh api repos/schivei/mc/branches/main/protection \
+  --jq '{checks: .required_status_checks.contexts, strict: .required_status_checks.strict,
+         admins: .enforce_admins.enabled, approvals: .required_pull_request_reviews.required_approving_review_count,
+         force: .allow_force_pushes.enabled, deletions: .allow_deletions.enabled}'
+```
+
+---
+
 ## Cutting a release
 
-1. Edit `VERSION` (a single line, `X.Y.Z`) and open a pull request. `ci.yml` runs on it.
-2. Merge into `main`. `ci.yml` runs again on `main`.
-3. Actions -> **Tag** -> Run workflow -> `version` = the same `X.Y.Z`, `notes` = the release notes.
-   The workflow refuses to run if the two do not agree.
-4. `tag.yml` starts `release.yml` itself. If that dispatch failed, its job summary says so —
-   start it by hand: Actions -> Release -> Run workflow -> the tag.
-5. The release appears with `mc-X.Y.Z-macos-arm64.tar.gz` and its `.sha256`.
+There is no procedure. **Merging a pull request is the procedure.**
+
+1. Open the pull request, with the release label if the change is not a patch
+   ([CONTRIBUTING.md](https://github.com/schivei/mc/blob/main/CONTRIBUTING.md)). `ci.yml` runs on
+   it.
+2. The owner merges it, by squash.
+3. `autotag.yml` finds the pull request behind the squash commit, reads its labels, computes the
+   next version from the newest reachable tag, pushes `vX.Y.Z`, and dispatches `release.yml`.
+4. `release.yml` builds `mc`, verifies the signature, runs the whole suite with the binary being
+   shipped, packages it, and publishes the Release with `mc-X.Y.Z-macos-arm64.tar.gz` and its
+   `.sha256`.
+
+If step 3's dispatch fails, its job summary says so — the tag is pushed either way, and
+Actions -> Release -> Run workflow -> the tag finishes the job.
+
+For a release that a merge cannot express — skipping a number, re-releasing a deleted tag,
+releasing a commit that was pushed directly — use Actions -> **Tag** -> Run workflow instead.
 
 ## Consuming the release binary
 
@@ -283,11 +525,31 @@ The binary is the whole toolchain: the standard library travels inside it (`#inc
 `<prelude>`, `<io>`, `<mc/core>` — M15), and `--exe` writes a signed executable with no `ld`
 (M11). `docs/build.md` describes `mc build` and `mc.toml`.
 
+## `scripts/next-version.sh`
+
+```sh
+scripts/next-version.sh BASE BUMP    # 0.1.9 minor -> 0.2.0
+scripts/next-version.sh --gt A B     # exit 0 when A is strictly newer than B
+scripts/next-version.sh --test       # 40 assertions
+```
+
+`BASE` and the comparands are `X.Y.Z` with an optional leading `v`, which is stripped; the output
+never carries one, because the caller is what turns a version into a tag name. Pre-release
+suffixes and leading zeros are rejected, with a message that names the rule.
+
+`autotag.yml` uses it for the bump, `tag.yml` for both the shape check and the
+newer-than-the-newest-tag check, and `release.yml` for the shape check on the tag it was handed.
+That is the point of the file: **one definition of what a version is**, exercised by `--test`
+before any of them trusts it.
+
 ## `scripts/release-assets.sh`
 
 ```sh
 scripts/release-assets.sh VERSION TARGET BINARY [OUTDIR]
 ```
+
+`VERSION` comes from the release tag — `release.yml` passes what it derived from `v0.1.1`. A
+leading `v` is stripped, so `v0.1.1` and `0.1.1` name the same archive.
 
 Writes `OUTDIR/mc-VERSION-TARGET.tar.gz` and its `.sha256` (the `shasum -c` / `sha256sum -c`
 format). The tarball holds one directory, `mc-VERSION-TARGET/`, with `mc`, a generated
@@ -326,7 +588,8 @@ already there; four things move.
 3. **`scripts/release-assets.sh`** — nothing, by design. It is target-agnostic; `INSTALL.txt`
    already switches its quarantine paragraph on the target name, and a Windows package would want
    a `.zip` alongside the tarball.
-4. **`VERSION`** — nothing. One version covers every target.
+4. **The version** — nothing. One tag covers every target; `release-assets.sh` puts the target
+   in the file name.
 
 The blocker to watch is the one `docs/build.md` names: `src/driver.mc` reaches `environ` through
 `_NSGetEnviron`, which musl does not have. Until that is abstracted, `mc` cannot spawn tools on
