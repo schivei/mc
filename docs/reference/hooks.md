@@ -220,6 +220,19 @@ worked case — `target("none", "riscv64", "rv-image", "rv-image")` in its `user
 = "none" / arch = "riscv64"` in its `mc.toml`, and `mc build examples/kernel` writes the image.
 `mc sysroot stub` runs the same resolution ([sysroot.md](sysroot.md) § 7).
 
+**A module may also re-register the HOST pair, and since the post-M41 review the single-file CLI
+honours it for both slots.** `target_find` searches back to front, so the last registration wins,
+and `src/cli.mc` resolves what the host answers for — the exe slot for `--exe`, the object slot for
+a plain `mc x.mc -o x.o` — after `user_init()` and after the `--dump-*` modes have returned, the
+same rule M39.5 wrote for the driver. Before that the object half was resolved while the flags were
+being read, so a re-registration was honoured by `mc build` and silently ignored by the CLI. A 0 in
+either slot is refused there too, in the wording a command line can act on:
+`<os> requires a linker: there is no direct executable` for the exe slot and
+`<os>/<arch> has no object backend: use --exe` for the object one
+([cli.md](cli.md), [diagnostics.md](diagnostics.md) § 9). `tests/proj/objswap.mc`,
+`tests/proj/noobjhost.mc` and `tests/proj/noexe.mc` are the three cases, in
+`scripts/check-build.sh`.
+
 `src/driver.mc` reads nothing but this table: `target_find(os, arch)` gives the row,
 `tgt_obj_at(i)` / `tgt_exe_at(i)` the two backends, `target_os_known(os)` whether the operating
 system exists at all, and `target_os_list()` / `target_arch_list(os)` build the diagnostics

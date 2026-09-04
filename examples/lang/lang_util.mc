@@ -372,3 +372,13 @@ uptr lg_stn(i64 ty) {
     if (w == 4) return "st32";
     return "st64";
 }
+
+// the read-modify-write helper of lib/rt.mc matching an operator and a width:
+// `p.f += e` is rt_fadd64(&p.f, e). The address is passed once because building
+// it twice would put the RECEIVER under two nodes, and the walker would then
+// evaluate that expression twice (lib/rt.mc, § compound assignment on a field).
+uptr lg_fopn(i64 op, i64 ty) {
+    uptr base = "rt_fadd";
+    if (op == K_SUB) base = "rt_fsub";
+    return lg_cat(base, lg_num(type_width(ty) * 8));
+}

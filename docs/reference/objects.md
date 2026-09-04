@@ -530,7 +530,7 @@ The other two backends are the same idea with a different envelope:
 |---|---|---|
 | `macho` | `MH_OBJECT` for `ld` | the default |
 | `macho-exe` | ad-hoc signed `MH_EXECUTE` | does what `ld` did: segment layout on 16 KiB pages, its own resolution of the four relocations, `__TEXT,__stubs` + `__DATA,__got` per imported symbol with bind opcodes, rebase entries for every `UNSIGNED`, 13 load commands, and a `CS_CodeDirectory` with SHA-256 per 4 KiB page |
-| `elf-obj` | ELF64 `ET_REL`, `EM_AARCH64` | section names mapped (`__TEXT,__text` → `.text`, `__TEXT,__cstring` → `.rodata`, …), the leading `_` dropped from symbols, `l_strN` → `.LstrN`, and the four relocations mapped to `CALL26`/`ADR_PREL_PG_HI21`/`ADD_ABS_LO12_NC`/`LDST*_ABS_LO12_NC`/`ABS64` |
+| `elf-obj` | ELF64 `ET_REL`, `EM_AARCH64` | section names mapped (`__TEXT,__text` → `.text`, `__TEXT,__cstring` → `.rodata`, …), the leading `_` dropped from symbols, `l_strN` → `.LstrN`, the four relocations mapped to `CALL26`/`ADR_PREL_PG_HI21`/`ADD_ABS_LO12_NC`/`LDST*_ABS_LO12_NC`/`ABS64`, and one section that is not a module section: `.note.GNU-stack` (below) |
 | `elf-obj-x86_64` | the same file, `EM_X86_64` | `R_X86_64_64` / `PC32` / `PLT32`, addend −4 on both pc-relative kinds because a `rel32` counts from the end of its field |
 | `coff-obj-arm64` | COFF, `IMAGE_FILE_MACHINE_ARM64` | `src/backend_coff.mc` (M19): `.text`/`.rdata`/`.data`/`.bss`, alignment as three bits of `Characteristics`, no leading `_` on a symbol, `l_strN` → `$str.N`, and the four relocations mapped to `BRANCH26`/`PAGEBASE_REL21`/`PAGEOFFSET_12A`/`PAGEOFFSET_12L`/`ADDR64`. `TimeDateStamp` is 0 |
 | `coff-obj-x86_64` | the same file, `IMAGE_FILE_MACHINE_AMD64` | M20: `coff_machine` selects the header value and the relocation table, the way `elf_em` does in the ELF writer. `R_X86_PLT32` and `R_X86_PC32` both become `IMAGE_REL_AMD64_REL32` (`0x0004`) and `R_UNSIGNED` becomes `IMAGE_REL_AMD64_ADDR64` (`0x0001`, **not** ARM64's `0x000E`). The backend names the `x86_64-win` machine as its first statement |
@@ -544,6 +544,58 @@ instructions put their `disp32` at the very end (`call rel32` is `E8` plus four 
 1; `lea r, [rip+disp32]` is `REX.W 8D modrm` plus four, reloc offset 3), and the encoder writes
 `buf_u32(o, 0)` in both. `IMAGE_REL_AMD64_REL32_1..5`, for a field followed by 1..5 further bytes
 of immediate operand, are never needed: mc emits no such shape.
+
+### `.note.GNU-stack` in every ELF object (post-M41 review)
+
+Both ELF backends append one section that corresponds to no module section:
+
+```
+Name: .note.GNU-stack
+Type: SHT_PROGBITS
+Flags [ (0x0) ]          no SHF_EXECINSTR, and not even SHF_ALLOC
+Size: 0
+AddressAlignment: 1
+```
+
+which is field for field what `clang --target=aarch64-linux-musl -c` emits for any C file
+(checked with `llvm-readobj --sections`). Its absence is not neutral: a toolchain reads it as
+"built before the marker existed, assume an executable stack". Measured, same source, one compiler
+apart:
+
+| linker | before | after |
+|---|---|---|
+| GNU ld 2.35.2 (Debian bullseye), x86-64, mc object + musl `crt1.o` | `PT_GNU_STACK RWE` | `PT_GNU_STACK RW` |
+| GNU ld 2.38 (Ubuntu 22.04), aarch64, `-nostdlib` | no `PT_GNU_STACK` header at all | `PT_GNU_STACK RW` |
+| GNU ld 2.45.1, `ld.lld` 22 | `PT_GNU_STACK RW` (they no longer infer it) | `PT_GNU_STACK RW` |
+
+Nothing mc compiles ever needs an executable stack: the language has no nested function and no
+trampoline.
+
+**Where it sits, and why that matters.** A module section's ELF index is its own index plus one and
+`st_shndx` is `sym_sect` unchanged ([§ 6](#6-symbols)), so the note is appended **after** every
+content section — before the `.rela.*` block, which is indexed by variables computed at that point.
+Adding it moved no symbol: `llvm-readobj --symbols` of `src/mc_linux.mc`'s object is identical
+before and after, and the only difference in `--relocs` is that `.rela.text`/`.rela.data` are
+sections 6 and 7 instead of 5 and 6.
+
+**What the two assertions in `scripts/test-linux.sh` are worth.** They are not the same kind of
+check, and the difference matters when reading a green run:
+
+| assertion | what it looks at | fails against a compiler that does not write the note? |
+|---|---|---|
+| `check_note` | the section's type, flags and size in **every object** | **yes** — this is the regression guard |
+| `check_stack` | `PT_GNU_STACK` present and not `X` in **every linked binary** | **no**, not with the linker this script uses |
+
+`scripts/test-linux.sh` and the CI legs link with `ld.lld`, which is one of the linkers in the third
+row of the table above: it writes `PT_GNU_STACK RW` whether or not the inputs carry the note.
+Measured here with `ld.lld` 22.1.7 on the same source compiled by the two compilers, one commit
+apart — the object without the section and the object with it — `llvm-readelf -lW` of the two
+linked binaries is **byte-identical**, `GNU_STACK ... RW`. So `check_stack` is an **end-state**
+assertion: it states, on whatever linker is in use, the property that actually matters (nothing mc
+links has an executable stack). Only `check_note` regresses if the backend stops emitting the
+section. The linkers where the note changes the outcome are the older binutils in the first two
+rows, which is where the exposure was measured and which this suite does not run against — the
+baseline here is the newest toolchains, and old binutils is a reproduction, not a supported target.
 
 ### No `.pdata`/`.xdata` (accepted M19 gap, M20 included)
 

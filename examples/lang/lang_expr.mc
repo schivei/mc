@@ -24,6 +24,16 @@ i64 lg_args(uptr pn) {
     return head;
 }
 
+// The wrapper of `lib/rt.mc` that takes `na` arguments after the receiver and
+// the packed integer. A dynamic call needs the receiver twice -- for the vtable
+// and as `self` -- and a node lives in ONE tree: putting the same node in two
+// argument lists splices them together through `nd_next` (the vtable `ld64`
+// inherits the method's arguments, `wrong arity in intrinsic`) and makes the
+// walker evaluate the receiver EXPRESSION twice. The wrapper binds it to a
+// parameter, which is the one name an expression can introduce here, so it is
+// written once and read twice inside. See lib/rt.mc § dynamic dispatch.
+uptr lg_disp_fn(uptr base, i64 na) { return lg_cat(base, lg_num(na)); }
+
 // a method call on a class: virtual goes through the vtable, everything else is
 // a direct call to the mangled Owner_method
 i64 lg_call_method(i64 recv, i64 mi, i64 line, uptr fl) {
@@ -39,9 +49,8 @@ i64 lg_call_method(i64 recv, i64 mi, i64 line, uptr fl) {
     if (mt_slot(m) >= 0) {
         if (na + 2 > MAXPARAMS)
             err_at2(fl, line, "too many arguments for a virtual call", mt_name(m));
-        i64 vt = lg_call("ld64", recv);
-        i64 slot = lg_call("ld64", lg_bin(K_ADD, vt, lg_int((LG_VT_FIXED + mt_slot(m)) * 8)));
-        r = lg_call("callp", list_append(list_append(slot, recv), args));
+        i64 off = lg_int((LG_VT_FIXED + mt_slot(m)) * 8);
+        r = lg_call(lg_disp_fn("rt_vcall", na), list_append(list_append(recv, off), args));
     } else {
         r = lg_call(mt_fn(m), list_append(recv, args));
     }
@@ -64,9 +73,14 @@ i64 lg_call_iface(i64 recv, i64 fi, uptr mem, i64 line, uptr fl) {
     lg_file = fl;
     if (na != im_np(im)) err_at2(fl, line, "wrong number of arguments", mem);
     if (na + 2 > MAXPARAMS) err_at2(fl, line, "too many arguments for a virtual call", mem);
-    i64 tab = lg_call2("rt_itab", lg_call("ld64", recv), lg_int(fi));
-    i64 slot = lg_call("ld64", lg_bin(K_ADD, tab, lg_int(k * 8)));
-    i64 r = lg_call("callp", list_append(list_append(slot, recv), args));
+    // the interface index and the method's index within it, in ONE argument, so
+    // that an interface call spends as many parameters as a virtual one and the
+    // ceiling just checked is the real one. Both are indices into this
+    // compiler's tables, one entry per declaration in the program.
+    if (fi >= 65536 || k >= 65536)
+        err_at2(fl, line, "too many interfaces or interface methods", mem);
+    i64 code = lg_int(fi * 65536 + k);
+    i64 r = lg_call(lg_disp_fn("rt_icall", na), list_append(list_append(recv, code), args));
     i64 own = 0;
     if (im_rcls(im) >= 0 || im_rif(im) >= 0) own = 1;
     lg_xt_set(r, im_rcls(im), im_rif(im), own, -1);
@@ -98,8 +112,12 @@ i64 lg_field_use(i64 left, i64 fdi, i64 line, uptr fl) {
         lg_line = line;
         lg_file = fl;
         if (isobj) err_at2(fl, line, "+= on a field of class type", fd_name(f));
-        i64 cur = lg_call(lg_ldn(fd_ty(f)), lg_bin(K_ADD, left, lg_int(fd_off(f))));
-        return lg_call2(lg_stn(fd_ty(f)), addr, lg_bin(op, cur, v));
+        // `addr` is handed over ONCE: a load through a second `left + off` would
+        // put the receiver under two nodes and the walker would lower that
+        // expression twice -- `pick(s).k += 1` calling `pick` twice. The
+        // read-modify-write happens inside the runtime helper, where the address
+        // is a parameter. See lib/rt.mc § compound assignment on a field.
+        return lg_call2(lg_fopn(op, fd_ty(f)), addr, v);
     }
     i64 r = lg_call(lg_ldn(fd_ty(f)), addr);
     lg_xt_set(r, fd_cls(f), fd_if(f), 0, -1);

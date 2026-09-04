@@ -119,6 +119,80 @@ if [ "$mode" != "build" ]; then
     fi
 fi
 
+# Homebrew hides the LLVM tools from the default PATH and a Linux distribution
+# puts them under /usr/lib/llvm-*/bin; the same lookup scripts/test-windows.sh
+# uses. Without them the two stack assertions below are skipped and say so --
+# they are a property of the object, not of the program's behaviour, so they
+# must not turn a green suite red on a machine that cannot inspect the file.
+findtool() {
+    t=$(command -v "$1" 2>/dev/null)
+    if [ -z "$t" ]; then
+        for cand in /opt/homebrew/opt/llvm/bin/"$1" /usr/local/opt/llvm/bin/"$1" \
+                    /usr/lib/llvm-*/bin/"$1"; do
+            if [ -x "$cand" ]; then t="$cand"; break; fi
+        done
+    fi
+    echo "$t"
+}
+readobj=$(findtool llvm-readobj)
+readelf=$(findtool llvm-readelf)
+[ -n "$readelf" ] || readelf=$(command -v readelf 2>/dev/null)
+notes=0                                  # objects whose .note.GNU-stack is right
+stacks=0                                 # binaries whose PT_GNU_STACK is not X
+
+# post-M41 review: every ELF object mc writes carries an empty `.note.GNU-stack`
+# with sh_flags = 0. An object WITHOUT it tells the toolchain nothing, and an
+# older toolchain then assumes the worst: GNU ld 2.35 answers PT_GNU_STACK RWE
+# and GNU ld 2.38 drops the header entirely, leaving the kernel's own default
+# (docs/reference/objects.md has the table). This is THE REGRESSION GUARD for
+# that fix: it fails against a compiler whose ELF backend does not write the
+# section. Asserted per object, on both architectures.
+check_note() {                           # object, test name
+    if [ -n "$readobj" ]; then           # the whole claim: type, flags and size
+        got=$("$readobj" --sections "$1" 2>/dev/null | awk '
+            /Name: \.note\.GNU-stack/ { inb = 1; next }
+            inb && /Type:/            { type = $2 }
+            inb && /Flags \[/         { flags = $3 }
+            inb && /Size:/            { size = $2; exit }
+            END                       { print type " " flags " " size }')
+        if [ "$got" != "SHT_PROGBITS (0x0) 0" ]; then
+            echo "FAIL $2 (.note.GNU-stack: got '$got', want 'SHT_PROGBITS (0x0) 0')"
+            fails=$((fails + 1)); return 1
+        fi
+    elif [ -n "$readelf" ]; then         # a plain readelf: presence, at least
+        if ! "$readelf" -SW "$1" 2>/dev/null | grep -q '\.note\.GNU-stack'; then
+            echo "FAIL $2 (no .note.GNU-stack section in the object)"
+            fails=$((fails + 1)); return 1
+        fi
+    else
+        return 0
+    fi
+    notes=$((notes + 1))
+    return 0
+}
+
+# and the END STATE, on the linked program: the header has to be there and it has
+# to be RW, never RWE. This one is NOT a regression guard for the note. Both this
+# script and CI link with ld.lld, which writes PT_GNU_STACK RW whether or not the
+# inputs carry the section -- measured with ld.lld 22.1.7, where the program
+# headers of the same program built by the two compilers, one commit apart, are
+# byte-identical. It asserts the property that matters on the linker actually in
+# use; check_note above is what catches the backend dropping the section.
+check_stack() {                          # binary, test name
+    [ -n "$readelf" ] || return 0
+    got=$("$readelf" -lW "$1" 2>/dev/null | awk '$1 == "GNU_STACK" { print $(NF - 1) }')
+    if [ -z "$got" ]; then
+        echo "FAIL $2 (no PT_GNU_STACK in the linked binary)"
+        fails=$((fails + 1)); return 1
+    fi
+    case "$got" in
+        *E*) echo "FAIL $2 (PT_GNU_STACK is $got: the stack is executable)"
+             fails=$((fails + 1)); return 1 ;;
+    esac
+    stacks=$((stacks + 1))
+    return 0
+}
+
 root=$(pwd)
 # M37: MC_SYSROOT may be an absolute path outside the repository -- on Alpine
 # with musl-dev it is /usr/lib -- so it is not always root-relative.
@@ -209,6 +283,8 @@ run_one() {
     if ! msg=$("$mc" build "$tmp" --config "$tmp/mc.toml" 2>&1); then
         echo "FAIL $name (build: $msg)"; fails=$((fails + 1)); return
     fi
+    check_note "$outdir/$name.o" "$name" || return
+    check_stack "$outdir/$name" "$name" || return
 
     # stderr goes to a file, not to /dev/null: an exec-level failure (missing or
     # non-executable binary, wrong architecture, docker/QEMU trouble) only says
@@ -249,6 +325,8 @@ build_one() {
         echo "FAIL $name (build: $msg)"; fails=$((fails + 1)); return
     fi
 
+    check_note "$split/$name.o" "$name" || return
+
     echo "exit: $want_exit" > "$split/$name.expect"
     if [ "$has_out" != "0" ]; then
         echo "stdout: $want_out" >> "$split/$name.expect"
@@ -282,6 +360,8 @@ link_run_one() {
     if ! msg=$(ld.lld "$@" 2>&1); then
         echo "FAIL $name (link: $msg)"; fails=$((fails + 1)); return
     fi
+    check_note "$split/$name.o" "$name" || return
+    check_stack "$split/$name" "$name" || return
 
     # same reasoning as run_one: an exec-level failure must not read like the
     # program returning the wrong code
@@ -371,6 +451,20 @@ if [ "$mode" = "build" ]; then
     echo "$((total - fails))/$total objects cross-compiled for linux/$arch in $split"
 else
     echo "$((total - fails))/$total tests passed on linux/$arch"
+fi
+if [ -n "$readobj" ]; then
+    echo "ok .note.GNU-stack (SHT_PROGBITS, no flags, size 0) in $notes objects"
+elif [ -n "$readelf" ]; then
+    echo "ok .note.GNU-stack present in $notes objects (no llvm-readobj: flags unchecked)"
+else
+    echo "note: no llvm-readobj and no readelf, .note.GNU-stack not checked"
+fi
+if [ "$mode" != "build" ]; then
+    if [ -n "$readelf" ]; then
+        echo "ok PT_GNU_STACK is not executable in $stacks linked binaries"
+    else
+        echo "note: no readelf, PT_GNU_STACK not checked"
+    fi
 fi
 if [ -n "$skipped" ]; then
     echo "skipped (not portable to this target):$skipped"

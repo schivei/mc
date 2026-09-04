@@ -28,6 +28,13 @@
 #   toy.toml    the same project with the fix the message asks for,
 #               kind = "exe" -> the exe slot is `macho-exe`, and it runs
 #
+# The post-M41 review adds three more taught compilers, for the SINGLE-FILE CLI,
+# which reaches the same registry through src/cli.mc: tests/proj/mc-noexe.mc
+# (the exe slot at 0, `--exe` refused), mc-objswap.mc (the host pair
+# re-registered with another object backend, which `mc x.mc -o x.o` has to
+# honour) and mc-noobjhost.mc (the object slot at 0, refused with the advice
+# `--exe`, which the same compiler then carries out).
+#
 # The last section checks the diagnostics: a foreign [target].os, os = "linux"
 # with no [linker] (M16), a missing key and a bad [project].kind have to come
 # out with file:line:col and exit 1 -- and the same two [target] messages,
@@ -151,6 +158,140 @@ if ! "$mc" build "$dir" --config "$dir/toy.toml" > "$tmp/o" 2>&1; then
 else
     sed 's|^|  |' "$tmp/o"
     run_check "$dir/build/app-toy" "toy.toml -> kind = \"exe\" through the taught target"
+fi
+
+# ---- post-M41: `--exe` resolves the HOST's exe slot, and a 0 there is refused ----
+# The third entry point into the same registry, and the reason it belongs in
+# this script: `mc build` (above), `mc sysroot stub` (below) and the single-file
+# `--exe` all have to reach the same registration and say the same thing about
+# it. Until the post-M41 review batch `--exe` was the literal name `macho-exe`
+# in src/cli.mc, so a Linux- or Windows-hosted mc answered it with a Mach-O
+# binary its own kernel refuses with ENOEXEC (reproduced with
+# build/mc-linux-arm64 under Docker).
+# The host this script runs on always has an exe backend, so the empty slot is
+# reached the way M39.5 reached the empty object one -- a taught compiler,
+# tests/proj/mc-noexe.mc, which re-registers the host pair with that slot at 0.
+os=$("$mc" --host | sed -n 's|^os ||p')
+noexe="$tmp/mc-noexe"
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) noexe="$noexe.exe" ;; esac
+
+total=$((total + 1))
+if ! msg=$(scripts/build-exe.sh "$mc" "$noexe" "$dir/mc-noexe.mc" 2>&1); then
+    fail "mc-noexe.mc" "$msg"
+else
+    ok "mc-noexe.mc -> a compiler whose host target has no exe backend"
+
+    # the refusal: exit 1 and the message, byte for byte
+    total=$((total + 1))
+    "$noexe" --exe tests/001-return42.mc -o "$tmp/noexe-out" > "$tmp/o" 2>&1
+    rc=$?
+    got=$(tail -1 "$tmp/o")
+    want="mc: $os requires a linker: there is no direct executable"
+    if [ "$rc" != "1" ]; then
+        fail "--exe with an empty exe slot" "exit $rc, expected 1"
+    elif [ "$got" != "$want" ]; then
+        fail "--exe with an empty exe slot" "got '$got', expected '$want'"
+    elif [ -e "$tmp/noexe-out" ]; then
+        fail "--exe with an empty exe slot" "it wrote $tmp/noexe-out anyway"
+    else
+        ok "--exe with an empty exe slot -> a diagnostic, and no file written"
+        echo "  $got"
+    fi
+
+    # and the object road of the SAME compiler is untouched: the refusal is
+    # about the exe slot, not about the target being unusable.
+    total=$((total + 1))
+    if ! msg=$("$noexe" tests/001-return42.mc -o "$tmp/noexe.o" 2>&1); then
+        fail "the object road of the same compiler" "$msg"
+    else
+        ok "the object road of the same compiler still writes an object"
+    fi
+fi
+
+# ---- post-M41 review: the OBJECT slot, from the single-file CLI ----
+# The default object backend is the obj slot of the host's target(), and
+# src/cli.mc used to resolve it while the flags were being read -- before
+# user_init(). Two consequences, one case each, and the module is the only way
+# to reach either, exactly as in the two blocks above.
+arch=$("$mc" --host | sed -n 's|^arch ||p')
+magic() { od -An -tx1 -N4 "$1" 2>/dev/null | tr -d ' \n'; }
+
+# (1) a module that re-registers the host pair with a DIFFERENT object backend
+# was silently ignored: `mc x.mc -o x.o` kept writing the format the compiler
+# was born with. tests/proj/objswap.mc asks for a format the host does not use,
+# so the first four bytes of the object are the whole assertion.
+want_magic=7f454c46                      # ELF, what objswap.mc asks for
+case "$os" in linux) want_magic=cffaedfe ;; esac   # there it asks for Mach-O
+objswap="$tmp/mc-objswap"
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) objswap="$objswap.exe" ;; esac
+total=$((total + 1))
+if ! msg=$(scripts/build-exe.sh "$mc" "$objswap" "$dir/mc-objswap.mc" 2>&1); then
+    fail "mc-objswap.mc" "$msg"
+else
+    ok "mc-objswap.mc -> a compiler that re-registers the host's object backend"
+    total=$((total + 1))
+    rm -f "$tmp/objswap.o"
+    if ! msg=$("$objswap" tests/001-return42.mc -o "$tmp/objswap.o" 2>&1); then
+        fail "the re-registered object backend" "$msg"
+    elif [ "$(magic "$tmp/objswap.o")" != "$want_magic" ]; then
+        fail "the re-registered object backend" \
+             "magic $(magic "$tmp/objswap.o"), expected $want_magic"
+    else
+        ok "mc x.mc -o x.o honours the module's target() (magic $want_magic)"
+    fi
+fi
+
+# (2) and a module that leaves that slot at 0 -- a registration, not an omission
+# -- must be refused instead of handing the 0 to backend_find(), whose str_eq
+# dereferences it. Reproduced with a compiler that registers the pair before
+# mc_main (a recreated compiler, docs/guide/98): exit 139, SIGSEGV, no message.
+noobjh="$tmp/mc-noobjhost"
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) noobjh="$noobjh.exe" ;; esac
+total=$((total + 1))
+if ! msg=$(scripts/build-exe.sh "$mc" "$noobjh" "$dir/mc-noobjhost.mc" 2>&1); then
+    fail "mc-noobjhost.mc" "$msg"
+else
+    ok "mc-noobjhost.mc -> a compiler whose host target has no object backend"
+
+    total=$((total + 1))
+    rm -f "$tmp/noobjhost.o"
+    "$noobjh" tests/001-return42.mc -o "$tmp/noobjhost.o" > "$tmp/o" 2>&1
+    rc=$?
+    got=$(tail -1 "$tmp/o")
+    want="mc: $os/$arch has no object backend: use --exe"
+    if [ "$rc" != "1" ]; then
+        fail "the object road with an empty object slot" "exit $rc, expected 1"
+    elif [ "$got" != "$want" ]; then
+        fail "the object road with an empty object slot" "got '$got', expected '$want'"
+    elif [ -e "$tmp/noobjhost.o" ]; then
+        fail "the object road with an empty object slot" "it wrote $tmp/noobjhost.o anyway"
+    else
+        ok "an empty object slot -> a diagnostic, and no file written"
+        echo "  $got"
+    fi
+
+    # and the advice in it: `--exe` on the same compiler. On a host whose exe
+    # slot is 0 as well (linux, windows) there is no direct executable at all,
+    # and the only right answer is the OTHER message -- asserted, not skipped.
+    total=$((total + 1))
+    rm -f "$tmp/noobjhost-exe"
+    "$noobjh" --exe tests/001-return42.mc -o "$tmp/noobjhost-exe" > "$tmp/o" 2>&1
+    rc=$?
+    got=$(tail -1 "$tmp/o")
+    if [ "$rc" = "0" ]; then
+        run_check_exit=0
+        "$tmp/noobjhost-exe"; run_check_exit=$?
+        if [ "$run_check_exit" = "42" ]; then
+            ok "the advice works: --exe on the same compiler runs (exit 42)"
+        else
+            fail "the advice (--exe)" "the binary exited $run_check_exit, expected 42"
+        fi
+    elif [ "$got" = "mc: $os requires a linker: there is no direct executable" ]; then
+        ok "no direct executable on this host either, and it says so"
+        echo "  $got"
+    else
+        fail "the advice (--exe)" "exit $rc, last line '$got'"
+    fi
 fi
 
 # ---- M25: the [sysroot] resolution chain (src/sysroot.mc) ----

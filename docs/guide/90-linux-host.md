@@ -140,8 +140,18 @@ or, the usual way, `mc build` with a `[linker]` section. Two consequences worth 
   compiler on a Linux host needs that section even if its `[target]` is something else. Without it:
   `a taught compiler on this host needs [linker]: there is no direct executable`.
 
-`--exe` still exists on a Linux host, and it still writes a signed Mach-O executable: that is
-cross-compilation to macOS, and the binary will not run where it was built.
+`--exe` exists on a Linux host and is **refused** there (post-M41 review):
+
+```
+$ mc --exe hello.mc -o hello
+mc: linux requires a linker: there is no direct executable
+```
+
+It used to write a signed Mach-O executable — a macOS binary this kernel refuses with `ENOEXEC`,
+produced with no warning, because the flag was the literal backend name `macho-exe` in
+`src/cli.mc`. It resolves the exe slot of the host's `target()` registration now, and `linux` is
+registered with 0 in that slot. To cross-compile to macOS from here, ask for it:
+`mc --backend=macho-exe hello.mc -o hello`.
 
 ---
 
@@ -238,7 +248,7 @@ Linux there is no C seed, so it is a build-and-run gate rather than a cross-chec
 
 ```
 bootstrap: SKIPPED (macOS chain: mc0 -> mc1 -> mc2 -> mc3; bootstrap-linux is the Linux one)
-test-exe: SKIPPED (--exe is the Mach-O direct-executable backend; Linux links with ld.lld)
+test-exe: SKIPPED (--exe is refused on this host: linux has no direct executable; it links with ld.lld)
 check-standalone: SKIPPED (its criterion is a signed Mach-O executable)
 check-surface: SKIPPED (its cases build taught compilers with --exe)
 check-build: SKIPPED (tests/proj targets macos/aarch64 through ld)

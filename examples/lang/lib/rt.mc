@@ -173,6 +173,85 @@ uptr rt_itab(uptr vt, i64 id) {
     return 0;
 }
 
+// ---- dynamic dispatch: the receiver, evaluated once ----
+//
+// A dynamic call needs the receiver TWICE -- once to reach the method pointer
+// through the vtable, and once as the `self` argument -- and the module cannot
+// write it twice. An AST node is a node in ONE tree: `list_append` links by
+// mutating `nd_next`, so the same node placed in two argument lists splices the
+// two lists together (the vtable `ld64` then ends up with the method's own
+// arguments as well, `wrong arity in intrinsic`), and a node reachable from two
+// places is walked twice, which evaluates the receiver EXPRESSION twice --
+// `new C().m()` allocating two objects, `pick(s).m()` calling `pick` twice.
+//
+// So the receiver is bound to a name instead, and the cheapest name in a
+// language with no block expression is a PARAMETER: `obj` below is written once
+// by the caller, at the call site's own position in the evaluation order, and
+// read twice inside. One wrapper per arity because `callp` takes a fixed number
+// of arguments at each call site; `lg_call_method`/`lg_call_iface` pick the one
+// that matches (examples/lang/lang_expr.mc). The arity ceiling is unchanged:
+// with `obj` and one packed integer ahead of them, a method may still take the
+// ten arguments `na + 2 > MAXPARAMS` has always allowed.
+uptr rt_vslot(uptr obj, i64 off) { return ld64(ld64(obj) + off); }
+
+// `code` packs the interface index and the method's index within it, so that an
+// interface call spends exactly as many parameters as a virtual one. Both are
+// indices into the compiler's own tables, one per declaration in the program;
+// lang_expr.mc refuses to pack anything at or above 65536.
+uptr rt_islot(uptr obj, i64 code) {
+    return ld64(rt_itab(ld64(obj), code / 65536) + (code % 65536) * 8);
+}
+
+i64 rt_vcall0(uptr obj, i64 off) { return callp(rt_vslot(obj, off), obj); }
+i64 rt_vcall1(uptr obj, i64 off, i64 a1) { return callp(rt_vslot(obj, off), obj, a1); }
+i64 rt_vcall2(uptr obj, i64 off, i64 a1, i64 a2) { return callp(rt_vslot(obj, off), obj, a1, a2); }
+i64 rt_vcall3(uptr obj, i64 off, i64 a1, i64 a2, i64 a3) { return callp(rt_vslot(obj, off), obj, a1, a2, a3); }
+i64 rt_vcall4(uptr obj, i64 off, i64 a1, i64 a2, i64 a3, i64 a4) { return callp(rt_vslot(obj, off), obj, a1, a2, a3, a4); }
+i64 rt_vcall5(uptr obj, i64 off, i64 a1, i64 a2, i64 a3, i64 a4, i64 a5) { return callp(rt_vslot(obj, off), obj, a1, a2, a3, a4, a5); }
+i64 rt_vcall6(uptr obj, i64 off, i64 a1, i64 a2, i64 a3, i64 a4, i64 a5, i64 a6) { return callp(rt_vslot(obj, off), obj, a1, a2, a3, a4, a5, a6); }
+i64 rt_vcall7(uptr obj, i64 off, i64 a1, i64 a2, i64 a3, i64 a4, i64 a5, i64 a6, i64 a7) { return callp(rt_vslot(obj, off), obj, a1, a2, a3, a4, a5, a6, a7); }
+i64 rt_vcall8(uptr obj, i64 off, i64 a1, i64 a2, i64 a3, i64 a4, i64 a5, i64 a6, i64 a7, i64 a8) { return callp(rt_vslot(obj, off), obj, a1, a2, a3, a4, a5, a6, a7, a8); }
+i64 rt_vcall9(uptr obj, i64 off, i64 a1, i64 a2, i64 a3, i64 a4, i64 a5, i64 a6, i64 a7, i64 a8, i64 a9) { return callp(rt_vslot(obj, off), obj, a1, a2, a3, a4, a5, a6, a7, a8, a9); }
+i64 rt_vcall10(uptr obj, i64 off, i64 a1, i64 a2, i64 a3, i64 a4, i64 a5, i64 a6, i64 a7, i64 a8, i64 a9, i64 a10) { return callp(rt_vslot(obj, off), obj, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10); }
+
+i64 rt_icall0(uptr obj, i64 code) { return callp(rt_islot(obj, code), obj); }
+i64 rt_icall1(uptr obj, i64 code, i64 a1) { return callp(rt_islot(obj, code), obj, a1); }
+i64 rt_icall2(uptr obj, i64 code, i64 a1, i64 a2) { return callp(rt_islot(obj, code), obj, a1, a2); }
+i64 rt_icall3(uptr obj, i64 code, i64 a1, i64 a2, i64 a3) { return callp(rt_islot(obj, code), obj, a1, a2, a3); }
+i64 rt_icall4(uptr obj, i64 code, i64 a1, i64 a2, i64 a3, i64 a4) { return callp(rt_islot(obj, code), obj, a1, a2, a3, a4); }
+i64 rt_icall5(uptr obj, i64 code, i64 a1, i64 a2, i64 a3, i64 a4, i64 a5) { return callp(rt_islot(obj, code), obj, a1, a2, a3, a4, a5); }
+i64 rt_icall6(uptr obj, i64 code, i64 a1, i64 a2, i64 a3, i64 a4, i64 a5, i64 a6) { return callp(rt_islot(obj, code), obj, a1, a2, a3, a4, a5, a6); }
+i64 rt_icall7(uptr obj, i64 code, i64 a1, i64 a2, i64 a3, i64 a4, i64 a5, i64 a6, i64 a7) { return callp(rt_islot(obj, code), obj, a1, a2, a3, a4, a5, a6, a7); }
+i64 rt_icall8(uptr obj, i64 code, i64 a1, i64 a2, i64 a3, i64 a4, i64 a5, i64 a6, i64 a7, i64 a8) { return callp(rt_islot(obj, code), obj, a1, a2, a3, a4, a5, a6, a7, a8); }
+i64 rt_icall9(uptr obj, i64 code, i64 a1, i64 a2, i64 a3, i64 a4, i64 a5, i64 a6, i64 a7, i64 a8, i64 a9) { return callp(rt_islot(obj, code), obj, a1, a2, a3, a4, a5, a6, a7, a8, a9); }
+i64 rt_icall10(uptr obj, i64 code, i64 a1, i64 a2, i64 a3, i64 a4, i64 a5, i64 a6, i64 a7, i64 a8, i64 a9, i64 a10) { return callp(rt_islot(obj, code), obj, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10); }
+
+// ---- compound assignment on a field: the receiver, evaluated once ----
+//
+// `p.f += e` needs the field's ADDRESS twice -- to load the current value and
+// to store the new one -- and that address is `receiver + offset`. Building it
+// twice puts the receiver EXPRESSION under two nodes, and a node reachable from
+// two places is walked twice: `pick(s).k += 1` called `pick` twice
+// (examples/lang/tests/93-dup-field.lx), the same defect the dispatch wrappers
+// above fixed for `o.m()`. The answer is the same one: the address is bound to
+// a PARAMETER, written once by the caller at its own position in the evaluation
+// order and read twice inside. One pair per width, because the field's width is
+// what picks the ldW/stW intrinsic (lang_util.mc, lg_fopn).
+//
+// Two consequences, both deliberate. The field is read AFTER `e` has been
+// evaluated, so `p.f += g()` sees whatever `g` left in it -- before, the load
+// came first, but only because the receiver was being evaluated a second time.
+// And the value of the whole expression is the field's new value read back from
+// memory, so for a u8/u16/u32 field it is the narrowed one.
+i64 rt_fadd8(uptr p, i64 v)   { st8(p, ld8(p) + v);    return ld8(p); }
+i64 rt_fadd16(uptr p, i64 v)  { st16(p, ld16(p) + v);  return ld16(p); }
+i64 rt_fadd32(uptr p, i64 v)  { st32(p, ld32(p) + v);  return ld32(p); }
+i64 rt_fadd64(uptr p, i64 v)  { st64(p, ld64(p) + v);  return ld64(p); }
+i64 rt_fsub8(uptr p, i64 v)   { st8(p, ld8(p) - v);    return ld8(p); }
+i64 rt_fsub16(uptr p, i64 v)  { st16(p, ld16(p) - v);  return ld16(p); }
+i64 rt_fsub32(uptr p, i64 v)  { st32(p, ld32(p) - v);  return ld32(p); }
+i64 rt_fsub64(uptr p, i64 v)  { st64(p, ld64(p) - v);  return ld64(p); }
+
 // ---- output ----
 
 void rt_print_str(uptr s) {

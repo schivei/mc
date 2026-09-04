@@ -114,7 +114,9 @@ the module's own block handler and with it every scope-exit release.
 the left operand *already parsed* and reads the member name itself, so what it
 emits depends on the static type the module recorded for that expression: a field
 becomes `ldW`/`stW` at an offset, a virtual method becomes
-`callp(ld64(ld64(obj) + slot), obj, ...)`, a plain method becomes a direct call
+`rt_vcall<N>(obj, slot * 8, ...)` — the runtime wrapper that does
+`callp(ld64(ld64(obj) + off), obj, ...)` with the receiver bound to a parameter,
+[below](#the-receiver-is-evaluated-once) — a plain method becomes a direct call
 to `Owner_method`. Member **assignment** works because `=` is deliberately not in
 the core's infix table: the Pratt loop has already stopped, the handler reads the
 `=`, and the core sees a plain expression statement.
@@ -159,6 +161,56 @@ an object whose class it knows nothing about.
 An interface value **is** the object pointer. Dispatch goes
 `rt_itab(ld64(obj), IFACE_ID)` to find that class's method array for that
 interface, then `callp` through it. A class inherits its bases' interfaces.
+
+### The receiver is evaluated once
+
+A dynamic call needs the receiver **twice** — once to reach the method pointer
+and once as `self` — and an AST node lives in exactly one tree. Writing it twice
+is not an option in a language with no block expression, so the module calls a
+wrapper and the receiver becomes that wrapper's **parameter**:
+
+```
+o.m(x)          ->  rt_vcall1(o, (LG_VT_FIXED + slot) * 8, x)
+i.m(x)          ->  rt_icall1(o, iface * 65536 + method, x)
+```
+
+`lib/rt.mc` holds `rt_vcall0..10` and `rt_icall0..10`, one line each, because
+`callp` takes a fixed number of arguments at every call site; `lg_disp_fn` picks
+the one whose arity matches. The interface index and the method index share one
+argument so that an interface call spends the same two words a virtual one does
+and the `na + 2 > MAXPARAMS` ceiling means the same thing on both paths.
+
+Until the post-M41 review the module put the same receiver node into two
+argument lists instead. `list_append` links by mutating `nd_next`, so the two
+lists spliced: the vtable's `ld64` inherited the method's arguments and any
+method with an argument failed to compile (`wrong arity in intrinsic`,
+`tests/90-virt-arg.lx`, `tests/91-iface-arg.lx`) — and, for arity 0, where
+nothing spliced, the node was simply reachable twice and the receiver
+**expression** was lowered twice: `new C().m()` allocated two objects
+(`tests/92-dup-eval.lx`). All fourteen tests written before it call a method on
+a plain name, where neither half can be seen.
+
+The same rule binds a **compound assignment on a field**, for the same reason:
+`p.f += e` needs the field's address twice, to load and to store, and that
+address is `receiver + offset`.
+
+```
+p.f += e        ->  rt_fadd64(p + off, e)
+p.f -= e        ->  rt_fsub64(p + off, e)
+```
+
+One pair per width (`rt_fadd8/16/32/64`, `rt_fsub8/16/32/64`), picked by
+`lg_fopn` from the field's declared type exactly as `lg_ldn`/`lg_stn` pick
+`ldW`/`stW`. The module used to build `left + off` a second time for the load,
+which put the receiver under two nodes: `pick(s).k += 1` called `pick` twice,
+with the stored value right and the count wrong (`tests/93-dup-field.lx`).
+Moving the read-modify-write inside the helper has two consequences, both
+deliberate: the field is read **after** `e` has been evaluated, and the value of
+the whole expression is the field's new value read back from memory, so a
+`u8`/`u16`/`u32` field yields the narrowed one. `p.f = e`, the plain read and
+`a[i]` never had the defect -- each builds its address once, in one branch --
+and `x += e` on a plain **name** is a `#rule` in `lib/prelude.lx`, which
+re-materializes the name and cannot evaluate anything twice.
 
 ---
 
@@ -210,9 +262,6 @@ Known, deliberate, and none of them is a core limitation:
   `C t = new C(); f(t);` instead. The module classifies ownership per
   expression, not per statement, so there is no place to hang the temporary's
   release.
-- **The receiver of a virtual or interface call is evaluated twice** (once to
-  load the vtable, once as the argument). Every receiver in these tests is a
-  name or a load, so it is idempotent; a call with side effects would run twice.
 - **A namespace merges by prefix and nothing else.** Reopening `namespace geo`
   in a second file adds to the same prefix; `import geo;` is `#include "geo.lx"`
   plus `using geo;` and is once-only, and `using` lasts for the rest of the
@@ -242,8 +291,9 @@ Known, deliberate, and none of them is a core limitation:
   class `Rect`.
 - **No overloads, no default arguments, no properties, no static members, no
   `null` check.** A class-typed local starts at 0 and using it faults.
-- **At most 8 parameters**, `self` and the vtable pointer included: a virtual
-  method takes at most 6 arguments besides `self`.
+- **At most `MAXPARAMS` parameters** (12 since M38), `self` included: a method
+  takes at most ten arguments besides it, which is what `na + 2 > MAXPARAMS`
+  refuses, and the dispatch wrappers spend exactly those two words.
 
 ## The compiler is `<mc/core>` plus one module
 
@@ -282,13 +332,13 @@ so nothing is mapped and the numbers above are what `mc limits` prints.
 | `lang.mc` | 88 | the module: the includes and `user_init`, where every hook is registered |
 | `lang_solo.mc` | 9 | the empty default of `lg_more()`, the chain point `user_init` ends with: a compiler holds one `user_init`, so a module STACKED on this one (`examples/conc`) registers from there and supplies its own `lg_more` instead of this file |
 | `lang_tab.mc` | 297 | every table, as flat records with named getters |
-| `lang_util.mc` | 374 | names, node builders, the linear lookups |
+| `lang_util.mc` | 384 | names, node builders, the linear lookups |
 | `lang_type.mc` | 318 | reading a type, resolving a name, record/replay of a generic, `where` |
 | `lang_class.mc` | 667 | `class`, `interface`, `namespace`, `import`, `using`, and the code a class generates |
 | `lang_stmt.mc` | 671 | `fn`, the block, `while`/`for`, reference counting, `ref` rewriting |
-| `lang_expr.mc` | 294 | `.`, `[`, `new`, `ref`, qualified names, generic calls |
-| `lib/rt.mc` | 204 | the runtime: arena, free lists, reference counting, printing |
+| `lang_expr.mc` | 312 | `.`, `[`, `new`, `ref`, qualified names, generic calls |
+| `lib/rt.mc` | 283 | the runtime: arena, free lists, reference counting, printing, the `rt_vcall<N>`/`rt_icall<N>` dispatch wrappers and the `rt_fadd<W>`/`rt_fsub<W>` field helpers |
 | `lib/prelude.lx` | 30 | what every `.lx` includes: the runtime plus `+=`/`-=`/`++`/`--` |
 | `main.lx`, `geo.lx` | 65 + 26 | the spec's sample, extended with a namespace in a second file |
-| `tests/*.lx` | 14 tests | one per feature, with `expect-stdout`/`expect-exit`/`expect-error` headers |
+| `tests/*.lx` | 18 tests | one per feature, with `expect-stdout`/`expect-exit`/`expect-error` headers |
 | `test.sh` | 151 | builds with `mc build --compiler-only`, runs the suite, checks determinism, `--dump-asm` and `--dump-rules` |

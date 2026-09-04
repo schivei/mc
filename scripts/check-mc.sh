@@ -47,9 +47,11 @@ for f in tests/mc/*.mc; do
     if ! msg=$(scripts/link-host.sh "$exe" "$obj" 2>&1); then
         echo "FAIL $name (link: $msg)"; fails=$((fails + 1)); continue
     fi
-    # M37: `--exe` is the Mach-O direct-executable backend. On a Linux or a
-    # Windows host it would cross-compile a macOS binary this machine cannot
-    # run, so the second half of each case is the object + linker path only.
+    # M37: `--exe` writes a direct executable FOR THE HOST. Linux and Windows
+    # are registered with no such backend -- since the post-M41 review batch
+    # the flag is refused there, and before it it silently produced a macOS
+    # binary this machine cannot run -- so the second half of each case is the
+    # object + linker path only, and only macOS runs both.
     runs="$exe"
     if [ "$(uname -s)" = "Darwin" ]; then
         rm -f "$exe2"
