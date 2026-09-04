@@ -110,6 +110,12 @@ jobs:
       - name: Cross-compile the suite for windows/arm64
         run: scripts/test-windows.sh --build-only build/windows-objs build/mc1
 
+      # M20: the same for windows/x86_64 -- the `coff-obj-x86_64` backend over
+      # the Win64 half of the x86-64 machine. Its own winrt.obj, winstart.obj
+      # and kernel32.lib travel with it: nothing is shared with the ARM64 set.
+      - name: Cross-compile the suite for windows/x86_64
+        run: scripts/test-windows.sh --arch x86_64 --build-only build/windows-objs-x86_64 build/mc1
+
       - name: Upload the self-hosted compiler
         uses: actions/upload-artifact@v4
         with:
@@ -160,6 +166,14 @@ jobs:
         with:
           name: windows-arm64-objects
           path: build/windows-objs
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the cross-built windows/x86_64 objects
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64-objects
+          path: build/windows-objs-x86_64
           if-no-files-found: error
           retention-days: 7
 
@@ -514,6 +528,78 @@ jobs:
       - name: Link with lld-link and run natively
         shell: bash
         run: scripts/test-windows.sh --run-only build/windows-objs
+
+  # M20: the x64 half of the same story. windows-latest is an x86-64 runner and
+  # ships LLVM under C:\Program Files\LLVM, so the "Tool facts" step below
+  # normally finds lld-link and nothing is downloaded; the download branch is
+  # kept because this job must FAIL rather than skip -- it is the only place a
+  # windows/x86_64 binary is ever executed (docs/plan.md § Rule for every new
+  # target).
+  windows-x86_64:
+    name: Link and run the suite (windows/x86_64)
+    runs-on: windows-latest
+    needs: check
+    timeout-minutes: 30
+    env:
+      LLVM_VERSION: "20.1.8"
+    steps:
+      - name: Check out
+        # The tests are run from the repository root: 025-linecount opens its
+        # own source by a relative path, and 072-six-params opens its own too.
+        uses: actions/checkout@v4
+
+      - name: Download the cross-built objects
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-x86_64-objects
+          path: build/windows-objs-x86_64
+
+      - name: Tool facts
+        id: tools
+        shell: bash
+        run: |
+          echo "runner: $RUNNER_OS $RUNNER_ARCH"
+          if where lld-link 2>/dev/null; then
+            echo "found=1" >> "$GITHUB_OUTPUT"
+          elif [ -x "/c/Program Files/LLVM/bin/lld-link.exe" ]; then
+            echo "/c/Program Files/LLVM/bin" >> "$GITHUB_PATH"
+            echo "found=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "lld-link: absent -- the next step downloads LLVM $LLVM_VERSION"
+            echo "found=0" >> "$GITHUB_OUTPUT"
+          fi
+          where clang 2>/dev/null || echo "clang: absent (not needed)"
+
+      - name: Cache the LLVM toolchain
+        if: steps.tools.outputs.found != '1'
+        uses: actions/cache@v4
+        with:
+          path: build/llvm
+          key: llvm-win64-${{ env.LLVM_VERSION }}
+
+      # Two shapes have shipped over the years -- a tarball and an NSIS
+      # installer -- so both are tried, x64 assets in both cases.
+      - name: Obtain lld-link
+        if: steps.tools.outputs.found != '1'
+        shell: bash
+        run: |
+          set -e
+          if [ ! -x build/llvm/bin/lld-link.exe ]; then
+            mkdir -p build/llvm
+            base="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION"
+            if curl -fSL -o /tmp/llvm.tar.xz "$base/clang+llvm-$LLVM_VERSION-x86_64-pc-windows-msvc.tar.xz"; then
+              tar -xf /tmp/llvm.tar.xz -C build/llvm --strip-components=1
+            else
+              curl -fSL -o /tmp/llvm.exe "$base/LLVM-$LLVM_VERSION-win64.exe"
+              7z x -obuild/llvm /tmp/llvm.exe > /dev/null
+            fi
+          fi
+          echo "$PWD/build/llvm/bin" >> "$GITHUB_PATH"
+          build/llvm/bin/lld-link.exe --version || true
+
+      - name: Link with lld-link and run natively
+        shell: bash
+        run: scripts/test-windows.sh --arch x86_64 --run-only build/windows-objs-x86_64
 
   docs-updated:
     name: Docs updated
