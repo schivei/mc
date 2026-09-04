@@ -166,6 +166,27 @@ test-linux-x86_64: build/mc1
 	    scripts/test-linux.sh --arch x86_64 build/mc1; \
 	fi
 
+# M19: the Windows sysroot -- kernel32.def plus the import library llvm-dlltool
+# builds from it. No download and no Windows SDK; cached like the musl one.
+sysroot-windows:
+	scripts/sysroot-windows.sh
+
+# M19: the whole suite cross-compiled to windows/aarch64 with the
+# `coff-obj-arm64` backend, every object's COFF header checked with
+# llvm-readobj, and three of them linked with lld-link. Nothing is EXECUTED
+# here -- there is no Windows host on this machine, and the windows-11-arm CI
+# leg is the runtime oracle (docs/ci.md). Guarded like test-linux: without the
+# LLVM tools there is nothing to check, and `make check` says so instead of
+# failing.
+test-windows: build/mc1
+	@if ! sh -c 'command -v lld-link || [ -x /opt/homebrew/opt/llvm/bin/lld-link ]' > /dev/null 2>&1; then \
+	    echo "test-windows: SKIPPED (lld-link not found; brew install lld llvm)"; \
+	elif ! sh -c 'command -v llvm-dlltool || [ -x /opt/homebrew/opt/llvm/bin/llvm-dlltool ]' > /dev/null 2>&1; then \
+	    echo "test-windows: SKIPPED (llvm-dlltool not found; brew install llvm)"; \
+	else \
+	    scripts/test-windows.sh build/mc1; \
+	fi
+
 # M23: the seed guard -- `mc limits src/mc.mc` against the fixed MAX* constants
 # still in stage0/mc.h and stage0/*.c. Fails when any of them is over 90% used,
 # which is the early warning that the C seed has to be raised before it stops
@@ -275,13 +296,14 @@ check-skipped:
 	@echo "check-build: SKIPPED (tests/proj targets macos/aarch64 through ld)"
 	@echo "check-minimal: SKIPPED (its ceilings are measured on the macOS backends)"
 	@echo "test-linux/test-linux-x86_64: SKIPPED (cross-compilation from macOS; here the suite is native)"
+	@echo "test-windows: SKIPPED (cross-compilation from macOS; the windows-11-arm CI leg is the runtime oracle)"
 	@echo "check-examples/check-lang/check-conc/check-desktop: SKIPPED (macOS dylibs and --exe)"
 	@echo "check-docs/site/check-site: SKIPPED (their samples are built with --exe)"
 
 ifeq ($(HOST),Linux)
 check: budget bootstrap-linux check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-limits check-skipped
 else
-check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-limits check-minimal test-linux test-linux-x86_64 check-examples check-lang check-conc check-desktop check-docs site check-site
+check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-limits check-minimal test-linux test-linux-x86_64 test-windows check-examples check-lang check-conc check-desktop check-docs site check-site
 endif
 
 budget:
@@ -292,7 +314,7 @@ clean:
 
 .PHONY: bootstrap-linux mc-linux mc-linux-x86_64 mc-linux-obj mc-linux-x86_64-obj
 .PHONY: check-linux-host check-skipped
-.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-limits sysroot-linux sysroot-linux-x86_64 test-linux test-linux-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal
+.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-limits sysroot-linux sysroot-linux-x86_64 sysroot-windows test-linux test-linux-x86_64 test-windows check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal
 
 # M32: examples/desktop -- a GTK4 application written in mc, and the same
 # application with its widget tree written in a UI language taught by ui.mc.
