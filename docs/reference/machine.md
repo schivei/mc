@@ -1,23 +1,32 @@
 # The machine task contract
 
-> **Contract version 2 — the integer tasks, for three instruction sets (M17, M39).**
-> `src/gen_walk.mc` is the target-independent walker; `src/machine_arm64.mc` (step A) and
+> **Contract version 3 -- the integer tasks, the depth type, and deriving a machine (M17, M24, M39).**
+> `src/gen_walk.mc` is the target-independent walker; `src/machine_arm64.mc` (M17 step A) and
 > `src/machine_x86_64.mc` (step B, and M20's Win64 half) are the three machines behind it in the
-> compiler — `arm64`, `x86_64`, `x86_64-win` — and `machine(name, tab)` in
-> `src/hooks.mc` is the seam. Since M39 there is a fourth, and it is **not** in the compiler:
+> compiler -- `arm64`, `x86_64`, `x86_64-win` -- and `machine(name, tab)` in `src/hooks.mc` is
+> the seam. Since M39 there is a fourth, and it is **not** in the compiler:
 > `examples/kernel/machine_riscv64.mc` registers `riscv64` from a module under `examples/`,
-> which is the proof that the seam is real from outside. The float tasks at the end of this page are still specification
-> (`docs/specs/M24.md`), and so is `#machine`.
+> which is the proof that the seam is real from outside. Since M24 a machine also reads the
+> TYPE of a depth (`walk_depth_type`), which is how `lib/machine_arm64_float.mc` answers `fadd`
+> where the built-in answers `add`, and how a module derives a machine with `machine_tab` /
+> `machine_slot`; `#machine` was dropped (`docs/specs/M24.md` § M9).
 >
-> A version is the list of `MTASK_*` slots below, in that order and with those signatures. Adding a
-> task appends a slot and bumps the version; changing one's signature is a breaking change to every
-> machine, and there is exactly one place to look for the answer — this page.
+> A version is the list of `MTASK_*` slots below, in that order and with those signatures, plus
+> what a machine outside `src/` may rely on. Adding a task appends a slot and bumps the version;
+> changing one's signature is a breaking change to every machine, and there is exactly one place to
+> look for the answer — this page.
 >
 > **Version 1 → 2** appended exactly one slot, `MTASK_RELOC_OFF`. Version 1 assumed a relocation
 > patches the instruction from its first byte, which is true of every fixed-width encoding and
 > false of x86: `call rel32` carries its field one byte in, `lea r, [rip + disp32]` three. The
-> walker now asks. AArch64 answers 0 and its objects did not move a byte. The float tasks will be
-> version 3.
+> walker now asks. AArch64 answers 0 and its objects did not move a byte.
+>
+> **Version 2 → 3 (M24) appends no slot and changes no signature.** The bump is *what a module may
+> rely on*: `walk_depth_type(d)` and `walk_ret_type()` (§ 3), `machine_tab`/`machine_slot` as the
+> way to derive a table, and the three allocator functions § 3 publishes by name. The float tasks
+> the old § 3 specified — thirteen `mf_*` slots — were **dropped**: a second register file needs no
+> contract line once the walker says what type is at a depth, and `<float>` is a library over that
+> (`docs/specs/M24.md`). `#machine` was dropped with them, for the reasons in § 4.
 
 ## Why the split exists
 
@@ -364,41 +373,85 @@ leg: `make test-windows-x86_64` cross-compiles it.
 
 ---
 
-## 3. The float tasks (M24) — specified, not implemented
+## 3. The depth type, and what a taught machine may rely on (version 3)
 
-`f32` and `f64` add their own tasks, with their own register set (`v16..v23` on arm64) and a depth
-stack that tracks the type of each depth:
+A machine with **one** register file needs nothing here: the walker says "the value is at depth 2"
+and depth 2 is an integer. A machine with two — floats in `v0..v31`, a wide value in a pair, a
+vector in `ymm` — has to know *what* is at depth 2 before it can pick the file, the instruction and
+the ABI register. `MTASK_PARAM` has carried `ty` since M17, so the callee side of a float ABI was
+already reachable; `MTASK_BIN`/`CMP`/`UN`/`BOOL`/`CALL`/`RET` carry no type at all, and that
+asymmetry is exactly what these two functions close.
 
-`mf_const(d, bits, width)` · `mf_bin(op, d, d2, width)` · `mf_neg(d, width)` ·
-`mf_cmp(cond, d, d2, width)` · `mf_load(width, d, dbase)` · `mf_store(width, d, dbase)` ·
-`mf_local_load` · `mf_local_store` · `mf_cvt(from, to, d)` · `mf_arg_move` · `mf_ret` ·
-`mf_call_save` · `mf_call_restore`
+| function | answers |
+|---|---|
+| `i64 walk_depth_type(i64 d)` | the type of the value **currently** at depth `d`; `TY_I64` outside `0..MAXDEPTH-1` |
+| `i64 walk_ret_type()` | the type the value **about to land** at this depth will have — the type of the node whose task is running |
 
-On arm64 these map to `fmov/fadd/fsub/fmul/fdiv/fcmp/fcvt/scvtf/ucvtf/fcvtzs/fcvtzu/ldr d/str
-d/fneg/fabs/fsqrt`; a constant materialises through `movz`/`movk` into an `x` register and then
-`fmov d, x`, so there are no literal pools and no relocations. On x86-64 they map to SSE2
-(`addsd`, `mulsd`, `ucomisd`, `cvtsi2sd`, `cvttsd2si`, `sqrtsd`). Adding them appends slots and
-makes the contract version 3.
+Neither is a task slot. No signature moves, the contract stays additive, and a machine that never
+reads them emits byte for byte what it emitted under version 2.
 
-## 4. `#machine` — naming the instruction for a task — specified, not implemented
+**How they are maintained.** `gen_expr` is a wrapper around the dispatch: it writes `res_type(n)`
+into the depth *before* the children run, calls the dispatch, and writes `res_type(n)` again
+*after*. The second write is the one that matters — the value that actually lands at `d` is
+described by the node that produced it, not by the last child that happened to use the same depth.
+That one line covers, in one place, every site where the type changes under the walker's feet: a
+comparison (`i64` out of two floats), `gen_logic`'s shortcut constant, `MUN_LNOT`, a cast, an
+intrinsic load, and a call — where depth `d` is overwritten by argument 0 before the result comes
+back. `walk_ret_type()` is saved and restored around each child for the same reason, which is why
+a `MTASK_CALL` handler can still ask what the call returns while `dtype[d]` holds argument 0's
+type. Every depth is reset to `TY_I64` at the top of each function.
 
-The directive that makes the table teachable from a source file, in the same spirit as `#opcode`:
+**What this buys.** `MTASK_BIN(MOP_ADD, d, d2)` with `walk_depth_type(d) == f64` is an `fadd`;
+`MTASK_RET(d)` returns in `v0`; `MTASK_CALL(d, na, sym)` walks `walk_depth_type(d + i)` and runs
+the AAPCS64 NGRN/NSRN split — the whole float ABI, with no task added. A stale entry is wrong code
+rather than a diagnostic, so `lib/machine_probe.mc` derives a machine that asserts the contract on
+every task and is run over the whole of `src/mc.mc` by `scripts/check-surface.sh`; the criterion is
+that the assertion never fires *and* the object stays byte for byte the bundled machine's.
+
+### The allocator functions a task handler may call
+
+A machine's register partition and spill policy are private — `dslot`, `in_reg`, `save_live`,
+`REG_BASE` are nobody's business. Exactly three names are published, because a task handler written
+outside `src/` has to be able to find where the allocator put its operands:
+
+| function | answers |
+|---|---|
+| `i64 val_reg(i64 d, i64 scratch)` | the register holding depth `d`'s value, loading a spilled depth into `scratch` first |
+| `i64 dst_reg(i64 d)` | the register to write depth `d`'s result into |
+| `void dst_done(i64 d, i64 reg)` | tell the machine the result is in `reg`; spills it if depth `d` is not register-resident |
+
+They exist with these signatures in both bundled machines (`src/machine_arm64.mc`,
+`src/machine_x86_64.mc`) and the x86-64 ones carry the `x86_` prefix (`x86_val_reg`,
+`x86_dst_reg`, `x86_dst_done`) because `.mc` has no file scope. Nothing else of a machine's
+internals is contract: a derived table reaches the built-in implementation of any slot through the
+pointer it copied, which is what keeps `a64_bin`/`a64_const` from being frozen surface.
+
+### Deriving a machine
+
+`machine_tab(name)` gives the table to copy from and `machine_slot(tab, task, fn)` writes one slot
+of the copy; the recipe, and the one trap in it — delegate through a **pristine** second copy, not
+through the table you patched — is in [hooks.md](hooks.md) § 3. `lib/machine_probe.mc` is the
+smallest complete example, `src/machine_x86_64.mc`'s Win64 half the oldest one, and
+`lib/machine_arm64_float.mc` the one that adds a register file.
+
+## 4. Why there is no `#machine`
+
+The directive that would have made the table teachable from a source file —
 
 ```
 #machine arm64  fadd_f64(rd, rn, rm)  0x1E602800 | (rm << 16) | (rn << 5) | rd
-#machine arm64  fsqrt_f64(rd, rn)     0x1E61C000 | (rn << 5) | rd
-#machine x86_64 fadd_f64(rd, rn, rm)  bytes(0xF2, 0x0F, 0x58) modrm(rd, rn)
 ```
 
-- The fixed-width form is a 32-bit word template with parameters, exactly like `#opcode`, and it
-  registers an encoder for `task` on `arch` in the table the walker drives.
-- The variable-length form for x86 uses a small byte-template language — `bytes(...)`,
-  `modrm(reg, rm)`, `rex_w`, `imm32(x)`.
-- The general escape is already here: a `.mc` function registered at `user_init` with
-  `machine_task(MTASK_X, &f)` over a copy of the table, then `machine("mine", tab)`.
-- A module's `#machine` overrides the bundled implementation for that task, and `--dump-machine`
-  lists every task per architecture with its origin (`bundled`, or `module file:line`) and the
-  bytes it emits for a sample operand set.
+— was specified through M17 and **dropped by M24**, deliberately, for three reasons worth keeping:
+
+- it is a fourth encoding-template language after `#opcode` and `x86_desc`;
+- **a task is not an instruction.** `MTASK_BIN(MOP_ADD, d, d2)` on a spilled depth is a load, an op
+  and a store, so a one-word template is false for every deep expression;
+- it would be a directive the frozen `stage0/lex.c`'s `dir_names[]` cannot parse, so it could never
+  appear in `src/*.mc` anyway.
+
+`machine_slot` plus `#opcode` reach the same place with no new syntax: a module writes an ordinary
+`.mc` function and puts it in a copied table.
 
 ---
 

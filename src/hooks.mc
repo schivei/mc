@@ -287,6 +287,54 @@ i64 syntax_expr_find(i64 tok) {
     return -1;
 }
 
+// ---- M24 (Tier 4): syntax_lit, the numeric-literal position ----
+// syntax_lit(&f) registers `i64 f()`, consulted by parse_primary at the one
+// point where it is about to build the N_INT/N_CHAR node. The handler returns
+// the node it built -- or 0, meaning "the core handles this one", which is what
+// makes a module that only wants `1.5` leave `1` alone.
+//
+// This is the one grammar position Tier 3 genuinely cannot reach: every other
+// hook is keyed by a token word_add() created, and word_add can never yield
+// T_INT. It is generic on purpose -- it says "numeric literal", not "float" --
+// so the decimal-to-binary conversion lives in the MODULE and lex_number stays
+// exactly what the frozen stage0/lex.c does, which is what keeps --dump-tokens
+// comparable over the whole tree (scripts/check-lex.sh).
+//
+// The handler reads the raw source with p_start(), consumes what the lexer did
+// not with p_extend_lit(), and returns an ordinary node. The documented
+// fallback -- `#token "."` plus syntax_infix(".", prec, &f) -- costs zero core
+// lines and is rejected as the mechanism because it reserves `.` program-wide
+// (colliding head-on with examples/lang, whose lg_dot owns it) and cannot spell
+// `1e-3` at all.
+//
+// Shaped like on_stmt and short-circuited by `nonlit == 0`, so an untaught
+// compiler does not even make the callp.
+uptr synlit_fn;
+i64  synlitcap = 0;
+i64  nonlit = 0;
+
+uptr synlit_fn_at(i64 i) { return ld64(synlit_fn + i * 8); }
+
+void syntax_lit(uptr fn) {
+    synlit_fn = grow(T_SYNTAX, synlit_fn, nonlit, &synlitcap, 8);
+    st64(synlit_fn + nonlit * 8, fn);
+    nonlit = nonlit + 1;
+}
+
+// the handlers in registration order; the first non-zero node wins, so the last
+// module to register is NOT the one that wins -- unlike the keyed tables, a
+// literal handler that answers 0 is saying "not mine", not "not registered"
+i64 run_syntax_lit() {
+    i64 i = 0;
+    loop {
+        if (i >= nonlit) break;
+        i64 n = callp(synlit_fn_at(i));
+        if (n) return n;
+        i = i + 1;
+    }
+    return 0;
+}
+
 // M21. syntax_infix(".+", 9, &f): a binary operator taught by code. There is no
 // new table: the `#infix` entry gains one column (INF_FN), which is what puts a
 // taught operator and a `#infix` one in a SINGLE comparable precedence order.
@@ -321,14 +369,49 @@ i64 nalias = 0;
 i64 alias_tok_at(i64 i)  { return ld64(alias_tok + i * 8); }
 i64 alias_base_at(i64 i) { return ld64(alias_base + i * 8); }
 
-void type_alias(uptr name, i64 base) {
-    if (base < 0 || base >= TY_MAX) die2("type_alias with invalid type", name);
+// the append side of that table, shared with type_new: reserving the word and
+// pointing it at a type id is the same operation in both cases
+void alias_add(uptr name, i64 base) {
     i64 oc = aliascap;
     alias_tok = grow(T_ALIAS, alias_tok, nalias, &aliascap, 8);
     if (aliascap != oc) alias_base = grow_to(alias_base, nalias, aliascap, 8);
     st64(alias_tok + nalias * 8, word_add(name));
     st64(alias_base + nalias * 8, base);
     nalias = nalias + 1;
+}
+
+// M24: the guard widened from TY_MAX to type_count(), so an alias may name a
+// type another module registered -- `type_alias("double", ty_f64)`.
+void type_alias(uptr name, i64 base) {
+    if (base < 0 || base >= type_count()) die2("type_alias with invalid type", name);
+    alias_add(name, base);
+}
+
+// ---- M24 (Tier 4): type_new, a PRIMITIVE the core has never heard of ----
+// type_new("f64", 8, 8, TK_FLOAT) appends to the registry in src/ast.mc and
+// reserves the word in the SAME table type_alias uses, which is what makes the
+// name valid in all seven type positions at once -- globals, locals,
+// parameters, extern, casts, array elements and p_type() -- for one line in
+// type_of_token that was already there. It is an ordinary function called from
+// user_init(): no keyword, no directive, so tok_init() is untouched, the ids
+// K_U8..K_EXTERN do not shift and check-lex keeps cross-checking the two lexers
+// over the whole tree.
+//
+// What the core then does with the id: type_width and type_align size globals,
+// arrays and frame slots; type_name puts it in --dump-ast; type_kind is for the
+// machine. Nothing else. Arithmetic, literals, the ABI and the instructions are
+// the module's, through syntax_lit, intrinsic and a derived machine table.
+//
+// The word is reserved PROGRAM-WIDE, exactly as type_alias's is: loading a
+// module that teaches `f32` removes `f32` from the source's identifier
+// vocabulary. That is why <float> is not in lib/user_default.mc.
+i64 type_new(uptr name, i64 width, i64 align, i64 kind) {
+    if (width < 1) die2("type_new with a width below 1", name);
+    if (align < 1) die2("type_new with an alignment below 1", name);
+    if (kind < TK_INT || kind > TK_OPAQUE) die2("type_new with an unknown kind", name);
+    i64 t = ty_reg_add(name, width, align, kind);
+    alias_add(name, t);                  // word_add refuses a core keyword here
+    return t;
 }
 
 // type of alias `id`, or -1 if the token is not an alias; the last registration wins
@@ -380,12 +463,22 @@ uptr mach_tab = 0;                    // the table gen_walk.mc drives
 uptr mach_names_at(i64 i) { return ld64(mach_names + i * 8); }
 uptr mach_tabs_at(i64 i)  { return ld64(mach_tabs + i * 8); }
 
-// machine("arm64", tab): tab is MT_COUNT entries of `&fn`, in MT_* order
+// machine("arm64", tab): tab is MTASK_COUNT entries of `&fn`, in MTASK_* order.
+// M24 (D5): a registration that SHADOWS an existing name reuses that name's
+// slot instead of appending. `machine_find` already searched back to front, so
+// nothing observable changes -- what changes is that a module stacking a second
+// taught machine on `arm64` no longer walks the table towards `too many
+// machines`, which is the failure a user would have discovered by stacking two
+// modules that each teach a type family.
 void machine(uptr name, uptr tab) {
-    if (nmachines >= MAXMACHINES) die2("too many machines", name);
-    st64(mach_names + nmachines * 8, name);
-    st64(mach_tabs + nmachines * 8, tab);
-    nmachines = nmachines + 1;
+    i64 i = machine_find(name);
+    if (i < 0) {
+        if (nmachines >= MAXMACHINES) die2("too many machines", name);
+        i = nmachines;
+        nmachines = nmachines + 1;
+        st64(mach_names + i * 8, name);
+    }
+    st64(mach_tabs + i * 8, tab);
     mach_tab = tab;
 }
 
@@ -405,6 +498,31 @@ void machine_use(uptr name) {
     if (i < 0) die2("unknown machine", name);
     mach_tab = mach_tabs_at(i);
 }
+
+// ---- M24: deriving a machine ----
+// The published recipe used to be "copy the table, overwrite the slot with
+// machine_task, register the copy" -- but `machine_task` writes the GLOBAL
+// m_arm64 by name (src/machine_arm64.mc), so following it corrupted arm64's own
+// table for the rest of the compilation. These two are the recipe, and the doc
+// was corrected with them (docs/reference/hooks.md).
+//
+// machine_tab(name) is the registered table, to copy FROM; machine_slot writes
+// one slot of a table the caller owns. Nothing new is possible -- the Win64
+// machine already derives with ld64/st64 (src/machine_x86_64.mc) -- this is
+// contract and safety.
+//
+// Delegation needs no further names: the module copies the table first, so the
+// bundled implementation of every slot is a pointer it holds and can `callp`.
+// That is what keeps a taught machine from having to reimplement integer
+// codegen, and what keeps a64_bin/a64_const from becoming frozen surface.
+uptr machine_tab(uptr name) {
+    i64 i = machine_find(name);
+    if (i < 0) die2("unknown machine", name);
+    return mach_tabs_at(i);
+}
+
+// machine_slot lives in src/gen_walk.mc, beside mach() and the MTASK_* list it
+// has to bound-check: the task vocabulary is the walker's, not the registry's.
 
 // ---- M17/M33: the target registry ----
 // `src/driver.mc` used to carry the whitelist itself -- an `i64 drv_linux` flag,

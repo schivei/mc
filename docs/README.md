@@ -25,6 +25,7 @@ nothing to a running signed binary in about two minutes.
 | [How `mc` compiles itself](guide/70-bootstrap.md) | the bootstrap chain, the fixed point, and the determinism rules for contributors |
 | [Footprint](guide/80-footprint.md) | what the smallest program costs per target, floor by floor, and the ceilings that guard it |
 | [`mc` on a Linux host](guide/90-linux-host.md) | the host layer, the Linux bootstrap chain, cross-building the compiler, what `make check` skips on Linux and why |
+| [A new primitive](guide/96-a-new-primitive.md) | teaching `mc` a value type it has never heard of: `type_new`, `syntax_lit`, a derived machine, `intrinsic` |
 | [`mc` on a Windows host](guide/95-windows-host.md) | the same for Windows: no C runtime at all, the kernel32 runtime object, the `.exe` suffix, CRLF, and the Windows `make check` subset |
 | [A new architecture](guide/97-a-new-architecture.md) | adding an instruction set and an output format from OUTSIDE the compiler: the three registrations, how to prove the encoder, and which families the data model excludes today |
 

@@ -687,6 +687,145 @@ else
     fails=$((fails + 1))
 fi
 
+# ---- M24 (Tier 4): type_new, syntax_lit, the fold guards and a derived machine ----
+# `fix` is 16.16 signed fixed point in eight bytes and `pair` a sixteen-byte
+# opaque value, both registered with type_new by lib/user_syntax_demo.mc, and
+# `1.5` is read by its syntax_lit handler out of the raw source -- the lexer's
+# token is still `1` and --dump-tokens has not moved.
+#
+# One program covers three of the four core decisions M24 delegates: `fix` names
+# a PARAMETER, a CAST names it back to i64, and the literal survives resolve
+# with the module's type on it (without M2 it would come back TY_I64 and the
+# division would be by the wrong scale).
+hook_case type_new-param-cast 42 'i64 f(fix v) { return (i64) v / 65536; }
+i64 main() { fix a = 1.5; return f(a) * 28 + 14; }'
+
+# the fourth: the frame slot is the TYPE's width. Two `pair` locals reserve 32
+# bytes where two i64 locals reserve 16 -- the whole of M5, visible.
+printf 'i64 f() { pair a; pair b; return 1; }\n' > "$tmp/m24-wide.mc"
+printf 'i64 f() { i64 a; i64 b; return 1; }\n'   > "$tmp/m24-narrow.mc"
+wide=$("$demo" --dump-asm "$tmp/m24-wide.mc"   | sed -n '/^_f:/,/ret/p' | grep -c 'sub sp, sp, #32')
+narrow=$("$demo" --dump-asm "$tmp/m24-narrow.mc" | sed -n '/^_f:/,/ret/p' | grep -c 'sub sp, sp, #16')
+if [ "$wide" = 1 ] && [ "$narrow" = 1 ]; then
+    echo "ok type_new: a 16-byte type gets a 16-byte frame slot (32 vs 16 bytes)"
+else
+    echo "FAIL slot_new(type_width): wide=$wide narrow=$narrow"
+    fails=$((fails + 1))
+fi
+
+# M3: the core has no arithmetic for a type it did not define, so none of these
+# five folds. Without the guards `1.5 + 2.5` would become an INTEGER add of two
+# bit patterns at compile time, silently.
+#
+# The observable is --dump-asm, not --dump-ast: fold() runs after the AST dump.
+# An unfolded expression leaves instructions behind -- an `add` beside the
+# frame's own, a `neg`, an `mvn`, a `cmp`/`cset` -- and a folded one leaves a
+# single `movz` and nothing else.
+fold_ops() {                        # fold_ops SOURCE OP -> how many in _main
+    "$demo" --dump-asm "$1" | sed -n '/^_main:/,/^$/p' | grep -cE "^  $2 "
+}
+printf 'i64 main() { fix a = 1.5 + 2.5; fix b = -1.5; fix c = ~1.5; i64 d = !1.5; fix e = (fix) 3; i64 g = (i64) 1.5; return d; }\n' > "$tmp/m24-fold.mc"
+printf 'i64 main() { i64 a = 1 + 2; i64 b = -1; i64 c = ~1; i64 d = !1; i64 e = (u8) 3; i64 g = (i64) 1; return d; }\n'          > "$tmp/m24-nofold.mc"
+unfolded=0
+# +, -, ~ and ! survive on a taught literal...
+[ "$(fold_ops "$tmp/m24-fold.mc" add)"  = 2 ] || { echo "FAIL fold guard: + folded"; unfolded=1; }
+[ "$(fold_ops "$tmp/m24-fold.mc" neg)"  = 1 ] || { echo "FAIL fold guard: - folded"; unfolded=1; }
+[ "$(fold_ops "$tmp/m24-fold.mc" mvn)"  = 1 ] || { echo "FAIL fold guard: ~ folded"; unfolded=1; }
+[ "$(fold_ops "$tmp/m24-fold.mc" cset)" = 1 ] || { echo "FAIL fold guard: ! folded"; unfolded=1; }
+# ...and only on a taught literal: the same five on core literals still fold to
+# one constant each, which is the whole of the frame's `add`/`sub` and no more
+[ "$(fold_ops "$tmp/m24-nofold.mc" add)"  = 1 ] || { echo "FAIL fold guard: core + stopped folding"; unfolded=1; }
+[ "$(fold_ops "$tmp/m24-nofold.mc" neg)"  = 0 ] || { echo "FAIL fold guard: core - stopped folding"; unfolded=1; }
+[ "$(fold_ops "$tmp/m24-nofold.mc" mvn)"  = 0 ] || { echo "FAIL fold guard: core ~ stopped folding"; unfolded=1; }
+[ "$(fold_ops "$tmp/m24-nofold.mc" cset)" = 0 ] || { echo "FAIL fold guard: core ! stopped folding"; unfolded=1; }
+# the cast, both ways: (fix) 3 and (i64) 1.5 are conversions a module's machine
+# performs, so neither may be masked away at compile time
+if "$demo" --dump-ast "$tmp/m24-fold.mc" 2>&1 | grep -q 'CAST type=fix'; then :
+else echo "FAIL fold guard: (fix) 3 is not in the tree"; unfolded=1; fi
+if [ "$unfolded" = 0 ]; then
+    echo "ok fold guards: +, -, ~, ! and a cast leave a taught literal alone, and only it"
+else
+    fails=$((fails + unfolded))
+fi
+
+# M1: type_new goes through word_add, so a type named after a core keyword is
+# refused at user_init time, exactly as type_alias, syntax and syntax_infix are
+sed 's|user_default\.mc|user_dupty.mc|' "$save" > "$user"
+if ! grep -q 'user_dupty\.mc' "$user"; then
+    echo "FAIL: could not wire lib/user_dupty.mc into $user"
+    exit 1
+fi
+if ! msg=$("$mc0" src/mc.mc -o build/mc1t.o 2>&1); then
+    echo "FAIL: compiling src/mc.mc with user_dupty: $msg"
+    fails=$((fails + 1))
+elif ! msg=$(scripts/link.sh build/mc1t build/mc1t.o 2>&1); then
+    echo "FAIL: linking build/mc1t: $msg"
+    fails=$((fails + 1))
+elif msg=$(build/mc1t tests/001-return42.mc -o "$tmp/t.o" 2>&1); then
+    echo "FAIL: type_new(\"if\", ...) was accepted"
+    fails=$((fails + 1))
+elif [ "$msg" != "mc: cannot redefine core keyword: if" ]; then
+    echo "FAIL: type_new on a core keyword said '$msg'"
+    fails=$((fails + 1))
+else
+    echo "ok type_new refuses a core keyword at user_init ($msg)"
+fi
+cp "$save" "$user"
+
+# M6, the inertness shape: a module whose ONLY registration is syntax_lit and
+# whose handler answers 0 for every literal has to produce exactly the tree and
+# exactly the object the compiler without the hook produces. The callp happens
+# on every numeric literal of every program -- 0 is the handler declining, not
+# the absence of a handler.
+litnop="build/mc-lit-nop"
+rm -f "$litnop"
+if ! msg=$("$mc1" --exe lib/mc_lit_nop.mc -o "$litnop" 2>&1); then
+    echo "FAIL: compiling lib/mc_lit_nop.mc: $msg"
+    fails=$((fails + 1))
+else
+    litfails=0
+    for f in tests/*.mc; do
+        [ -f "$f" ] || continue
+        "$mc1"    --dump-ast "$f" > "$tmp/ln0.ast" 2>&1
+        "$litnop" --dump-ast "$f" > "$tmp/ln1.ast" 2>&1
+        cmp -s "$tmp/ln0.ast" "$tmp/ln1.ast" || {
+            echo "FAIL syntax_lit inert: --dump-ast of $f"; litfails=$((litfails + 1)); }
+        "$mc1"    "$f" -o "$tmp/ln0.o" 2>/dev/null
+        "$litnop" "$f" -o "$tmp/ln1.o" 2>/dev/null
+        cmp -s "$tmp/ln0.o" "$tmp/ln1.o" || {
+            echo "FAIL syntax_lit inert: object of $f"; litfails=$((litfails + 1)); }
+    done
+    if [ "$litfails" = 0 ]; then
+        echo "ok syntax_lit returning 0: --dump-ast and objects identical over tests/"
+    else
+        fails=$((fails + litfails))
+    fi
+fi
+
+# M4/M8: the probe machine (lib/machine_probe.mc). It derives from `arm64` with
+# machine_tab/machine_slot, delegates every task through the pristine copy, and
+# asserts the depth-type contract on every task it sees -- over the whole of
+# src/mc.mc, which is the only corpus large enough to settle it. A stale entry
+# is wrong code, not a diagnostic, so the criterion is both halves: the assertion
+# never fires AND the object is byte for byte the one the bundled machine writes.
+probe="build/mc-probe"
+rm -f "$probe"
+if ! msg=$("$mc1" --exe lib/mc_probe.mc -o "$probe" 2>&1); then
+    echo "FAIL: compiling lib/mc_probe.mc: $msg"
+    fails=$((fails + 1))
+elif ! msg=$("$probe" --backend=macho-probe-core src/mc.mc -o "$tmp/probe.o" 2>&1); then
+    echo "FAIL: the probe machine over src/mc.mc: $msg"
+    fails=$((fails + 1))
+else
+    "$mc1" src/mc.mc -o "$tmp/probe-ref.o" 2>/dev/null
+    if cmp -s "$tmp/probe.o" "$tmp/probe-ref.o"; then
+        echo "ok machine_tab/machine_slot: derived machine, $msg, object identical"
+    else
+        echo "FAIL the probe machine changed the object"
+        fails=$((fails + 1))
+    fi
+fi
+
 # decision 7.3: teaching the same operator twice is refused at user_init time,
 # before the first token of any source is read
 sed 's|user_default\.mc|user_dupop.mc|' "$save" > "$user"

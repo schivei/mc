@@ -144,30 +144,44 @@ registers it from `void machine_arm64_init()`; `src/machine_x86_64.mc` does the 
 any backend can lower, and then `machine_use("arm64")`, because each registration also makes its
 machine current and the host's is the default.
 
-**A module writes its own setter.** `machine_task` is not a general helper: it writes into
-`m_arm64` **by name**, and `x86_task` writes into `m_x86_64`. Until M39 this page told a module
-author to "copy the table, overwrite the slot with `machine_task`, and register the copy" —
-following that recipe corrupts AArch64's table instead of filling the module's own
-(`docs/specs/M39.md` § G9, decision D7). The shape that works is two lines, and every machine in
-the repository has its own:
+Registering a name that is **already registered reuses that name's slot** (M24, decision D5)
+rather than appending, so stacking taught modules that each shadow `arm64` does not walk the table
+towards `too many machines`. `machine_find` already searched back to front, so nothing observable
+changes.
 
-```c
-uptr m_mine[MTASK_COUNT];
-void my_task(i64 task, uptr fn) { st64(m_mine + task * 8, fn); }
+### `uptr machine_tab(uptr name)` · `void machine_slot(uptr tab, i64 task, uptr fn)`
 
-void my_machine_init() {
-    i64 t = 0;
-    while (t < MTASK_COUNT) {                    // start from an existing machine, if you like
-        st64(m_mine + t * 8, ld64(m_arm64 + t * 8));
-        t = t + 1;
-    }
-    my_task(MTASK_ENCODE, &my_encode);           // ...and replace what you mean to replace
-    machine("mine", m_mine);
+The two functions a module **deriving** a machine uses (M24). `machine_tab` returns a registered
+table, to copy from (`unknown machine` otherwise); `machine_slot` writes one slot of a table the
+caller owns, bounds-checked against `MTASK_COUNT` (`machine_slot outside the task table`). It lives
+in `src/gen_walk.mc`, beside `mach()` and the `MTASK_*` list it checks against.
+
+Do **not** use `machine_task` or `x86_task` for this: they write the bundled global `m_arm64` /
+`m_x86_64` by name, so a module following that recipe corrupts the built-in machine for the rest
+of the compilation. The recipe is:
+
+```
+pr_tab  = xalloc(MTASK_COUNT * 8);        // the table the walker will drive
+pr_orig = xalloc(MTASK_COUNT * 8);        // ...and a PRISTINE copy to delegate to
+uptr src = machine_tab("arm64");
+i64 t = 0;
+loop {
+    if (t >= MTASK_COUNT) break;
+    st64(pr_tab  + t * 8, ld64(src + t * 8));
+    st64(pr_orig + t * 8, ld64(src + t * 8));
+    t = t + 1;
 }
+machine_slot(pr_tab, MTASK_BIN, &my_bin);  // one slot replaced
+machine("arm64+mine", pr_tab);
 ```
 
-`examples/kernel/machine_riscv64.mc` is the worked case: 31 slots of its own, `rv_task` as the
-setter, registered from a module under `examples/` with no line added to `src/`.
+Two copies, and the one trap worth naming: a wrapper delegates through `pr_orig`, never through
+`pr_tab` — reading the patched table from inside a wrapper makes every wrapper call itself.
+Delegation needs no further names, which is what keeps `a64_bin`/`a64_const` from becoming frozen
+surface. `lib/machine_probe.mc` is the worked example, and `examples/avx` the one that adds an
+instruction.
+
+`examples/kernel/machine_riscv64.mc` is the other worked case: a machine written from nothing rather than derived -- 31 slots of its own, `rv_task` as the setter, registered from a module under `examples/` with no line added to `src/`.
 
 Who calls `machine_use` in a normal build: **the object backend**, once, as its first statement.
 That keeps `target()`'s four columns (below) — `[target].arch` is a *file format* question, and
@@ -210,10 +224,10 @@ system or architecture becomes reachable from `mc.toml` without editing the driv
 
 ---
 
-## 3. Tier 3 — the five word registrations, and the two node hooks
+## 3. Tier 3 and Tier 4 — the six word registrations, and the three node hooks
 
-Each one claims a **word** in the lexer and a **grammar position**. All five refuse a core
-keyword (`cannot redefine core keyword`), and all five reserve the word for the *whole program*,
+Each of the six claims a **word** in the lexer and a **grammar position**. All six refuse a core
+keyword (`cannot redefine core keyword`), and all six reserve the word for the *whole program*,
 not just their own position: whoever registers `log` removes `log` from the source's identifier
 vocabulary, and the parser says so plainly —
 `name reserved by a syntax/type_alias registration: log`.
@@ -224,13 +238,14 @@ vocabulary, and the parser says so plainly —
 | `syntax_stmt(word, &f)` | statement | `i64 f()` | the returned node |
 | `syntax_expr(word, &f)` | expression (primary) | `i64 f()` | the returned node |
 | `syntax_infix(word, prec, &f)` | binary operator | `i64 f(i64 left)` | the returned node |
-| `type_alias(name, TY_*)` | a type word | — | — |
+| `type_alias(name, ty)` | a type word | — | — |
+| `type_new(name, w, a, kind)` | a type word, for a **new** primitive (M24) | — | the type id it returns |
 
 In every case the parse is stopped **on the registered word**; consuming it is the handler's job.
 
-`on_stmt(&f)` (M21.5) and `on_jump(&f)` (M31) are the two registrations that claim no word, so none
-of the paragraph above applies to them — they observe nodes the parser has just built. Each has its
-own section below.
+`on_stmt(&f)` (M21.5), `on_jump(&f)` (M31) and `syntax_lit(&f)` (M24) are the three registrations
+that claim no word, so none of the paragraph above applies to them — they observe or replace nodes
+at a position the grammar reaches on its own. Each has its own section below.
 
 ### `void syntax(uptr word, uptr fn)`
 
@@ -317,13 +332,75 @@ not an override. A `#infix` on the same token afterwards is *not* an error: it g
 
 ### `void type_alias(uptr name, i64 base)`
 
-Makes `name` a valid type word resolving to a core type. `base` is one of `TY_VOID`, `TY_U8`,
-`TY_U16`, `TY_U32`, `TY_U64`, `TY_I64`, `TY_UPTR`; anything else is
-`type_alias with invalid type`. The alias applies everywhere `type_of_token` is consulted:
-declarations, parameters, `extern`, casts and `p_type()`.
+Makes `name` a valid type word resolving to a type that already exists. `base` is one of
+`TY_VOID`, `TY_U8`, `TY_U16`, `TY_U32`, `TY_U64`, `TY_I64`, `TY_UPTR` — or, since M24, any id a
+`type_new` returned; anything outside `0 .. type_count() - 1` is `type_alias with invalid type`.
+The alias applies everywhere `type_of_token` is consulted: declarations, parameters, `extern`,
+casts, array elements and `p_type()`.
 
 Prefer capitalised names (`Todo`, `Request`) and words a source would not use as an identifier —
 the registration takes the word away from the whole program.
+
+### `i64 type_new(uptr name, i64 width, i64 align, i64 kind)` — a new primitive (M24)
+
+Registers a type the core has never heard of and returns its id, which is at or above `TY_MAX`.
+`width` and `align` are in bytes and must be at least 1; `kind` is one of
+
+| kind | meaning to a machine |
+|---|---|
+| `TK_INT` | an integer the core's own operators fit |
+| `TK_FLOAT` | a floating-point value |
+| `TK_WIDE` | wider than a register; lives in a frame slot |
+| `TK_OPAQUE` | the core knows nothing about it but its size |
+
+and is never read by the core — it is what a machine dispatches on when it does not know the exact
+id (`type_new with an unknown kind` otherwise).
+
+The word is reserved through the same `word_add` every registration above uses, so `type_new("if",
+…)` is `cannot redefine core keyword: if`, and it is entered in the same table `type_alias` writes,
+so the name is valid in all seven type positions at once. It is an ordinary function called from
+`user_init()`: no keyword and no directive, so `tok_init()` is untouched, the ids `K_U8..K_EXTERN`
+do not shift, and `scripts/check-lex.sh` keeps cross-checking the two lexers over the whole tree.
+
+What the core then does with the id is exactly four things — `type_width`, `type_align`,
+`type_name` and nothing else — and is spelled out in [language.md](language.md) § 2. Arithmetic,
+literals, the ABI and the instructions belong to the module: `syntax_lit` below, `intrinsic`
+(§ 2), and a derived machine table ([machine.md](machine.md) § 3).
+
+### The type registry, read side
+
+| function | returns |
+|---|---|
+| `i64 type_count()` | how many type ids exist: the seven core ones plus the registered ones |
+| `i64 type_width(i64 t)` | its width in bytes (1, 2, 4, 8 for the core types) |
+| `i64 type_align(i64 t)` | its alignment; a core type aligns to its own width |
+| `i64 type_kind(i64 t)` | its `TK_*`; every core type answers `TK_INT` |
+| `uptr type_name(i64 t)` | the name `--dump-ast` prints; `"?"` for an id that is not registered |
+| `i64 type_of_token(i64 id)` | the type a token names — core word, `type_alias` or `type_new` — or -1 |
+
+### `void syntax_lit(uptr fn)` — the numeric-literal position (M24)
+
+Registers `i64 f()`, consulted by `parse_primary` at the one point where it is about to build the
+`N_INT`/`N_CHAR` node. The handler returns the node it built, or **0** meaning "the core handles
+this one" — which is what lets a module that only wants `1.5` leave `1` alone. Handlers run in
+registration order and the first non-zero node wins.
+
+This is the one grammar position Tier 3 cannot reach: every other hook is keyed by a token
+`word_add` created, and `word_add` can never yield `T_INT`. It says *numeric literal*, not
+*float*: the decimal-to-binary conversion lives in the module, and `lex_number` stays exactly what
+the frozen `stage0/lex.c` does — which is what keeps `--dump-tokens` comparable over the whole
+tree.
+
+The handler reads the raw source with `p_start()`, scans forward to at most `p_src_end()`, says
+where its literal ends with `p_take_lit(q)`, and advances with `p_next()` before returning
+(§ 4). The node it returns is an **ordinary `N_INT`** whose `val` is the representation and whose
+`nd_type` is the module's type id; everything downstream follows from that, with no new node kind
+and no new machine task — an initializer list accepts it, `glob_place` writes `type_width` bytes of
+it, `res_expr` keeps its type, `fold` leaves it alone, and `MTASK_CONST` carries it to the machine.
+
+A module that registers `syntax_lit` and answers 0 for every literal must produce byte-identical
+trees and objects to a compiler without the hook; `lib/user_lit_nop.mc` is that module, and
+`scripts/check-surface.sh` runs it over the whole `tests/` corpus.
 
 ### The lookup side
 
@@ -519,6 +596,8 @@ instantiation needs.
 | `uptr p_skip_balanced(i64 open, i64 close, uptr plen)` | with the parse sitting on the opening token, record the whole delimited region **without parsing it**: returns the source bytes, delimiters included, writes the length through `plen`, and leaves the parser just past the closing token |
 | `void p_push_source(uptr name, uptr text, i64 len)` | parse a second source with `#include`'s exact semantics: the lexer pops on its own at the end, and `name` is what `err_at` prints for everything inside |
 | `void p_resplit_punct(i64 n)` | the current punctuation token, of length > `n`, becomes the punctuation formed by its first `n` bytes; the cursor rewinds to just after them |
+| `void p_take_lit(uptr q)` | the current numeric token really ends at `q`: the cursor moves there, the token's length grows with it, and the next token is lexed from `q` (M24) |
+| `uptr p_src_end()` | where the source being lexed ends — what a handler scanning raw bytes forward from `p_start()` has to stop at (M24) |
 
 `p_skip_balanced` counts depth over **real tokens**, which is what makes a `}` inside a string or
 a comment harmless — a byte scan could not do that. An unterminated region is reported at the
@@ -541,6 +620,12 @@ instantiation, without the core knowing what an instantiation is.
 was just lexed from the source being read", never a string and never a substituted identifier
 (`p_resplit_punct expects a longer punctuation token`,
 `p_resplit_punct: unknown punctuation`). Its use is `Holder<Bag<Num, 2>>` closing on a `>>`.
+
+`p_take_lit` is the other half of a `syntax_lit` handler, under the same guard and for the same
+reason (`p_take_lit outside the source token`). The lexer stops a number where *its* grammar ends
+— `1.5` is the token `1` with the cursor left on the `.` — so a handler that scanned further says
+where its literal really ended. `q` may not be before the cursor (a handler cannot un-read) and
+may not be past `p_src_end()`.
 
 ### Hygienic substitution
 

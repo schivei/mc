@@ -35,7 +35,7 @@ root in order.
 
 ## The catalogue
 
-The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 47 entries,
+The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 52 entries,
 plus `mc/bundle_data`, which is regenerated on demand (see below). Those are the names `<...>`
 accepts.
 
@@ -137,11 +137,16 @@ downloaded binary with no checkout:
 | `<pass_demo>` | `lib/pass_demo.mc` — the `x * 1` → `x` pass |
 | `<user_default>` | `lib/user_default.mc` — an empty `user_init()` |
 | `<user_demo>` | `lib/user_demo.mc` — registers the backend and the pass |
-| `<user_syntax_demo>` | `lib/user_syntax_demo.mc` — the nine Tier 3 registrations |
+| `<user_syntax_demo>` | `lib/user_syntax_demo.mc` — the Tier 3 registrations, plus M24's `type_new`/`syntax_lit` pair |
 | `<mc_syntax_demo>` | `lib/mc_syntax_demo.mc` — the taught compiler that wires them in |
 | `<syntax_demo_test>` | `lib/syntax_demo_test.mc` — the program only that compiler accepts |
 | `<user_dupop>` | `lib/user_dupop.mc` — the duplicate `syntax_infix` refusal |
 | `<user_tokadd>` | `lib/user_tokadd.mc` — the `tok_add`-before-`tok_init` guard |
+| `<user_dupty>` | `lib/user_dupty.mc` — a `type_new` on a core keyword, refused at `user_init` |
+| `<user_lit_nop>` | `lib/user_lit_nop.mc` — a `syntax_lit` that answers 0 for every literal |
+| `<mc_lit_nop>` | `lib/mc_lit_nop.mc` — the compiler that carries it, for the M24 inertness proof |
+| `<machine_probe>` | `lib/machine_probe.mc` — a derived machine that changes no instruction and asserts the depth-type contract |
+| `<mc_probe>` | `lib/mc_probe.mc` — the compiler that carries it |
 | `<embed_demo>` | `tests/mc/bundle/embed_demo.mc` — `#embed` inside a bundled file |
 | `<embed_demo.txt>` | `tests/mc/bundle/embed_demo.txt` — its payload |
 

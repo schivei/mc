@@ -1538,6 +1538,88 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   point) and the Windows pair cross-computed per `tests/golden/README.md`.
 - Next: M18 or M24 (`docs/plan.md`); M40 (the word-size sweep AVR/PIC need) is
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
+- M24 step A ✔ (`docs/specs/M24.md` § M1-M6, M8 and decision D5): **Tier 4 -- the inert half.
+  A primitive the core has never heard of.** All in `src/`; `stage0/` untouched (2848/3000).
+  The rule the whole milestone rests on is a number: **a type id below `TY_MAX` (7) is a core type
+  and behaves exactly as it always has, byte for byte; an id at or above it was registered by a
+  module, and every core decision about it is delegated.**
+  * **M1, the type registry** (`src/ast.mc`, `src/hooks.mc`): `type_new(name, width, align, kind)
+    -> ty`, with `type_count`/`type_width`/`type_align`/`type_kind`/`type_name` falling through to
+    it above `TY_MAX` and unchanged below. `TK_INT/TK_FLOAT/TK_WIDE/TK_OPAQUE` is what a MACHINE
+    dispatches on; the core reads only width and align. A growable arena block (`T_TYPES`) holding
+    only the registered types, so the core ladder is untouched. The word is reserved through the
+    same `word_add` and entered in the same table `type_alias` writes, so `type_of_token` needed
+    NO line and the name is valid in all seven type positions at once; `type_alias`'s guard
+    widened from `TY_MAX` to `type_count()`. No keyword and no directive: `tok_init` is untouched,
+    `K_U8..K_EXTERN` do not shift, `check-lex` keeps comparing the two lexers.
+  * **M2, the literal's type survives resolve** (`src/gen_resolve.mc`): `res_expr`'s `N_INT` arm
+    answered `TY_I64` unconditionally and threw a taught literal's type away before the walker or
+    any machine could see it.
+  * **M3, the three fold guards** (`src/parse.mc`): `fold_unary`, `fold_binary` and `fold_cast`
+    return early on a type at or above `TY_MAX`. Without them `1.5 + 2.5` would fold to an INTEGER
+    add of two bit patterns and produce an infinity at compile time, silently.
+  * **M4, the depth type** (`src/gen_walk.mc`): `walk_depth_type(d)` and `walk_ret_type()`, a
+    `MAXDEPTH` array reset per function. **Not a task slot** -- no signature moves, and a machine
+    that never reads it emits byte for byte what it emitted before. The five re-announcement sites
+    the spec lists are covered in ONE place instead: `gen_expr` became a wrapper that writes
+    `res_type(n)` into the depth before the dispatch and again after, and saves/restores
+    `walk_ret` around each child, so a comparison, `gen_logic`'s shortcut, `MUN_LNOT`, a cast, an
+    intrinsic load and a call are all handled by the same two lines.
+  * **M5, the frame slot is the type's width** (`src/gen_walk.mc`, 2 lines): `slot_new(8)` ->
+    `slot_new(type_width(ty))` for a scalar local and for a parameter. Provably byte-identical for
+    the seven core types, since `slot_new` rounds `(size + 7) & ~7`.
+  * **M6, `syntax_lit(&f)`** (`src/hooks.mc`, `src/parse.mc`): the one grammar position Tier 3
+    cannot reach, short-circuited by `nonlit == 0`. The handler returns a node or 0 ("the core
+    handles this one"). The decimal-to-binary conversion lives in the MODULE, so `lex_number` and
+    therefore `--dump-tokens` are exactly what the frozen `stage0/lex.c` produces. **Deviation,
+    +8 lines over the spec's M6:** the handler also needs to say where its literal ended, so
+    `p_take_lit(q)` and `p_src_end()` were added beside `p_resplit_punct`, under the same "a token
+    just lexed from the source being read" guard.
+  * **M8, deriving a machine** (`src/gen_walk.mc` for `machine_slot`, `src/hooks.mc` for
+    `machine_tab`): `machine_task` writes the GLOBAL `m_arm64` by name, so the recipe
+    `docs/reference/hooks.md` published corrupted arm64's own table. Both are built and the doc is
+    corrected with them, including the one trap: delegate through a PRISTINE second copy, never
+    through the table you patched. `machine_slot` lives in `gen_walk.mc` beside the `MTASK_*` list
+    it bounds-checks, and because `src/astdump.mc` includes `hooks.mc` without `gen_walk.mc`.
+  * **D5**: a `machine()` registration that shadows an existing name reuses that name's slot.
+  Proofs, all in `scripts/check-surface.sh`: a taught `fix` (16.16 fixed point) and `pair`
+  (16 bytes) in `lib/user_syntax_demo.mc` with a `syntax_lit` handler reading `1.5` out of the raw
+  source -- a parameter, a cast and the literal in one program (exit 42); two `pair` locals
+  reserving 32 bytes of frame where two `i64` reserve 16; the fold guards through `+`, `-`, `~`,
+  `!` and a cast measured on `--dump-asm` (`fold()` runs after `--dump-ast`), with the control that
+  core literals still fold; `type_new("if", ...)` refused with `cannot redefine core keyword: if`
+  (`lib/user_dupty.mc`); `lib/user_lit_nop.mc` -- a module whose only registration is `syntax_lit`
+  and whose handler answers 0 -- producing byte-identical `--dump-ast` AND objects over the whole
+  `tests/` corpus; and `lib/machine_probe.mc`, a machine derived from `arm64` that changes no
+  instruction and asserts the depth-type contract on every task over the whole of `src/mc.mc`:
+  **32137 tasks, 40238 depths, object byte-identical to the bundled machine's**.
+  `scripts/check-lex.sh` gained the `seed-skip` escape `check-asm.sh`/`check-ast.sh` already had
+  (risk 6 / D6), unused today. New `scripts/check-inert.sh`: the M17-step-A proof as a script.
+  — core cost, measured (`git diff --numstat`, added lines / added lines that are neither a
+  comment nor blank): `ast.mc` +58/37, `hooks.mc` +117/45, `parse.mc` +41/15, `gen_resolve.mc`
+  +11/5, `gen_walk.mc` +73/34 = **300 added lines, 136 of code**, against the spec's 132 for this
+  half. The 164 lines of comment are this repository's density, not extra mechanism.
+  `stage0/` untouched, 2846/3000.
+  **The gate is that nothing moves, and it held.** `make check` green end to end (RC 0):
+  `test` 32/32, `check-lex` 93/93 (1 skipped), `check-ast` 93/93, `check-asm` 93/93, `check-obj`
+  **32/32 identical to the frozen seed**, `check-bundle` (52 files), `bootstrap` at a fixed point
+  (`mc2.o == mc3.o`, `--dump-asm` diff between `mc1` and `mc2` empty), `check-surface` 32/32 plus
+  every M24 case, `test-exe` 32/32, `check-mc` 7/7, `check-standalone`, `check-toml`,
+  `check-build`, `check-limits` **17/17 under 90%**, `check-minimal`, `test-linux` 33/33,
+  `test-linux-x86_64` 30/30, `test-windows`, `test-windows-x86_64`, `check-examples`,
+  `check-lang`, `check-conc`, `check-desktop`, `check-docs` (155 symbols, 17 flags, 16 TOML keys,
+  10 directives, 47 samples, 196 links), `site` 75 pages, `check-site` 0 link problems.
+  Plus `scripts/check-inert.sh`: the compiler from before the step and the one after produce
+  **byte-identical objects for all 32 `tests/*.mc`, for `src/mc.mc`, and -- through the taught
+  compiler each of them builds -- for `examples/api`, `examples/lang`, `examples/conc` and
+  `examples/desktop`**. All five goldens rewritten once.
+  Docs: `docs/reference/machine.md` (contract **version 3**, § 3 and § 4 rewritten -- the old
+  thirteen `mf_*` float slots and `#machine` are DROPPED, with the three reasons recorded),
+  `docs/reference/hooks.md` (§ 3 is now six word registrations and three node hooks; the
+  derivation recipe corrected), `docs/reference/language.md` § 2 and § 11,
+  `docs/reference/diagnostics.md`, `docs/reference/bundle.md`, `docs/build.md`, and the new
+  `docs/guide/96-a-new-primitive.md`.
+- Next: M18 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
   sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is
   one more motivating case).
   Update this section when each milestone closes.

@@ -3,6 +3,7 @@ embed_demo	tests/mc/bundle/embed_demo.mc
 embed_demo.txt	tests/mc/bundle/embed_demo.txt
 io	lib/io.mc
 lz	src/lz.mc
+machine_probe	lib/machine_probe.mc
 mc/arena	src/arena.mc
 mc/ast	src/ast.mc
 mc/backend_coff	src/backend_coff.mc
@@ -33,6 +34,8 @@ mc/stubs	src/stubs.mc
 mc/sysroot	src/sysroot.mc
 mc/sysroots	src/sysroots.mc
 mc/toml	src/toml.mc
+mc_lit_nop	lib/mc_lit_nop.mc
+mc_probe	lib/mc_probe.mc
 mc_syntax_demo	lib/mc_syntax_demo.mc
 pass_demo	lib/pass_demo.mc
 prelude	lib/prelude.mc
@@ -46,5 +49,7 @@ sys_windows_start	lib/sys_windows_start.mc
 user_default	lib/user_default.mc
 user_demo	lib/user_demo.mc
 user_dupop	lib/user_dupop.mc
+user_dupty	lib/user_dupty.mc
+user_lit_nop	lib/user_lit_nop.mc
 user_syntax_demo	lib/user_syntax_demo.mc
 user_tokadd	lib/user_tokadd.mc

@@ -60,14 +60,16 @@ refs="$tmp/refs"
 cat docs/reference/*.md > "$refs" 2>/dev/null || { echo "FAIL: docs/reference/ is empty"; exit 1; }
 
 # Public API: the definitions in src/*.mc whose name is one of the families the
-# spec names -- p_*, syntax*, type_alias, pass, backend*, machine*, sec_*, sym_*,
+# spec names -- p_*, syntax*, type_*, pass, backend*, machine*, sec_*, sym_*,
 # reloc_add, gen_* -- plus on_*, the M21.5 hook family the spec's literal list
 # predates (on_stmt fits none of the other prefixes and was uncovered), and
 # decl_*, the M31 family that answers about a declaration the parser already read,
-# and host_*, the M37 host layer -- the compiler's own operating system. A symbol counts as documented when the reference mentions it
+# and host_*, the M37 host layer -- the compiler's own operating system, and
+# M24's three Tier 4 families: type_* (the registry widened from the single
+# type_alias the M26 list named), intrinsic* and walk_* (the depth type). A symbol counts as documented when the reference mentions it
 # as a call (`name(`), which is how every entry in hooks.md and objects.md is
 # written; a bare word in prose is not enough.
-grep -hoE '^(void|i64|uptr|u8|u16|u32|u64) +(p_|syntax|type_alias|pass|backend|machine|sec_|sym_|reloc_add|gen_|on_|decl_|host_)[A-Za-z_0-9]*\(' src/*.mc \
+grep -hoE '^(void|i64|uptr|u8|u16|u32|u64) +(p_|syntax|type_|pass|backend|machine|sec_|sym_|reloc_add|gen_|on_|decl_|host_|intrinsic|walk_)[A-Za-z_0-9]*\(' src/*.mc \
     | sed -E 's/^[a-z0-9]+ +//; s/\($//' | sort -u > "$tmp/syms"
 
 missing=""

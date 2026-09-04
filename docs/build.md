@@ -1313,6 +1313,10 @@ examples/api/mc.toml:46:13: tolerance must be between 0 and 1
 
 ### What this replaces
 
+The list has grown twice since: `types` (M24's type registry) is one more arena block under the
+same rule, and it is deliberately NOT charged against any seed constant — the seven core types are
+not in it, so a program the seed compiles never puts a row there.
+
 `MAX*` is gone from `src/`, with four exceptions that are not tables that scale with a program:
 `MAXPARAMS` (12, the ABI — 8 in registers and 9..12 on the stack since M38; the frozen seed keeps
 8, a documented divergence of the same kind as `MAXSTRS`/`MAXGLOBALS`/`MAXOPEN`, because `stage0`
@@ -1332,10 +1336,10 @@ failing at 90%:
 ```
 $ scripts/check-limits.sh build/mc1
 ok   tokens        51 / 2048     2%  (MAXTOK)
-ok   defines      634 / 2048    30%  (MAXDEFS)
-ok   funcs       1002 / 2048    48%  (MAXFUNCS)
-ok   globals      320 / 512     62%  (MAXGLOBALS)
-ok   strings      648 / 2048    31%  (MAXSTRS)
+ok   defines      676 / 2048    33%  (MAXDEFS)
+ok   funcs       1070 / 2048    52%  (MAXFUNCS)
+ok   globals      323 / 512     63%  (MAXGLOBALS)
+ok   strings      678 / 2048    33%  (MAXSTRS)
 ...
 ok   heap        29Mi / 64Mi    46%  (HEAP_SIZE, max RSS of build/mc0)
 17/17 seed limits under 90%

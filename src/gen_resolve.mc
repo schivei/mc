@@ -393,6 +393,13 @@ void res_call(i64 n) {
     set_res_type(n, fs_type(fs_at(fi)));
 }
 
+// M24: the type of an N_INT. TY_I64 for every literal the core builds; a module
+// that answered a syntax_lit with a node of its own type keeps it.
+i64 res_lit_type(i64 n) {
+    if (nd_type(n) >= TY_MAX) return nd_type(n);
+    return TY_I64;
+}
+
 // a comparison yields i64; everything else keeps the left operand's type, which
 // is the rule the divide and the shift read to pick their signed form
 void res_binary(i64 n) {
@@ -406,7 +413,11 @@ void res_binary(i64 n) {
 
 void res_expr(i64 n) {
     i64 k = nd_kind(n);
-    if (k == N_INT)   { set_res_type(n, TY_I64); return; }
+    // M24: a literal keeps the type the parser gave it when a module gave it
+    // one. res_expr used to answer TY_I64 unconditionally, which threw a taught
+    // literal's type away before the walker or any machine could see it -- one
+    // line, and load-bearing for every type_new family.
+    if (k == N_INT)   { set_res_type(n, res_lit_type(n)); return; }
     if (k == N_STR)   { set_res_type(n, TY_UPTR); return; }
     if (k == N_IDENT) { res_ident(n); return; }
     if (k == N_ADDR)  { res_addr(n); return; }

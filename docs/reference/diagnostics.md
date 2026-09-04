@@ -166,10 +166,14 @@ notatype main() { return 0; }
 | `syntax_infix handler produced no expression` | the same for an operator handler | return the resulting node |
 | `operator already taught` | a second `syntax_infix` on the same token | a second registration is a mistake, not an override. A later `#infix` on the token *is* allowed: it clears the handler and the template wins |
 | `cannot redefine core keyword` | `syntax`/`syntax_stmt`/`syntax_expr`/`syntax_infix`/`type_alias` on a core word | choose another word |
-| `type_alias with invalid type` | the base is not one of `TY_VOID..TY_UPTR` | use a core type constant |
+| `type_alias with invalid type` | the base is not a type id that exists — one of `TY_VOID..TY_UPTR`, or one a `type_new` returned | use a core type constant, or the id `type_new` gave you |
+| `type_new with a width below 1` | M24: a registered type has to occupy at least one byte | the detail is the type's name |
+| `type_new with an alignment below 1` | the same for the alignment | |
+| `type_new with an unknown kind` | the kind is not `TK_INT`, `TK_FLOAT`, `TK_WIDE` or `TK_OPAQUE` | |
 | `p_skip_balanced expects the opening token` | the parse was not sitting on the opening token | position the handler on the `{`/`<`/`(` before calling |
 | `unterminated region` | `p_skip_balanced` reached end of file — reported at the **opening** token | close the region; the position points at what never closed |
 | `region crosses a file boundary` | the region began in one source and ended in another | a span is a slice of one buffer; keep a recorded region inside one file |
+| `p_take_lit outside the source token` | M24: a `syntax_lit` handler said its literal ends before the cursor, past the end of the source, or on a token that was not just lexed from the source being read | same rule as `p_resplit_punct`: never a string, never a substituted identifier |
 | `p_resplit_punct expects a longer punctuation token` | the current token is not a punctuation token longer than `n`, freshly lexed from the source | it works only on a token just read from the source being lexed — never a string, never a substituted identifier |
 | `p_resplit_punct: unknown punctuation` | the first `n` bytes are not a registered lexeme | split at a boundary that is a real token, as `>>` → `>` |
 
@@ -197,6 +201,7 @@ notatype main() { return 0; }
 | `instruction with no encoder` / `instruction with no dump` | an `I_*` opcode the encoder or the dumper does not handle | the same, one layer down: a backend produced an instruction the core cannot encode |
 | `x86 instruction with no encoder` / `x86 instruction with no dump` | the same two, from the x86-64 machine and its `X_*` opcodes. There is no third: `MTASK_INS_SIZE` is the encoder over a scratch buffer, so an opcode with no encoder has no size either | see [machine.md](machine.md) |
 | `no machine registered` | the walker was asked to lower with no machine table in effect | `main()` registers both and calls `machine_use("arm64")`; a taught compiler that replaced the table has to register one |
+| `machine_slot outside the task table` | M24: the task index handed to `machine_slot` is not in `0 .. MTASK_COUNT - 1` | the slot list is [machine.md](machine.md) § 2 |
 | `unknown machine` | `--machine=NAME`, or a backend's `machine_use`, named something not registered | `arm64` and `x86_64` are built in; the detail is the name |
 | `add/sub immediate out of 12 bits` / `cmp immediate out of 12 bits` | a folded immediate does not fit the instruction | materialise it into a variable first |
 | `immediate and mask not supported` | an `and` with an immediate the bitmask encoding cannot express | put the mask in a variable |
