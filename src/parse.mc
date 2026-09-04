@@ -674,15 +674,25 @@ void name_fix(i64 n, uptr ph, uptr to, i64 nn) {
 }
 
 // ---- expressions ----
+// M41: one lookup, then one test. type_disable(ty) removed the WORD from the
+// surface, and every position that names a type -- global, local, parameter,
+// extern, cast, array element, p_type() -- comes through here, so this is the
+// only place that has to know. An alias of a disabled type is refused too,
+// under the core type's own name: what was removed is the width, not a
+// spelling.
 i64 type_of_token(i64 id) {
-    if (id == K_U8)   return TY_U8;
-    if (id == K_U16)  return TY_U16;
-    if (id == K_U32)  return TY_U32;
-    if (id == K_U64)  return TY_U64;
-    if (id == K_I64)  return TY_I64;
-    if (id == K_UPTR) return TY_UPTR;
-    if (id == K_VOID) return TY_VOID;
-    return alias_find(id);               // Tier 3: type_alias(); -1 if there is none
+    i64 t = -1;
+    if (id == K_U8)        t = TY_U8;
+    else if (id == K_U16)  t = TY_U16;
+    else if (id == K_U32)  t = TY_U32;
+    else if (id == K_U64)  t = TY_U64;
+    else if (id == K_I64)  t = TY_I64;
+    else if (id == K_UPTR) t = TY_UPTR;
+    else if (id == K_VOID) t = TY_VOID;
+    else t = alias_find(id);             // Tier 3: type_alias(); -1 if there is none
+    if (t >= 0 && type_disabled(t))
+        err_at2(tok_file(cur), tok_line(cur), type_name(t), "removed by this compiler");
+    return t;
 }
 
 i64 parse_primary() {

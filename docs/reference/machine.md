@@ -486,3 +486,40 @@ own, in the table above and in [objects.md](objects.md) § 4b: parameters untouc
 `rdi rsi rdx rcx r8 r9`, `rax` untouched by `leave; ret`, depths in `r8..r11`, scratch
 `rax`/`rcx`/`rdx`, `rbx` and `r12..r15` never written, an unconditional `push rbp; mov rbp, rsp`
 frame record. A runtime written with `#opcode` is bound to one instruction set anyway.
+
+## 6. The declared word (M41)
+
+How wide a pointer is is the one fixed decision of the core a machine may override. It is declared
+from `user_init()`, not from the task table — a width is not a task, and the walker needs the
+answer before it lowers the first slot:
+
+```
+void user_init() {
+    machine_avr_init();
+    type_set_width(TY_UPTR, 2);
+}
+```
+
+`type_set_width(ty, w)` accepts `TY_UPTR` only, with `w` in {1, 2, 4, 8}; every other type is
+refused with `type_set_width only declares the width of uptr` (`i64` folds in 64 bits at parse
+time and would disagree with the machine). Two functions in `src/gen_walk.mc` read it, and they
+are the whole of what follows:
+
+| function | value | what uses it |
+|---|---|---|
+| `walk_word()` | `type_width(TY_UPTR)`, 8 by default | the granule `slot_new` rounds a frame slot to; the size of the pointer a string literal writes into a `uptr[]` initializer, with an `R_UNSIGNED` relocation of length log2 of it |
+| `walk_align()` | twice the word, 16 by default | the alignment of a frame, of a local array and of a zerofill placement |
+
+Inert with nothing declared: width 8, granule 8, alignment 16, an 8-byte initializer — byte for
+byte what the walker did before the mechanism existed, which is what
+`scripts/check-inert.sh` proves over the whole corpus.
+
+A machine does not have to consent to the width: it is the *walker* that changes, and the machine
+sees the smaller offsets in `MTASK_LOCAL_LOAD`, `MTASK_LOCAL_STORE`, `MTASK_LOCAL_ADDR` and
+`MTASK_FRAME_FIX` like any other frame. What it must do is honour them — a machine whose load
+instruction cannot reach an odd offset has to say so itself.
+
+The trap, stated once: `uptr t[1000]` is 8000 bytes and refused as `local array too large` on
+arm64, and 2000 bytes and accepted at width 2. The same source, two answers. `sizeof` does not
+exist in this language, so a record laid out with `#define` offsets has to write them as `N * W`
+with a per-dialect `W`.

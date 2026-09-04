@@ -170,6 +170,11 @@ notatype main() { return 0; }
 | `type_new with a width below 1` | M24: a registered type has to occupy at least one byte | the detail is the type's name |
 | `type_new with an alignment below 1` | the same for the alignment | |
 | `type_new with an unknown kind` | the kind is not `TK_INT`, `TK_FLOAT`, `TK_WIDE` or `TK_OPAQUE` | |
+| `type_set_width only declares the width of uptr` | M41: `type_set_width` with any `ty` but `TY_UPTR` | `i64` folds in 64 bits at parse time and u8/u16/u32/u64 are their own names; register a new primitive with `type_new()` instead |
+| `uptr width must be 1, 2, 4 or 8` | M41: `type_set_width(TY_UPTR, w)` with any other `w` | a word the relocation length can be the log2 of |
+| `type_disable with an unknown type` | M41: the id is negative or past `type_count()` | pass a `TY_*` constant, or an id `type_new` returned |
+| `type_disable beyond the mask` | M41: a type id above 62 — the disable set is one `i64` of bits | disable it before registering 60 other types, or leave the word in |
+| `too many intrinsic_disable` | M41: more than 32 `intrinsic_disable()` names | the ceiling is fixed on purpose, like the subcommand table |
 | `too many subcommands` | M41: more than 16 `subcommand()` registrations | the ceiling is fixed on purpose: the number of subcommands is a property of the compiler |
 | `too many on_plan hooks` | M41: more than 8 `on_plan()` registrations | same |
 | `p_skip_balanced expects the opening token` | the parse was not sitting on the opening token | position the handler on the `{`/`<`/`(` before calling |
@@ -203,6 +208,7 @@ notatype main() { return 0; }
 | `instruction with no encoder` / `instruction with no dump` | an `I_*` opcode the encoder or the dumper does not handle | the same, one layer down: a backend produced an instruction the core cannot encode |
 | `x86 instruction with no encoder` / `x86 instruction with no dump` | the same two, from the x86-64 machine and its `X_*` opcodes. There is no third: `MTASK_INS_SIZE` is the encoder over a scratch buffer, so an opcode with no encoder has no size either | see [machine.md](machine.md) |
 | `no machine registered` | the walker was asked to lower with no machine table in effect. Since M41 `mc_main` says it before `gen_lower` as well, so a compiler that registered none fails at a defined point instead of mid-lowering | `main()` registers both and `mc_main` makes the host's current; a recreated compiler registers its own from `user_init()` |
+| `<word>: removed by this compiler` | M41: a type word `type_disable()` removed, at the token that used it, or an intrinsic name `intrinsic_disable()` removed, at the call. The detail is the word | this dialect does not have it. `type_disable` removes the WORD, not the type: `ld32()` still yields `TY_U32` internally |
 | `cannot shadow a core intrinsic` | M24: `intrinsic()` was given the name of a built-in one (`ld64`, `st64`, `emit`, `reloc`, `callp`, …), which the dispatch would never reach | pick another name; the detail is the one asked for |
 | `intrinsic with an impossible arity` | the arity is negative or above `MAXPARAMS` | |
 | `intrinsic with an unknown result type` | the result type is not a type id that exists | register the type first |

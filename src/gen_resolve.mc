@@ -431,6 +431,10 @@ i64 intrinsic_find(uptr name) {
 // then a declared signature. emit(), reloc() and a #opcode call take CONSTANTS,
 // never lowered expressions, so their arguments are not resolved here either.
 void res_call(i64 n) {
+    // M41: intrinsic_disable("ld64") removes the NAME -- core or taught --
+    // before any dispatch sees it, so the refusal is the same for both.
+    if (intrin_disabled(nd_name(n)))
+        err_at2(nd_file(n), nd_line(n), nd_name(n), "removed by this compiler");
     i64 in = intrin_id(nd_name(n));
     if (in) {
         set_res_bind(n, RK_INTRIN, in);

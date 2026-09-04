@@ -430,6 +430,79 @@ i64 type_new(uptr name, i64 width, i64 align, i64 kind) {
     return t;
 }
 
+// ---- M41: the machine-declared width of uptr ----
+// The one fixed decision of the core a module may override, and the reason M24
+// D8 (which refused type_set_width for having no caller) is reversed: M40's AVR
+// module is the caller. It follows into src/gen_walk.mc's slot granule, frame
+// alignment and pointer initializer, and into src/parse.mc's array bound --
+// M40 § 1b C1/C3/C4/C5, and nothing else.
+//
+// Every other type refuses, deliberately: `i64` folds in 64 bits at parse time
+// (src/parse.mc, fold_binary) and would disagree with the machine, and u8/u16/
+// u32/u64 are their own names. A module that wants a different primitive
+// registers one with type_new().
+//
+// Declared from user_init(), before a byte of the source is read, and inert
+// when nobody calls it: the width stays 8, the granule 8 and the alignment 16.
+void type_set_width(i64 ty, i64 w) {
+    if (ty != TY_UPTR) die("type_set_width only declares the width of uptr");
+    if (w != 1 && w != 2 && w != 4 && w != 8) die("uptr width must be 1, 2, 4 or 8");
+    ty_set_uptr_width(w);
+}
+
+// ---- M41: removing a core primitive ----
+// Two removals, both consulted before the core's own answer, both meant for a
+// RECREATED compiler that does not want a word its target cannot honour.
+//
+// type_disable(TY_U32) removes the WORD `u32` from the surface: every position
+// that goes through type_of_token refuses it with `u32: removed by this
+// compiler`, at the token. It does NOT remove the type from the model -- ld8()
+// still yields TY_U8, type_width(TY_U32) is still 4 and a machine still sees
+// the id -- so read it as "this dialect has no such declaration" and never as
+// "the type is gone".
+//
+// Disabling i64, uptr or void is permitted and makes the language unusable: a
+// literal is TY_I64, `&f` and every pointer are TY_UPTR, and a function with no
+// result is TY_VOID. There is no special case; a compiler that does it finds
+// out on its first declaration.
+void type_disable(i64 ty) {
+    if (ty < 0 || ty >= type_count()) die("type_disable with an unknown type");
+    ty_disable_set(ty);
+}
+
+// intrinsic_disable("ld64") removes the NAME: a call is refused with
+// `ld64: removed by this compiler`, at the call site. It covers the core
+// intrinsics (src/gen_resolve.mc's IN_*) and the ones intrinsic() registered,
+// by name, so the rule is the same for both. The named caller is M40 § 2B: on a
+// two-byte word `ld64`/`st64` are silently wrong, and a portable source uses
+// the module's own `ldw`/`stw` instead -- which only works if the wide pair can
+// be made unreachable.
+//
+// Fixed ceiling, like the subcommand table: what a compiler removes is a
+// property of the compiler.
+#define MAXNOINTRIN 32
+
+uptr nointrin[MAXNOINTRIN];
+i64  nnointrin = 0;
+
+void intrinsic_disable(uptr name) {
+    if (nnointrin >= MAXNOINTRIN) die2("too many intrinsic_disable", name);
+    st64(nointrin + nnointrin * 8, name);
+    nnointrin = nnointrin + 1;
+}
+
+// 1 when `name` was passed to intrinsic_disable; src/gen_resolve.mc asks before
+// it dispatches a call to anything at all
+i64 intrin_disabled(uptr name) {
+    i64 i = 0;
+    loop {
+        if (i >= nnointrin) break;
+        if (str_eq(ld64(nointrin + i * 8), name)) return 1;
+        i = i + 1;
+    }
+    return 0;
+}
+
 // type of alias `id`, or -1 if the token is not an alias; the last registration wins
 i64 alias_find(i64 id) {
     i64 i = nalias - 1;

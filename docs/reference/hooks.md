@@ -865,6 +865,68 @@ Unregistered, nothing is pre-sized and the tables grow from the seeds in
 `src/arena.mc`. That is not a degradation to be afraid of: it is what
 `src/astdump.mc` has always done.
 
+### `void type_disable(i64 ty)`
+
+Removes the **word** from the surface. Every position that names a type —
+global, local, parameter, `extern`, cast, array element, `p_type()` — goes
+through `type_of_token`, and after `type_disable(TY_U32)` each of them refuses
+`u32` with
+
+```
+prog.mc:3: u32: removed by this compiler
+```
+
+**It does not remove the type from the model.** `ld32()` still yields `TY_U32`,
+`type_width(TY_U32)` is still 4, `type_name(TY_U32)` is still `u32` and a
+machine still sees the id. Read it as "this dialect has no such declaration",
+never as "the type is gone" — a `type_alias` of a disabled type is refused too,
+under the core type's own name.
+
+The read side is `type_disabled(t)`, which is what `type_of_token` asks and what
+a module can ask too; the write side is this function and nothing else.
+
+Disabling `TY_I64`, `TY_UPTR` or `TY_VOID` is permitted and makes the language
+unusable: a literal is `TY_I64`, `&f` and every pointer are `TY_UPTR`, and a
+function with no result is `TY_VOID`. There is no special case.
+
+### `void intrinsic_disable(uptr name)`
+
+Removes the **name**: a call to it is refused at the call site with
+
+```
+prog.mc:4: ld64: removed by this compiler
+```
+
+It covers the core intrinsics (`emit`, `reloc`, `callp`, `ld8`..`st64`) and the
+ones `intrinsic()` registered, by name, so the rule is the same for both. The
+named caller is a target whose word is narrower than eight bytes: there,
+`ld64`/`st64` are silently wrong, and the dialect offers its own `ldw`/`stw`
+(`intrinsic()`) after making the wide pair unreachable.
+
+The ceiling is fixed (32), for the same reason as the subcommand table.
+
+### `void type_set_width(i64 ty, i64 w)`
+
+Declares how wide a pointer is; `ty` must be `TY_UPTR` and `w` one of 1, 2, 4,
+8. Every other type is refused with `type_set_width only declares the width of
+uptr`: `i64` folds in 64 bits at parse time and would disagree with the
+machine, and `u8`/`u16`/`u32`/`u64` are their own names. A module that wants a
+different primitive registers one with `type_new()`.
+
+What follows it, all in `src/gen_walk.mc` and all through `type_width(TY_UPTR)`:
+
+* `walk_word()` — the granule `slot_new` rounds a frame slot to;
+* `walk_align()` — twice the word: the alignment of a frame, of a local array
+  and of a zerofill placement;
+* the pointer a string literal writes into a `uptr[]` initializer: `w` zero
+  bytes and an `R_UNSIGNED` relocation whose length is log2 of `w`;
+* `src/parse.mc`'s local-array bound, for free.
+
+Inert when nobody calls it: the width is 8, the granule 8, the alignment 16 and
+the initializer 8 bytes — byte for byte what the compiler did before the
+mechanism existed. Declare it from `user_init()`, before a byte of the source
+is read.
+
 ### `i64 mc_main(i64 argc, uptr argv, uptr envp)`
 
 Not a registration, but the other half of the same idea: the whole command line

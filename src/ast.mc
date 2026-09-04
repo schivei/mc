@@ -258,11 +258,39 @@ uptr type_name(i64 t) {
     return "?";
 }
 
-// width in bytes of a type; uptr/i64/u64 are 8, a registered one says its own
+// M41: the machine-declared width of uptr. It is the ONE fixed decision of the
+// core a module may override (type_set_width, src/hooks.mc; M40 § 1b C1), and
+// it is 8 -- exactly what this file answered before -- until something says
+// otherwise from user_init(). Everything that needs a word reads it through
+// type_width(TY_UPTR): src/gen_walk.mc's slot granule, frame alignment and
+// pointer initializer, and src/parse.mc's local-array bound.
+i64 ty_uptr_w = 8;
+
+void ty_set_uptr_width(i64 w) { ty_uptr_w = w; }
+
+// M41: the words type_disable() took out of the surface, one bit per type id.
+// A bitmask, so the test at the head of type_of_token costs a shift and an and.
+// The type itself is untouched: ld8() still yields TY_U8 and type_width still
+// answers for it -- what is gone is the WORD (docs/reference/hooks.md).
+i64 ty_off = 0;
+
+void ty_disable_set(i64 t) {
+    if (t > 62) die("type_disable beyond the mask");
+    ty_off = ty_off | (1 << t);
+}
+
+i64 type_disabled(i64 t) {
+    if (t < 0 || t > 62) return 0;
+    return (ty_off >> t) & 1;
+}
+
+// width in bytes of a type; i64/u64 are 8, uptr is the declared word, and a
+// registered one says its own
 i64 type_width(i64 t) {
     if (t == TY_U8)  return 1;
     if (t == TY_U16) return 2;
     if (t == TY_U32) return 4;
+    if (t == TY_UPTR) return ty_uptr_w;
     if (ty_registered(t)) return ld64(ty_w + (t - TY_MAX) * 8);
     return 8;
 }
