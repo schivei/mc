@@ -1,0 +1,59 @@
+# mc.linux.toml — the same example, built for and ON a Linux host (M37,
+# docs/guide/90-linux-host.md).
+#
+#   mc build examples/api --config examples/api/mc.linux.toml
+#
+# What differs from mc.toml:
+#
+#   [target]    linux/aarch64
+#   [linker]    ld.lld against musl -- on Linux this section also links the
+#               TAUGHT COMPILER, because the host has no `--exe` backend
+#   [libs]      SQLite is a static archive here, not a dylib. `#dylib` in
+#               lib/sqlite.mc is a Mach-O concept and is simply ignored by the
+#               ELF writer; the [externs] mapping below is what a static link
+#               needs, and the archive is an ordinary [linker] argument.
+#
+# NOT EXERCISED IN CI, and the reason is worth writing down: the musl sysroot
+# scripts/sysroot-linux.sh builds is `apk add musl-dev`, four files, and it has
+# no SQLite. A machine that wants to run this needs `apk add sqlite-static`
+# (Alpine) or the distribution's `libsqlite3.a` next to the crt objects, and
+# then `{sysroot}/libsqlite3.a` below resolves. Without it ld.lld reports the
+# undefined `sqlite3_*` symbols and the build stops -- which is the honest
+# failure, not a silent one.
+
+[project]
+name  = "api"
+entry = "main.mc"
+out   = "build/api"
+kind  = "exe"
+
+[target]
+os   = "linux"
+arch = "aarch64"
+
+[compiler]
+modules = ["mc-api.mc"]
+out     = "build/mc-api"
+
+[sysroot]
+path = "../../build/sysroot/linux-aarch64"
+
+[linker]
+cmd  = "ld.lld"
+args = ["-o", "{out}", "{sysroot}/crt1.o", "{sysroot}/crti.o", "{obj}",
+        "{sysroot}/libsqlite3.a", "{sysroot}/libc.a", "{sysroot}/crtn.o"]
+
+# The ordinals only matter to the Mach-O writer; on ELF the mapping is inert and
+# the archive above is what resolves the symbols. Kept so one source tree reads
+# the same on both systems.
+[libs]
+sqlite3 = "libsqlite3.a"
+
+[externs]
+"sqlite3_*" = "sqlite3"
+
+[include]
+paths = ["lib"]
+
+[limits]
+tolerance = 0.25

@@ -89,16 +89,13 @@ void mx_unlock(uptr m) {
     pthread_mutex_unlock(m);
 }
 
-// a counting semaphore. POSIX unnamed semaphores are stubbed out on macOS, so
-// this is libdispatch's; on Linux the same three functions wrap sem_init/wait/post.
-uptr gate_new(i64 value) {
-    uptr s = dispatch_semaphore_create(value);
-    if (s == 0) conc_die("dispatch_semaphore_create failed");
-    return s;
-}
-
-void gate_wait(uptr s) { dispatch_semaphore_wait(s, DISPATCH_FOREVER); }
-void gate_post(uptr s) { dispatch_semaphore_signal(s); }
+// The counting semaphore -- gate_new / gate_wait / gate_post -- is the one
+// primitive with no portable spelling: POSIX unnamed semaphores are stubbed out
+// on macOS (sem_init returns ENOSYS) and libdispatch does not exist on Linux.
+// M37 moved the three of them into the platform layer, next to the pthread
+// declarations they belong with: lib/macos/thread.mc has the libdispatch ones,
+// lib/linux/thread.mc the sem_init/sem_wait/sem_post ones, and [include].paths
+// in mc.toml (or mc.linux.toml) is what picks the file.
 
 // ---- channel: a bounded ring, one mutex and two condition variables ----
 

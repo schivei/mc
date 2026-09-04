@@ -40,5 +40,9 @@ tolerance = 1.0
 
 # `#include "lib/prelude.lx"` already resolves against main.lx's own directory;
 # this root is what lets a file be moved into lib/ and included by bare name.
+# M37: `lib/macos` is the platform layer -- lib/rt.mc writes
+# `#include "thread.mc"` and there is no thread.mc next to it any more, so this
+# root is what picks the libdispatch semaphores and the macOS pthread
+# initializers. mc.linux.toml is the same file with `lib/linux` instead.
 [include]
-paths = ["lib"]
+paths = ["lib", "lib/macos"]
