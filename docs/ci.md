@@ -218,16 +218,23 @@ The tests run from the repository root, like the Linux ones, because `025-lineco
 source by a relative path — and so does `072-six-params`, which opens its own source through
 `CreateFileA` to exercise a seven-argument call.
 
-### Job `windows-x86_64` — `windows-latest`
+### Job `windows-x86_64` — `windows-2025`
 
 M20's leg, and a copy of the one above with the artifact name and the LLVM assets changed: it
 downloads `windows-x86_64-objects` and runs
-`scripts/test-windows.sh --arch x86_64 --run-only build/windows-objs-x86_64`. `windows-latest` is
-an x86-64 runner and ships LLVM under `C:\Program Files\LLVM`, so the **Tool facts** step
+`scripts/test-windows.sh --arch x86_64 --run-only build/windows-objs-x86_64`. The runner ships
+LLVM under `C:\Program Files\LLVM`, so the **Tool facts** step
 normally finds `lld-link` and nothing is downloaded; the download branch is kept, with the x64
 assets (`clang+llvm-<ver>-x86_64-pc-windows-msvc.tar.xz`, then `LLVM-<ver>-win64.exe`), and it
 fails loudly rather than skipping, for the same reason: this is the only place a `windows/x86_64`
 binary is ever executed.
+
+M38 pins it to `windows-2025` (Decision 9): `windows-latest` moves under the project, and the
+Windows *host* job below has to name an image anyway.
+
+### Jobs `windows-arm64-host` / `windows-x86-64-host` — `windows-11-arm`, `windows-2025`
+
+M38, and the runtime proof of it: see § M38 below.
 
 ---
 
@@ -403,14 +410,19 @@ seed → `mc1l` → `mc2l` → `mc3l`, `cmp`, the golden, and the whole suite na
 Linux equivalent of the macOS job's `scripts/test.sh dist/mc`, and stronger — the artifact is only
 packaged once it has reproduced itself. It uploads `release-linux-arm64` / `release-linux-x86_64`.
 
-Job `build-future-hosts` is `if: false`. Since M37 it holds only the two Windows **host** builds —
-`windows-arm64`, `windows-x86_64` — and turns on when **`mc` itself runs on Windows**. Note what
-these are not: M19 and M20 gave the Windows arm64 and x64 *targets*, which are a different thing
-from a *host*. M20 does not enable them and ships no Windows-hosted `mc`; that is M38.
+Job `build-windows` is the same story on Windows (M38): the macOS job also cross-compiles
+`make mc-windows-obj` / `make mc-windows-x86_64-obj` plus the two sysroots (`make mcrt-windows`,
+`make mcrt-windows-x86_64`) and uploads them as `mc-windows-objects`; a two-entry matrix on
+`windows-11-arm` and `windows-2025` links each object with `scripts/link-windows.sh`, checks
+`mc --host`, runs `scripts/bootstrap-windows.sh` with the binary being shipped — seed → `mc1w` →
+`mc2w` → `mc3w`, `cmp`, the golden, the suite, the cross proof — and packages it. `build-future-hosts`
+is gone: there is no future host left in it.
 
-Job `publish` needs both `build` and `build-linux`, collects the three `release-*` artifacts,
+Job `publish` needs `build`, `build-linux` and `build-windows`, collects the five `release-*`
+artifacts,
 takes the **tag's annotation as the release body**, appends
-an install snippet and the checksums, and calls `gh release create --verify-tag`. A version with a
+an install snippet (macOS, Linux and Windows) and the checksums, and calls
+`gh release create --verify-tag`. A version with a
 `-` suffix (`0.2.0-rc1`) is published as a pre-release. Only this job has `contents: write`.
 
 ---
@@ -487,8 +499,9 @@ directly. Four decisions:
 
 - **required checks**: `make check (macOS arm64)`, `Link and run the suite (linux/arm64)`,
   `Link and run the suite (linux/x86_64)`, `Link and run the suite (windows/arm64)`, since M20
-  `Link and run the suite (windows/x86_64)`, and, since M37, `mc on linux/arm64 host` and
-  `mc on linux/x86_64 host` — seven of the job names in `ci.yml`;
+  `Link and run the suite (windows/x86_64)`, since M37 `mc on linux/arm64 host` and
+  `mc on linux/x86_64 host`, and, since M38, `mc on windows/arm64 host` and
+  `mc on windows/x86_64 host` — nine of the job names in `ci.yml`;
 - **strict (up to date before merging) is off**: `mc` builds are minutes long and the project is
   one person's; requiring every pull request to re-run against a moved `main` buys little and
   costs a rebase loop. `release.yml` rebuilds and re-runs the whole suite from the tag anyway;
@@ -512,7 +525,11 @@ gh api -X PUT repos/schivei/mc/branches/main/protection --input - <<'JSON'
   "required_status_checks": {
     "strict": false,
     "contexts": ["make check (macOS arm64)", "Link and run the suite (linux/arm64)",
-                 "mc on linux/arm64 host", "mc on linux/x86_64 host"]
+                 "Link and run the suite (linux/x86_64)",
+                 "Link and run the suite (windows/arm64)",
+                 "Link and run the suite (windows/x86_64)",
+                 "mc on linux/arm64 host", "mc on linux/x86_64 host",
+                 "mc on windows/arm64 host", "mc on windows/x86_64 host"]
   },
   "enforce_admins": false,
   "required_pull_request_reviews": {
@@ -714,9 +731,92 @@ mc-<VER>-linux-arm64.tar.gz
 mc-<VER>-linux-x86_64.tar.gz
 ```
 
-`build-future-hosts` still exists with `if: false`, now holding only the two Windows entries,
-which wait for a Windows *host* build of `mc` (M19 and M20 gave the Windows *targets*).
-
 `scripts/bootstrap-linux.sh` downloads exactly those assets when a Linux machine has no seed: the
 release is not just a convenience, it is the entry point of the Linux chain
 ([bootstrap.md](bootstrap.md) § The Linux chain).
+
+
+---
+
+## M38 — `mc` hosted on Windows, in CI
+
+Two more jobs, one per architecture, in exactly the shape M37 gave the Linux ones: not "a COFF
+object was produced" but "the compiler ran there and reproduced itself".
+
+| job | runner | what it does |
+|---|---|---|
+| `mc on windows/arm64 host` | `windows-11-arm` | downloads `mc-windows-hosts` (the compiler object and the sysroot), `windows-arm64-objects` (the suite) and the macOS `build/mc2.o`, obtains `lld-link`, installs GNU make, **links** the object, runs `make check SEED=…` and the cross proof |
+| `mc on windows/x86_64 host` | `windows-2025` | the same with `build/mc-windows-x86_64.obj` |
+
+`make check` on a Windows host starts with `scripts/bootstrap-windows.sh` — seed → `mc1w` →
+`mc2w` → `mc3w`, `cmp`, the golden, `--host`, and the whole suite linked and run with the compiler
+that came out — and then runs the portable cross-check subset; `check-skipped` prints one line per
+target that does not run there ([guide/95-windows-host.md](guide/95-windows-host.md) § 8).
+
+The **cross proof** is the last step of each job: the Windows-hosted compiler compiles `src/mc.mc`
+and the Mach-O object it writes is `cmp`-equal to `build/mc2.o`. Same compiler, different host,
+byte-identical output.
+
+### What the macOS job has to ship
+
+The same argument as § M37, one step stronger. The Windows runners have `lld-link` and **no `mc`
+at all**, so everything the link needs has to travel:
+
+```sh
+make mc-windows-obj           # build/mc-windows-arm64.obj    COFF, ARM64
+make mc-windows-x86_64-obj    # build/mc-windows-x86_64.obj   COFF, AMD64
+make mcrt-windows             # build/sysroot/windows-aarch64: winstart.obj, mcrt.obj, kernel32.lib
+make mcrt-windows-x86_64      # build/sysroot/windows-x86_64:  the same three
+```
+
+`winstart.obj` is `mc_start`, what `-entry:` names; `mcrt.obj` is the fifteen POSIX names the
+compiler declares `extern`, over kernel32 (`lib/sys_windows_host.mc`); `kernel32.lib` is the import
+library `llvm-dlltool` generates from a list of names. The two objects cannot be made on the Windows
+runner, because they need `mc` — the compiler that is being built — so the macOS job verifies each
+of them is non-empty and, when `llvm-readobj` is available, that the machine of each object is the
+right one: a wrong machine would otherwise only surface on the Windows runner, far from its cause.
+`kernel32.lib` is the exception: GitHub's macOS runners have no `llvm-dlltool`, so it is usually
+absent from the artifact (the step prints a notice, not an error) and `scripts/link-windows.sh`
+regenerates it on the Windows runner, whose LLVM install carries the tool — the same arrangement
+the suite legs have had since M19.
+
+### Three things the Windows runners need that the Linux ones do not
+
+1. **`core.autocrlf=false`, set before the checkout.** These jobs compile `.mc` sources and run
+   shell scripts out of the checkout, and GitHub's Windows images ship `core.autocrlf=true`, where
+   a `#!/bin/sh\r` is a hard failure. `.gitattributes` says `* -text`; the job says it again for
+   the checkout that happens before that file is read.
+2. **`MSYS2_ARG_CONV_EXCL='*'`.** MSYS rewrites an argument that looks like a path, which every
+   dash-form `lld-link` option does. The dash form is already the belt (a leading `/out:` becomes
+   `C:/Program Files/Git/out:`); this is the braces.
+3. **GNU make** (`choco install make`, Decision 7). The image does not ship one, and the Windows
+   `check` subset is a Makefile target like every other host's.
+
+### The release
+
+`release.yml` has the same split: `build` (macOS) cross-compiles the two objects, the two sysroots
+and the two suites and uploads `mc-windows-objects`; `build-windows`, a two-entry matrix on
+`windows-11-arm` and `windows-2025`, links each one, proves it with
+`scripts/bootstrap-windows.sh`, and packages it. Both suites travel in that one artifact, so each
+leg has to name its own tree: the matrix carries an `objs` column (`build/windows-objs` for arm64,
+`build/windows-objs-x86_64` for x86_64) and `MC_WINTESTS` is that column. A name that does not
+exist would not fail -- `scripts/bootstrap-windows.sh` re-cross-compiles the suite with the seed
+it just linked when `$MC_WINTESTS/manifest` is missing -- so the column is spelled out per entry
+rather than derived from the architecture, whose two spellings do not agree. A release therefore carries **five** tarballs and
+five checksums:
+
+```
+mc-<VER>-macos-arm64.tar.gz
+mc-<VER>-linux-arm64.tar.gz
+mc-<VER>-linux-x86_64.tar.gz
+mc-<VER>-windows-arm64.tar.gz
+mc-<VER>-windows-x86_64.tar.gz
+```
+
+The Windows tarballs hold `mc.exe` rather than `mc` — a file that is not called `*.exe` cannot be
+launched — and `scripts/release-assets.sh` writes a Windows `INSTALL.txt` saying that the binary
+needs nothing but `kernel32.dll`. The format stays `.tar.gz` (Decision 8).
+
+`scripts/bootstrap-windows.sh` downloads exactly those assets when a Windows machine has no seed:
+the release is the entry point of the Windows chain
+([bootstrap.md](bootstrap.md) § The Windows chain).

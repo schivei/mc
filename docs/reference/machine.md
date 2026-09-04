@@ -108,7 +108,7 @@ width; `l` is a label number; `sym` a symbol index; `e` an `Ins` record.
 | slot | signature | meaning |
 |---|---|---|
 | `MTASK_PROLOGUE` | `void f()` | open the frame: the frame record, and a reserve whose size is not known yet |
-| `MTASK_PARAM` | `void f(i64 ty, i64 i, i64 off)` | argument `i` into the frame slot at `off` |
+| `MTASK_PARAM` | `void f(i64 ty, i64 i, i64 off)` | argument `i` into the frame slot at `off`; `i` past the machine's register table means the caller left it on the stack (M38: `MAXPARAMS` is 12) |
 | `MTASK_EPILOGUE` | `void f()` | release the frame and return |
 | `MTASK_FRAME_FIX` | `void f(i64 frame)` | the frame size, known only after the whole body |
 | `MTASK_CONST` | `void f(i64 d, i64 imm)` | materialise a constant at depth `d` |
@@ -216,8 +216,9 @@ writer is shared with aarch64 down to the section table.
 | why three | — | `idiv` writes `rdx`, `div` needs it zeroed, shifts count in `cl` | — |
 | locals | `[sp, #k]`, fixed up at the end | `[rbp - k]`, correct from the first instruction | the same |
 | frame | `stp x29, x30` + `sub sp` | `push rbp; mov rbp, rsp; sub rsp` / `leave` | the same |
-| arguments | `x0..x7` | `rdi rsi rdx rcx r8 r9`, then `[rsp]`, `[rsp+8]` | `rcx rdx r8 r9`, then `[rsp+32]`, … |
-| stack parameters | — | `[rbp+16]`, `[rbp+24]` | `[rbp+48]`, `[rbp+56]`, … |
+| arguments | `x0..x7`, then `[sp]`, `[sp+8]`, … | `rdi rsi rdx rcx r8 r9`, then `[rsp]`, `[rsp+8]` | `rcx rdx r8 r9`, then `[rsp+32]`, … |
+| stack parameters | `[x29+16]`, `[x29+24]`, … | `[rbp+16]`, `[rbp+24]`, … | `[rbp+48]`, `[rbp+56]`, … |
+| outgoing area | the bottom of the frame, `sp` never moves | `push`, given back with `add rsp` | the same, plus the shadow space |
 | shadow space | — | none | 32 bytes, reserved by the caller |
 | callee-saved, never touched | `x18..x28` | `rbx`, `r12..r15` | those plus `rsi`, `rdi` |
 | result | `x0` | `rax` | `rax` |
@@ -277,7 +278,7 @@ while compiling `src/mc.mc` for `windows/x86_64` re-assemble byte-identically un
 against `target - (address + length)`. The relocation shapes match
 `clang --target=x86_64-windows-msvc -c` of equivalent C: `IMAGE_REL_AMD64_REL32` at instruction + 1
 for a `call` and at instruction + 3 for a `lea r, [rip+d32]`, with the in-place field zero and no
-addend anywhere ([objects.md](objects.md) § 8). The suite itself runs on the `windows-latest` CI
+addend anywhere ([objects.md](objects.md) § 8). The suite itself runs on the `windows-2025` CI
 leg: `make test-windows-x86_64` cross-compiles it.
 
 ---
@@ -330,7 +331,8 @@ the other: a machine changes what instructions are chosen, a backend changes how
 out.
 
 What a *runtime* — rather than a backend — may rely on is the register and frame contract in
-[objects.md](objects.md) § 4: parameters in `x0..x7` untouched by the prologue, `x0` untouched by
+[objects.md](objects.md) § 4: parameters 1..8 in `x0..x7` (9..12 at `[x29 + 16 + 8*(i-8)]`)
+untouched by the prologue, `x0` untouched by
 the epilogue, depths in `x9..x15`, scratch in `x8`/`x16`/`x17`, `x18..x28` never written, and the
 unconditional `stp x29, x30` frame record. Every machine added here has to keep those or say
 plainly that it does not — they are what a `#opcode` syscall wrapper, an atomic and a stack walker

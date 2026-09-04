@@ -19,3 +19,26 @@ macOS: delete both files and run `make check-linux-host` (Docker); the script re
 only when the file is absent, and only after the fixed point (`mc2l.o == mc3l.o`) holds. On a
 Linux host, `scripts/bootstrap-linux.sh` does the same natively. The two CI jobs `mc on
 linux/<arch> host` compare against them on every pull request.
+
+Since M38 there are two more, `mc2-windows-arm64.sha256` and `mc2-windows-x86_64.sha256`: the
+SHA-256 of `build/mc2w.obj`, the COFF object the Windows-hosted `mc` writes for `src/mc_windows.mc`
+(resp. `src/mc_windows_x86_64.mc`), recorded by `scripts/bootstrap-windows.sh`
+(`docs/bootstrap.md` § The Windows chain). Like the Linux pair they move whenever `mc2.sha256`
+moves -- it is the same compiler, one host file apart -- so all five are rewritten in the same
+commit.
+
+**How the two Windows goldens are computed on macOS.** There is no Windows machine in this
+repository's development loop and no container that could hold one, so they cannot be recorded the
+way the Linux pair can (`make check-linux-host`). They are computed by CROSS-COMPILING the same
+source with the same compiler:
+
+    build/mc1 --backend=coff-obj-arm64  src/mc_windows.mc        -o build/mc2w-arm64.obj
+    build/mc1 --backend=coff-obj-x86_64 src/mc_windows_x86_64.mc -o build/mc2w-x86_64.obj
+    shasum -a 256 build/mc2w-arm64.obj build/mc2w-x86_64.obj
+
+That is exactly the object the Windows-hosted compiler must write for the same source -- which is
+the cross criterion the two CI jobs check on every pull request: `mc` produces the same bytes for
+a given input on every host it runs on, and the fixed point on the runner
+(`cmp build/mc2w.obj build/mc3w.obj`) plus this hash is what says so. A divergence between the
+value recorded here and the value the runner computes is a real failure and not a recording
+mistake: it would mean the Windows-hosted compiler is not the compiler that was cross-compiled.

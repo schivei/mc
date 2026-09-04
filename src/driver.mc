@@ -424,7 +424,13 @@ void drv_entry(uptr entry, uptr out, uptr kind) {
 // flag. The worst of the two verdicts is what comes back.
 i64 drv_teach(uptr cout, uptr dir, i64 compiler_only) {
     uptr gen = drv_gen_compiler(cout);
-    drv_step("compiler", tm_cat(cout, ".mc"), cout);
+    // M38: [compiler].out names a program the driver LINKS and then SPAWNS, so
+    // it is the one place `mc` has to know what an executable is called on the
+    // host it is running on -- nothing on macOS and Linux, ".exe" on Windows
+    // (src/host_windows.mc, Decision 4). The generated source keeps the bare
+    // name: `<out>.mc` is a source file on every host.
+    uptr cbin = tm_cat(cout, host_exe_suffix());
+    drv_step("compiler", tm_cat(cout, ".mc"), cbin);
     // M37: the taught compiler is a program for the HOST, never for [target] --
     // it has to run here, right after it is written. Which backend that is
     // comes from the registry, looked up with the host's own pair: on macos it
@@ -433,15 +439,15 @@ i64 drv_teach(uptr cout, uptr dir, i64 compiler_only) {
     i64 ht = target_find(host_os(), host_arch());
     if (ht < 0) die2("the host is not a registered target", host_os());
     if (tgt_exe_at(ht) != 0) {
-        drv_compile(gen, drv_path(cout), tgt_exe_at(ht), 0, tm_cat(cout, ".mc"));
+        drv_compile(gen, drv_path(cbin), tgt_exe_at(ht), 0, tm_cat(cout, ".mc"));
     } else {
         if (toml_get("linker.cmd") == 0)
             toml_err_key("linker.cmd",
                          "a taught compiler on this host needs [linker]: there is no direct executable");
         uptr cobj = tm_cat(cout, ".o");
         drv_compile(gen, drv_path(cobj), tgt_obj_at(ht), 0, tm_cat(cout, ".mc"));
-        drv_step("link", cobj, cout);
-        drv_link(drv_path(cobj), drv_path(cout));
+        drv_step("link", cobj, cbin);
+        drv_link(drv_path(cobj), drv_path(cbin));
     }
     i64 rc = drv_finish(tm_cat(cout, ".mc"));
     // M21.5: --compiler-only stops here and prints the path of the binary it
@@ -449,11 +455,11 @@ i64 drv_teach(uptr cout, uptr dir, i64 compiler_only) {
     // need the compiler and not the entry; without the flag they had to build
     // the entry too, just to throw it away.
     if (compiler_only) {
-        out_str(1, drv_path(cout));
+        out_str(1, drv_path(cbin));
         out_str(1, "\n");
         return rc;
     }
-    uptr comp = drv_runnable(drv_path(cout));
+    uptr comp = drv_runnable(drv_path(cbin));
     u8 av[8 * 8];
     st64(av + 0,  comp);
     st64(av + 8,  "build");

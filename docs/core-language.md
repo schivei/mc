@@ -117,11 +117,12 @@ from an `extern`, the symbol comes out **undefined external** in the `.o`. `&loc
 and `&function` are the same syntax: codegen looks for a local, then a global, then the
 signature table, and only then errors `unknown name`.
 
-**`callp(p, a1, ..., a7)`** calls address `p`: arguments `a1..a7` go into `x0..x6`, the pointer
-goes into `x16` (IP0 — caller-saved and outside `x0..x7`, so no argument steps on it), and the
-call is `blr x16`. Saving live depths is the same as for a normal `bl`. The result is `x0` and
-its type is `i64` — if the called function returns something else, converting it is up to the
-caller. Arity 1 to 8 (the pointer counts): seven arguments is the max.
+**`callp(p, a1, ..., a11)`** calls address `p`: the arguments go where a direct call would put
+them — `x0..x7`, then the stack — the pointer goes into `x16` (IP0 — caller-saved and outside
+`x0..x7`, so no argument steps on it), and the call is `blr x16`. Saving live depths is the same as
+for a normal `bl`. The result is `x0` and its type is `i64` — if the called function returns
+something else, converting it is up to the caller. Arity 1 to 12 (the pointer counts): eleven
+arguments is the max.
 
 ```c
 i64 add2(i64 a) { return a + 2; }
@@ -194,7 +195,8 @@ u8 big[4090];   // frame too large (rounding to 16 overflows the sub-immediate)
 
 ## Functions
 
-`type name(type a, ...) { }` — max 8 parameters (never an argument on the stack; exceeding it is
+`type name(type a, ...) { }` — max 12 parameters (the first eight in registers, 9..12 on the
+stack — `docs/reference/objects.md` § 4; exceeding it is
 an error; no varargs). Two top-level passes allow calling a function before it's defined, and
 mutual recursion with no forward declaration.
 

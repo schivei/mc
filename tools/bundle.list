@@ -18,6 +18,9 @@ mc/host_linux	src/host_linux.mc
 mc/host_linux_aarch64	src/host_linux_aarch64.mc
 mc/host_linux_x86_64	src/host_linux_x86_64.mc
 mc/host_macos	src/host_macos.mc
+mc/host_windows	src/host_windows.mc
+mc/host_windows_aarch64	src/host_windows_aarch64.mc
+mc/host_windows_x86_64	src/host_windows_x86_64.mc
 mc/lex	src/lex.mc
 mc/limits	src/limits.mc
 mc/machine_arm64	src/machine_arm64.mc
@@ -35,6 +38,7 @@ sys	lib/sys.mc
 sys_linux	lib/sys_linux.mc
 sys_svc	lib/sys_svc.mc
 sys_windows	lib/sys_windows.mc
+sys_windows_host	lib/sys_windows_host.mc
 sys_windows_start	lib/sys_windows_start.mc
 user_default	lib/user_default.mc
 user_demo	lib/user_demo.mc

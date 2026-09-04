@@ -117,6 +117,45 @@ jobs:
             file build/mc-linux-x86_64.o | grep -q 'ELF 64-bit.*x86-64'
           fi
 
+      # M38: the two Windows hosts, the same way and for the same reason. What
+      # this runner can produce is the two COFF objects plus everything the link
+      # needs and the program does not provide -- winstart.obj (the entry
+      # point), mcrt.obj (the POSIX shims over kernel32) and kernel32.lib. The
+      # Windows runners have lld-link and no `mc`, so the compiler they link IS
+      # this artifact (docs/ci.md, docs/guide/95-windows-host.md).
+      - name: Cross-compile mc for the Windows hosts
+        run: |
+          set -eu
+          make mc-windows-obj
+          make mc-windows-x86_64-obj
+          make mcrt-windows
+          make mcrt-windows-x86_64
+          ls -l build/mc-windows-arm64.obj build/mc-windows-x86_64.obj
+          ls -l build/sysroot/windows-aarch64 build/sysroot/windows-x86_64
+          for f in build/mc-windows-arm64.obj build/mc-windows-x86_64.obj \
+                   build/sysroot/windows-aarch64/winstart.obj \
+                   build/sysroot/windows-aarch64/mcrt.obj \
+                   build/sysroot/windows-x86_64/winstart.obj \
+                   build/sysroot/windows-x86_64/mcrt.obj; do
+            [ -s "$f" ] || { echo "::error::$f was not produced"; exit 1; }
+          done
+          # kernel32.lib needs llvm-dlltool, which this runner may not have (the
+          # suite step above has the same caveat): when it is absent here,
+          # scripts/link-windows.sh regenerates it on the Windows runner, where
+          # the LLVM install carries the tool.
+          for a in aarch64 x86_64; do
+            [ -s "build/sysroot/windows-$a/kernel32.lib" ] \
+              || echo "::notice::build/sysroot/windows-$a/kernel32.lib absent (no llvm-dlltool here); the Windows runner regenerates it"
+          done
+
+      # The suite objects the Windows jobs run: cross-compiled here, linked and
+      # executed there, which is the only place a Windows binary runs at all.
+      - name: Cross-compile the suite for the Windows hosts
+        run: |
+          set -eu
+          scripts/test-windows.sh --build-only build/windows-objs build/mc1
+          scripts/test-windows.sh --arch x86_64 --build-only build/windows-objs-x86_64 build/mc1
+
       - name: Upload the packaged artifact
         uses: actions/upload-artifact@v4
         with:
@@ -133,6 +172,19 @@ jobs:
           path: |
             build/mc-linux-arm64.o
             build/mc-linux-x86_64.o
+          if-no-files-found: error
+
+      - name: Upload the cross-compiled Windows objects
+        uses: actions/upload-artifact@v4
+        with:
+          name: mc-windows-objects
+          path: |
+            build/mc-windows-arm64.obj
+            build/mc-windows-x86_64.obj
+            build/sysroot/windows-aarch64
+            build/sysroot/windows-x86_64
+            build/windows-objs
+            build/windows-objs-x86_64
           if-no-files-found: error
 
   # M37: the Linux half of the release. One job per architecture, each on real
@@ -258,35 +310,181 @@ jobs:
             dist/mc-*.tar.gz.sha256
           if-no-files-found: error
 
-  # Placeholders, deliberately disabled. The Linux entries are gone from here:
-  # M37 hosts `mc` on Linux, `build` cross-compiles both objects and
-  # `build-linux` links and packages them on real Linux hardware. Windows still
-  # waits for the COFF work of M19/M20.
-  build-future-hosts:
-    name: Build ${{ matrix.target }} (not enabled yet)
-    if: false
+  # M38: the Windows half of the release, `build-linux`'s shape on Windows
+  # hardware. One job per architecture, because the proof that the shipped
+  # binary IS the compiler is that it reproduces itself there:
+  # scripts/bootstrap-windows.sh runs seed -> mc1w -> mc2w -> mc3w,
+  # `cmp mc2w.obj mc3w.obj`, the golden, `--host`, and the whole suite with the
+  # compiler that came out. Only then is the seed packaged.
+  #
+  # These jobs produce the `release-windows-*` artifacts the publish job
+  # collects, so a release carries five tarballs (docs/ci.md § M38).
+  build-windows:
+    name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    needs: build
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-11-arm
             target: windows-arm64
+            larch: aarch64
+            # The directory the `build` job cross-compiled the suite into and
+            # packed in the `mc-windows-objects` artifact. Spelled out per entry
+            # rather than derived from `larch`: the arm64 tree is the unsuffixed
+            # one, and a name that does not exist would silently degrade into
+            # rebuilding the whole suite here (scripts/bootstrap-windows.sh
+            # falls back when $MC_WINTESTS/manifest is missing).
+            objs: build/windows-objs
+            llvmkey: woa64
+            llvmtriple: aarch64-pc-windows-msvc
+            llvminst: woa64
           - os: windows-2025
             target: windows-x86_64
+            larch: x86_64
+            objs: build/windows-objs-x86_64
+            llvmkey: win64
+            llvmtriple: x86_64-pc-windows-msvc
+            llvminst: win64
+    env:
+      LLVM_VERSION: "20.1.8"
+      # MSYS rewrites an argument that looks like a path -- and every dash-form
+      # lld-link option does (docs/specs/M38.md § 7).
+      MSYS2_ARG_CONV_EXCL: "*"
+      MC_WINTESTS: ${{ matrix.objs }}
     steps:
-      - name: Not enabled
+      # This job COMPILES .mc sources and RUNS shell scripts out of the
+      # checkout, and GitHub's Windows images ship core.autocrlf=true, where a
+      # `#!/bin/sh\r` is a hard failure.
+      - name: Never translate line endings
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - name: Check out the tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      # The shape of the tag was already validated by the `build` job, which
+      # this one needs.
+      - name: Derive the version from the tag
+        shell: bash
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          set -eu
+          tag="${TAG_INPUT:-$GITHUB_REF_NAME}"
+          echo "VERSION=${tag#v}" >> "$GITHUB_ENV"
+          echo "releasing $tag on ${{ matrix.target }}"
+
+      - name: Download the cross-compiled Windows objects
+        uses: actions/download-artifact@v4
+        with:
+          name: mc-windows-objects
+          path: build
+
+      - name: Tool facts
+        id: tools
+        shell: bash
+        run: |
+          echo "runner: $RUNNER_OS $RUNNER_ARCH"
+          uname -s
+          uname -m
+          if where lld-link 2>/dev/null; then
+            echo "found=1" >> "$GITHUB_OUTPUT"
+          elif [ -x "/c/Program Files/LLVM/bin/lld-link.exe" ]; then
+            echo "/c/Program Files/LLVM/bin" >> "$GITHUB_PATH"
+            echo "found=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "lld-link: absent -- the next step downloads LLVM $LLVM_VERSION"
+            echo "found=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache the LLVM toolchain
+        if: steps.tools.outputs.found != '1'
+        uses: actions/cache@v4
+        with:
+          path: build/llvm
+          key: llvm-${{ matrix.llvmkey }}-${{ env.LLVM_VERSION }}
+
+      - name: Obtain lld-link
+        if: steps.tools.outputs.found != '1'
+        shell: bash
+        run: |
+          set -e
+          if [ ! -x build/llvm/bin/lld-link.exe ]; then
+            mkdir -p build/llvm
+            base="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION"
+            if curl -fSL -o /tmp/llvm.tar.xz "$base/clang+llvm-$LLVM_VERSION-${{ matrix.llvmtriple }}.tar.xz"; then
+              tar -xf /tmp/llvm.tar.xz -C build/llvm --strip-components=1
+            else
+              curl -fSL -o /tmp/llvm.exe "$base/LLVM-$LLVM_VERSION-${{ matrix.llvminst }}.exe"
+              7z x -obuild/llvm /tmp/llvm.exe > /dev/null
+            fi
+          fi
+          echo "$PWD/build/llvm/bin" >> "$GITHUB_PATH"
+          build/llvm/bin/lld-link.exe --version || true
+
+      - name: Link the compiler
+        shell: bash
+        run: |
+          set -eu
+          ls -l build/mc-${{ matrix.target }}.obj build/sysroot/windows-${{ matrix.larch }}
+          scripts/link-windows.sh --arch ${{ matrix.larch }} \
+              build/mc-${{ matrix.target }}.exe build/mc-${{ matrix.target }}.obj
+          ls -l build/mc-${{ matrix.target }}.exe
+
+      - name: What this binary says it is
+        shell: bash
+        run: |
+          set -eu
+          build/mc-${{ matrix.target }}.exe --host
+          os=$(build/mc-${{ matrix.target }}.exe --host | sed -n 's|^os *||p')
+          arch=$(build/mc-${{ matrix.target }}.exe --host | sed -n 's|^arch *||p')
+          if [ "$os" != "windows" ] || [ "$arch" != "${{ matrix.larch }}" ]; then
+            echo "::error::the binary says it is hosted on '$os/$arch', not windows/${{ matrix.larch }}"
+            exit 1
+          fi
+
+      # The release gate: the binary being shipped compiles itself to a fixed
+      # point on this machine and then runs the whole suite. It is the Windows
+      # equivalent of the macOS job's `scripts/test.sh dist/mc`, and stronger.
+      # TMPDIR in D:/a/_temp form and the architecture stated, for the same
+      # reasons the CI host jobs give (docs/guide/95-windows-host.md).
+      - name: Bootstrap to a fixed point with the binary being shipped
+        shell: bash
+        run: |
+          export TMPDIR="$(cygpath -m "$RUNNER_TEMP")"
+          scripts/bootstrap-windows.sh --arch ${{ matrix.larch }} build/mc-${{ matrix.target }}.exe
+
+      - name: Package
+        shell: bash
         env:
           TARGET: ${{ matrix.target }}
-        run: echo "waiting on a host build of mc for $TARGET"
+        run: |
+          set -eu
+          scripts/release-assets.sh "$VERSION" "$TARGET" "build/mc-$TARGET.exe" dist
+          ls -l dist
+
+      - name: Upload the packaged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            dist/mc-*.tar.gz
+            dist/mc-*.tar.gz.sha256
+          if-no-files-found: error
 
   publish:
     name: Publish the release
-    # Three tarballs: the macOS one from `build`, the two Linux ones from
-    # `build-linux`. `download-artifact` below globs `release-*`, so both
-    # producers have to be finished.
-    needs: [build, build-linux]
+    # Five tarballs: the macOS one from `build`, the two Linux ones from
+    # `build-linux`, the two Windows ones from `build-windows`.
+    # `download-artifact` below globs `release-*`, so all three producers have
+    # to be finished.
+    needs: [build, build-linux, build-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -336,6 +534,10 @@ jobs:
             echo "# Linux (arm64 or x86_64), statically linked against musl"
             echo "tar xzf mc-$version-linux-arm64.tar.gz"
             echo "install -m 755 mc-$version-linux-arm64/mc /usr/local/bin/mc"
+            echo
+            echo "# Windows (arm64 or x86_64), kernel32 only, no C runtime"
+            echo "tar xzf mc-$version-windows-arm64.tar.gz"
+            printf '%s\n' "copy mc-$version-windows-arm64\\mc.exe C:\\tools\\mc.exe"
             echo '```'
             echo
             echo "## Checksums"

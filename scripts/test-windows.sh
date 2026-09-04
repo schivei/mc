@@ -117,6 +117,9 @@ fi
 
 root=$(pwd)
 tmp="${TMPDIR:-/tmp}/test-windows.$$"
+# Under Git Bash on Windows, MSYS hands TMPDIR to this shell in /d/... form, a
+# path the native mc cannot open; cygpath -m gives D:/... which both accept.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) tmp=$(cygpath -m "$tmp") ;; esac
 mkdir -p "$tmp" "$outdir"
 fails=0
 total=0
@@ -324,6 +327,20 @@ else
         fi
         build_one "$f" "$name" kernel32
     done
+
+    # M38: the one tests/mc/ case that belongs to every target -- twelve
+    # parameters, four of them on the stack. It lives in tests/mc/ because the
+    # frozen C seed refuses it (`at most 8 parameters`), not because it needs
+    # anything Windows cannot give: it links like every other test here.
+    f="tests/mc/080-twelve-params.mc"
+    why=$(skip_reason "$f")
+    if [ -n "$why" ]; then
+        skipped="$skipped
+  080-twelve-params — $why"
+        echo "080-twelve-params — $why" >> "$split/skipped"
+    else
+        build_one "$f" 080-twelve-params kernel32
+    fi
 
     # the cases with no runtime object next to them: the source includes
     # <sys_windows> itself, so it carries the wrappers and links with nothing but

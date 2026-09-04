@@ -266,7 +266,7 @@ the way it links against musl on Linux — the compiled `lib/sys_windows.mc` is 
 the command line.
 
 `scripts/test-windows.sh [--arch aarch64|x86_64]` cross-compiles the suite here and the
-`windows-11-arm` and `windows-latest` CI jobs link and run it; `make test-windows` and
+`windows-11-arm` and `windows-2025` CI jobs link and run it; `make test-windows` and
 `make test-windows-x86_64` do the local half (objects, `llvm-readobj` on each, three real
 `lld-link` links) and skip themselves without `lld-link` or `llvm-dlltool`. `docs/build.md`
 § Windows targets has the full field-by-field mapping.

@@ -34,6 +34,7 @@
 #define REG_LR    30
 #define REG_SP    31
 #define REG_FRAME 32                  // fictitious base swapped for sp in fix_frame
+#define REG_ARGS   8                  // x0..x7: arguments 1..8 (9..12 go on the stack)
 
 // ---- full plan enum; the encoder only implements what it uses.
 // I_LABEL (0) belongs to gen_walk.mc: it is the one opcode the walker itself
@@ -97,6 +98,7 @@ i64 dslot[MAXDEPTH];                  // slot for the depth: save (<=6) or spill
 uptr m_arm64[MTASK_COUNT];            // the task table the walker drives
 i64 a64_isub = 0;                     // the prologue's `sub sp, sp, #F`, patched last
 i64 a64_iadd = 0;                     // and the epilogue's `add sp, sp, #F`
+i64 a64_out  = 0;                     // M38: bytes of OUTGOING arguments this function needs
 
 i64  dslot_at(i64 i)      { return ld64(dslot + i * 8); }
 void set_dslot_at(i64 i, i64 v) { st64(dslot + i * 8, v); }
@@ -222,6 +224,38 @@ void arg_to_reg(i64 r, i64 d) {
     else           em(I_LDR, r, REG_FRAME, 0 - slot_depth(d));
 }
 
+// M38: arguments 9..12 travel on the stack, at [sp, #0], [sp, #8]... at the
+// moment of the `bl` -- which is exactly where the callee reads them
+// ([x29 + 16 + 8*(i-8)] after its own frame record, see a64_param).
+//
+// The area is NOT a `sub sp` around the call, the way the x86-64 machine pushes
+// its own stack arguments: on AArch64 every frame slot is addressed through the
+// fictitious REG_FRAME base, which fix_frame() only turns into `sp + (frame -
+// off)` at the END of the function, so any sp that moves inside the body would
+// make every spilled depth read the wrong address. Instead the outgoing area is
+// reserved at the BOTTOM of the frame -- a64_frame_fix adds a64_out to the frame
+// size, so the lowest slot_new() offset still lands above it -- and the stores
+// name REG_SP directly, which fix_frame leaves alone.
+//
+// The stores come BEFORE the argument registers are written: they read the depth
+// registers x9..x15, which x0..x7 cannot clobber, and they may need x16 to carry
+// a spilled depth.
+void a64_stack_args(i64 dbase, i64 na) {
+    if (na <= REG_ARGS) return;
+    i64 need = ((na - REG_ARGS) * 8 + 15) & ~15;      // the sp stays 16-aligned
+    if (need > a64_out) a64_out = need;
+    i64 i = REG_ARGS;
+    loop {
+        if (i >= na) break;
+        i64 d = dbase + i;
+        i64 r = REG_S1;
+        if (in_reg(d)) r = REG_BASE + d;
+        else           em(I_LDR, REG_S1, REG_FRAME, 0 - slot_depth(d));
+        em(I_STR, r, REG_SP, (i - REG_ARGS) * 8);
+        i = i + 1;
+    }
+}
+
 // swaps the frame's fictitious base for sp: address = x29 - off = sp + (frame - off)
 void fix_frame(i64 frame) {
     i64 i = ins_base;
@@ -246,6 +280,7 @@ void a64_prologue() {
         set_dslot_at(d, 0);
         d = d + 1;
     }
+    a64_out = 0;
     ins_add(I_STP_PRE, REG_FP, REG_SP, REG_LR, 0 - 16, 0, 0);
     ei(I_ADDI, REG_FP, REG_SP, 0);               // mov x29, sp
     a64_isub = nins;
@@ -253,9 +288,15 @@ void a64_prologue() {
 }
 
 // parameter i arrives in xi and goes to its slot, without the prologue ever
-// writing an argument register (docs/reference/objects.md § 4)
+// writing an argument register (docs/reference/objects.md § 4). M38: parameter
+// 9 and up did not arrive in a register at all -- the caller left it above the
+// frame record, at [x29 + 16 + 8*(i-8)], which is the caller's sp + 8*(i-8)
+// because the prologue's `stp x29, x30, [sp, #-16]!` is what moved sp by 16.
+// x29 is named directly: REG_FRAME is the NEGATIVE side of the frame.
 void a64_param(i64 ty, i64 i, i64 off) {
-    em(mem_op(ty, 1), i, REG_FRAME, 0 - off);
+    if (i < REG_ARGS) { em(mem_op(ty, 1), i, REG_FRAME, 0 - off); return; }
+    em(I_LDR, REG_S1, REG_FP, 16 + (i - REG_ARGS) * 8);
+    em(mem_op(ty, 1), REG_S1, REG_FRAME, 0 - off);
 }
 
 void a64_epilogue() {
@@ -265,11 +306,19 @@ void a64_epilogue() {
     e0(I_RET);
 }
 
+// M38: the outgoing-argument area is part of the frame, at its bottom, so a
+// function that passes nine arguments or more reserves a64_out bytes more than
+// its slots need. A function that never does keeps a64_out at 0 and the frame is
+// byte for byte what it was. The walker's own `frame too large` is raised before
+// this, on the slots alone; the reserve can only push the total over the 12-bit
+// immediate, which is what the guard here is for.
 void a64_frame_fix(i64 frame) {
-    set_ins_imm(ins_at(a64_isub), frame);
-    set_ins_imm(ins_at(a64_iadd), frame);
-    if (frame == 0) { set_ins_op(ins_at(a64_isub), I_NOP); set_ins_op(ins_at(a64_iadd), I_NOP); }
-    fix_frame(frame);
+    i64 f = frame + a64_out;
+    if (f > 4095) die("frame too large");
+    set_ins_imm(ins_at(a64_isub), f);
+    set_ins_imm(ins_at(a64_iadd), f);
+    if (f == 0) { set_ins_op(ins_at(a64_isub), I_NOP); set_ins_op(ins_at(a64_iadd), I_NOP); }
+    fix_frame(f);
 }
 
 void a64_const(i64 d, i64 imm) {
@@ -369,13 +418,14 @@ void a64_global_store(i64 ty, i64 d, i64 sym) {
     em(mem_op(ty, 1), val_reg(d, REG_S2), REG_S1, 0);
 }
 
-// bl: the arguments go to x0.., the live depths below `d` go to the frame, the
-// result comes back from x0
+// bl: arguments 1..8 go to x0..x7 and 9..12 to the outgoing area, the live
+// depths below `d` go to the frame, the result comes back from x0
 void a64_call(i64 d, i64 na, i64 sym) {
     save_live(d);                                // live: the depths below
+    a64_stack_args(d, na);                       // M38: 9..12, before x0..x7
     i64 i = 0;
     loop {
-        if (i >= na) break;
+        if (i >= na || i >= REG_ARGS) break;
         arg_to_reg(i, d + i);
         i = i + 1;
     }
@@ -386,15 +436,22 @@ void a64_call(i64 d, i64 na, i64 sym) {
     dst_done(d, rd);
 }
 
-// callp(p, a1..a7): the pointer (argument 0) goes to x16, outside the ABI, and
-// the rest to x0..x6 — one fewer than a direct call, because x16 is taken
+// callp(p, a1..a11): the pointer (argument 0) goes to x16, outside the ABI, and
+// the arguments follow the ordinary rule -- x0..x7, then the outgoing area --
+// because the callee is an ordinary function and reads them where a `bl` would
+// have left them. x16 is not an argument register, so callp carries one
+// argument fewer than MAXPARAMS, not one fewer per register.
 void a64_callp(i64 d, i64 na) {
     save_live(d);
+    a64_stack_args(d + 1, na - 1);               // M38: arguments 9..11
     i64 i = 0;
     loop {
         if (i >= na) break;
         i64 r = REG_S1;
-        if (i) r = i - 1;
+        if (i) {
+            if (i - 1 >= REG_ARGS) break;
+            r = i - 1;
+        }
         arg_to_reg(r, d + i);
         i = i + 1;
     }

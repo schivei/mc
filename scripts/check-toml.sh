@@ -12,6 +12,10 @@
 mc="${1:-build/mc1}"
 tomldump="${2:-build/tomldump}"
 
+# M38: on Windows a program that is not called *.exe cannot be launched, so the
+# name is written with the suffix here, where it is chosen (docs/guide/95-windows-host.md).
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) tomldump="$tomldump.exe" ;; esac
+
 if [ ! -x "$mc" ]; then
     echo "FAIL: compiler '$mc' not found or not executable"
     exit 1
@@ -27,6 +31,9 @@ if ! msg=$(scripts/build-exe.sh "$mc" "$tomldump" src/tomldump.mc 2>&1); then
 fi
 
 tmp="${TMPDIR:-/tmp}/check-toml.$$"
+# Under Git Bash on Windows, MSYS hands TMPDIR to this shell in /d/... form, a
+# path the native mc cannot open; cygpath -m gives D:/... which both accept.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) tmp=$(cygpath -m "$tmp") ;; esac
 mkdir -p "$tmp"
 fails=0
 total=0

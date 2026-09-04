@@ -76,7 +76,7 @@ notatype main() { return 0; }
 | `#opcode expects a name` | `#opcode` not followed by an identifier | name the instruction |
 | `expected ( in #opcode` | no parameter list | write `name(a, b)` even when empty: `name()` |
 | `parameter name expected in #opcode` | a non-identifier in the parameter list | parameters are plain names |
-| `at most 8 parameters in #opcode` | more than 8 parameters | split the encoding into two opcodes |
+| `at most 12 parameters in #opcode` | more than 12 parameters | split the encoding into two opcodes |
 | `expected ) in #opcode` | the parameter list is not closed | close it |
 | `duplicate #opcode` | two `#opcode`s with the same name | rename one |
 
@@ -128,7 +128,7 @@ notatype main() { return 0; }
 | `parameter of type void` | a parameter declared `void` | drop it |
 | `local of type void` | a local declared `void` | there is no value of that type |
 | `global of type void` | a global declared `void` | same |
-| `at most 8 parameters` | more than 8 parameters | the ABI limit: pass a pointer to a struct-like block instead |
+| `at most 12 parameters` | more than 12 parameters | the ABI limit (8 in registers, 4 on the stack): pass a pointer to a struct-like block instead |
 | `expected ( in the parameter list` / `expected ) in the parameter list` | the parentheses of a declaration | close them |
 | `expected ( after if` / `expected ) after condition` | `if` without its parenthesised condition | write `if (c) …` |
 | `expected {` | a block was required | `loop`, a function body and a `block $b` hole all need braces |
@@ -181,7 +181,7 @@ notatype main() { return 0; }
 | `call to unknown function` | a call to a name with no signature | declare a prototype or an `extern` before the call |
 | `wrong number of arguments` | the call's arity does not match the declaration | fix one of the two |
 | `wrong arity in intrinsic` | `ld*`, `st*`, `emit`, `reloc` with the wrong count | `ld*` takes 1, `st*` takes 2 |
-| `callp expects 1 to 8 arguments` | `callp()` empty, or with more than 7 arguments after the pointer | the pointer counts towards the eight |
+| `callp expects 1 to 12 arguments` | `callp()` empty, or with more than 11 arguments after the pointer | the pointer counts towards the twelve |
 | `function declared twice` | two definitions of one name | delete one |
 | `declaration does not match prototype` | the definition's return type or arity differs from the prototype | make them agree |
 | `prototype with no definition` | a prototype nobody defines and no `extern` | define it, or declare it `extern` |
@@ -331,7 +331,8 @@ i64 main() { write(1, "a\0b", 3); return 0; }
 ```
 
 ```mc
-// expect-error: at most 8 parameters
-i64 f(i64 a, i64 b, i64 c, i64 d, i64 e, i64 g, i64 h, i64 i, i64 j) { return a; }
+// expect-error: at most 12 parameters
+i64 f(i64 a, i64 b, i64 c, i64 d, i64 e, i64 g, i64 h, i64 i,
+      i64 j, i64 k, i64 l, i64 m, i64 n) { return a; }
 i64 main() { return 0; }
 ```

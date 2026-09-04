@@ -16,15 +16,20 @@ for mc in "$mc0" "$mc1"; do
     fi
 done
 
-# M37: on a Linux host the object being compared is an ELF object for THIS
-# machine, so a test that is not portable to it has nothing to compare. The
-# headers are the ones scripts/test-linux.sh already reads -- `// skip-linux:`
+# M37/M38: on a Linux or a Windows host the object being compared is an ELF or a
+# COFF object for THIS machine, so a test that is not portable to it has nothing
+# to compare. The headers are the ones scripts/test-linux.sh and
+# scripts/test-windows.sh already read -- `// skip-linux:` / `// skip-windows:`
 # for the whole system, `// skip-<arch>:` for one instruction set -- and a
 # skipped test is reported, not counted as a failure. On macOS nothing is
 # skipped: the Mach-O objects are what the frozen seed writes for every test.
 host_skip() {
-    [ "$(uname -s)" = "Linux" ] || return 1
-    r=$(sed -n 's|^// skip-linux: *||p' "$1" | head -1)
+    case "$(uname -s)" in
+        Linux)                sys=linux ;;
+        MINGW*|MSYS*|CYGWIN*) sys=windows ;;
+        *)                    return 1 ;;
+    esac
+    r=$(sed -n "s|^// skip-$sys: *||p" "$1" | head -1)
     [ -n "$r" ] && { echo "$r"; return 0; }
     case "$(uname -m)" in
         aarch64|arm64) a=aarch64 ;;
@@ -37,6 +42,9 @@ host_skip() {
 }
 
 tmp="${TMPDIR:-/tmp}/check-obj.$$"
+# Under Git Bash on Windows, MSYS hands TMPDIR to this shell in /d/... form, a
+# path the native mc cannot open; cygpath -m gives D:/... which both accept.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) tmp=$(cygpath -m "$tmp") ;; esac
 mkdir -p "$tmp/a" "$tmp/b"
 fails=0
 total=0

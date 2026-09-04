@@ -370,7 +370,7 @@ void res_call(i64 n) {
         if (in == IN_EMIT || in == IN_RELOC) { set_res_type(n, TY_VOID); return; }
         if (in == IN_CALLP) {
             i64 na = arg_count(n);
-            if (na < 1 || na > MAXPARAMS) err_node(n, "callp expects 1 to 8 arguments");
+            if (na < 1 || na > MAXPARAMS) err_node(n, "callp expects 1 to 12 arguments");
             res_args(n);
             set_res_type(n, TY_I64);
             return;
@@ -507,7 +507,7 @@ void gen_resolve(i64 unit) {
                 np = np + 1;
                 p = nd_next(p);
             }
-            if (np > MAXPARAMS) err_node(f, "at most 8 parameters");
+            if (np > MAXPARAMS) err_node(f, "at most 12 parameters");
             i64 def = 1;
             if (k == N_PROTO) def = 0;
             func_add(nd_name(f), nd_type(f), np, def, f);

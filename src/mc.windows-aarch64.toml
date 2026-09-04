@@ -1,0 +1,60 @@
+# mc.windows-aarch64.toml — cross-building `mc` itself for a windows/aarch64
+# HOST (M38, docs/guide/95-windows-host.md).
+#
+#   build/mc1 build src --config src/mc.windows-aarch64.toml
+#   -> build/mc-windows-arm64.exe    a PE executable, kernel32 only, no C runtime
+#
+# The entry is src/mc_windows.mc: the same core and the same extension point as
+# src/mc.mc, with the Windows host layer instead of the macOS one. Nothing else
+# about the compiler changes -- the object it writes for a given input is the
+# same object src/mc.mc writes, and the CI cross check proves that sentence
+# against build/mc2.o.
+#
+# Every path below is relative to THIS FILE's directory (src/), which is why
+# they all start with `../`.
+#
+# The sysroot is one file, kernel32.lib, generated from a list of names by
+# llvm-dlltool: `make sysroot-windows`. There is nothing to download and no
+# Windows SDK is involved (scripts/sysroot-windows.sh).
+#
+# The two extra objects are what a system with no C runtime needs, and they live
+# in the sysroot beside the import library: `make mcrt-windows` builds both.
+#
+#   {sysroot}/winstart.obj    lib/sys_windows_start.mc -- mc_start, which
+#                             -entry: names; it is the one file that declares
+#                             `main` extern, so it cannot be inside the layer
+#   {sysroot}/mcrt.obj        lib/sys_windows_host.mc -- the fifteen POSIX
+#                             names the compiler declares extern, over kernel32
+#
+# There is no [compiler] section: this is the plain compiler, not a taught one.
+
+[project]
+name  = "mc-windows-arm64"
+entry = "mc_windows.mc"
+out   = "../build/mc-windows-arm64.exe"
+kind  = "exe"
+
+[target]
+os   = "windows"
+arch = "aarch64"
+
+[sysroot]
+path = "../build/sysroot/windows-aarch64"
+
+# `os = "windows"` has no direct executable backend -- there is no PE writer and
+# M38 does not add one -- so [linker] is required. lld-link takes its options
+# with either prefix; the dash form is used because this same line runs under
+# Git Bash on the Windows runners, where MSYS rewrites a leading `/out:` into a
+# path before the linker ever sees it.
+[linker]
+cmd  = "lld-link"
+args = ["-machine:arm64", "-subsystem:console", "-entry:mc_start", "-nodefaultlib", "-stack:8388608",
+        "-out:{out}", "{obj}",
+        "{sysroot}/winstart.obj", "{sysroot}/mcrt.obj",
+        "{sysroot}/kernel32.lib"]
+
+# The compiler compiling itself is the biggest source in the repository; at the
+# default 0.25 several tables double mid-build. 1.0 keeps the whole build inside
+# the first reserve (`mc limits src --config src/mc.windows-aarch64.toml`).
+[limits]
+tolerance = 1.0

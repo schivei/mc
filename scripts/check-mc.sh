@@ -22,12 +22,16 @@ mkdir -p build/tests-mc
 fails=0
 total=0
 
+# M38: on Windows a program that is not called *.exe cannot be launched.
+hostexe=""
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) hostexe=".exe" ;; esac
+
 for f in tests/mc/*.mc; do
     [ -f "$f" ] || continue
     name=$(basename "$f" .mc)
     total=$((total + 1))
     obj="build/tests-mc/$name.o"
-    exe="build/tests-mc/$name"
+    exe="build/tests-mc/$name$hostexe"
     exe2="build/tests-mc/$name-exe"
 
     want_exit=$(sed -n 's|^// expect-exit: *||p' "$f" | head -1)
@@ -43,9 +47,9 @@ for f in tests/mc/*.mc; do
     if ! msg=$(scripts/link-host.sh "$exe" "$obj" 2>&1); then
         echo "FAIL $name (link: $msg)"; fails=$((fails + 1)); continue
     fi
-    # M37: `--exe` is the Mach-O direct-executable backend. On a Linux host it
-    # would cross-compile a macOS binary this machine cannot run, so the second
-    # half of each case is the .o + linker path only.
+    # M37: `--exe` is the Mach-O direct-executable backend. On a Linux or a
+    # Windows host it would cross-compile a macOS binary this machine cannot
+    # run, so the second half of each case is the object + linker path only.
     runs="$exe"
     if [ "$(uname -s)" = "Darwin" ]; then
         rm -f "$exe2"

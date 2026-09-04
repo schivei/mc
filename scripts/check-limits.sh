@@ -25,6 +25,9 @@ if [ ! -x "$mc" ]; then
 fi
 
 tmp="${TMPDIR:-/tmp}/check-limits.$$"
+# Under Git Bash on Windows, MSYS hands TMPDIR to this shell in /d/... form, a
+# path the native mc cannot open; cygpath -m gives D:/... which both accept.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) tmp=$(cygpath -m "$tmp") ;; esac
 mkdir -p "$tmp"
 
 # exit 3 means `grew`/`tight`, which is a report, not a failure; only a real

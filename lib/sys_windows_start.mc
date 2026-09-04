@@ -30,12 +30,17 @@
 //            -nodefaultlib -out:prog.exe prog.obj [winrt.obj] winstart.obj \
 //            <sysroot>/kernel32.lib
 
-extern i64  main(i64 argc, uptr argv);
+// M38: three arguments, not two. src/main.mc is `main(argc, argv, envp)` -- the
+// third is what the C runtime passes on macOS and Linux -- and a Windows entry
+// point has nothing to put there, so it passes 0 and src/host_windows.mc's
+// host_init ignores it. A program whose own `main` takes two parameters is
+// unaffected: the extra register is simply not read.
+extern i64  main(i64 argc, uptr argv, uptr envp);
 extern i64  win_setup();
 extern uptr win_argv();
 extern void ExitProcess(i64 code);
 
 i64 mc_start() {
     i64 argc = win_setup();
-    ExitProcess(main(argc, win_argv()));
+    ExitProcess(main(argc, win_argv(), 0));
 }

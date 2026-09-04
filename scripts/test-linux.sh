@@ -338,6 +338,21 @@ else
         fi
     done
 
+    # M38: the one tests/mc/ case that belongs to every target. It lives there
+    # because the frozen C seed refuses it (`at most 8 parameters`), not because
+    # it needs anything the other tests do not -- twelve parameters, four of them
+    # on the stack, is an ABI claim and every ABI has to answer it.
+    why=$(skip_reason tests/mc/080-twelve-params.mc)
+    if [ -n "$why" ]; then
+        skipped="$skipped
+  080-twelve-params — $why"
+        [ "$mode" = "build" ] && echo "080-twelve-params — $why" >> "$split/skipped"
+    elif [ "$mode" = "build" ]; then
+        build_one tests/mc/080-twelve-params.mc 080-twelve-params musl
+    else
+        run_one tests/mc/080-twelve-params.mc 080-twelve-params "$MUSL_ARGS"
+    fi
+
     # the no-libc case: no crt objects, no libc.a, entry point _start
     why=$(skip_reason tests/linux/070-nolibc.mc)
     if [ -n "$why" ]; then

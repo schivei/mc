@@ -1481,7 +1481,7 @@ void do_opcode(i64 line, uptr fl) {
         if (tok_id(cur) != T_IDENT)
             err_at(tok_file(cur), tok_line(cur), "parameter name expected in #opcode");
         if (opc_nparams == MAXPARAMS)
-            err_at(tok_file(cur), tok_line(cur), "at most 8 parameters in #opcode");
+            err_at(tok_file(cur), tok_line(cur), "at most 12 parameters in #opcode");
         set_op_at(opc_nparams, cur_name());
         opc_nparams = opc_nparams + 1;
         next();
@@ -1932,7 +1932,7 @@ i64 parse_params() {
         if (tail) set_nd_next(tail, p); else head = p;
         tail = p;
         n = n + 1;
-        if (n > MAXPARAMS) err_at(fl, line, "at most 8 parameters");
+        if (n > MAXPARAMS) err_at(fl, line, "at most 12 parameters");
         if (tok_id(cur) != K_COMMA) break;
         next();
     }

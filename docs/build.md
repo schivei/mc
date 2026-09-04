@@ -1,4 +1,4 @@
-# build.md — `mc build` and `mc.toml` (M14), the bundle and `#embed` (M15), Linux targets (M16), Windows targets (M19/M20), limits (M23), a Linux host (M37)
+# build.md — `mc build` and `mc.toml` (M14), the bundle and `#embed` (M15), Linux targets (M16), Windows targets (M19/M20), limits (M23), a Linux host (M37), a Windows host (M38)
 
 Through M13 the only way to compile was one file at a time:
 
@@ -898,13 +898,23 @@ $ build/mc1 build tests/proj --config /tmp/w.toml
 A Windows program does not link against a copy of `kernel32.dll`. It links against an **import
 library** — a small archive holding one thunk per exported name and no code from the DLL — and
 that archive can be generated from a plain list of names. So `scripts/sysroot-windows.sh
-[--arch aarch64] [DIR]` writes `kernel32.def` (the seven entry points `lib/sys_windows.mc`
-declares) and builds `kernel32.lib` from it with `llvm-dlltool -m arm64`. No network, no Windows
+[--arch aarch64] [DIR]` writes `kernel32.def` (the entry points `lib/sys_windows.mc` declares,
+and since M38 the six more `lib/sys_windows_host.mc` needs: `CreateProcessA`,
+`WaitForSingleObject`, `GetExitCodeProcess`, `CreateDirectoryA`, `DeleteFileA`, `VirtualAlloc`)
+and builds `kernel32.lib` from it with `llvm-dlltool -m arm64`. No network, no Windows
 SDK, no mingw. Like the musl one it is a cache: with `kernel32.lib` already there it does nothing.
 `make sysroot-windows` runs it, and `scripts/test-windows.sh` runs it by itself.
 
-A program that needs more than those seven names — a whole SDK, other DLLs — is what
-`mc sysroot fetch windows-*` will be for; this is the toolchain the test suite needs.
+A program that needs more than those thirteen names — a whole SDK, other DLLs — is what
+`mc sysroot fetch windows-*` will be for; this is the toolchain the test suite and the
+Windows-hosted compiler need.
+
+Since M38 the same directory also holds the two objects every Windows link line carries besides
+the program, because they are the rest of "everything this link needs and the program does not
+provide": `winstart.obj` (the entry point, `lib/sys_windows_start.mc`) and `mcrt.obj` (the POSIX
+shims over kernel32, `lib/sys_windows_host.mc`). `make mcrt-windows` and
+`make mcrt-windows-x86_64` build them, and `scripts/link-windows.sh` builds them on demand when a
+compiler is available. See [guide/95-windows-host.md](guide/95-windows-host.md) § 4.
 
 ### What the COFF writer says
 
@@ -1061,7 +1071,7 @@ per object, and **both** carry `winstart.obj`, because that is where `-entry:mc_
 The default mode is what `make test-windows` and `make test-windows-x86_64` run on the development
 machine: cross-compile everything, assert every object carries the right
 `IMAGE_FILE_MACHINE_*` with `TimeDateStamp` 0, and link three of them with `lld-link`. Nothing is
-executed here — there is no Windows host — and the `windows-11-arm` and `windows-latest` CI legs
+executed here — there is no Windows host — and the `windows-11-arm` and `windows-2025` CI legs
 are the runtime oracles, which is what `docs/plan.md` § Rule for every new target requires.
 
 ```
@@ -1291,7 +1301,10 @@ examples/api/mc.toml:46:13: tolerance must be between 0 and 1
 ### What this replaces
 
 `MAX*` is gone from `src/`, with four exceptions that are not tables that scale with a program:
-`MAXPARAMS` (8, the ABI), `MAXDEPTH` (64, the expression depth that produces `expression too
+`MAXPARAMS` (12, the ABI — 8 in registers and 9..12 on the stack since M38; the frozen seed keeps
+8, a documented divergence of the same kind as `MAXSTRS`/`MAXGLOBALS`/`MAXOPEN`, because `stage0`
+only ever compiles `src/mc.mc` and no function there has more than eight parameters),
+`MAXDEPTH` (64, the expression depth that produces `expression too
 deep`), `MAXBIND`/`MAXRDEPTH`/`MAXITEMS`/`MAXNAMES`, which bound **one** `#rule` and size the
 inline fields of a rule's record, and `MAXSUBST` (16, M21), which bounds **one** lexer frame's
 substitutions and produces `too many substitutions`. The two tables M23 did not see, because they

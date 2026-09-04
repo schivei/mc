@@ -39,3 +39,7 @@ uptr host_sys() { return "sys_linux"; }
 // `xcrun` is a macOS program: a Linux mc.toml that writes `{sdk}` is an error,
 // not a spawn that fails with "cannot run xcrun" (src/driver.mc, drv_sdk).
 i64 host_has_sdk() { return 0; }
+
+// M38: what this host appends to the name of an executable it is about to write
+// and then run -- nothing here, ".exe" on Windows (src/host_windows.mc).
+uptr host_exe_suffix() { return ""; }

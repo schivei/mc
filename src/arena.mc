@@ -45,10 +45,17 @@ extern uptr mmap(uptr addr, i64 len, i64 prot, i64 flags, i64 fd, i64 off);
 #define PROT_RW   3
 #define MAP_ANONP 0x1022
 
-// ---- limit shared by parse.mc and gen_arm64.mc (stage0's mc.h) ----
+// ---- limit shared by parse.mc, gen_resolve.mc and the machines (stage0's mc.h) ----
 // MAXPARAMS is not a table: it is the ABI. Every other MAX* of the seed became a
 // growable table at M23 -- see the registry below and docs/build.md § limits.
-#define MAXPARAMS 8                   // never passes an argument on the stack
+//
+// M38 raised it from 8 to 12 and taught all three machines to pass the extra
+// four on the stack: `CreateProcessA` takes ten parameters, and a Windows-hosted
+// compiler has to be able to declare it (docs/specs/M38.md § 1). The FROZEN C
+// SEED keeps 8 -- stage0 only ever compiles src/mc.mc, which has no function
+// with more than eight parameters -- so this is a documented divergence of the
+// same kind as MAXSTRS/MAXGLOBALS/MAXOPEN (docs/build.md § limits).
+#define MAXPARAMS 12                  // 1..8 in registers, 9..12 on the stack
 
 // ---- M23: the limits registry ----
 // Every table of the compiler is an arena block that doubles on demand. The

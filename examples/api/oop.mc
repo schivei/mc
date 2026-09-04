@@ -278,10 +278,10 @@ i64 oop_fieldp(i64 off) { return oop_bin(K_ADD, oop_id("self"), oop_int(off)); }
 //
 // `extra` is how many argument slots dispatch spends besides the parameters:
 // 1 in the interface, because the dispatcher calls `callp(slot, self, ...)`
-// and the pointer takes up the first of `callp`'s 8 slots; 0 in the class,
-// whose method is called directly via `bl`. Without this an interface method
-// with self + 7 parameters would get past here and die further ahead with
-// "callp expects 1 to 8 arguments", at the wrong line. ----
+// and the pointer takes up the first of `callp`'s MAXPARAMS slots; 0 in the
+// class, whose method is called directly via `bl`. Without this an interface
+// method with self + MAXPARAMS - 1 parameters would get past here and die
+// further ahead with "callp expects 1 to 12 arguments", at the wrong line. ----
 i64 oop_params(uptr pnp, i64 extra) {
     p_expect(K_LPAR, "expected ( in the method parameter list");
     if (p_id() != T_IDENT || !str_eq(p_name(), "self"))
@@ -309,7 +309,7 @@ i64 oop_params(uptr pnp, i64 extra) {
 i64 oop_dispatch(i64 ty, uptr iface, uptr m, i64 params, i64 idx) {
     i64 vt = oop_call("ld64", oop_id("self"));
     i64 slot = oop_call("ld64", oop_bin(K_ADD, vt, oop_int(idx * 8)));
-    i64 args = slot;                             // callp(p, a1..a7): the pointer comes first
+    i64 args = slot;                             // callp(p, a1..): the pointer comes first
     i64 p = params;
     while (p != 0) {
         args = list_append(args, oop_id(nd_name(p)));

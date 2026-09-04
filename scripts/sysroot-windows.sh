@@ -10,7 +10,8 @@
 # tool that does it -- so this script writes the list (`kernel32.def`) and builds
 # `kernel32.lib` from it, with no network and no Windows SDK.
 #
-# The list is exactly the seven entry points lib/sys_windows.mc declares. A
+# The list is exactly the entry points lib/sys_windows.mc and
+# lib/sys_windows_host.mc declare. A
 # program that needs more than that (a whole SDK, other DLLs) is what
 # `mc sysroot fetch windows-*` will be for; this is the toolchain the test suite
 # needs and nothing else.
@@ -58,19 +59,28 @@ fi
 
 mkdir -p "$dir" || exit 1
 
-# The seven kernel32 entry points lib/sys_windows.mc declares, one per line.
-# Keep this list and the `extern`s in that file in step: a name here that the
-# layer does not use costs nothing, a name the layer uses and this list does not
-# have is an "unresolved external symbol" at link time.
+# The kernel32 entry points the two layers declare, one per line: the seven of
+# lib/sys_windows.mc (M19) and the six more lib/sys_windows_host.mc needs for a
+# HOSTED compiler (M38) -- spawning a tool, waiting for it, creating and
+# deleting a file, and the arena's mapping. Keep this list and the `extern`s in
+# those two files in step: a name here that no layer uses costs nothing, a name
+# a layer uses and this list does not have is an "unresolved external symbol" at
+# link time.
 cat > "$dir/kernel32.def" <<'DEF'
 LIBRARY kernel32.dll
 EXPORTS
 CloseHandle
+CreateDirectoryA
 CreateFileA
+CreateProcessA
+DeleteFileA
 ExitProcess
 GetCommandLineA
+GetExitCodeProcess
 GetStdHandle
 ReadFile
+VirtualAlloc
+WaitForSingleObject
 WriteFile
 DEF
 

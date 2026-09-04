@@ -6,6 +6,10 @@
 mc="${1:-build/mc0}"
 lexdump="${2:-build/lexdump}"
 
+# M38: on Windows a program that is not called *.exe cannot be launched, so the
+# name is written with the suffix here, where it is chosen (docs/guide/95-windows-host.md).
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) lexdump="$lexdump.exe" ;; esac
+
 if [ ! -x "$mc" ]; then
     echo "FAIL: compiler '$mc' not found or not executable"
     exit 1
@@ -23,6 +27,9 @@ if ! msg=$(scripts/link-host.sh "$lexdump" "$obj" 2>&1); then
 fi
 
 tmp="${TMPDIR:-/tmp}/check-lex.$$"
+# Under Git Bash on Windows, MSYS hands TMPDIR to this shell in /d/... form, a
+# path the native mc cannot open; cygpath -m gives D:/... which both accept.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) tmp=$(cygpath -m "$tmp") ;; esac
 mkdir -p "$tmp"
 fails=0
 total=0

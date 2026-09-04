@@ -24,19 +24,27 @@ fi
 
 mkdir -p build
 tmp="${TMPDIR:-/tmp}/check-bundle.$$"
+# Under Git Bash on Windows, MSYS hands TMPDIR to this shell in /d/... form, a
+# path the native mc cannot open; cygpath -m gives D:/... which both accept.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) tmp=$(cygpath -m "$tmp") ;; esac
 mkdir -p "$tmp"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-if ! msg=$(scripts/build-exe.sh "$mc" build/bundle tools/bundle.mc 2>&1); then
+# M38: on Windows a program that is not called *.exe cannot be launched, so the
+# two helper binaries below carry the suffix (docs/guide/95-windows-host.md).
+hostexe=""
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) hostexe=".exe" ;; esac
+
+if ! msg=$(scripts/build-exe.sh "$mc" "build/bundle$hostexe" tools/bundle.mc 2>&1); then
     echo "FAIL: compiling tools/bundle.mc: $msg"
     exit 1
 fi
 
-if ! msg=$(build/bundle tools/bundle.list "$tmp/a.mc" 2>&1); then
+if ! msg=$("build/bundle$hostexe" tools/bundle.list "$tmp/a.mc" 2>&1); then
     echo "FAIL: generating the bundle (run 1): $msg"
     exit 1
 fi
-if ! msg=$(build/bundle tools/bundle.list "$tmp/b.mc" 2>&1); then
+if ! msg=$("build/bundle$hostexe" tools/bundle.list "$tmp/b.mc" 2>&1); then
     echo "FAIL: generating the bundle (run 2): $msg"
     exit 1
 fi
@@ -83,11 +91,11 @@ echo "ok <mc/bundle_data> is one #embed node plus the $want-value index"
 # src/lz.mc on its own: synthetic buffers from a deterministic LCG (pure random
 # bytes, runs, a 4-letter alphabet, a repeating pattern; sizes 0 to 256 KiB) and
 # every file of the manifest, read from disk. Deflate, inflate, compare.
-if ! msg=$(scripts/build-exe.sh "$mc" build/lz_test tools/lz_test.mc 2>&1); then
+if ! msg=$(scripts/build-exe.sh "$mc" "build/lz_test$hostexe" tools/lz_test.mc 2>&1); then
     echo "FAIL: compiling tools/lz_test.mc: $msg"
     exit 1
 fi
-if ! out=$(build/lz_test tools/bundle.list 2>&1); then
+if ! out=$("build/lz_test$hostexe" tools/bundle.list 2>&1); then
     echo "FAIL: lz round trip"
     printf '%s\n' "$out" | tail -5
     exit 1

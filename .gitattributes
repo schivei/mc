@@ -1,0 +1,6 @@
+# M38: never translate line endings. The Windows runners compile .mc sources
+# and run shell scripts straight out of the checkout, and GitHub Windows images
+# ship core.autocrlf=true -- a `#!/bin/sh\r` is a hard failure. The lexer treats
+# \r as whitespace, so a CRLF checkout would still produce the same tokens and
+# the same object, but the scripts are not so forgiving (docs/specs/M38.md § 7).
+* -text

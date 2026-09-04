@@ -14,12 +14,24 @@ BUDGET  = 3000
 #   REF   the compiler a cross-check compares AGAINST -- mc0 on macOS (the
 #         frozen C seed, the oracle), mc1l on Linux (the stage the seed built)
 #   MC    the compiler under test -- mc1 on macOS, mc2l on Linux
+#
+# M38: the third host is Windows under Git Bash, where `uname -s` says
+# MINGW64_NT-... or MSYS_NT-..., so the switch is a findstring and not an ifeq.
+# There is no `mc0` there either -- scripts/bootstrap-windows.sh is the chain --
+# and every name carries `.exe`, because a file that is not called *.exe cannot
+# be launched on Windows (docs/guide/95-windows-host.md). HOSTARCH comes from
+# scripts/host-arch.sh: under Git Bash on Windows on ARM `uname -m` reports the
+# emulated x86_64, and only the environment knows the real machine.
 HOST     := $(shell uname -s)
-HOSTARCH := $(shell uname -m | sed -e 's/^arm64$$/aarch64/' -e 's/^amd64$$/x86_64/')
+HOSTARCH := $(shell sh scripts/host-arch.sh)
+WINHOST  := $(findstring MINGW,$(HOST))$(findstring MSYS,$(HOST))$(findstring CYGWIN,$(HOST))
 
 ifeq ($(HOST),Linux)
 REF = build/mc1l
 MC  = build/mc2l
+else ifneq (,$(WINHOST))
+REF = build/mc1w.exe
+MC  = build/mc2w.exe
 else
 REF = build/mc0
 MC  = build/mc1
@@ -46,6 +58,14 @@ ifeq ($(HOST),Linux)
 # does not list it a second time.
 test: $(MC)
 	scripts/test-linux.sh --arch $(HOSTARCH) $(MC)
+else ifneq (,$(WINHOST))
+# M38: on Windows the suite is cross-compiled by the compiler that is running
+# here and then linked and run natively, both halves of scripts/test-windows.sh
+# in one go. `make check` does not list it: scripts/bootstrap-windows.sh already
+# ends with the --run-only half, run by the compiler it just bootstrapped.
+test: $(MC)
+	scripts/test-windows.sh --arch $(HOSTARCH) --build-only build/tests-windows-$(HOSTARCH) $(MC)
+	scripts/test-windows.sh --arch $(HOSTARCH) --run-only build/tests-windows-$(HOSTARCH)
 else
 test: build/mc0
 	scripts/test.sh build/mc0
@@ -195,7 +215,7 @@ test-windows: build/mc1
 
 # M20: the same suite for windows/x86_64 -- the `coff-obj-x86_64` backend over
 # the Win64 half of the x86-64 machine. Nothing is EXECUTED here either; the
-# windows-latest CI leg is the runtime oracle. Guarded exactly like test-windows.
+# windows-2025 CI leg is the runtime oracle. Guarded exactly like test-windows.
 test-windows-x86_64: build/mc1
 	@if ! sh -c 'command -v lld-link || [ -x /opt/homebrew/opt/llvm/bin/lld-link ]' > /dev/null 2>&1; then \
 	    echo "test-windows-x86_64: SKIPPED (lld-link not found; brew install lld llvm)"; \
@@ -270,6 +290,59 @@ build/mc2l:
 build/mc1l: build/mc2l
 	@:
 
+# M38: the Windows chain. Same shape as bootstrap-linux: there is no mc0 here,
+# so `check` starts from scripts/bootstrap-windows.sh -- seed -> mc1w -> mc2w ->
+# mc3w, cmp, golden, --host, the suite, and the cross proof against build/mc2.o.
+# SEED is optional: with none the script takes build/mc-windows-<target>.exe,
+# links build/mc-windows-<target>.obj when only the object is there (that is
+# what the CI artifact holds), and otherwise downloads the release asset and
+# verifies its checksum.
+bootstrap-windows:
+	scripts/bootstrap-windows.sh --arch $(HOSTARCH) $(SEED)
+
+build/mc2w.exe:
+	scripts/bootstrap-windows.sh $(SEED)
+
+# an empty recipe on purpose: the file is written by the rule above
+build/mc1w.exe: build/mc2w.exe
+	@:
+
+# M38: cross-building `mc` itself for a Windows host, from macOS. Two configs,
+# two PE executables, each linked by lld-link against the kernel32 import
+# library and the two objects a system with no C runtime needs. Unlike the Linux
+# pair this needs no Docker at all -- the whole sysroot is one generated .lib.
+mc-windows: build/mc1 sysroot-windows mcrt-windows
+	build/mc1 build src --config src/mc.windows-aarch64.toml
+
+mc-windows-x86_64: build/mc1 sysroot-windows-x86_64 mcrt-windows-x86_64
+	build/mc1 build src --config src/mc.windows-x86_64.toml
+
+# M38: the same cross-build stopped one step earlier -- `kind = "obj"`, so no
+# [linker] and no sysroot. This is what CI runs on the macOS runner; the object
+# is linked on the Windows runner. It is byte for byte the one the two targets
+# above write on their way to the executable.
+mc-windows-obj: build/mc1
+	build/mc1 build src --config src/mc.windows-aarch64-obj.toml
+
+mc-windows-x86_64-obj: build/mc1
+	build/mc1 build src --config src/mc.windows-x86_64-obj.toml
+
+# M38: the two objects every Windows link line carries besides the program --
+# the entry point (lib/sys_windows_start.mc) and the POSIX shims over kernel32
+# (lib/sys_windows_host.mc). They go into the SYSROOT, beside kernel32.lib,
+# because that is the directory that holds everything a link for this target
+# needs and is not the program; they travel in the CI artifact for the same
+# reason, since the Windows runner has no `mc` until it has linked one.
+mcrt-windows: build/mc1
+	@mkdir -p build/sysroot/windows-aarch64
+	build/mc1 --backend=coff-obj-arm64 lib/sys_windows_start.mc -o build/sysroot/windows-aarch64/winstart.obj
+	build/mc1 --backend=coff-obj-arm64 lib/sys_windows_host.mc  -o build/sysroot/windows-aarch64/mcrt.obj
+
+mcrt-windows-x86_64: build/mc1
+	@mkdir -p build/sysroot/windows-x86_64
+	build/mc1 --backend=coff-obj-x86_64 lib/sys_windows_start.mc -o build/sysroot/windows-x86_64/winstart.obj
+	build/mc1 --backend=coff-obj-x86_64 lib/sys_windows_host.mc  -o build/sysroot/windows-x86_64/mcrt.obj
+
 # M37: cross-building `mc` itself for a Linux host, from macOS. Two configs,
 # two ELF executables, both statically linked against musl by ld.lld. The
 # sysroot prerequisite is what needs Docker: scripts/sysroot-linux.sh copies the
@@ -303,8 +376,23 @@ check-linux-host: build/mc1
 	    scripts/check-linux-host.sh; \
 	fi
 
-# M37: what a Linux host cannot prove, with the reason. Every line here is a
-# target `make check` runs on macOS and does not run on Linux.
+# M37/M38: what a Linux or a Windows host cannot prove, with the reason. Every
+# line here is a target `make check` runs on macOS and does not run there.
+ifneq (,$(WINHOST))
+check-skipped:
+	@echo "stage0/mc0: the C seed is macOS-first -- it emits Mach-O only (docs/bootstrap.md)"
+	@echo "bootstrap: SKIPPED (macOS chain: mc0 -> mc1 -> mc2 -> mc3; bootstrap-windows is the Windows one)"
+	@echo "test: SKIPPED (bootstrap-windows already ran the suite with the compiler it built)"
+	@echo "test-exe: SKIPPED (--exe is the Mach-O direct-executable backend; Windows links with lld-link)"
+	@echo "check-standalone: SKIPPED (its criterion is a signed Mach-O executable)"
+	@echo "check-surface: SKIPPED (its cases build taught compilers with --exe)"
+	@echo "check-build: SKIPPED (tests/proj targets macos/aarch64 through ld)"
+	@echo "check-minimal: SKIPPED (its ceilings are measured on the macOS backends)"
+	@echo "test-linux/test-linux-x86_64: SKIPPED (cross-compilation from macOS, with Docker)"
+	@echo "test-windows/test-windows-x86_64: SKIPPED (cross-compilation from macOS; here the suite is native)"
+	@echo "check-examples/check-lang/check-conc/check-desktop: SKIPPED (macOS dylibs and --exe)"
+	@echo "check-docs/site/check-site: SKIPPED (their samples are built with --exe)"
+else
 check-skipped:
 	@echo "budget/stage0: the C seed is macOS-first -- it emits Mach-O only (docs/bootstrap.md)"
 	@echo "bootstrap: SKIPPED (macOS chain: mc0 -> mc1 -> mc2 -> mc3; bootstrap-linux is the Linux one)"
@@ -315,12 +403,18 @@ check-skipped:
 	@echo "check-minimal: SKIPPED (its ceilings are measured on the macOS backends)"
 	@echo "test-linux/test-linux-x86_64: SKIPPED (cross-compilation from macOS; here the suite is native)"
 	@echo "test-windows: SKIPPED (cross-compilation from macOS; the windows-11-arm CI leg is the runtime oracle)"
-	@echo "test-windows-x86_64: SKIPPED (cross-compilation from macOS; the windows-latest CI leg is the runtime oracle)"
+	@echo "test-windows-x86_64: SKIPPED (cross-compilation from macOS; the windows-2025 CI leg is the runtime oracle)"
 	@echo "check-examples/check-lang/check-conc/check-desktop: SKIPPED (macOS dylibs and --exe)"
 	@echo "check-docs/site/check-site: SKIPPED (their samples are built with --exe)"
+endif
 
 ifeq ($(HOST),Linux)
 check: budget bootstrap-linux check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-limits check-skipped
+else ifneq (,$(WINHOST))
+# M38: the Windows subset. Everything not here needs `mc` plus something this
+# host does not have -- the C seed, the Mach-O direct-executable backend, GTK4,
+# Docker or python3 -- and `check-skipped` prints the reason for each one.
+check: budget bootstrap-windows check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-limits check-skipped
 else
 check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-limits check-minimal test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-desktop check-docs site check-site
 endif
@@ -333,6 +427,8 @@ clean:
 
 .PHONY: bootstrap-linux mc-linux mc-linux-x86_64 mc-linux-obj mc-linux-x86_64-obj
 .PHONY: check-linux-host check-skipped
+.PHONY: bootstrap-windows mc-windows mc-windows-x86_64 mc-windows-obj mc-windows-x86_64-obj
+.PHONY: mcrt-windows mcrt-windows-x86_64
 .PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-limits sysroot-linux sysroot-linux-x86_64 sysroot-windows sysroot-windows-x86_64 test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal
 
 # M32: examples/desktop -- a GTK4 application written in mc, and the same
