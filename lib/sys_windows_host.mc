@@ -206,7 +206,10 @@ i64 posix_spawnp(uptr pid, uptr file, uptr fa, uptr attr, uptr av, uptr envp) {
 // `(code & 255) << 8` is exact; the mask is what keeps a DWORD exit code such as
 // 0x100 from arriving as 0.
 i64 waitpid(i64 pid, uptr status, i64 options) {
-    if ((WaitForSingleObject(pid, INFINITE) & BOOL_MASK) != WAIT_OBJECT_0) return 0 - 1;
+    if ((WaitForSingleObject(pid, INFINITE) & BOOL_MASK) != WAIT_OBJECT_0) {
+        CloseHandle(pid);
+        return 0 - 1;
+    }
     st64(wh_code, 0);
     if ((GetExitCodeProcess(pid, wh_code) & BOOL_MASK) == 0) {
         CloseHandle(pid);

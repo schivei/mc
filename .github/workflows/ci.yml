@@ -703,7 +703,7 @@ jobs:
         id: tools
         shell: bash
         run: |
-          echo "runner: $windows-11-arm_OS $windows-11-arm_ARCH"
+          echo "runner: $RUNNER_OS $RUNNER_ARCH"
           uname -s
           uname -m
           if where lld-link 2>/dev/null; then
@@ -855,7 +855,7 @@ jobs:
         id: tools
         shell: bash
         run: |
-          echo "runner: $windows-2025_OS $windows-2025_ARCH"
+          echo "runner: $RUNNER_OS $RUNNER_ARCH"
           uname -s
           uname -m
           if where lld-link 2>/dev/null; then
