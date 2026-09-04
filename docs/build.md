@@ -867,6 +867,51 @@ without `ld.lld` in `PATH`, or with Docker not running, they print `SKIPPED (...
 stays green. In CI each one has a job that links and *runs* the suite on a real machine of that
 architecture (`docs/ci.md`), which is what `docs/plan.md` § Rule for every new target requires.
 
+### A kernel-7 local oracle with Lima
+
+Docker's kernel is the VM's: Docker Desktop boots a LinuxKit kernel (6.12 here) that cannot be
+changed, so the project's Linux baseline -- the newest OS, kernel 7+, which CI reaches on the
+GitHub runners -- is reached locally with a second Docker daemon inside a Lima VM running Ubuntu
+26.04 (`linux-image-7.0.0-30-generic`). Nothing in the repository changes; only the Docker
+context the two targets talk to does. `brew install lima`, then `~/.lima/mc-k7.yaml`:
+
+```yaml
+vmType: vz                        # Virtualization.framework
+cpus: 4
+memory: 4GiB
+disk: 30GiB
+images:                           # Ubuntu 26.04 LTS cloud image, pinned by digest
+- location: "https://cloud-images.ubuntu.com/releases/resolute/release-20260823/ubuntu-26.04-server-cloudimg-arm64.img"
+  arch: "aarch64"
+  digest: "sha256:00e2d9f09373125eb9040952ae3b8d5553fe3df8f5004c08838473a1f61b74bf"
+mountType: virtiofs               # the tests bind-mount the repo by its host path,
+mounts:                           # so the same path must exist inside the VM
+- location: "/Users/schivei/projects"
+  writable: true
+- location: "/private/tmp/claude-501"
+  writable: true
+vmOpts:
+  vz:
+    rosetta: { enabled: true, binfmt: true }   # --platform linux/amd64 containers
+containerd: { system: false, user: false }
+# provision/probes/portForwards: Lima's own docker-rootful template, verbatim
+# (curl -fsSL https://get.docker.com | sh; /var/run/docker.sock forwarded to
+# {{.Dir}}/sock/docker.sock)
+```
+
+```
+limactl start --name mc-k7 --tty=false ~/.lima/mc-k7.yaml
+docker context create mc-k7 --docker "host=unix://$HOME/.lima/mc-k7/sock/docker.sock"
+DOCKER_CONTEXT=mc-k7 make test-linux
+DOCKER_CONTEXT=mc-k7 make test-linux-x86_64
+```
+
+`DOCKER_CONTEXT=` is per command on purpose: the default context stays Docker Desktop. Measured
+on the same checkout: `ubuntu:latest`, `alpine:3` and `--platform linux/amd64 alpine:3` all answer
+`uname -r` = `7.0.0-30-generic` (the last one `uname -m` = `x86_64`, through Rosetta); the suites
+are 33/33 and 30/30 under both daemons, 9.9 s / 10.4 s under Lima against 16.0 s / 17.2 s under
+Docker Desktop.
+
 ---
 
 ## M19/M20 — Windows targets (`os = "windows"`, `arch = "aarch64"` or `"x86_64"`)
