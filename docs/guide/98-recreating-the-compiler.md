@@ -55,16 +55,16 @@ void user_init() {
 }
 ```
 
-**One caveat, measured on a real recreated compiler (M40).** `backend_default()`
-does not take effect today: `mc_main` resolves the default backend BEFORE it
-calls `user_init()` (`src/cli.mc`), so a compiler whose only backend is
-registered from `user_init` still needs `--backend=NAME` on the command line —
-and it needs it even for `--dump-ast` and `--dump-asm`, which never reach a
-backend at all. `mc build` is unaffected: `[target]` is resolved after
-`user_init` (M39.5), which is why `examples/avr` builds end to end from
-`mc.toml` and passes `--backend=avr-image` everywhere it uses the single-file
-CLI. Moving those five lines below `user_init()` is the fix; it is a change to
-`src/` and it is the architect's to take.
+**`backend_default()` did not always work, and the fix is worth knowing about.**
+Until the post-M41 review batch, `mc_main` resolved the default backend BEFORE
+it called `user_init()`, so a compiler whose only backend is registered there
+still needed `--backend=NAME` on the command line -- and needed it even for
+`--dump-ast` and `--dump-asm`, which never reach a backend at all. The
+resolution now happens after `user_init()` and after the dump modes have
+returned (`src/cli.mc`), which is the same rule M39.5 wrote for `[target]` in
+`mc build`. `examples/avr` was written while the old order was still in place
+and still passes `--backend=avr-image` on every single-file command; it does not
+have to any more.
 
 Six lines of `user_init` and a `main` that names the parts. That is the whole
 mechanism; everything else on this page is what each of those lines buys and
