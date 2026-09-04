@@ -91,6 +91,31 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: scripts/release-assets.sh "$VERSION" "$TARGET" dist/mc dist
 
+      # M37: the two Linux hosts. They are CROSS-BUILT here, from the same
+      # source and by the compiler that has just bootstrapped -- `mc` is one
+      # program with a host layer (src/host_linux.mc), not a port. The runtime
+      # proof is the CI jobs "mc on linux/arm64 host" and "mc on linux/x86_64
+      # host", which bootstrap each of these binaries to its own fixed point on
+      # a real Linux CPU (docs/ci.md, docs/guide/90-linux-host.md).
+      - name: Cross-build and package the Linux hosts
+        run: |
+          set -eu
+          if ! command -v ld.lld >/dev/null 2>&1; then
+            brew install lld || true
+            for cand in /opt/homebrew/opt/lld/bin/ld.lld /usr/local/opt/lld/bin/ld.lld; do
+              [ -x "$cand" ] && sudo ln -sf "$cand" /usr/local/bin/ld.lld && break
+            done
+          fi
+          ld.lld --version
+          make sysroot-linux
+          make sysroot-linux-x86_64
+          build/mc1 build src --config src/mc.linux-aarch64.toml
+          build/mc1 build src --config src/mc.linux-x86_64.toml
+          ls -l build/mc-linux-arm64 build/mc-linux-x86_64
+          scripts/release-assets.sh "$VERSION" linux-arm64  build/mc-linux-arm64  dist
+          scripts/release-assets.sh "$VERSION" linux-x86_64 build/mc-linux-x86_64 dist
+          ls -l dist
+
       - name: Upload the packaged artifact
         uses: actions/upload-artifact@v4
         with:
@@ -100,13 +125,9 @@ jobs:
             dist/mc-*.tar.gz.sha256
           if-no-files-found: error
 
-  # Placeholders, deliberately disabled. They turn on when `mc` itself runs on
-  # Linux and Windows -- today it is a macOS arm64 program (docs/plan.md
-  # § Phase 2: "mc itself keeps running on macOS arm64 for now; cross-hosting
-  # comes later with CI", and docs/build.md § Limits: the driver needs
-  # `_NSGetEnviron`, which is libSystem-only). M16 gave Linux arm64 *targets*;
-  # hosting mc there is the milestone that flips `if: false` to `if: true`, and
-  # Windows waits for the COFF work of M19/M20.
+  # Placeholders, deliberately disabled. The Linux entries are gone from here:
+  # M37 hosts `mc` on Linux and the job above cross-builds and packages both
+  # architectures. Windows still waits for the COFF work of M19/M20.
   build-future-hosts:
     name: Build ${{ matrix.target }} (not enabled yet)
     if: false
@@ -116,10 +137,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04-arm
-            target: linux-arm64
-          - os: ubuntu-24.04
-            target: linux-x86_64
           - os: windows-11-arm
             target: windows-arm64
           - os: windows-2025
@@ -173,10 +190,15 @@ jobs:
             echo "## Install"
             echo
             echo '```sh'
+            echo "# macOS (arm64)"
             echo "tar xzf mc-$version-macos-arm64.tar.gz"
             echo "cd mc-$version-macos-arm64"
             echo "xattr -d com.apple.quarantine mc     # ad-hoc signed, not notarized"
             echo "install -m 755 mc /usr/local/bin/mc"
+            echo
+            echo "# Linux (arm64 or x86_64), statically linked against musl"
+            echo "tar xzf mc-$version-linux-arm64.tar.gz"
+            echo "install -m 755 mc-$version-linux-arm64/mc /usr/local/bin/mc"
             echo '```'
             echo
             echo "## Checksums"

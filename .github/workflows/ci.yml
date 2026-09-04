@@ -13,9 +13,10 @@ permissions:
   contents: read
 
 # One run per pull request (or per branch, for the push to main); a new push
-# cancels the previous run. The two job names below are the required status
-# checks on `main` -- "make check (macOS arm64)" and "Link and run the suite
-# (linux/arm64)" -- so they must not be renamed without updating the branch
+# cancels the previous run. The job names below are the required status checks
+# on `main` -- "make check (macOS arm64)", "Link and run the suite
+# (linux/arm64)" and, since M37, "mc on linux/arm64 host" and "mc on
+# linux/x86_64 host" -- so they must not be renamed without updating the branch
 # protection (docs/ci.md § Branch protection).
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
@@ -71,11 +72,53 @@ jobs:
       - name: Cross-compile the suite for linux/x86_64
         run: scripts/test-linux.sh --arch x86_64 --build-only build/linux-objs-x86_64 build/mc1
 
+      # M37: `mc` hosted on Linux. The two binaries are CROSS-BUILT here -- the
+      # ELF writers and the two machines are the same compiler -- and the jobs
+      # below run them on real Linux CPUs: bootstrap to a fixed point and the
+      # Linux `make check` subset. ld.lld and the musl sysroot are the only
+      # extra ingredients, and Homebrew has both (the sysroot needs Docker,
+      # which these runners do not have, so it comes from `brew install musl`
+      # when it is there and the job self-skips otherwise).
+      - name: Cross-build mc for linux/arm64 and linux/x86_64
+        run: |
+          set -eu
+          if ! command -v ld.lld >/dev/null 2>&1; then
+            brew install lld || true
+            for cand in /opt/homebrew/opt/lld/bin/ld.lld /usr/local/opt/lld/bin/ld.lld; do
+              [ -x "$cand" ] && sudo ln -sf "$cand" /usr/local/bin/ld.lld && break
+            done
+          fi
+          ld.lld --version
+          make sysroot-linux
+          make sysroot-linux-x86_64
+          build/mc1 build src --config src/mc.linux-aarch64.toml
+          build/mc1 build src --config src/mc.linux-x86_64.toml
+          ls -l build/mc-linux-arm64 build/mc-linux-x86_64
+          file build/mc-linux-arm64 build/mc-linux-x86_64 || true
+
       - name: Upload the self-hosted compiler
         uses: actions/upload-artifact@v4
         with:
           name: mc-macos-arm64
           path: build/mc-exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the reference object of the macOS bootstrap
+        uses: actions/upload-artifact@v4
+        with:
+          name: mc2-macos-arm64
+          path: build/mc2.o
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the cross-built Linux compilers
+        uses: actions/upload-artifact@v4
+        with:
+          name: mc-linux-hosts
+          path: |
+            build/mc-linux-arm64
+            build/mc-linux-x86_64
           if-no-files-found: error
           retention-days: 14
 
@@ -218,6 +261,132 @@ jobs:
 
       - name: Link with ld.lld and run natively
         run: scripts/test-linux.sh --arch x86_64 --run-only build/linux-objs-x86_64
+
+  # M37: `mc` HOSTED on Linux. Not "a Linux target built from macOS" -- the
+  # binary downloaded here is the compiler, and it compiles itself to a fixed
+  # point on this machine before anything else runs. See
+  # docs/guide/90-linux-host.md.
+  linux-arm64-host:
+    name: mc on linux/arm64 host
+    runs-on: ubuntu-24.04-arm
+    needs: check
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Download the cross-built Linux compilers
+        uses: actions/download-artifact@v4
+        with:
+          name: mc-linux-hosts
+          path: build
+
+      - name: Download the macOS reference object
+        uses: actions/download-artifact@v4
+        with:
+          name: mc2-macos-arm64
+          path: build
+
+      - name: Install ld.lld and the musl development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lld musl-dev musl-tools
+          if ! command -v ld.lld >/dev/null 2>&1; then
+            for cand in /usr/bin/ld.lld-* /usr/lib/llvm-*/bin/ld.lld; do
+              if [ -x "$cand" ]; then
+                sudo ln -sf "$cand" /usr/local/bin/ld.lld
+                break
+              fi
+            done
+          fi
+          ld.lld --version
+          ls -l /usr/lib/aarch64-linux-musl/crt1.o /usr/lib/aarch64-linux-musl/libc.a
+
+      - name: What this binary says it is
+        run: |
+          chmod 755 build/mc-linux-arm64
+          build/mc-linux-arm64 --host
+
+      # MC_SYSROOT points at the distribution's own musl files, so nothing is
+      # downloaded and no container is started: scripts/link-linux.sh and
+      # scripts/test-linux.sh both read it.
+      - name: Bootstrap and run the Linux make check subset
+        env:
+          MC_SYSROOT: /usr/lib/aarch64-linux-musl
+        run: make check SEED=build/mc-linux-arm64
+
+      # The proof that a Linux-hosted mc is the SAME compiler: the Mach-O object
+      # it writes for src/mc.mc is byte for byte the one the macOS job wrote for
+      # itself (build/mc2.o, uploaded above).
+      - name: Cross proof against the macOS object
+        run: |
+          set -eu
+          build/mc2l src/mc.mc -o build/x-cross.o
+          cmp build/x-cross.o build/mc2.o
+          echo "ok: the Mach-O object written on linux/arm64 is the one macOS writes"
+
+  # M37: `mc` HOSTED on Linux. Not "a Linux target built from macOS" -- the
+  # binary downloaded here is the compiler, and it compiles itself to a fixed
+  # point on this machine before anything else runs. See
+  # docs/guide/90-linux-host.md.
+  linux-x86-64-host:
+    name: mc on linux/x86_64 host
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Download the cross-built Linux compilers
+        uses: actions/download-artifact@v4
+        with:
+          name: mc-linux-hosts
+          path: build
+
+      - name: Download the macOS reference object
+        uses: actions/download-artifact@v4
+        with:
+          name: mc2-macos-arm64
+          path: build
+
+      - name: Install ld.lld and the musl development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lld musl-dev musl-tools
+          if ! command -v ld.lld >/dev/null 2>&1; then
+            for cand in /usr/bin/ld.lld-* /usr/lib/llvm-*/bin/ld.lld; do
+              if [ -x "$cand" ]; then
+                sudo ln -sf "$cand" /usr/local/bin/ld.lld
+                break
+              fi
+            done
+          fi
+          ld.lld --version
+          ls -l /usr/lib/x86_64-linux-musl/crt1.o /usr/lib/x86_64-linux-musl/libc.a
+
+      - name: What this binary says it is
+        run: |
+          chmod 755 build/mc-linux-x86_64
+          build/mc-linux-x86_64 --host
+
+      # MC_SYSROOT points at the distribution's own musl files, so nothing is
+      # downloaded and no container is started: scripts/link-linux.sh and
+      # scripts/test-linux.sh both read it.
+      - name: Bootstrap and run the Linux make check subset
+        env:
+          MC_SYSROOT: /usr/lib/x86_64-linux-musl
+        run: make check SEED=build/mc-linux-x86_64
+
+      # The proof that a Linux-hosted mc is the SAME compiler: the Mach-O object
+      # it writes for src/mc.mc is byte for byte the one the macOS job wrote for
+      # itself (build/mc2.o, uploaded above).
+      - name: Cross proof against the macOS object
+        run: |
+          set -eu
+          build/mc2l src/mc.mc -o build/x-cross.o
+          cmp build/x-cross.o build/mc2.o
+          echo "ok: the Mach-O object written on linux/x86_64 is the one macOS writes"
 
   docs-updated:
     name: Docs updated
