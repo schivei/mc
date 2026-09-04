@@ -24,6 +24,9 @@ fi
 
 mkdir -p build
 tmp="${TMPDIR:-/tmp}/check-bundle.$$"
+# Under Git Bash on Windows, MSYS hands TMPDIR to this shell in /d/... form, a
+# path the native mc cannot open; cygpath -m gives D:/... which both accept.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) tmp=$(cygpath -m "$tmp") ;; esac
 mkdir -p "$tmp"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 

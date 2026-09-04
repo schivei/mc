@@ -42,6 +42,9 @@ host_skip() {
 }
 
 tmp="${TMPDIR:-/tmp}/check-obj.$$"
+# Under Git Bash on Windows, MSYS hands TMPDIR to this shell in /d/... form, a
+# path the native mc cannot open; cygpath -m gives D:/... which both accept.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) tmp=$(cygpath -m "$tmp") ;; esac
 mkdir -p "$tmp/a" "$tmp/b"
 fails=0
 total=0

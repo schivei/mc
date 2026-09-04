@@ -31,6 +31,9 @@ if ! msg=$(scripts/build-exe.sh "$mc" "$tomldump" src/tomldump.mc 2>&1); then
 fi
 
 tmp="${TMPDIR:-/tmp}/check-toml.$$"
+# Under Git Bash on Windows, MSYS hands TMPDIR to this shell in /d/... form, a
+# path the native mc cannot open; cygpath -m gives D:/... which both accept.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) tmp=$(cygpath -m "$tmp") ;; esac
 mkdir -p "$tmp"
 fails=0
 total=0

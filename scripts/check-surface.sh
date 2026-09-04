@@ -45,6 +45,9 @@ done
 user="src/user.mc"
 save="${TMPDIR:-/tmp}/user.mc.$$"
 tmp="${TMPDIR:-/tmp}/check-surface.$$"
+# Under Git Bash on Windows, MSYS hands TMPDIR to this shell in /d/... form, a
+# path the native mc cannot open; cygpath -m gives D:/... which both accept.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) tmp=$(cygpath -m "$tmp") ;; esac
 mkdir -p "$tmp"
 cp "$user" "$save"
 # restore the repository to how it was, no matter what happens

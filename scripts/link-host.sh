@@ -14,18 +14,10 @@ set -e
 case "$(uname -s)" in
     Darwin) exec scripts/link.sh "$@" ;;
     Linux)
-        case "$(uname -m)" in
-            aarch64|arm64) arch=aarch64 ;;
-            x86_64|amd64)  arch=x86_64 ;;
-            *) echo "link-host: unsupported machine $(uname -m)" >&2; exit 1 ;;
-        esac
+        arch=$(sh scripts/host-arch.sh)   # never `uname -m`: Git Bash runs emulated on ARM64
         exec scripts/link-linux.sh --arch "$arch" "$@" ;;
     MINGW*|MSYS*|CYGWIN*)
-        case "$(uname -m)" in
-            aarch64|arm64) arch=aarch64 ;;
-            x86_64|amd64)  arch=x86_64 ;;
-            *) echo "link-host: unsupported machine $(uname -m)" >&2; exit 1 ;;
-        esac
+        arch=$(sh scripts/host-arch.sh)   # never `uname -m`: Git Bash runs emulated on ARM64
         exec scripts/link-windows.sh --arch "$arch" "$@" ;;
     *) echo "link-host: unsupported host $(uname -s)" >&2; exit 1 ;;
 esac
