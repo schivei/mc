@@ -31,7 +31,10 @@ extern i64  unlink(uptr path);
 #define DT_REG   8
 #define DT_LNK  10
 
-#define MODE_755 493                  // 0755 in decimal: the core has no octal literal
+// MODE_755 (0755 in decimal: the core has no octal literal) comes from
+// <mc/arena>, which this file already has through site/gen/main.mc. It was
+// defined here until M41 moved it into the arena, and a second #define of the
+// same name is an error.
 
 // ---- growable block (the shape of arena.mc's grow(), without the registry) ----
 // The registry ids in arena.mc name the compiler's own tables; mcsite is not the

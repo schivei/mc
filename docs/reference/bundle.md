@@ -221,6 +221,16 @@ Spelled out, the whole compiler is:
 and `docs/guide/98-recreating-the-compiler.md` is what each omitted line costs, in bytes and in
 capability.
 
+**A part stands on `<mc/core_min>` alone**, and `scripts/check-parts.sh` compiles each of the four
+optional parts on top of the minimal one to say so. It is not free: four names had to move when M41
+landed, because the full assembly hides a cross-part dependency completely. `tm_cat` and
+`tm_num_str` went from `src/toml.mc` to `src/arena.mc` (`src/cli.mc` needs the first for
+`--include=` and `src/backend_coff.mc` the second for a long section name); `MODE_755` went from
+`src/backend_exe.mc` to `src/arena.mc` (`src/driver.mc` uses it for `mkdir -p`); and
+`R_X86_PC32`/`R_X86_PLT32` went from `src/machine_x86_64.mc` to `src/objmodel.mc`, which is where a
+relocation kind the machine emits and the writer maps belongs. None of the four changed a byte of
+generated code — they are a `#define` and three leaf functions.
+
 **The naming rule.** A bundle name's last path component is the file's basename, because a
 relative `#include` inside a bundled file resolves by joining and then, failing that, by last
 component (see below), and `tools/bundle.mc` refuses a manifest where two entries share one. That

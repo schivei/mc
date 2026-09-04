@@ -66,10 +66,12 @@ cat docs/reference/*.md > "$refs" 2>/dev/null || { echo "FAIL: docs/reference/ i
 # decl_*, the M31 family that answers about a declaration the parser already read,
 # and host_*, the M37 host layer -- the compiler's own operating system, and
 # M24's three Tier 4 families: type_* (the registry widened from the single
-# type_alias the M26 list named), intrinsic* and walk_* (the depth type). A symbol counts as documented when the reference mentions it
+# type_alias the M26 list named), intrinsic* and walk_* (the depth type), and
+# M41's subcommand*, the eighth registry -- the one family whose name is a word
+# on its own and fits none of the prefixes above. A symbol counts as documented when the reference mentions it
 # as a call (`name(`), which is how every entry in hooks.md and objects.md is
 # written; a bare word in prose is not enough.
-grep -hoE '^(void|i64|uptr|u8|u16|u32|u64) +(p_|syntax|type_|pass|backend|machine|sec_|sym_|reloc_add|gen_|on_|decl_|host_|intrinsic|walk_)[A-Za-z_0-9]*\(' src/*.mc \
+grep -hoE '^(void|i64|uptr|u8|u16|u32|u64) +(p_|syntax|type_|pass|backend|machine|sec_|sym_|reloc_add|gen_|on_|decl_|host_|intrinsic|walk_|subcommand)[A-Za-z_0-9]*\(' src/*.mc \
     | sed -E 's/^[a-z0-9]+ +//; s/\($//' | sort -u > "$tmp/syms"
 
 missing=""

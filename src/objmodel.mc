@@ -90,6 +90,15 @@
 #define R_PAGEOFF12  4
 #define R_ADDEND     10
 
+// M17 step B: the two kinds the x86-64 machine produces. They travel in the
+// same Reloc record as the Mach-O ones, so their numbers only have to avoid
+// R_UNSIGNED..R_ADDEND (0..4 and 10); src/backend_elf.mc maps them to
+// R_X86_64_PC32 / PLT32. They are HERE, and not in src/machine_x86_64.mc where
+// they were written, because the machine and the writer that reads them are in
+// two different parts and the object model is what both include (M41).
+#define R_X86_PC32   16
+#define R_X86_PLT32  17
+
 // ---- section flags (mc.h) ----
 #define S_REGULAR                0
 #define S_ZEROFILL               1
