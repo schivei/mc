@@ -76,11 +76,32 @@ i64  drv_stub_mode = 0;               // `mc sysroot stub`: parse, write the
 // the backends that write for the target in effect. M17 replaced the whitelist
 // this file used to carry -- an `i64 drv_linux` flag and two literal messages --
 // with the registry in src/hooks.mc: `target(os, arch, obj, exe)`, registered by
-// src/main.mc. `drv_exe_backend() == 0` says the target has no direct executable
-// and always goes through [linker], which is what Linux does
+// src/main.mc. A zero `exe` slot says the target has no direct executable and
+// always goes through [linker], which is what Linux does
 // (docs/build.md § Linux targets).
-uptr drv_obj_backend() { return tgt_obj_at(drv_target); }
-uptr drv_exe_backend() { return tgt_exe_at(drv_target); }
+//
+// M39.5: the pair is NOT resolved when the TOML is read. drv_run keeps
+// [target].os/.arch as the strings the file wrote, drv_entry asks for a ROLE,
+// and drv_backend_for turns that role into a backend name inside drv_parse,
+// right after user_init() -- so a target a module registered counts, and
+// `mc build` reaches a bare-metal pair the running binary alone does not know
+// (docs/specs/M39.md § Gaps, G1). The two diagnostics and the [linker] check
+// are the ones this file has always printed, moved and not rewritten.
+#define DRV_ROLE_OBJ 1                // the object backend of [target]
+#define DRV_ROLE_EXE 2                // its direct-executable backend
+uptr drv_bname = 0;                   // what drv_compile writes with: a role
+                                      // until the resolution below names it
+
+uptr drv_backend_for(i64 role) {
+    if (!target_os_known(drv_os)) toml_err_key("target.os", target_os_list());
+    drv_target = target_find(drv_os, drv_arch);
+    if (drv_target < 0) toml_err_key("target.arch", target_arch_list(drv_os));
+    if (role == DRV_ROLE_OBJ) return tgt_obj_at(drv_target);
+    if (tgt_exe_at(drv_target) == 0)
+        toml_err_key("target.os", tm_cat(drv_os,
+                     " requires [linker]: there is no direct executable"));
+    return tgt_exe_at(drv_target);
+}
 
 // M23: 0 = plain build, 1 = --limits (report + verdict), 2 = --fix-limits
 // (report + rewrite the [limits] section). `mc limits` is mode 1.
@@ -286,6 +307,11 @@ i64 drv_parse(uptr src, i64 cfg, uptr label) {
     tok_init();
     lex_init(src);
     user_init();
+    // M39.5: HERE. After user_init(), so a [target] a module registered is in
+    // the registry; before parse_unit(), so an unknown pair is still reported
+    // ahead of anything the source itself might be wrong about.
+    if (drv_bname == DRV_ROLE_OBJ || drv_bname == DRV_ROLE_EXE)
+        drv_bname = drv_backend_for(drv_bname);
     if (cfg) drv_apply_config();
     i64 unit = parse_unit();
     unit = run_passes(unit);
@@ -294,10 +320,13 @@ i64 drv_parse(uptr src, i64 cfg, uptr label) {
     return unit;
 }
 
+// `bname` is a backend name, or one of the two DRV_ROLE_* markers drv_entry
+// passes when the name has to come out of [target] (M39.5).
 void drv_compile(uptr src, uptr out, uptr bname, i64 cfg, uptr label) {
+    drv_bname = bname;
     i64 unit = drv_parse(src, cfg, label);
-    i64 bi = backend_find(bname);
-    if (bi < 0) backend_die(bname);
+    i64 bi = backend_find(drv_bname);
+    if (bi < 0) backend_die(drv_bname);
     drv_mkdirs(out);
     unlink(out);                       // never rewrite a signed binary in place
     callp(backend_fn_at(bi), unit, out);
@@ -507,20 +536,17 @@ void drv_entry(uptr entry, uptr out, uptr kind) {
     }
     if (str_eq(kind, "obj")) {
         drv_step("compile", entry, out);
-        drv_compile(src, drv_path(out), drv_obj_backend(), 1, entry);
+        drv_compile(src, drv_path(out), DRV_ROLE_OBJ, 1, entry);
         return;
     }
     if (has_linker == 0) {
-        if (drv_exe_backend() == 0)
-            toml_err_key("target.os", tm_cat(drv_os,
-                         " requires [linker]: there is no direct executable"));
         drv_step("compile", entry, out);
-        drv_compile(src, drv_path(out), drv_exe_backend(), 1, entry);
+        drv_compile(src, drv_path(out), DRV_ROLE_EXE, 1, entry);
         return;
     }
     uptr obj = tm_cat(out, ".o");
     drv_step("compile", entry, obj);
-    drv_compile(src, drv_path(obj), drv_obj_backend(), 1, entry);
+    drv_compile(src, drv_path(obj), DRV_ROLE_OBJ, 1, entry);
     drv_step("link", obj, out);
     drv_link(drv_path(obj), drv_path(out));
 }
@@ -618,13 +644,13 @@ i64 drv_run(uptr dir, uptr cfg, i64 entry_only, i64 compiler_only) {
     // M37: with no [target] the target IS the host. On macOS that is exactly
     // the macos/aarch64 this used to hardcode; on a Linux host it is that
     // host's own pair, which is what makes a config with no [target] portable.
+    // M39.5: only the STRINGS are read here. The registry lookup waits for
+    // drv_backend_for, after user_init() -- this process may be the untaught
+    // parent of a compiler that registers the pair itself.
     uptr os = toml_get("target.os");
     if (os == 0) os = host_os();
     uptr arch = toml_get("target.arch");
     if (arch == 0) arch = host_arch();
-    if (!target_os_known(os)) toml_err_key("target.os", target_os_list());
-    drv_target = target_find(os, arch);
-    if (drv_target < 0) toml_err_key("target.arch", target_arch_list(os));
     drv_os = os;
     drv_arch = arch;
 

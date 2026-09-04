@@ -175,6 +175,14 @@ fi
 # ---- diagnostics ----
 # name, config path, config body, expected LAST line of output (CFG = config path).
 # The error is always the last thing printed: a step line may come first.
+#
+# M39.5: the three [target] cases below write their config into tests/proj/build
+# and name the entry as `../app.mc`, so the source EXISTS. Since M39.5 the
+# (os, arch) pair is resolved after `user_init()` -- late enough for a target a
+# module registered to count -- which is after the entry has been opened and
+# lexed. With an unreachable entry the first error would be `cannot open`, and
+# the [target] diagnostic under test would never be reached. The messages
+# themselves are unchanged, and so is the rule that the error is the last line.
 diag() {
     total=$((total + 1))
     printf '%s' "$3" > "$2"
@@ -192,9 +200,9 @@ diag() {
     fi
 }
 
-diag "diag [target].os" "$tmp/d.toml" \
+diag "diag [target].os" "$dir/build/d.toml" \
     '[project]
-entry = "app.mc"
+entry = "../app.mc"
 out   = "build/x"
 
 [target]
@@ -204,9 +212,9 @@ os = "haiku"
 
 # M16: os = "linux" is valid, but there is no direct executable for it -- a
 # Linux build always hands the object to [linker].
-diag "diag [target].os linux without [linker]" "$tmp/d.toml" \
+diag "diag [target].os linux without [linker]" "$dir/build/d.toml" \
     '[project]
-entry = "app.mc"
+entry = "../app.mc"
 out   = "build/x"
 
 [target]
@@ -216,9 +224,9 @@ os = "linux"
 
 # M19: the same for Windows -- valid os, no direct executable, and the message
 # names the operating system the file asked for.
-diag "diag [target].os windows without [linker]" "$tmp/d.toml" \
+diag "diag [target].os windows without [linker]" "$dir/build/d.toml" \
     '[project]
-entry = "app.mc"
+entry = "../app.mc"
 out   = "build/x"
 
 [target]
