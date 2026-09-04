@@ -248,6 +248,7 @@ notatype main() { return 0; }
 | `--entry-only and --compiler-only are exclusive` | both halves of a taught build asked for at once | `--compiler-only` builds the compiler and stops; `--entry-only` compiles the entry with the running binary. Pick one |
 | `unknown backend: NAME` (then `registered: …`) | `--backend=` naming something not registered | the message lists what exists |
 | `cannot run` | `posix_spawnp` could not start the linker or the taught compiler | check the `cmd` in `[linker]`, and that a relative compiler path starts with `./` |
+| `cannot spawn: <tool> (error N)` | a tool `mc` may legitimately find missing — `curl`, `wget`, `tar`, `llvm-dlltool` — is there and could not be started anyway. `N` is the number `posix_spawnp` returned: 13 `EACCES` (not executable), 8 `ENOEXEC` (not a program), 7 `E2BIG` (on a Windows host, a command line past `WH_CMDMAX`). Only `ENOENT` (2) is silent, and means "not on `PATH`" | fix the permissions on the tool, or take the broken copy off the `PATH` |
 | `waitpid failed` | the spawned process could not be waited for | a system-level failure |
 | `posix_spawn_file_actions_init failed` | the spawn could not be set up | same |
 | `xcrun --show-sdk-path failed` | `{sdk}` was used and `xcrun` failed | install the command line tools, or write the SDK path literally |
@@ -277,7 +278,7 @@ does not:
 
 | message | key | fix |
 |---|---|---|
-| `missing key` | `project.entry`, `project.out`, `compiler.modules`, `compiler.out`, `sysroot.path` | add it. `compiler.out` is only required when there is no `project.name` to default from; `sysroot.path` only when `{sysroot}` is actually used |
+| `missing key` | `project.entry`, `project.out`, `compiler.modules`, `compiler.out` | add it. `compiler.out` is only required when there is no `project.name` to default from. `sysroot.path` is **not** on this list since M25: an absent `[sysroot]` is not an error, it is step 1 of the chain of § 11 falling through to the next step |
 | `must be exe or obj` | `project.kind` | those are the two values |
 | `only macos, linux and windows (see docs/build.md)` | `target.os` | the list is built from the `target()` registry, so a target a module registers appears in it |
 | `only aarch64 and x86_64 (see docs/build.md)` | `target.arch` | the architectures that operating system was registered with (macOS and Windows have only `aarch64`) |
@@ -287,7 +288,61 @@ does not:
 | `library not declared in [libs]` | an `[externs]` value | the value must name a `[libs]` key |
 | `tolerance must be between 0 and 1` | `limits.tolerance` | a float in `[0, 1]`, at most four fraction digits |
 
-## 11. Runtime and I/O
+## 11. The sysroot, and exit code 2
+
+One message, printed by `sysroot_missing()` (`src/sysroot.mc`) and shared by `mc build` and by
+`mc sysroot`. It is the only thing that exits **2** — "the environment is not ready", as opposed
+to 1 (a diagnostic) and 3 (the limits verdict), [cli.md](cli.md) § Exit codes.
+
+```
+mc: no sysroot for linux-aarch64
+  tried: build/sysroot/linux-aarch64 (no crt1.o)
+         /Users/me/.mc/sysroots/linux-aarch64 (no crt1.o)
+  run:   sh scripts/sysroot-linux.sh --arch aarch64
+```
+
+| line | what it says |
+|---|---|
+| `no sysroot for <os>-<arch>` | the target whose `{sysroot}` could not be resolved |
+| `tried:` | one line per candidate the chain looked at, with the reason it was refused: `no <marker>`, the first of that target's marker files ([sysroot.md](sysroot.md) § 2) that the directory does not hold. A directory that does not exist at all is refused with the same words, and deliberately — the chain probes the marker FILES and never the directory, because `open` on a directory is not portable to a Windows host |
+| `run:` | the command that would produce one, per operating system |
+
+It is the one diagnostic in this compiler with **no `file:line:col`**, on purpose: the chain runs
+lazily, the first time an `[linker].args` value asks for `{sysroot}`, so there is no single key to
+blame — and `mc sysroot path <target>` prints the same text with no config open at all. Every
+`tried:` line names an absolute directory instead. `docs/specs/M25.md` § Deviations records it.
+
+`mc sysroot fetch` fails through the same `run:`/`or:` block and the same exit 2, under its own
+first line:
+
+| message | cause |
+|---|---|
+| `mc: no downloader on this PATH (tried curl)` | neither `host_downloader()` nor its alternative is on the `PATH` — `ENOENT` from both spawns, and nothing else: a downloader that is there and refuses to start is the `cannot spawn` of § 9 instead |
+| `mc: the download failed (exit N)` | the downloader ran and returned non-zero. `curl` exit 1 here is the `--proto '=https'` guard refusing a redirect to plaintext |
+| `mc: checksum mismatch for <file>` | the bytes are not the pinned row's. Both digests are printed |
+| `mc: wrong size for <file>` | the length is not the pinned row's |
+| `mc: tar could not extract <file>` | the `tar` spawn returned non-zero; its own diagnostic came out on stderr just above |
+| `mc: the archive did not carry <name>` | `tar` returned 0 but a member of the row, or a marker, is not there. The download and the directory's marker files are removed, so the partial directory cannot be mistaken for a sysroot later |
+
+Causes, in the order the chain runs them ([sysroot.md](sysroot.md) § 1):
+
+| cause | fix |
+|---|---|
+| `[sysroot].path` names a directory that is not a sysroot | fix the path, or populate the directory. An explicit path stops the chain: nothing else is tried after it |
+| the host is not the target, and nothing is cached | `mc sysroot fetch <os>-<arch> --yes`, or `sh scripts/sysroot-linux.sh --arch <arch>`, or point `--sysroot-dir` at a directory you already have |
+| the host *is* the target but the system has no musl | on Debian/Ubuntu `apt-get install musl-dev`, on Alpine `apk add musl-dev` |
+| no `HOME`, no `[sysroot].cache` and no `--sysroot-dir` | the `tried:` line says exactly that; give the chain one of the three |
+
+The stub writers (`{stubs}`, `mc sysroot stub`, [sysroot.md](sysroot.md) § 9) have three of their
+own, all exit 1:
+
+| message | cause | fix |
+|---|---|---|
+| `mc: no stub writer for: linux: a static libc is code, not a name list` | `{stubs}` or `mc sysroot stub` on a Linux target | a `libc.a` cannot be synthesized from a name list; `mc sysroot fetch linux-<arch> --yes` |
+| `mc: cannot run llvm-dlltool for: PATH` | the Windows stub writer could not start `llvm-dlltool` | put it on `PATH` (Homebrew keeps it in `opt/llvm/bin`) |
+| `mc: llvm-dlltool failed for: PATH` | it started and returned non-zero | its own diagnostic came out on stderr just above; the `.def` it was given is the named file |
+
+## 12. Runtime and I/O
 
 | message | cause | fix |
 |---|---|---|

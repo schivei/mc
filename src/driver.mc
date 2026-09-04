@@ -66,6 +66,12 @@ uptr cfg_file = 0;                    // path of mc.toml, as it will appear in e
 uptr drv_sdk_cache = 0;               // {sdk}, resolved at most once
 i64  drv_target = -1;                 // index in the target registry (hooks.mc)
 uptr drv_os = 0;                      // [target].os, as the file wrote it
+uptr drv_arch = 0;                    // [target].arch, likewise (M25: {sysroot})
+uptr drv_stubs_cache = 0;             // {stubs}, written at most once (M25)
+i64  drv_unit = 0;                    // the unit the last parse produced -- what
+                                      // the stub writer reads its externs from
+i64  drv_stub_mode = 0;               // `mc sysroot stub`: parse, write the
+                                      // stubs, and neither compile nor link
 
 // the backends that write for the target in effect. M17 replaced the whitelist
 // this file used to carry -- an `i64 drv_linux` flag and two literal messages --
@@ -148,6 +154,40 @@ uptr drv_subst(uptr s, uptr pat, uptr rep) {
 // runs `file` with the argv in `av` (NULL-terminated) and returns its exit code;
 // 128+N when a signal killed it. stdin/stdout/stderr are inherited, which is how
 // the tool's own diagnostics reach the user unchanged.
+// M25: the same thing, but -1 instead of a diagnostic when the program is not
+// on PATH at all. `mc sysroot fetch` tries curl and then wget, and "not
+// installed" is a case it handles rather than a failure -- see
+// sysroot_download (src/sysroot.mc).
+//
+// -1 means EXACTLY that, and nothing else. posix_spawnp returns the error
+// number rather than setting errno, so ENOENT is the one value that says "no
+// such program"; EACCES (a file that is there and not executable), ENOEXEC (a
+// file that is there and not a program) and everything else are real failures,
+// and turning them into -1 sent the caller looking for a second downloader, or
+// printing `no downloader on this PATH` about a curl that is on the PATH. They
+// stop the build here instead, with the tool and the number
+// (docs/reference/diagnostics.md § 10).
+//
+// The Windows shim (lib/sys_windows_host.mc) answers in the same vocabulary:
+// ENOENT when CreateProcessA could not find the program, another non-zero
+// otherwise. See docs/reference/sysroot.md § 7.
+#define ENOENT 2
+
+i64 drv_spawn_ok(uptr file, uptr av, uptr fa) {
+    u8 pid[8];
+    st64(pid, 0);
+    i64 e = posix_spawnp(pid, file, fa, 0, av, host_environ());
+    if (e == ENOENT) return -1;
+    if (e != 0)
+        die2("cannot spawn", tm_cat(file, tm_cat(" (error ", tm_cat(tm_num_str(e), ")"))));
+    u8 st[8];
+    st64(st, 0);
+    if (waitpid(ld64(pid), st, 0) < 0) die2("waitpid failed", file);
+    i64 s = ld32(st);
+    if ((s & 127) != 0) return 128 + (s & 127);
+    return (s >> 8) & 255;
+}
+
 i64 drv_spawn(uptr file, uptr av, uptr fa) {
     u8 pid[8];
     st64(pid, 0);
@@ -236,7 +276,12 @@ uptr drv_usage_file() { return drv_path("build/.mc-usage.toml"); }
 // `label` is the source as the TOML names it (`main.mc`, `build/mc-api.mc`):
 // the key of this compilation's section in build/.mc-usage.toml, stable no
 // matter which directory `mc build` was run from.
-void drv_compile(uptr src, uptr out, uptr bname, i64 cfg, uptr label) {
+// M25: the front half on its own, because `mc sysroot stub` needs exactly this
+// much -- the program parsed, its `extern`s and their libraries known -- and
+// nothing that follows. It also leaves the unit in `drv_unit`, which is what
+// {stubs} reads at link time: the compile and the link happen in one process,
+// so the externs are still in memory when the link line is assembled.
+i64 drv_parse(uptr src, i64 cfg, uptr label) {
     lim_plan(src, drv_tol, drv_usage_file(), label);   // M23: before any table exists
     tok_init();
     lex_init(src);
@@ -245,6 +290,12 @@ void drv_compile(uptr src, uptr out, uptr bname, i64 cfg, uptr label) {
     i64 unit = parse_unit();
     unit = run_passes(unit);
     unit = fold(unit);
+    drv_unit = unit;
+    return unit;
+}
+
+void drv_compile(uptr src, uptr out, uptr bname, i64 cfg, uptr label) {
+    i64 unit = drv_parse(src, cfg, label);
     i64 bi = backend_find(bname);
     if (bi < 0) backend_die(bname);
     drv_mkdirs(out);
@@ -338,23 +389,71 @@ uptr drv_runnable(uptr p) {
 }
 
 // ---- linking ----
-// {sysroot}: [sysroot].path, resolved against the config's directory like every
-// other path in the file. M16 uses it for the musl crt objects and libc.a that
-// scripts/sysroot-linux.sh copies out of Alpine.
+// {sysroot}: where the musl crt objects and libc.a (or the Windows import
+// library, or the macOS SDK) come from.
+// M25: this used to be `toml_get` plus a path join, with no existence check --
+// a wrong directory was reported by the linker, in the linker's words, halfway
+// through a build. It is now one call into the resolution chain
+// (src/sysroot.mc): [sysroot].path checked against the target's marker files,
+// then the running system when host == target, then the cache
+// (--sysroot-dir / [sysroot].cache / ~/.mc/sysroots), then the message and exit
+// 2. `mc build` still never downloads: only `mc sysroot fetch --yes` does.
 uptr drv_sysroot() {
-    uptr p = toml_get("sysroot.path");
-    if (p == 0) toml_err_key("sysroot.path", "missing key");
-    return drv_path(p);
+    return sysroot_for(drv_os, drv_arch);
 }
 
-// {out} {obj} {sysroot} {sdk} substituted anywhere inside an argument. {sdk} is
-// lazy: it is what makes `xcrun --show-sdk-path` run, and only if some argument
-// asks for it.
+// everything of `p` before its last '/', or "." when it has none
+uptr drv_dirname(uptr p) {
+    i64 last = -1;
+    i64 i = 0;
+    loop {
+        i64 c = ld8(p + i);
+        if (c == 0) break;
+        if (c == '/') last = i;
+        i = i + 1;
+    }
+    if (last < 0) return ".";
+    u8 b[BUF_SIZE];
+    buf_init(b);
+    buf_put(b, p, last);
+    buf_u8(b, 0);
+    return buf_p(b);
+}
+
+// {stubs}: the directory holding one synthesized import file per library the
+// program uses -- a TBD v4 `.tbd` on macOS, a `.def` plus the `.lib`
+// llvm-dlltool builds from it on Windows (src/stubs.mc). Written from the
+// program's own `extern`s, at most once per build, and only because some
+// [linker].args value asked for it -- the same laziness {sdk} has.
+//
+// It sits beside the output, `<dirname of [project].out>/stubs`, which for the
+// usual `out = "build/app"` is `build/stubs`.
+uptr drv_stubs() {
+    if (drv_stubs_cache != 0) return drv_stubs_cache;
+    uptr out = toml_get("project.out");
+    if (out == 0) toml_err_key("project.out", "missing key");
+    uptr d = drv_path(tm_cat(drv_dirname(out), "/stubs"));
+    drv_mkdirs(tm_cat(d, "/x"));
+    i64 n = stubs_write(drv_unit, d, drv_os, drv_arch);
+    out_str(1, "stubs ");
+    out_num(1, n);
+    out_str(1, " -> ");
+    out_str(1, d);
+    out_str(1, "\n");
+    drv_stubs_cache = d;
+    return d;
+}
+
+// {out} {obj} {sysroot} {sdk} {stubs} substituted anywhere inside an argument.
+// {sdk} is lazy: it is what makes `xcrun --show-sdk-path` run, and only if some
+// argument asks for it. {stubs} is lazy in the same way, and for the same
+// reason: it writes files.
 uptr drv_ph(uptr a, uptr obj, uptr out) {
     a = drv_subst(a, "{out}", out);
     a = drv_subst(a, "{obj}", obj);
     if (drv_has(a, "{sysroot}")) a = drv_subst(a, "{sysroot}", drv_sysroot());
     if (drv_has(a, "{sdk}")) a = drv_subst(a, "{sdk}", drv_sdk(tm_cat(out, ".sdk")));
+    if (drv_has(a, "{stubs}")) a = drv_subst(a, "{stubs}", drv_stubs());
     return a;
 }
 
@@ -398,6 +497,14 @@ void drv_link(uptr obj, uptr out) {
 void drv_entry(uptr entry, uptr out, uptr kind) {
     uptr src = drv_path(entry);
     uptr has_linker = toml_get("linker.cmd");
+    // M25: `mc sysroot stub` is the front half of a build and no more -- parse
+    // the entry, write one stub per library it uses, stop. No object, no link,
+    // and no [linker] required.
+    if (drv_stub_mode) {
+        drv_parse(src, 1, entry);
+        drv_stubs();
+        return;
+    }
     if (str_eq(kind, "obj")) {
         drv_step("compile", entry, out);
         drv_compile(src, drv_path(out), drv_obj_backend(), 1, entry);
@@ -490,8 +597,10 @@ i64 drv_finish(uptr what) {
 
 // ---- CLI ----
 void drv_usage() {
-    out_str(2, "usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits]\n");
+    out_str(2, "usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits] [--sysroot-dir DIR]\n");
     out_str(2, "       mc limits [DIR|FILE.mc]\n");
+    out_str(2, "       mc sysroot list|path <target>|fetch <target> [--yes] [--sysroot-dir DIR]\n");
+    out_str(2, "       mc sysroot stub [DIR] [--config FILE]\n");
 }
 
 // everything after the flags: one shape for `mc build` and for `mc limits`
@@ -517,6 +626,7 @@ i64 drv_run(uptr dir, uptr cfg, i64 entry_only, i64 compiler_only) {
     drv_target = target_find(os, arch);
     if (drv_target < 0) toml_err_key("target.arch", target_arch_list(os));
     drv_os = os;
+    drv_arch = arch;
 
     uptr entry = toml_get("project.entry");
     if (entry == 0) toml_err_key("project.entry", "missing key");
@@ -553,6 +663,14 @@ i64 drv_build(i64 argc, uptr argv) {
             if (i + 1 >= argc) die("--config requires an argument");
             i = i + 1;
             cfg = ld64(argv + i * 8);
+        }
+        else if (str_eq(a, "--sysroot-dir")) {
+            // M25: the sysroot for THIS target, as a directory, overriding both
+            // [sysroot].cache and ~/.mc/sysroots. CI passes it so that no job
+            // depends on HOME (docs/reference/sysroot.md).
+            if (i + 1 >= argc) die("--sysroot-dir requires an argument");
+            i = i + 1;
+            sr_dir_opt = ld64(argv + i * 8);
         }
         else if (str_eq(a, "--entry-only"))    entry_only = 1;
         else if (str_eq(a, "--compiler-only")) compiler_only = 1;

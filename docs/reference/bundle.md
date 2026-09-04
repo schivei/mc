@@ -94,6 +94,9 @@ and supplying that function *is* a taught compiler ([hooks.md](hooks.md)).
 | `<mc/sha256>` | `src/sha256.mc` |
 | `<mc/toml>` | `src/toml.mc` |
 | `<mc/driver>` | `src/driver.mc` |
+| `<mc/sysroot>` | `src/sysroot.mc` |
+| `<mc/sysroots>` | `src/sysroots.mc` |
+| `<mc/stubs>` | `src/stubs.mc` |
 | `<mc/limits>` | `src/limits.mc` |
 | `<mc/bundle>` | `src/bundle.mc` |
 | `<mc/main>` | `src/main.mc` |

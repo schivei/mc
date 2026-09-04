@@ -1,0 +1,35 @@
+# stub-windows.toml — the Windows mirror of stub.toml (M25).
+#
+# An import library is a list of names, so `mc` writes build/stubs/<lib>.def
+# from the program's own `extern`s and spawns `llvm-dlltool` to turn each one
+# into a .lib. Nothing is downloaded: this is the road that covers user32,
+# ws2_32 and msvcrt for a user program with no toolchain at all.
+#
+# Cross-compiled from macOS and linked with lld-link; not executed here (there
+# is no Windows machine in this loop -- the windows-11-arm CI leg is the
+# runtime oracle, docs/ci.md).
+#
+# `{stubs}/../winstart.obj` and not `build/winstart.obj`: an argument that is
+# not a placeholder is handed to the linker as written, and the linker inherits
+# the WORKING DIRECTORY, not the config's. Going through {stubs} is how a path
+# in this file stays relative to the file.
+[project]
+entry = "win.mc"
+out   = "build/win-stub.exe"
+kind  = "exe"
+
+[target]
+os   = "windows"
+arch = "aarch64"
+
+[linker]
+cmd  = "lld-link"
+args = ["-machine:arm64", "-subsystem:console", "-entry:mc_start", "-nodefaultlib",
+        "-out:{out}", "{obj}", "{stubs}/../winstart.obj",
+        "{stubs}/kernel32.lib", "{stubs}/user32.lib"]
+
+[libs]
+user32 = "user32.dll"
+
+[externs]
+"MessageBox*" = "user32"

@@ -44,6 +44,7 @@ extern i64  GetExitCodeProcess(uptr h, uptr code);
 extern i64  CreateDirectoryA(uptr path, uptr sa);
 extern i64  DeleteFileA(uptr path);
 extern uptr VirtualAlloc(uptr addr, i64 size, i64 type, i64 protect);
+extern i64  GetLastError();
 
 #define INFINITE       0xffffffff
 #define WAIT_OBJECT_0  0
@@ -51,6 +52,20 @@ extern uptr VirtualAlloc(uptr addr, i64 size, i64 type, i64 protect);
 #define MEM_RESERVE    0x2000
 #define PAGE_READWRITE 0x04
 #define BSLASH         92                 // there is no \\ escape worth reading here
+
+// ---- what posix_spawnp answers with ----
+// The POSIX call returns the error NUMBER, it does not set errno, and
+// src/driver.mc (drv_spawn_ok) reads exactly one of them: ENOENT means "no such
+// program", and is the only value that makes `mc sysroot fetch` try its second
+// downloader. Every other non-zero stops the build with the number in the
+// message, so the two Windows "not found" errors are the ones that have to be
+// translated; the rest travel as the GetLastError value they are, which is more
+// use in a diagnostic than a POSIX number invented for it
+// (docs/reference/sysroot.md § 7).
+#define ENOENT                 2
+#define E2BIG                  7
+#define ERROR_FILE_NOT_FOUND   2
+#define ERROR_PATH_NOT_FOUND   3
 
 // ---- STARTUPINFOA and PROCESS_INFORMATION, laid out by hand ----
 // This language has no struct, and that is on purpose (docs/plan.md): a record
@@ -96,8 +111,9 @@ void wh_zero(uptr p, i64 n) {
 }
 
 // One byte of the command line. Truncating it silently would run the WRONG
-// command, so the overflow is remembered and posix_spawnp fails with -1, which
-// src/driver.mc reports as `cannot run <tool>`.
+// command, so the overflow is remembered and posix_spawnp fails with E2BIG,
+// which src/driver.mc reports as `cannot spawn <tool> (error 7)` -- never as
+// "not on PATH", which is what a -1 here used to claim.
 void wh_byte(i64 c) {
     if (wh_o >= WH_CMDMAX - 1) { wh_over = 1; return; }
     st8(wh_cmd + wh_o, c);
@@ -188,12 +204,21 @@ i64 posix_spawnp(uptr pid, uptr file, uptr fa, uptr attr, uptr av, uptr envp) {
         i = i + 1;
     }
     st8(wh_cmd + wh_o, 0);
-    if (wh_over) return 0 - 1;
+    if (wh_over) return E2BIG;
     wh_zero(wh_si, SI_SIZE);
     wh_zero(wh_pi, PI_SIZE);
     st32(wh_si + SI_CB, SI_SIZE);
-    if ((CreateProcessA(0, wh_cmd, 0, 0, 1, 0, envp, 0, wh_si, wh_pi) & BOOL_MASK) == 0)
-        return 0 - 1;
+    if ((CreateProcessA(0, wh_cmd, 0, 0, 1, 0, envp, 0, wh_si, wh_pi) & BOOL_MASK) == 0) {
+        // The two errors that mean "the program is not there" become ENOENT,
+        // which is the one value src/driver.mc treats as "try the next tool";
+        // anything else is a real failure and travels as itself. A DWORD, so
+        // the high half is masked off, and a 0 that CreateProcessA left behind
+        // would read as SUCCESS to the caller -- it becomes 1 instead.
+        i64 e = GetLastError() & BOOL_MASK;
+        if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) return ENOENT;
+        if (e == 0) return 1;
+        return e;
+    }
     st64(pid, ld64(wh_pi + PI_HPROCESS));
     CloseHandle(ld64(wh_pi + PI_HTHREAD));
     return 0;

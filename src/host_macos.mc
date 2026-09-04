@@ -76,3 +76,26 @@ i64 host_has_sdk() { return 1; }
 // caller is `mc build`, for the taught compiler [compiler].out names
 // (src/driver.mc, drv_teach).
 uptr host_exe_suffix() { return ""; }
+
+// M25: the user's home directory, where the sysroot cache lives
+// (`~/.mc/sysroots/<os>-<arch>`, docs/reference/sysroot.md). `mc` has no
+// `getenv`: host_environ() is the NUL-terminated array of `KEY=VALUE` pointers
+// the C runtime keeps, and this walks it for `HOME=`. 0 when there is none --
+// the caller then has only [sysroot].cache and --sysroot-dir.
+uptr host_home() {
+    uptr e = host_environ();
+    if (e == 0) return 0;
+    i64 i = 0;
+    loop {
+        uptr s = ld64(e + i * 8);
+        if (s == 0) return 0;
+        if (mem_eq(s, "HOME=", 5)) return s + 5;
+        i = i + 1;
+    }
+}
+
+// M25: the program `mc sysroot fetch` spawns to download a pinned archive, and
+// the one it falls back to. `mc` speaks no HTTP and no TLS (docs/specs/M25.md
+// § 2); /usr/bin/curl ships with macOS, so there is nothing to fall back to.
+uptr host_downloader()     { return "curl"; }
+uptr host_downloader_alt() { return 0; }

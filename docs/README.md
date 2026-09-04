@@ -36,6 +36,7 @@ nothing to a running signed binary in about two minutes.
 | [cli.md](reference/cli.md) | every command, flag, dump and exit code |
 | [toml.md](reference/toml.md) | every `mc.toml` key: type, default, meaning |
 | [hooks.md](reference/hooks.md) | every public function of the parser and hook API |
+| [sysroot.md](reference/sysroot.md) | where a cross link finds its files: the resolution chain, the cache, the messages |
 | [objects.md](reference/objects.md) | the object model (`sec_*`, `sym_*`, `reloc_add`) and the codegen accessors (`gen_*`) |
 | [machine.md](reference/machine.md) | the machine task contract — **specified, not yet implemented** |
 | [diagnostics.md](reference/diagnostics.md) | every message the compiler emits, with cause and fix |

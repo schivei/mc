@@ -139,10 +139,11 @@ build with exit 1.
 | `{out}` | `[project].out`, resolved against the config's directory |
 | `{obj}` | the object just written, `<out>.o` |
 | `{sdk}` | the output of `xcrun --show-sdk-path`, run **lazily** — only if some argument mentions it, at most once per build |
-| `{sysroot}` | `[sysroot].path`, resolved against the config's directory |
+| `{sysroot}` | the sysroot for `[target]`, found by the resolution chain of [sysroot.md](sysroot.md): `[sysroot].path` (checked), then the running system, then the cache |
+| `{stubs}` | the directory of the import stubs `mc` writes from the program's own `extern`s — `<dirname of [project].out>/stubs`. Written **lazily**, like `{sdk}`: only if some argument mentions it, and at most once per build ([sysroot.md](sysroot.md) § 9) |
 | `{libs}` | one argument per `[libs]` entry, in key order |
 
-`{out}`, `{obj}`, `{sdk}` and `{sysroot}` are substituted **inside** an argument, so
+`{out}`, `{obj}`, `{sdk}`, `{sysroot}` and `{stubs}` are substituted **inside** an argument, so
 `-L{sdk}/usr/lib` and `{sysroot}/crt1.o` both work. `{libs}` is the one that must be a whole
 argument, since it expands to several; each expanded value then goes through the same
 substitution, so a library may be written `"{sdk}/usr/lib/libsqlite3.tbd"`.
@@ -154,10 +155,21 @@ Errors: `too many arguments in [linker].args` (the argv cap is 64),
 
 | key | type | meaning |
 |---|---|---|
-| `sysroot.path` | string | what `{sysroot}` expands to |
+| `sysroot.path` | string | the sysroot itself, resolved against the config's directory. Step 1 of the chain, and the one that wins |
+| `sysroot.cache` | string | the ROOT of a cache of sysroots, resolved the same way: the one for this target is `<cache>/<os>-<arch>`. Step 3 |
 
-A missing `sysroot.path` is an error **only** when some `[linker].args` argument actually uses
-the placeholder (`missing key: sysroot.path`).
+Neither key is required. `{sysroot}` is resolved by the chain of
+[sysroot.md](sysroot.md) — `[sysroot].path`, then the running system when the host *is* the
+target, then `--sysroot-dir` / `[sysroot].cache` / `~/.mc/sysroots/<os>-<arch>` — and the chain
+runs at most once per build, and only when some `[linker].args` argument actually mentions the
+placeholder.
+
+`sysroot.path` is now **checked**: a directory that is there but does not hold the target's
+marker files (`crt1.o` and `libc.a` for Linux, `kernel32.lib` for Windows,
+`usr/lib/libSystem.tbd` for macOS) stops the build with the `no sysroot` message and exit **2**,
+instead of being handed to the linker to fail on. An explicit path that is wrong is a mistake to
+report, not a reason to go looking somewhere else, so the probes and the cache are not tried
+after it.
 
 ## `[libs]` and `[externs]` — `#dylib` said from outside the source
 

@@ -139,6 +139,9 @@ i64 main(i64 argc, uptr argv, uptr envp) {
     target("linux", "x86_64", "elf-obj-x86_64", 0);
     target("windows", "aarch64", "coff-obj-arm64", 0);
     target("windows", "x86_64", "coff-obj-x86_64", 0);
+    // M25: the pinned rows `mc sysroot list|fetch` reads. Data only -- no I/O
+    // and no network until `fetch --yes` (src/sysroots.mc).
+    sysroots_init();
     // M15: the lexer only reaches the bundle through this pointer, so
     // src/lexdump.mc and src/astdump.mc keep compiling without src/bundle.mc.
     // Registered here, before any lex_init -- including the one inside
@@ -151,6 +154,9 @@ i64 main(i64 argc, uptr argv, uptr envp) {
     if (argc >= 2 && str_eq(ld64(argv + 8), "build")) return drv_build(argc, argv);
     // M23: the same driver, stopping at the report instead of the object.
     if (argc >= 2 && str_eq(ld64(argv + 8), "limits")) return drv_limits(argc, argv);
+    // M25: `mc sysroot list|path|fetch` -- where a cross link finds its files.
+    // After the targets, which is the registry `list` walks.
+    if (argc >= 2 && str_eq(ld64(argv + 8), "sysroot")) return sysroot_cmd(argc, argv);
 
     i64 i = 1;
     loop {

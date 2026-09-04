@@ -1,0 +1,21 @@
+# sysroot-bad.toml — [sysroot].path names a directory that is not a sysroot.
+# M25: an explicit path is CHECKED against the target's marker files, and being
+# explicit is what stops the chain -- the probes and the cache are not tried,
+# because a wrong path is a mistake to report and not a reason to go looking
+# somewhere else. Exit 2, and the message names the marker that is missing:
+# `inc/` exists (it is the [include].paths directory of the other configs), it
+# just is not a sysroot.
+[project]
+entry = "lin.mc"
+out   = "build/lin-bad"
+
+[target]
+os   = "linux"
+arch = "aarch64"
+
+[linker]
+cmd  = "echo"
+args = ["sysroot={sysroot}", "-o", "{out}", "{obj}"]
+
+[sysroot]
+path = "inc"

@@ -225,6 +225,21 @@ test-windows-x86_64: build/mc1
 	    scripts/test-windows.sh --arch x86_64 build/mc1; \
 	fi
 
+# M25: the pinned sysroot table (src/sysroots.mc) and its documentation say the
+# same thing, and `mc sysroot list` matches its golden. No network: a dead URL
+# is a maintenance issue for a scheduled job, not a red pull request.
+check-sysroots: $(MC)
+	scripts/check-sysroots.sh $(MC)
+
+# M25: the stub writers -- `mc sysroot stub` writes the import files a link
+# needs from the program's own externs, and a program using write and
+# sqlite3_open then links with ld64.lld against them, with no xcrun on PATH at
+# all, and RUNS. The Windows half writes the .def, runs llvm-dlltool over it and
+# links with lld-link (cross, not executed). Both linker cases skip themselves
+# with a reason when the tool is missing.
+check-stubs: build/mc1
+	scripts/check-stubs.sh build/mc1
+
 # M23: the seed guard -- `mc limits src/mc.mc` against the fixed MAX* constants
 # still in stage0/mc.h and stage0/*.c. Fails when any of them is over 90% used,
 # which is the early warning that the C seed has to be raised before it stops
@@ -387,6 +402,7 @@ check-skipped:
 	@echo "check-standalone: SKIPPED (its criterion is a signed Mach-O executable)"
 	@echo "check-surface: SKIPPED (its cases build taught compilers with --exe)"
 	@echo "check-build: SKIPPED (tests/proj targets macos/aarch64 through ld)"
+	@echo "check-stubs: SKIPPED (its acceptance links a macOS binary with ld64.lld and runs it)"
 	@echo "check-minimal: SKIPPED (its ceilings are measured on the macOS backends)"
 	@echo "test-linux/test-linux-x86_64: SKIPPED (cross-compilation from macOS, with Docker)"
 	@echo "test-windows/test-windows-x86_64: SKIPPED (cross-compilation from macOS; here the suite is native)"
@@ -400,6 +416,7 @@ check-skipped:
 	@echo "check-standalone: SKIPPED (its criterion is a signed Mach-O executable)"
 	@echo "check-surface: SKIPPED (its cases build taught compilers with --exe)"
 	@echo "check-build: SKIPPED (tests/proj targets macos/aarch64 through ld)"
+	@echo "check-stubs: SKIPPED (its acceptance links a macOS binary with ld64.lld and runs it)"
 	@echo "check-minimal: SKIPPED (its ceilings are measured on the macOS backends)"
 	@echo "test-linux/test-linux-x86_64: SKIPPED (cross-compilation from macOS; here the suite is native)"
 	@echo "test-windows: SKIPPED (cross-compilation from macOS; the windows-11-arm CI leg is the runtime oracle)"
@@ -409,14 +426,14 @@ check-skipped:
 endif
 
 ifeq ($(HOST),Linux)
-check: budget bootstrap-linux check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-limits check-skipped
+check: budget bootstrap-linux check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-sysroots check-limits check-skipped
 else ifneq (,$(WINHOST))
 # M38: the Windows subset. Everything not here needs `mc` plus something this
 # host does not have -- the C seed, the Mach-O direct-executable backend, GTK4,
 # Docker or python3 -- and `check-skipped` prints the reason for each one.
-check: budget bootstrap-windows check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-limits check-skipped
+check: budget bootstrap-windows check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-sysroots check-limits check-skipped
 else
-check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-limits check-minimal test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-desktop check-docs site check-site
+check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-sysroots check-stubs check-limits check-minimal test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-desktop check-docs site check-site
 endif
 
 budget:
@@ -429,7 +446,7 @@ clean:
 .PHONY: check-linux-host check-skipped
 .PHONY: bootstrap-windows mc-windows mc-windows-x86_64 mc-windows-obj mc-windows-x86_64-obj
 .PHONY: mcrt-windows mcrt-windows-x86_64
-.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-limits sysroot-linux sysroot-linux-x86_64 sysroot-windows sysroot-windows-x86_64 test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal
+.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-sysroots check-stubs check-limits sysroot-linux sysroot-linux-x86_64 sysroot-windows sysroot-windows-x86_64 test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal
 
 # M32: examples/desktop -- a GTK4 application written in mc, and the same
 # application with its widget tree written in a UI language taught by ui.mc.

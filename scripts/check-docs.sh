@@ -84,8 +84,14 @@ else
 fi
 
 # CLI: every long option and `-o`, taken from the string literals the driver
-# compares argv against.
-grep -hoE '"--[a-z][a-z-]*=?"' src/*.mc | tr -d '"' | sort -u > "$tmp/flags"
+# compares argv against -- literally that, since M25: the match requires a
+# `str_eq(x, "--flag")` or `opt_val(x, "--flag=")` around the literal. A bare
+# `"--..."` anywhere in src/ used to count, which swept in the arguments `mc`
+# passes to OTHER programs (`xcrun --show-sdk-path`, and since M25
+# `tar --strip-components=`) and would have demanded a cli.md row for a flag
+# `mc` does not accept.
+grep -hoE '(str_eq\([a-z_]+, |opt_val\([a-z_]+, )"--[a-z][a-z-]*=?"' src/*.mc \
+    | sed -E 's/.*("--[a-z][a-z-]*=?")/\1/' | tr -d '"' | sort -u > "$tmp/flags"
 echo "-o" >> "$tmp/flags"
 missing=""
 while read -r f; do

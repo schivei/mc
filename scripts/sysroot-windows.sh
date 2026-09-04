@@ -60,12 +60,15 @@ fi
 mkdir -p "$dir" || exit 1
 
 # The kernel32 entry points the two layers declare, one per line: the seven of
-# lib/sys_windows.mc (M19) and the six more lib/sys_windows_host.mc needs for a
-# HOSTED compiler (M38) -- spawning a tool, waiting for it, creating and
-# deleting a file, and the arena's mapping. Keep this list and the `extern`s in
-# those two files in step: a name here that no layer uses costs nothing, a name
-# a layer uses and this list does not have is an "unresolved external symbol" at
-# link time.
+# lib/sys_windows.mc (M19) and the seven more lib/sys_windows_host.mc needs for
+# a HOSTED compiler (M38) -- spawning a tool, asking why a spawn failed, waiting
+# for it, creating and deleting a file, and the arena's mapping -- plus
+# GetEnvironmentVariableA,
+# which is how src/host_windows.mc answers host_home() (M25: there is no
+# environment array on this host, so USERPROFILE is asked for by name). Keep
+# this list and the `extern`s in those two files in step: a name here that no
+# layer uses costs nothing, a name a layer uses and this list does not have is
+# an "unresolved external symbol" at link time.
 cat > "$dir/kernel32.def" <<'DEF'
 LIBRARY kernel32.dll
 EXPORTS
@@ -76,7 +79,9 @@ CreateProcessA
 DeleteFileA
 ExitProcess
 GetCommandLineA
+GetEnvironmentVariableA
 GetExitCodeProcess
+GetLastError
 GetStdHandle
 ReadFile
 VirtualAlloc

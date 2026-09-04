@@ -1,0 +1,37 @@
+# stub.toml — the same app.mc, linked with NO SDK at all (M25).
+#
+# `mc` writes one import stub per library the program uses -- build/stubs/
+# libSystem.tbd and libsqlite3.tbd, straight from its own `extern`s -- and the
+# link line names those instead of `-syslibroot {sdk}` and `-lSystem`. Nothing
+# here runs `xcrun`, so this config builds on a machine whose only linker is
+# ld64.lld and whose PATH has no xcrun on it (scripts/check-stubs.sh runs it
+# exactly that way).
+#
+# `ld64.lld` and not `ld`: a machine that has Apple's `ld` has the Command Line
+# Tools, and the CLT bring an SDK with them -- so "macOS with a linker and no
+# SDK" is honestly the LLVM linker, and that is the shape the stubs are for.
+[project]
+entry = "app.mc"
+out   = "build/app-stub"
+kind  = "exe"
+
+[target]
+os   = "macos"
+arch = "aarch64"
+
+[linker]
+cmd  = "ld64.lld"
+args = ["-arch", "arm64", "-platform_version", "macos", "13.0", "13.0",
+        "-e", "_main", "-o", "{out}", "{obj}",
+        "{stubs}/libSystem.tbd", "{stubs}/libsqlite3.tbd"]
+
+# the install name the synthesized .tbd records: what dyld is asked for at run
+# time. There is no `#dylib` in app.mc -- the mapping is [libs] + [externs].
+[libs]
+sqlite3 = "/usr/lib/libsqlite3.dylib"
+
+[externs]
+"sqlite3_*" = "sqlite3"
+
+[include]
+paths = ["inc"]

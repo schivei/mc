@@ -615,6 +615,9 @@ A taught compiler gets one from the bundle: `mc build` writes `#include <mc/host
 | `host_init(envp)` | called by `main` before anything else, with the third argument the C runtime passed. macOS and Windows ignore it; Linux stores it |
 | `host_exe_suffix()` | what this host appends to the name of an executable it is about to write and then run: `""` on macOS and Linux, `".exe"` on Windows. `mc build` is the only caller — `[compiler].out` names a taught compiler the driver links and immediately spawns (M38) |
 | `host_has_sdk()` | 1 when `xcrun --show-sdk-path` exists, which is what the `{sdk}` placeholder of `[linker].args` runs. 0 makes `{sdk}` a config error instead of a failed spawn |
+| `host_home()` | the user's home directory, or 0 when there is none. `HOME` out of `host_environ()` on macOS and Linux; on Windows `host_environ()` is 0, so `src/host_windows.mc` asks kernel32 for `USERPROFILE` through `GetEnvironmentVariableA`. The one caller is the sysroot cache, `~/.mc/sysroots/<os>-<arch>` (M25, [sysroot.md](sysroot.md) § 4) |
+| `host_downloader()` | the program `mc sysroot fetch` spawns to download a pinned archive: `"curl"` on macOS and Linux, `"curl.exe"` on Windows. `mc` speaks no HTTP and no TLS |
+| `host_downloader_alt()` | the one to try when the first is not on `PATH`: `"wget"` on Linux, 0 on macOS and Windows, where `curl` ships with the system |
 | `host_bundle_open(name, base, pcanon, plen)` | the lexer's one door into the bundle (`src/main.mc`): resolves `mc/host` to `host_include()` and passes everything else through to `bundle_open` |
 
 The host file also declares `posix_spawnp`, `posix_spawn_file_actions_*`, `waitpid`, `mkdir` and
@@ -632,3 +635,5 @@ What the host layer decides, in the driver and the CLI:
 * `--dump-asm` with no `--machine=` lowers for `host_machine()`;
 * `mc build` links the taught compiler with the host's executable backend when it has one, and
   with `[linker]` when it does not.
+* `{sysroot}` probes the running system only when `host_os()`/`host_arch()` equal the target's,
+  and caches under `host_home()` when nothing else answered ([sysroot.md](sysroot.md)).

@@ -1,14 +1,17 @@
 # Every command, flag and dump
 
-`mc` has one binary and three entry points: the single-file compiler, `mc build` and `mc limits`.
-Everything below is read off `src/main.mc` (the single-file CLI) and `src/driver.mc` (the two
-subcommands). Running `mc` with no argument prints exactly this and exits 1:
+`mc` has one binary and four entry points: the single-file compiler, `mc build`, `mc limits` and
+`mc sysroot`. Everything below is read off `src/main.mc` (the single-file CLI), `src/driver.mc`
+(the first two subcommands) and `src/sysroot.mc` (the third). Running `mc` with no argument
+prints exactly this and exits 1:
 
 ```
 usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] source.mc [-o out]
        mc --host
-usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits]
+usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits] [--sysroot-dir DIR]
        mc limits [DIR|FILE.mc]
+       mc sysroot list|path <target>|fetch <target> [--yes] [--sysroot-dir DIR]
+       mc sysroot stub [DIR] [--config FILE]
 ```
 
 ---
@@ -140,7 +143,7 @@ only the self-hosted compiler has the handler column that `syntax_infix` fills i
 ## 2. `mc build` — the project driver
 
 ```
-mc build [DIR] [--config FILE] [--entry-only] [--compiler-only] [--limits | --fix-limits]
+mc build [DIR] [--config FILE] [--entry-only] [--compiler-only] [--limits | --fix-limits] [--sysroot-dir DIR]
 ```
 
 `DIR` defaults to `.`, the config to `DIR/mc.toml`. Every path inside the file is relative to the
@@ -154,6 +157,7 @@ thing as `mc build` from inside `examples/api`. Every key is in [toml.md](toml.m
 | `--compiler-only` | build the taught compiler from `[compiler].modules`, print its path on stdout and stop — no spawn, no entry. This is the flag a `test.sh` wants when it drives the taught compiler over its own suite, and the one an editor server needs. Without a `[compiler].modules` it is an error (`missing key: compiler.modules`), not a silent full build; together with `--entry-only` it is `mc: --entry-only and --compiler-only are exclusive`. |
 | `--limits` | after the build, print the table report and return a verdict (see below). |
 | `--fix-limits` | the same report, and rewrite **only** the `[limits]` section of `mc.toml` with the smallest tolerance that would have avoided `grew` and `tight`. |
+| `--sysroot-dir DIR` | DIR **is** the sysroot for `[target]`, ahead of `[sysroot].cache` and of `~/.mc/sysroots` in the resolution chain — but behind `[sysroot].path`, which still wins. CI passes it so that no job depends on `HOME`. Missing argument: `mc: --sysroot-dir requires an argument`. See [sysroot.md](sysroot.md). |
 
 A second bare argument is `mc: duplicate directory: <arg>`; any other `-flag` reprints the usage
 and exits 1.
@@ -192,16 +196,48 @@ start seed), the high-water usage, how many times the block had to double, and t
 Row verdicts are `ok`, `tight` (used over 90 % of reserved) and `grew` (the block doubled at
 least once); the report's verdict is the worst row.
 
+## 3b. `mc sysroot` — where a cross link finds its files
+
+```
+mc sysroot list
+mc sysroot path <os>-<arch>
+mc sysroot fetch <os>-<arch> [--yes] [--sysroot-dir DIR]
+mc sysroot stub [DIR] [--config FILE]
+```
+
+| subcommand | what it does |
+|---|---|
+| `list` | one line per registered target and the source `fetch` would use. Walks the target registry and the pinned table and touches no file, so the output is the same on every host (`tests/golden/sysroot-list.txt`) |
+| `path <target>` | run the resolution chain for that target and print the directory on stdout; the `no sysroot` message and exit 2 when nothing answered |
+| `fetch <target>` | print the plan (url, size, sha256, destination). With `--yes`, download it, verify the sha256 with `mc`'s own SHA-256, extract it and write `manifest.toml` |
+| `stub [DIR]` | read `DIR/mc.toml` (or `--config FILE`), parse `[project].entry`, and write one import stub per library it uses — a `.tbd` on macOS, a `.def` plus the `.lib` `llvm-dlltool` builds from it on Windows. No object and no link; `[linker]` is not required |
+
+| flag | meaning |
+|---|---|
+| `--yes` | actually download. Without it `fetch` prints the plan, says `nothing was downloaded: re-run with --yes` and exits 0. There is no prompt: `mc` has no `isatty` |
+| `--sysroot-dir DIR` | DIR is the destination (`fetch`) or the candidate (`path`), instead of `~/.mc/sysroots/<os>-<arch>` |
+
+`mc sysroot stub` is the same thing `{stubs}` in `[linker].args` does on its own during a build,
+without the build. `fetch` is the **only** thing in `mc` that reaches the network, and it does it by spawning
+`curl`/`wget`/`curl.exe` — there is no HTTP and no TLS in this language. `mc build` never
+downloads. Everything about the chain, the cache and the pinned rows is in
+[sysroot.md](sysroot.md).
+
 ### Exit codes
 
 | code | meaning |
 |---|---|
 | `0` | success — and, under `--limits`, verdict `ok` |
 | `1` | any diagnostic: a compile error, a TOML error, a spawned tool that failed |
+| `2` | the environment is not ready: no sysroot for the target ([sysroot.md](sysroot.md) § 5) |
 | `3` | verdict `tight` or `grew` (`--limits` / `mc limits` only) |
 
 `--fix-limits` exits 0 when it managed to write a tolerance that fits, and 3 when even `1.0`
 would not have been enough (the file is left alone in that case).
+
+Code **2** is one message and nothing else — the `no sysroot for <os>-<arch>` block of
+[sysroot.md](sysroot.md) § 5. It is a separate code so that a script can tell "your machine is
+missing files" from "your program does not compile" without reading the text.
 
 ---
 

@@ -58,8 +58,9 @@ cmd  = "ld"                # without it, kind = "exe" uses the built-in macho-ex
 args = ["-arch", "arm64", "-syslibroot", "{sdk}", "-lSystem",
         "-o", "{out}", "{obj}", "{libs}"]
 
-[sysroot]                  # M16: what {sysroot} expands to in [linker].args
-path = "build/sysroot/linux-aarch64"
+[sysroot]                  # M16: where {sysroot} comes from -- M25 made it a chain
+path  = "build/sysroot/linux-aarch64"   # step 1, checked; absent is fine
+cache = "build/sysroots"                # step 3 root: <cache>/<os>-<arch>
 
 [libs]                     # named libraries, in the order the ordinals are handed out
 sqlite3 = "/usr/lib/libsqlite3.dylib"
@@ -193,10 +194,11 @@ args = ["-arch", "arm64", "-platform_version", "macos", "13.0", "13.0",
 | `{out}` | `[project].out`, resolved against the config's directory |
 | `{obj}` | the object `mc` just wrote, `<out>.o` |
 | `{sdk}` | the output of `xcrun --show-sdk-path`, run **lazily**: only if some argument mentions it, and at most once per build |
-| `{sysroot}` | `[sysroot].path`, resolved against the config's directory (M16). A missing `[sysroot].path` is an error only when some argument actually uses the placeholder |
+| `{sysroot}` | the sysroot for `[target]` (M16), found since M25 by a resolution chain rather than by one key: `[sysroot].path` **checked** against the target's marker files, then the running system when the host is the target, then `--sysroot-dir` / `[sysroot].cache` / `~/.mc/sysroots/<os>-<arch>`, then the `no sysroot` message and exit 2. Run at most once per build, and only when some argument mentions the placeholder (`docs/reference/sysroot.md`) |
+| `{stubs}` | the directory of the `.tbd` / `.def`+`.lib` import stubs `mc` writes from the program's own `extern`s (M25), `<dirname of [project].out>/stubs`. Lazy like `{sdk}`; `docs/reference/sysroot.md` § 9 |
 | `{libs}` | one argument per `[libs]` entry, in the order the keys are written |
 
-`{out}`, `{obj}`, `{sdk}` and `{sysroot}` are substituted **inside** an argument, so
+`{out}`, `{obj}`, `{sdk}`, `{sysroot}` and `{stubs}` are substituted **inside** an argument, so
 `-L{sdk}/usr/lib` and `{sysroot}/crt1.o` both work.
 `{libs}` is the one that has to be a whole argument, because it expands to several; each expanded
 value goes through the same substitution, so a library can be written as
@@ -717,6 +719,17 @@ there it does nothing, so `make test-linux` does not pull an image on every run.
 itself when any of the four files is missing (the same check the script itself makes, so a
 half-populated sysroot is repaired instead of failing every test).
 
+That script is now the *local* road, not the only one: `mc sysroot fetch linux-<arch> --yes`
+downloads the same four files from a pinned, checksummed Alpine `musl-dev` package and needs no
+Docker at all (`docs/reference/sysroot.md` § 7). Since M25 the driver resolves `{sysroot}`
+through a chain instead of reading one key: an explicit `[sysroot].path` (checked against
+`crt1.o` and `libc.a`, so a wrong directory is `mc`'s diagnostic and not the linker's), then the
+running system when the host is the target (`/usr/lib/<arch>-linux-musl`, `/usr/lib/musl/lib`,
+`/usr/lib`), then `--sysroot-dir` / `[sysroot].cache` / `~/.mc/sysroots/linux-<arch>`, and then
+one message with the exact command to run, at exit code **2**. `mc build` itself never
+downloads. The whole chain, the cache layout and every message are in
+`docs/reference/sysroot.md`.
+
 ### What the ELF writer says
 
 `gen_lower` and `gen_encode_all` are format-neutral — the same sections, symbols and relocations
@@ -899,13 +912,13 @@ A Windows program does not link against a copy of `kernel32.dll`. It links again
 library** — a small archive holding one thunk per exported name and no code from the DLL — and
 that archive can be generated from a plain list of names. So `scripts/sysroot-windows.sh
 [--arch aarch64] [DIR]` writes `kernel32.def` (the entry points `lib/sys_windows.mc` declares,
-and since M38 the six more `lib/sys_windows_host.mc` needs: `CreateProcessA`,
-`WaitForSingleObject`, `GetExitCodeProcess`, `CreateDirectoryA`, `DeleteFileA`, `VirtualAlloc`)
-and builds `kernel32.lib` from it with `llvm-dlltool -m arm64`. No network, no Windows
+and since M38 the seven more `lib/sys_windows_host.mc` needs: `CreateProcessA`,
+`WaitForSingleObject`, `GetExitCodeProcess`, `GetLastError`, `CreateDirectoryA`, `DeleteFileA`,
+`VirtualAlloc`) and builds `kernel32.lib` from it with `llvm-dlltool -m arm64`. No network, no Windows
 SDK, no mingw. Like the musl one it is a cache: with `kernel32.lib` already there it does nothing.
 `make sysroot-windows` runs it, and `scripts/test-windows.sh` runs it by itself.
 
-A program that needs more than those thirteen names — a whole SDK, other DLLs — is what
+A program that needs more than those fifteen names — a whole SDK, other DLLs — is what
 `mc sysroot fetch windows-*` will be for; this is the toolchain the test suite and the
 Windows-hosted compiler need.
 
