@@ -102,5 +102,7 @@ done
 # a running .exe cannot be replaced on Windows, and a stale one would be linked
 # around silently
 rm -f "$out"
+# -stack: the reserve is 1 MiB by default on Windows against 8 MiB on macOS and
+# Linux; the compiler is built for the latter, so the executable asks for it.
 exec "$linker" -machine:$machine -subsystem:console -entry:mc_start -nodefaultlib \
-     -out:"$out" "$@" "$start" "$rt" "$sysroot/kernel32.lib"
+     -stack:8388608 -out:"$out" "$@" "$start" "$rt" "$sysroot/kernel32.lib"

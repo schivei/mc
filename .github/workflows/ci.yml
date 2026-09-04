@@ -789,6 +789,21 @@ jobs:
       # cmp, the golden, --host, and the whole suite run with the compiler that
       # came out (the objects downloaded above, linked and executed here).
       # check-skipped prints one line per target that does not run.
+      # Diagnostics before the chain, never a gate: one small compile, then the
+      # compiler's own source lexed, parsed and compiled, each with its exit
+      # code -- so a crash in the chain below is already localised here.
+      - name: Smoke the seed
+        shell: bash
+        continue-on-error: true
+        run: |
+          set +e
+          echo "host-arch: $(sh scripts/host-arch.sh)  uname -m: $(uname -m)  PROCESSOR_ARCHITECTURE=$PROCESSOR_ARCHITECTURE PROCESSOR_ARCHITEW6432=$PROCESSOR_ARCHITEW6432"
+          build/mc-windows-arm64.exe tests/001-return42.mc -o build/smoke-small.obj; echo "small compile: exit $?"
+          build/mc-windows-arm64.exe --dump-tokens src/mc_windows.mc | tail -1; echo "lex src: exit ${PIPESTATUS[0]}"
+          build/mc-windows-arm64.exe --dump-ast src/mc_windows.mc | tail -1; echo "parse src: exit ${PIPESTATUS[0]}"
+          build/mc-windows-arm64.exe src/mc_windows.mc -o build/smoke-big.obj; echo "compile src: exit $?"
+          ls -l build/smoke-small.obj build/smoke-big.obj 2>/dev/null || true
+
       - name: Bootstrap and run the Windows make check subset
         shell: bash
         run: make check SEED=build/mc-windows-arm64.exe
@@ -941,6 +956,21 @@ jobs:
       # cmp, the golden, --host, and the whole suite run with the compiler that
       # came out (the objects downloaded above, linked and executed here).
       # check-skipped prints one line per target that does not run.
+      # Diagnostics before the chain, never a gate: one small compile, then the
+      # compiler's own source lexed, parsed and compiled, each with its exit
+      # code -- so a crash in the chain below is already localised here.
+      - name: Smoke the seed
+        shell: bash
+        continue-on-error: true
+        run: |
+          set +e
+          echo "host-arch: $(sh scripts/host-arch.sh)  uname -m: $(uname -m)  PROCESSOR_ARCHITECTURE=$PROCESSOR_ARCHITECTURE PROCESSOR_ARCHITEW6432=$PROCESSOR_ARCHITEW6432"
+          build/mc-windows-x86_64.exe tests/001-return42.mc -o build/smoke-small.obj; echo "small compile: exit $?"
+          build/mc-windows-x86_64.exe --dump-tokens src/mc_windows_x86_64.mc | tail -1; echo "lex src: exit ${PIPESTATUS[0]}"
+          build/mc-windows-x86_64.exe --dump-ast src/mc_windows_x86_64.mc | tail -1; echo "parse src: exit ${PIPESTATUS[0]}"
+          build/mc-windows-x86_64.exe src/mc_windows_x86_64.mc -o build/smoke-big.obj; echo "compile src: exit $?"
+          ls -l build/smoke-small.obj build/smoke-big.obj 2>/dev/null || true
+
       - name: Bootstrap and run the Windows make check subset
         shell: bash
         run: make check SEED=build/mc-windows-x86_64.exe

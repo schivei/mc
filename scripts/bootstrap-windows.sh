@@ -9,6 +9,8 @@
 #   SHA-256 of build/mc2w.obj vs tests/golden/mc2-windows-<target>.sha256
 #   build/mc2w.exe --host  =>  os windows / arch <arch>
 #   scripts/test-windows.sh --arch <arch> --run-only <objdir>
+#
+# bootstrap-windows.sh [--arch aarch64|x86_64] [SEED]
 #   build/mc2w.exe --backend=macho src/mc.mc  ==  build/mc2.o   (the cross proof)
 #
 # It is scripts/bootstrap-linux.sh's sibling, and it has the same one difference
@@ -42,6 +44,14 @@
 # No "set -e": every step checks its own exit code and says what failed.
 
 repo="${MC_SEED_REPO:-schivei/mc}"
+harch=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --arch)   harch="$2"; shift 2 ;;
+        --arch=*) harch="${1#--arch=}"; shift ;;
+        *) break ;;
+    esac
+done
 seed="$1"
 
 case "$(uname -s)" in
@@ -51,10 +61,15 @@ case "$(uname -s)" in
        exit 1 ;;
 esac
 
-case "$(uname -m)" in
+# --arch wins; otherwise scripts/host-arch.sh, which reads the environment
+# before `uname -m` -- under Git Bash on Windows on ARM the shell itself runs
+# emulated and `uname -m` answers x86_64 (the first CI run of this script died
+# on exactly that: "the seed says it is hosted on windows/aarch64, not x86_64").
+[ -n "$harch" ] || harch=$(sh scripts/host-arch.sh)
+case "$harch" in
     aarch64|arm64) target="arm64";  entry="src/mc_windows.mc";        larch="aarch64" ;;
     x86_64|amd64)  target="x86_64"; entry="src/mc_windows_x86_64.mc"; larch="x86_64" ;;
-    *) echo "bootstrap-windows: unsupported machine $(uname -m) (aarch64 | x86_64)" >&2
+    *) echo "bootstrap-windows: unsupported machine $harch (aarch64 | x86_64)" >&2
        exit 1 ;;
 esac
 golden="tests/golden/mc2-windows-$target.sha256"

@@ -19,9 +19,11 @@ BUDGET  = 3000
 # MINGW64_NT-... or MSYS_NT-..., so the switch is a findstring and not an ifeq.
 # There is no `mc0` there either -- scripts/bootstrap-windows.sh is the chain --
 # and every name carries `.exe`, because a file that is not called *.exe cannot
-# be launched on Windows (docs/guide/95-windows-host.md).
+# be launched on Windows (docs/guide/95-windows-host.md). HOSTARCH comes from
+# scripts/host-arch.sh: under Git Bash on Windows on ARM `uname -m` reports the
+# emulated x86_64, and only the environment knows the real machine.
 HOST     := $(shell uname -s)
-HOSTARCH := $(shell uname -m | sed -e 's/^arm64$$/aarch64/' -e 's/^amd64$$/x86_64/')
+HOSTARCH := $(shell sh scripts/host-arch.sh)
 WINHOST  := $(findstring MINGW,$(HOST))$(findstring MSYS,$(HOST))$(findstring CYGWIN,$(HOST))
 
 ifeq ($(HOST),Linux)
@@ -296,7 +298,7 @@ build/mc1l: build/mc2l
 # what the CI artifact holds), and otherwise downloads the release asset and
 # verifies its checksum.
 bootstrap-windows:
-	scripts/bootstrap-windows.sh $(SEED)
+	scripts/bootstrap-windows.sh --arch $(HOSTARCH) $(SEED)
 
 build/mc2w.exe:
 	scripts/bootstrap-windows.sh $(SEED)

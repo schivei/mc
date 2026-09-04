@@ -48,7 +48,7 @@ path = "../build/sysroot/windows-x86_64"
 # path before the linker ever sees it.
 [linker]
 cmd  = "lld-link"
-args = ["-machine:x64", "-subsystem:console", "-entry:mc_start", "-nodefaultlib",
+args = ["-machine:x64", "-subsystem:console", "-entry:mc_start", "-nodefaultlib", "-stack:8388608",
         "-out:{out}", "{obj}",
         "{sysroot}/winstart.obj", "{sysroot}/mcrt.obj",
         "{sysroot}/kernel32.lib"]

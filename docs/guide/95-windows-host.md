@@ -339,3 +339,14 @@ program that wants to spawn a process can.
 * [../ci.md](../ci.md) — the two Windows host jobs and the five release assets
 * [../reference/hooks.md](../reference/hooks.md) § 6 — the host interface
 * [../reference/objects.md](../reference/objects.md) § 4 — the ABI, including parameters 9..12
+
+## Two facts about the Windows runners
+
+* **`uname -m` lies on Windows on ARM.** Git for Windows is an x64 program and runs emulated
+  there, so `uname -m` answers `x86_64` on an ARM64 machine. `scripts/host-arch.sh` reads
+  `PROCESSOR_ARCHITEW6432` (the real architecture of an emulated process) and
+  `PROCESSOR_ARCHITECTURE` first, and the Makefile's `HOSTARCH` and `scripts/bootstrap-windows.sh`
+  both go through it; `--arch` and `MC_HOSTARCH` override it.
+* **The default stack is 1 MiB**, against 8 MiB on macOS and Linux. The compiler is built for the
+  latter, so every `mc` executable is linked with `-stack:8388608` (`scripts/link-windows.sh` and the
+  two `src/mc.windows-*.toml`).
