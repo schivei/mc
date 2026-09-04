@@ -117,15 +117,17 @@ Read one row of the registration tables: the name and the function pointer of ba
 the function pointer of pass `i`. `backend_fn_at` is what the driver hands to `callp` to run the
 chosen backend; the other two exist so a module can inspect what is registered.
 
-### `void backend_macho(i64 unit, uptr out)` · `void backend_exe(i64 root, uptr out)` · `void backend_elf(i64 root, uptr out)` · `void backend_elf_x86(i64 root, uptr out)`
+### `void backend_macho(i64 unit, uptr out)` · `void backend_exe(i64 root, uptr out)` · `void backend_elf(i64 root, uptr out)` · `void backend_elf_x86(i64 root, uptr out)` · `void backend_coff(i64 root, uptr out)` · `void backend_coff_x86(i64 root, uptr out)`
 
-The four built-in backends themselves, callable by name if a module wants to wrap or delegate to
+The six built-in backends themselves, callable by name if a module wants to wrap or delegate to
 one. `backend_macho` is literally `gen_lower` + `gen_encode_all` + `macho_write`; `backend_exe`
 adds what `ld` used to do (segment layout, relocation resolution, stubs, bind opcodes, an ad-hoc
-signature); `backend_elf` writes an ELF64 `ET_REL` for `EM_AARCH64`, and `backend_elf_x86` the
-same file for `EM_X86_64`. The two ELF ones share every line of the writer: each begins with
-`machine_use("arm64")` / `machine_use("x86_64")`, because an object records its architecture and
-therefore has to name the machine that produced it.
+signature); `backend_elf` writes an ELF64 `ET_REL` for `EM_AARCH64` and `backend_elf_x86` the
+same file for `EM_X86_64`; `backend_coff` writes a COFF `.obj` for `IMAGE_FILE_MACHINE_ARM64` and
+`backend_coff_x86` the same file for `IMAGE_FILE_MACHINE_AMD64`. Each pair shares every line of
+its writer, and each begins with `machine_use` — `arm64`, `x86_64`, or `x86_64-win` for
+`backend_coff_x86`, which is where the Win64 calling convention comes from — because an object
+records its architecture and therefore has to name the machine that produced it.
 
 ### `void machine(uptr name, uptr tab)` · `i64 machine_find(uptr name)` · `void machine_use(uptr name)`
 

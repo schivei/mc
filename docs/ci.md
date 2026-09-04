@@ -72,8 +72,8 @@ Triggers: `pull_request` against `main`, and `push` to `main`. The concurrency g
 new push to a pull request cancels its previous run.
 
 **The job names are the required status checks on `main`** — `make check (macOS arm64)`,
-`Link and run the suite (linux/arm64)`, `Link and run the suite (linux/x86_64)` and `Link and run
-the suite (windows/arm64)`. Renaming a job means updating the branch protection in the same
+`Link and run the suite (linux/arm64)`, `Link and run the suite (linux/x86_64)`, `Link and run
+the suite (windows/arm64)` and `Link and run the suite (windows/x86_64)`. Renaming a job means updating the branch protection in the same
 breath, or `main` starts requiring a check that no longer exists and nothing can merge.
 
 ### Job `check` — `macos-15`
@@ -81,7 +81,8 @@ breath, or `main` starts requiring a check that no longer exists and nothing can
 Runs `make check` unchanged: `budget`, `test`, `check-lex`, `check-ast`, `check-bundle`,
 `check-asm`, `check-obj`, `bootstrap` (the fixed point plus the golden SHA-256), `check-surface`,
 `test-exe`, `check-mc`, `check-standalone`, `check-toml`, `check-build`, `check-limits`,
-`test-linux`, `test-linux-x86_64`, `test-windows`, `check-examples`, `check-lang`, `check-docs`,
+`test-linux`, `test-linux-x86_64`, `test-windows`, `test-windows-x86_64`, `check-examples`,
+`check-lang`, `check-docs`,
 `site` and `check-site`. No environment variable is passed and the `Makefile` is not touched: the
 three cross-target suites already guard themselves, and `check-site` skips
 `checkhtml.py`/`contrast.py` when `python3` is absent (the link check still runs).
@@ -109,12 +110,14 @@ Five artifacts come out:
 - `mc-macos-arm64` — `build/mc-exe`, the self-hosted, `ld`-free compiler `make check` already
   builds for `check-standalone`. GitHub's artifact zip does not carry the executable bit, so a
   download needs `chmod +x mc-exe` (and, off a browser download, `xattr -d com.apple.quarantine`).
-- `linux-arm64-objects`, `linux-x86_64-objects` and `windows-arm64-objects` — the inputs to the
-  three suite jobs below. The cross-compilation runs three times, once per target, and no run
-  needs a linker or Docker. The Windows artifact carries two extra files the other side cannot
-  make for itself: `winrt.obj` (the compiled `lib/sys_windows.mc`) and `kernel32.lib` (the
-  import library `scripts/sysroot-windows.sh` generates with `llvm-dlltool`). If this runner has
-  no `llvm-dlltool`, the import library is simply absent and the Windows job rebuilds it there.
+- `linux-arm64-objects`, `linux-x86_64-objects`, `windows-arm64-objects` and
+  `windows-x86_64-objects` — the inputs to the four suite jobs below. The cross-compilation runs
+  four times, once per target, and no run needs a linker or Docker. Each Windows artifact carries
+  three extra files the other side cannot make for itself: `winrt.obj` (the compiled
+  `lib/sys_windows.mc`), `winstart.obj` (the entry point, `lib/sys_windows_start.mc`) and
+  `kernel32.lib` (the import library `scripts/sysroot-windows.sh` generates with `llvm-dlltool`).
+  If this runner has no `llvm-dlltool`, the import library is simply absent and the Windows job
+  rebuilds it there. Nothing is shared between the two architectures.
 - `mc-linux-hosts` — `build/mc-linux-arm64.o` and `build/mc-linux-x86_64.o`, `mc` itself
   cross-compiled for each Linux host by `make mc-linux-obj` / `make mc-linux-x86_64-obj`. Objects,
   not executables, for the same reason: no linker and no sysroot here (§ M37).
@@ -212,7 +215,19 @@ the import library all travel in the artifact, so this job wants a linker and no
    would mean the target is untested and the build still green.
 
 The tests run from the repository root, like the Linux ones, because `025-linecount` opens its own
-source by a relative path.
+source by a relative path — and so does `072-six-params`, which opens its own source through
+`CreateFileA` to exercise a seven-argument call.
+
+### Job `windows-x86_64` — `windows-latest`
+
+M20's leg, and a copy of the one above with the artifact name and the LLVM assets changed: it
+downloads `windows-x86_64-objects` and runs
+`scripts/test-windows.sh --arch x86_64 --run-only build/windows-objs-x86_64`. `windows-latest` is
+an x86-64 runner and ships LLVM under `C:\Program Files\LLVM`, so the **Tool facts** step
+normally finds `lld-link` and nothing is downloaded; the download branch is kept, with the x64
+assets (`clang+llvm-<ver>-x86_64-pc-windows-msvc.tar.xz`, then `LLVM-<ver>-win64.exe`), and it
+fails loudly rather than skipping, for the same reason: this is the only place a `windows/x86_64`
+binary is ever executed.
 
 ---
 
@@ -390,7 +405,8 @@ packaged once it has reproduced itself. It uploads `release-linux-arm64` / `rele
 
 Job `build-future-hosts` is `if: false`. Since M37 it holds only the two Windows **host** builds —
 `windows-arm64`, `windows-x86_64` — and turns on when **`mc` itself runs on Windows**. Note what
-these are not: M19 gave a Windows arm64 *target*, which is a different thing from a *host*.
+these are not: M19 and M20 gave the Windows arm64 and x64 *targets*, which are a different thing
+from a *host*. M20 does not enable them and ships no Windows-hosted `mc`; that is M38.
 
 Job `publish` needs both `build` and `build-linux`, collects the three `release-*` artifacts,
 takes the **tag's annotation as the release body**, appends
@@ -470,9 +486,9 @@ only way ordinary work reaches it — while leaving the owner able to push a doc
 directly. Four decisions:
 
 - **required checks**: `make check (macOS arm64)`, `Link and run the suite (linux/arm64)`,
-  `Link and run the suite (linux/x86_64)`, `Link and run the suite (windows/arm64)` and, since
-  M37, `mc on linux/arm64 host` and `mc on linux/x86_64 host` — six of the job names in
-  `ci.yml`;
+  `Link and run the suite (linux/x86_64)`, `Link and run the suite (windows/arm64)`, since M20
+  `Link and run the suite (windows/x86_64)`, and, since M37, `mc on linux/arm64 host` and
+  `mc on linux/x86_64 host` — seven of the job names in `ci.yml`;
 - **strict (up to date before merging) is off**: `mc` builds are minutes long and the project is
   one person's; requiring every pull request to re-run against a moved `main` buys little and
   costs a rebase loop. `release.yml` rebuilds and re-runs the whole suite from the tag anyway;
@@ -699,7 +715,7 @@ mc-<VER>-linux-x86_64.tar.gz
 ```
 
 `build-future-hosts` still exists with `if: false`, now holding only the two Windows entries,
-which wait for a Windows *host* build of `mc` (M19 gave the Windows arm64 *target*).
+which wait for a Windows *host* build of `mc` (M19 and M20 gave the Windows *targets*).
 
 `scripts/bootstrap-linux.sh` downloads exactly those assets when a Linux machine has no seed: the
 release is not just a convenience, it is the entry point of the Linux chain

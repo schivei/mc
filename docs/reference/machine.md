@@ -2,7 +2,8 @@
 
 > **Contract version 2 — the integer tasks, for two instruction sets (M17).**
 > `src/gen_walk.mc` is the target-independent walker; `src/machine_arm64.mc` (step A) and
-> `src/machine_x86_64.mc` (step B) are the two machines behind it, and `machine(name, tab)` in
+> `src/machine_x86_64.mc` (step B, and M20's Win64 half) are the three machines behind it —
+> `arm64`, `x86_64`, `x86_64-win` — and `machine(name, tab)` in
 > `src/hooks.mc` is the seam. The float tasks at the end of this page are still specification
 > (`docs/specs/M24.md`), and so is `#machine`.
 >
@@ -66,12 +67,13 @@ void machine_arm64_init()              // fills all 31 slots, then machine("arm6
 ```
 
 `src/machine_x86_64.mc` is the same two functions under its own names, `x86_task` and
-`machine_x86_64_init()`.
+`machine_x86_64_init()` — which registers `x86_64` and then, from a copy of the same table with
+`MTASK_PROLOGUE` replaced, `x86_64-win` (M20).
 
 The walker reaches the table through `uptr mach(i64 task)`, which is the only place that reads
 `mach_tab`. A machine that is missing is `no machine registered`, not a crash.
 
-**How a machine is chosen (settled in step B).** `main()` registers both machines and then names
+**How a machine is chosen (settled in step B).** `main()` registers every machine and then names
 the host's, because every `machine()` call also makes its own table current:
 
 ```c
@@ -81,7 +83,9 @@ machine_use("arm64");
 ```
 
 From there **the object backend picks**, as its first statement — `backend_elf` does
-`machine_use("arm64")`, `backend_elf_x86` does `machine_use("x86_64")`. Step A left two shapes
+`machine_use("arm64")`, `backend_elf_x86` does `machine_use("x86_64")`, and `backend_coff_x86` does
+`machine_use("x86_64-win")`, which is how the Win64 ABI is reached without `target()` growing a
+fifth column. Step A left two shapes
 open: a fifth column on `target()`, or `machine_use` from the backend. The backend won, for three
 reasons. `target()` keeps the four columns `docs/specs/M33.md` § 1 wrote down. An AST-consuming
 backend (wasm) needs no machine at all, so a mandatory machine column on every target would be a
@@ -198,25 +202,40 @@ one:
 
 ### The x86-64 implementation (M17 step B)
 
-`src/machine_x86_64.mc` fills the same thirty-one slots for the System V ABI. It is the proof that
-the split is real: **not one line of `src/gen_walk.mc` is architecture-specific**, and the ELF
+`src/machine_x86_64.mc` fills the same thirty-one slots, and registers **two** machines out of one
+set of functions: `x86_64` (System V, M17 step B) and `x86_64-win` (Win64, M20). It is the proof
+that the split is real: **not one line of `src/gen_walk.mc` is architecture-specific**, and the ELF
 writer is shared with aarch64 down to the section table.
 
-| | AArch64 | x86-64 |
-|---|---|---|
-| depth registers | `x9..x15` (0..6) | `r8..r11` (0..3) |
-| why those | caller-saved, not argument registers | the same rule leaves exactly four |
-| scratch | `x16`, `x17`, `x8` | `rax` (S1), `rcx` (S2), `rdx` |
-| why three | — | `idiv` writes `rdx`, `div` needs it zeroed, shifts count in `cl` |
-| locals | `[sp, #k]`, fixed up at the end | `[rbp - k]`, correct from the first instruction |
-| frame | `stp x29, x30` + `sub sp` | `push rbp; mov rbp, rsp; sub rsp` / `leave` |
-| arguments | `x0..x7` | `rdi rsi rdx rcx r8 r9`, then `[rsp]`, `[rsp+8]` |
-| result | `x0` | `rax` |
-| `callp` pointer | `x16`, `blr x16` | `rax`, `call rax` |
-| instruction width | 4 bytes | 1..10 bytes |
-| `x / 0`, `x % 0`, `INT64_MIN / -1` | `sdiv`/`udiv`: `0`, `x`, `INT64_MIN`, no trap | `idiv`/`div`: `SIGFPE`, the process dies |
-| relocations | `BRANCH26` `PAGE21` `PAGEOFF12` `UNSIGNED` | `R_X86_64_PLT32` `PC32` `64` |
-| relocation offset | 0 | 1 (`call`), 3 (`lea [rip+d32]`) |
+| | AArch64 | x86-64 System V | x86-64 Win64 |
+|---|---|---|---|
+| machine name | `arm64` | `x86_64` | `x86_64-win` |
+| depth registers | `x9..x15` (0..6) | `r8..r11` (0..3) | the same — volatile in both ABIs |
+| why those | caller-saved, not argument registers | the same rule leaves exactly four | — |
+| scratch | `x16`, `x17`, `x8` | `rax` (S1), `rcx` (S2), `rdx` | the same |
+| why three | — | `idiv` writes `rdx`, `div` needs it zeroed, shifts count in `cl` | — |
+| locals | `[sp, #k]`, fixed up at the end | `[rbp - k]`, correct from the first instruction | the same |
+| frame | `stp x29, x30` + `sub sp` | `push rbp; mov rbp, rsp; sub rsp` / `leave` | the same |
+| arguments | `x0..x7` | `rdi rsi rdx rcx r8 r9`, then `[rsp]`, `[rsp+8]` | `rcx rdx r8 r9`, then `[rsp+32]`, … |
+| stack parameters | — | `[rbp+16]`, `[rbp+24]` | `[rbp+48]`, `[rbp+56]`, … |
+| shadow space | — | none | 32 bytes, reserved by the caller |
+| callee-saved, never touched | `x18..x28` | `rbx`, `r12..r15` | those plus `rsi`, `rdi` |
+| result | `x0` | `rax` | `rax` |
+| `callp` pointer | `x16`, `blr x16` | `rax`, `call rax` | the same |
+| instruction width | 4 bytes | 1..10 bytes | the same |
+| `x / 0`, `x % 0`, `INT64_MIN / -1` | `sdiv`/`udiv`: `0`, `x`, `INT64_MIN`, no trap | `idiv`/`div`: `SIGFPE`, the process dies | the same |
+| relocations | `BRANCH26` `PAGE21` `PAGEOFF12` `UNSIGNED` | `R_X86_64_PLT32` `PC32` `64` | `IMAGE_REL_AMD64_REL32` `ADDR64` |
+| relocation offset | 0 | 1 (`call`), 3 (`lea [rip+d32]`) | the same |
+
+**The two ABIs are two machines, not a flag.** `m_x86_64_win` is a copy of `m_x86_64` with one slot
+replaced, `MTASK_PROLOGUE`; the other thirty entries are literally the same `&fn`, because
+`MTASK_INS_SIZE`, `MTASK_ENCODE`, `MTASK_DUMP`, `MTASK_RELOC_KIND` and `MTASK_RELOC_OFF` are pure
+functions of the `Ins` record and know nothing about a calling convention. The convention itself
+lives in three globals — the argument table, how many arguments travel in registers, and the
+caller's shadow space — set by that prologue, which `gen_func` always runs before the first
+`MTASK_PARAM` and before any `MTASK_CALL`, so they can never be stale. Two machines rather than a
+runtime flag because `--dump-asm --machine=x86_64-win` has to be able to show the Win64 sequence,
+and a flag the backend sets could not.
 
 Two consequences of variable-length encoding, both already in the contract:
 
@@ -233,9 +252,13 @@ Two consequences of variable-length encoding, both already in the contract:
   They are never executed — every function ends in `ret` — but a disassembler decodes them as
   `add %al, (%rax)`.
 
-Arguments seven and eight are pushed with `push r/m64`, straight from the frame slot, so no scratch
-register is spent on them; an odd count reserves an extra 8 bytes first, because `rsp` has to be
-16-byte aligned at the `call`.
+The arguments past the register table are pushed with `push r/m64`, straight from the frame slot, so
+no scratch register is spent on them; an odd count reserves an extra 8 bytes first, because `rsp`
+has to be 16-byte aligned at the `call`. On Win64 the 32 bytes of shadow space are subtracted
+**last**, so they end up below the pushed arguments and the fifth argument lands at `[rsp+32]` — the
+place the callee's `MTASK_PARAM` reads it from. The alignment rule does not change: `8*np + 32` is
+`0 mod 16` exactly when `np` is even. [objects.md](objects.md) § 4c is the full Win64 contract,
+including why `r8`/`r9` being argument registers 3 and 4 **and** depth registers 0 and 1 is safe.
 
 `#opcode`, `emit()` and `reloc()` are architecture-specific by nature — a source full of
 hand-encoded AArch64 words is portable to Linux arm64 and nowhere else — so the tests that use them
@@ -247,6 +270,15 @@ x86-64 — 948 of them — was fed back through `llvm-mc -triple=x86_64-linux-mu
 byte-identical; the relocation shapes (`R_X86_64_PC32` at instruction + 3 with addend −4,
 `R_X86_64_PLT32` at instruction + 1 with addend −4) match `clang --target=x86_64-linux-musl -c` of
 equivalent C, field for field. The suite itself runs: `make test-linux-x86_64`.
+
+The Win64 half was swept the same way (M20): the **967** distinct instructions the machine emits
+while compiling `src/mc.mc` for `windows/x86_64` re-assemble byte-identically under
+`llvm-mc -triple=x86_64-windows-msvc`, and the 9361 pc-relative displacements it wrote were checked
+against `target - (address + length)`. The relocation shapes match
+`clang --target=x86_64-windows-msvc -c` of equivalent C: `IMAGE_REL_AMD64_REL32` at instruction + 1
+for a `call` and at instruction + 3 for a `lea r, [rip+d32]`, with the in-place field zero and no
+addend anywhere ([objects.md](objects.md) § 8). The suite itself runs on the `windows-latest` CI
+leg: `make test-windows-x86_64` cross-compiles it.
 
 ---
 

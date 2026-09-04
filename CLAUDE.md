@@ -1160,7 +1160,104 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
      `IMAGE_REL_ARM64_ADDR32NB` per function — a milestone of its own. Written down in
      `docs/reference/objects.md` § No `.pdata`/`.xdata`, `docs/build.md` § Windows targets and
      `docs/specs/M19.md` § Out of scope.
-- Next: M18/M20 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
+- M20 done (`docs/specs/M20.md`, `docs/build.md` § Windows targets,
+  `docs/guide/50-cross-compile.md` § Windows, `docs/reference/objects.md` § 4c,
+  `docs/reference/machine.md`): **Windows x64 — COFF AMD64 relocations, the Win64 ABI as a second
+  x86-64 machine, and an architecture-neutral entry shim**. `stage0/` untouched (2848/3000).
+  1. **`x86_64-win`, a second machine out of the same file** (`src/machine_x86_64.mc` +83/-17,
+     775 -> 841). `m_x86_64_win` is a copy of `m_x86_64` with ONE slot replaced, `MTASK_PROLOGUE`;
+     the other thirty entries are literally the same `&fn`, because `MTASK_INS_SIZE`,
+     `MTASK_ENCODE`, `MTASK_DUMP`, `MTASK_RELOC_KIND` and `MTASK_RELOC_OFF` are pure functions of
+     the `Ins` record and are ABI-blind. The convention lives in three globals — the argument table
+     (`rcx rdx r8 r9`), `x86_nargreg` (6 / 4) and `x86_shadow` (0 / 32) — set by that prologue,
+     which `gen_func` always runs before the first `MTASK_PARAM` and before any `MTASK_CALL`, so
+     they can never be stale. `x86_param` reads argument `i >= nargreg` at
+     `16 + shadow + (i - nargreg) * 8`, i.e. `[rbp+48]` for the fifth Win64 parameter;
+     `x86_push_args` subtracts the shadow **last**, so it lands below the pushed arguments and the
+     fifth argument is at `[rsp+32]` — which is why it must return non-zero (32) even for a call
+     with no stack arguments. The alignment rule is unchanged (`8*np + 32` is 0 mod 16 iff `np` is
+     even). **The register partition does not move**: `rax`, `rcx`, `rdx` and `r8..r11` are
+     volatile in both ABIs, so depths stay in `r8..r11` and scratch stays `rax`/`rcx`/`rdx`;
+     `rdi`/`rsi` become callee-saved and the machine simply stops naming them. Two machines and not
+     a runtime flag because `--machine=x86_64-win` has to be able to DUMP the Win64 sequence.
+  2. **`coff-obj-x86_64`** (`src/backend_coff.mc` +62/-10, 380 -> 432; `src/main.mc` +2):
+     `i64 coff_machine`, the exact counterpart of `elf_em`, set by each entry point and deciding
+     both the header value (`IMAGE_FILE_MACHINE_AMD64` 0x8664) and the relocation table.
+     `R_X86_PLT32` and `R_X86_PC32` both map to `IMAGE_REL_AMD64_REL32` 0x0004, `R_UNSIGNED`
+     (len 3) to `IMAGE_REL_AMD64_ADDR64` **0x0001** — not ARM64's 0x000E. **No addend anywhere and
+     none needed**: `IMAGE_REL_AMD64_REL32` is defined from the byte FOLLOWING the four-byte field
+     (`S + A - (P + 4)`) where ELF's `R_X86_64_PC32` computes `S + A - P` from its start, so the
+     `-4` `elf_rel_addend` writes is already inside COFF's definition; `A` is the in-place content
+     and the encoder leaves both fields zero. `REL32_1..5` are never needed — both relocated
+     instructions put their disp32 at the very end. `backend_coff_x86` names `x86_64-win` as its
+     first statement, which is how the ABI is reached without `target()` growing a fifth column
+     (the M17 step B rule). `target("windows", "x86_64", "coff-obj-x86_64", 0)`.
+  3. **The entry shim split** (`lib/sys_windows_start.mc`, new, 41 lines; `lib/sys_windows.mc`
+     +21/-20). M19's `win_call_main` was `reloc(BRANCH26, "_main"); emit(0x94000000);` — a raw
+     AArch64 `bl`, the only architecture-specific line in the layer — and it could NOT be
+     re-encoded for x86-64: `emit()` writes exactly four bytes, a pending `reloc()` is pinned to
+     the START of that word, `gen_word` accepts only the four Mach-O kinds, and an x86
+     `call rel32` is five bytes with its field one byte in. The raw words were DELETED, not
+     doubled: `mc_start` moved to its own bundled file (`<sys_windows_start>`), compiled once into
+     `winstart.obj` and linked into EVERY Windows executable, where `main` is an ordinary `extern`
+     reached through `MTASK_CALL`. `lib/sys_windows.mc` keeps the wrappers and `win_split` and
+     gains `win_setup()`/`win_argv()`, so the file a program INCLUDES never names `main`.
+     `tools/bundle.list` 42 -> 43 entries.
+  4. **Scripts and tests.** `scripts/sysroot-windows.sh` unchanged (it already took
+     `--arch x86_64`). `scripts/test-windows.sh` (+59/-30, 350 -> 379): `x86_64` ->
+     `-machine:x64` and the `IMAGE_FILE_MACHINE_AMD64` assertion on the object AND on the linked
+     `.exe`; two-level `skip_reason` copied from `test-linux.sh` (`// skip-windows:` then
+     `// skip-<arch>:`, so no test needed a new header); `winstart.obj` built alongside
+     `winrt.obj` and present in BOTH branches of `link_one` — the `self` mode now means "no
+     `winrt.obj`", not "nothing next to it". The dash form of the lld-link options stays (MSYS
+     rewrites a leading `/out:` under Git Bash). `Makefile`: `sysroot-windows-x86_64` and
+     `test-windows-x86_64`, the latter in `check`, `.PHONY` and `check-skipped`.
+     `tests/windows/071-nested-args.mc` (31) is `f(a, b, g(x, y), h(z))` and the same through
+     `callp`: the executable proof that writing `r8`/`r9` — argument registers 3 and 4 on Win64
+     AND depth registers 0 and 1 — never clobbers a source still to be read, because the table is
+     written in ascending index and every depth register's own argument index is smaller than its
+     position in it. `tests/windows/072-six-params.mc` (38) reads a fifth and sixth parameter at
+     `[rbp+48]`/`[rbp+56]` and calls the seven-argument `CreateFileA`: the shadow space against a
+     real Win64 callee that uses its home space. Both are portable and both legs run them.
+  5. **CI** (`.github/workflows/ci.yml` +86): the macOS job cross-compiles for windows/x86_64 and
+     uploads `windows-x86_64-objects`; `Link and run the suite (windows/x86_64)` on
+     `windows-latest` links and RUNS the suite. `release.yml` untouched — no Windows-hosted `mc`
+     here, that is M38. After the merge the architect adds the job to the `main` branch protection
+     contexts (`docs/ci.md` § Branch protection).
+  Encoder cross-check: the **967 distinct instructions** the Win64 machine emits while compiling
+  `src/mc.mc` for windows/x86_64 (76533 in all) re-assemble byte-identically under
+  `llvm-mc -triple=x86_64-windows-msvc`, and the 9361 pc-relative displacements it wrote were
+  checked against `target - (address + length)`. Header, sections, symbols and relocation types
+  match `clang --target=x86_64-windows-msvc -c` of equivalent C field for field
+  (`Machine: IMAGE_FILE_MACHINE_AMD64 (0x8664)`, `main` as `Function`/`External` with no aux
+  record, `IMAGE_REL_AMD64_REL32` at instruction+1 for a `call` and instruction+3 for a
+  `lea r,[rip+d32]`, both with the field zero in place); the differences are mc's `TimeDateStamp`
+  0 and the sections clang adds and mc does not (`.debug$S`, `.llvm_addrsig`, the section-def
+  symbols). `.pdata`/`.xdata` stay the accepted M19 gap, now recorded for x64 in the same section.
+  — `stage0/` untouched, 2848/3000; `src/*.mc` 18169 lines (5185 of them generated).
+  `make bundle` re-run BEFORE bootstrapping: 43 files, raw 533478 -> LZ 245893, blob 246397 B.
+  `make check` green end to end (RC 0, zero FAIL): `test` 32/32, `check-lex` 83/83,
+  `check-ast` 83/83, `check-bundle` (lz round trip 67 cases), `check-asm` 83/83, `check-obj`
+  **32/32 identical to the frozen seed**, `bootstrap` at a fixed point (`mc2.o == mc3.o`,
+  663416 bytes; the `--dump-asm` diff between `mc1` and `mc2` is empty), `check-surface` 32/32,
+  `test-exe` 32/32, `check-mc` 6/6, `check-standalone`, `check-toml` 10/10, `check-build` 12/12,
+  `check-limits` 17/17 under 90%, `check-minimal`, `test-linux` 32/32 on linux/aarch64,
+  `test-linux-x86_64` 29/29 on linux/x86_64, **`test-windows` 34/34 objects for windows/aarch64
+  (1 skipped) and `test-windows-x86_64` 32/32 for windows/x86_64 (3 skipped)**, 3 executables
+  linked with `lld-link` in each, `check-examples`, `check-lang`, `check-conc`, `check-desktop`,
+  `check-docs` (140 symbols, 17 flags, 16 TOML keys, 10 directives, 46 samples, 163 links),
+  `site` 71 pages + `check-site` (0 link problems, 71 files 0 problems, 50 contrast pairs 0 below
+  the minimum). Independent inertness proof: a copy of `build/mc1` taken BEFORE the milestone and
+  the one after produce a byte-identical `--dump-asm` over `src/mc.mc` for arm64 and for
+  `--machine=x86_64`.
+  Goldens rewritten ONCE, all three in the same commit, only after the empty `--dump-asm` diff and
+  `cmp build/mc2.o build/mc3.o`: `tests/golden/mc2.sha256`
+  `6674d967…591b6d40` -> `6deafb02493e63f59eaa9c12627dcd63f0d9bbda1a0e22be852fc36616ef3bad`, and
+  the two Linux ones re-recorded by deleting them and running `make check-linux-host` —
+  `mc2-linux-arm64.sha256` `017325eb2de7548f32fea83caad8383db0d813c9094cd23644bee3c6af826ff8`,
+  `mc2-linux-x86_64.sha256` `3b93e1887585e8d38d62421a1451bd66a9f4752c7006fb2e67b6bb300852dfce`.
+  `build/mc-exe` 600211 B.
+- Next: M18 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
   sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is
   one more motivating case).
   Update this section when each milestone closes.
