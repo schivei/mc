@@ -22,6 +22,12 @@ bundled name you include or leave out:
 | `<mc/core_build>` | `toml` `driver` `sysroots` `sysroot` `stubs` `limits` | you want `mc build`, `mc limits`, `mc sysroot` |
 | `<mc/core_bundle>` | the LZ-compressed standard library | you want `#include <name>` |
 
+[`examples/avr`](../../examples/avr/README.md) is this page done for real, and the
+numbers in it are measured: `<mc/core_min>` + `<mc/core_build>` + an AVR machine
++ an ELF32 writer + four taught words is **339 KB against `mc`'s 663 KB**, and
+because it leaves `<mc/core_bundle>` out, every `#include` in that project is a
+relative path.
+
 `src/core.mc` is literally those five plus `main.mc`, and
 `scripts/check-parts.sh` compiles both spellings and `cmp`s the two objects —
 so the table above cannot drift from the code.
@@ -47,6 +53,17 @@ void user_init() {
     intrinsic_disable("ld64");             // ... so the wide pair is unreachable
 }
 ```
+
+**One caveat, measured on a real recreated compiler (M40).** `backend_default()`
+does not take effect today: `mc_main` resolves the default backend BEFORE it
+calls `user_init()` (`src/cli.mc`), so a compiler whose only backend is
+registered from `user_init` still needs `--backend=NAME` on the command line —
+and it needs it even for `--dump-ast` and `--dump-asm`, which never reach a
+backend at all. `mc build` is unaffected: `[target]` is resolved after
+`user_init` (M39.5), which is why `examples/avr` builds end to end from
+`mc.toml` and passes `--backend=avr-image` everywhere it uses the single-file
+CLI. Moving those five lines below `user_init()` is the fix; it is a change to
+`src/` and it is the architect's to take.
 
 Six lines of `user_init` and a `main` that names the parts. That is the whole
 mechanism; everything else on this page is what each of those lines buys and

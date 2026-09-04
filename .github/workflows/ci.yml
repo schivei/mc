@@ -61,6 +61,16 @@ jobs:
           else
             echo "qemu-system-riscv64: absent -- check-kernel self-skips the two runs"
           fi
+          # M40: examples/avr's two oracles. Neither is on a GitHub macOS
+          # runner either; check-avr builds the images and skips the runs, and
+          # the baremetal-avr job below is where they run.
+          for t in simavr qemu-system-avr; do
+            if command -v "$t" >/dev/null 2>&1; then
+              echo "$t: present"
+            else
+              echo "$t: absent -- check-avr self-skips that oracle"
+            fi
+          done
 
       # budget, test, check-lex, check-ast, check-bundle, check-asm, check-obj,
       # bootstrap (fixed point + golden), check-surface, test-exe, check-mc,
@@ -234,6 +244,36 @@ jobs:
           path: |
             examples/kernel/build/kernel.bin
             examples/kernel/build/kernel42.bin
+          if-no-files-found: error
+          retention-days: 7
+
+      # M40: examples/avr -- the bare-metal ATmega328P images, built by a
+      # RECREATED compiler (<mc/core_min> + <mc/core_build> + an AVR machine and
+      # an ELF32 writer, with `uptr` declared to be two bytes). `mc build` does
+      # both halves for the firmware; the halt(1) variant and the two sweeps are
+      # not [project].entry, so they go through the single-file CLI. All four
+      # travel to the baremetal-avr job below, which is where the simulators are.
+      - name: Build the bare-metal AVR images
+        run: |
+          set -eu
+          build/mc1 build examples/avr
+          cd examples/avr
+          sed 's/    halt(0);/    halt(1);/' main.mc > build/main1.mc
+          ./build/mc-avr --backend=avr-image --include=lib build/main1.mc -o build/avr1.elf
+          rm -f build/main1.mc
+          ./build/mc-avr --backend=avr-image --include=lib tests/sweep_a.mc -o build/sweep_a.elf
+          ./build/mc-avr --backend=avr-image --include=lib tests/sweep_b.mc -o build/sweep_b.elf
+          ls -l build/avr.elf build/avr1.elf build/sweep_a.elf build/sweep_b.elf
+
+      - name: Upload the bare-metal AVR images
+        uses: actions/upload-artifact@v4
+        with:
+          name: avr-images
+          path: |
+            examples/avr/build/avr.elf
+            examples/avr/build/avr1.elf
+            examples/avr/build/sweep_a.elf
+            examples/avr/build/sweep_b.elf
           if-no-files-found: error
           retention-days: 7
 
@@ -1118,6 +1158,93 @@ jobs:
           st=$(run kernel/kernel42.bin)
           if [ "$st" != "42" ]; then echo "::error::exit $st, expected 42"; exit 1; fi
           echo "ok: transcript, exit 0, and halt(42) -> exit 42"
+
+  # M40: the runtime oracle for examples/avr, and there are TWO of them because
+  # neither is enough on its own -- simavr gives a process exit code through the
+  # .mmcu command register and no board does, `qemu-system-avr` gives the UART
+  # transcript a real Arduino Uno would give and has no exit device. Ubuntu
+  # carries both (`simavr` in universe, `qemu-system-avr` in qemu-system-misc,
+  # the same package the RISC-V job already installs). Nothing is compiled here:
+  # the four images travel as an artifact from the macOS job.
+  baremetal-avr:
+    name: Run the firmware (bare-metal avr)
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 15
+    steps:
+      - name: Download the images
+        uses: actions/download-artifact@v4
+        with:
+          name: avr-images
+          path: avr
+
+      - name: Install simavr and qemu-system-avr
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends simavr qemu-system-misc
+          simavr --help 2>&1 | head -1 || true
+          qemu-system-avr --version | head -1
+
+      # simavr, the primary oracle: the exact transcript AND the exit code. The
+      # colour simavr wraps each console line in comes off first -- the
+      # transcript is the bytes the firmware wrote. `timeout` exists here (it
+      # does not on macOS, which is why examples/avr/test.sh has its own
+      # watchdog); 124 is its own failure, distinct from a wrong transcript.
+      - name: simavr -- the transcript and the exit code
+        run: |
+          set -u
+          esc=$(printf '\033')
+          run() {
+            timeout 60 simavr "$1" < /dev/null > out.txt 2> err.txt
+            echo $?
+          }
+          st=$(run avr/avr.elf)
+          sed "s/${esc}\[[0-9;]*m//g" out.txt > plain.txt
+          echo "--- transcript ---"; cat plain.txt; echo "--- exit $st ---"
+          if [ "$st" = "124" ]; then echo "::error::the firmware hung"; exit 1; fi
+          expected=$(printf 'boot\nblink\ntick\nsum 352\nok')
+          if [ "$(cat plain.txt)" != "$expected" ]; then
+            echo "::error::wrong transcript"; cat err.txt; exit 1
+          fi
+          if [ "$st" != "0" ]; then echo "::error::exit $st, expected 0"; exit 1; fi
+          st=$(run avr/avr1.elf)
+          if [ "$st" != "1" ]; then echo "::error::exit $st, expected 1"; exit 1; fi
+          echo "ok: transcript, exit 0, and halt(1) -> exit 1"
+
+      # The two sweeps check their own answers on the device: 40 of them, over
+      # every task of the machine. A wrong encoding usually still assembles.
+      - name: simavr -- the two on-device sweeps
+        run: |
+          set -u
+          esc=$(printf '\033')
+          for s in sweep_a sweep_b; do
+            timeout 120 simavr "avr/$s.elf" < /dev/null > out.txt 2> err.txt
+            st=$?
+            sed "s/${esc}\[[0-9;]*m//g" out.txt > plain.txt
+            cat plain.txt
+            if [ "$st" = "124" ]; then echo "::error::$s hung"; exit 1; fi
+            if ! grep -q "^$s 0 failed" plain.txt; then
+              echo "::error::$s reported a wrong answer"; exit 1
+            fi
+          done
+          echo "ok: every check agreed, under simavr"
+
+      # qemu-system-avr, the second oracle: the same five lines out of UART0 on
+      # an independent model of the part. An arduino-uno has no exit device, so
+      # the run is ENDED by the timeout and 124 is the expected status here --
+      # what is asserted is the transcript.
+      - name: qemu-system-avr -- the same transcript on UART0
+        run: |
+          set -u
+          timeout 30 qemu-system-avr -machine arduino-uno -bios avr/avr.elf -nographic \
+              < /dev/null > out.txt 2> err.txt
+          st=$?
+          echo "--- transcript ---"; cat out.txt; echo "--- exit $st ---"
+          expected=$(printf 'boot\nblink\ntick\nsum 352\nok')
+          if [ "$(cat out.txt)" != "$expected" ]; then
+            echo "::error::wrong transcript on UART0"; cat err.txt; exit 1
+          fi
+          echo "ok: the same transcript on a second simulator"
 
   docs-updated:
     name: Docs updated
