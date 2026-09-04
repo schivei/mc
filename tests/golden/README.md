@@ -9,3 +9,13 @@ Since M15 the object also carries the bundle (`src/bundle_data.mc`, ~135 KB in `
 so **any** change to `lib/*.mc` or to a core module moves this hash twice: once for the code and
 once for the blob. Run `make bundle` first — `make check` runs `check-bundle` before `bootstrap`
 precisely so a stale bundle is reported as a stale bundle and not as a golden mismatch.
+
+Since M37 there are two more goldens, `mc2-linux-arm64.sha256` and `mc2-linux-x86_64.sha256`:
+the SHA-256 of `build/mc2l.o`, the object the Linux-hosted `mc` writes for `src/mc_linux.mc` on
+each host, recorded by `scripts/bootstrap-linux.sh` (`docs/bootstrap.md` § The Linux chain). They
+move whenever `mc2.sha256` moves -- it is the same compiler, one host file apart -- so a change that
+rewrites the macOS golden rewrites these two as well, in the same commit. To rewrite them from
+macOS: delete both files and run `make check-linux-host` (Docker); the script records a golden
+only when the file is absent, and only after the fixed point (`mc2l.o == mc3l.o`) holds. On a
+Linux host, `scripts/bootstrap-linux.sh` does the same natively. The two CI jobs `mc on
+linux/<arch> host` compare against them on every pull request.
