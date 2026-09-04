@@ -943,6 +943,81 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   and the relocations match `clang --target=x86_64-linux-musl -c` of equivalent C
   (`R_X86_64_PC32` at instruction+3, `R_X86_64_PLT32` at instruction+1, both with addend −4),
   inspected with `llvm-objdump -dr` and `llvm-readobj`.
+- M37 done (`docs/specs/M37.md`, `docs/guide/90-linux-host.md`, `docs/bootstrap.md` § The Linux
+  chain, `docs/build.md`, `docs/ci.md`): **`mc` hosted on Linux (aarch64 and x86_64)**.
+  `stage0/` untouched (2848/3000): the C seed emits Mach-O only and stays macOS-first, so a Linux
+  host does not bootstrap from clang -- it bootstraps from a published (or cross-built) `mc`.
+  1. **The host layer.** `src/core.mc` is host-neutral; everything the COMPILER needs from the
+     system it RUNS on is one file the entry point includes before the core --
+     `src/host_macos.mc` (72), `src/host_linux.mc` (41, the OS half) plus
+     `src/host_linux_aarch64.mc` / `src/host_linux_x86_64.mc` (7 each, the three architecture
+     answers), with entries `src/mc_linux.mc` (15) and `src/mc_linux_x86_64.mc` (9). It answers
+     `host_os/host_arch/host_machine/host_sys/host_include/host_environ/host_init/host_has_sdk`
+     and declares `posix_spawnp`/`posix_spawn_file_actions_*`/`waitpid`/`mkdir`/`unlink` (same
+     names in musl) plus `O_CREAT`/`O_TRUNC`, the two values that differ. `_NSGetEnviron` was the
+     single blocker: musl has no equivalent, so the Linux host takes the `envp` the C runtime
+     passes and `main` became `main(argc, argv, envp)`, handing it to `host_init()` first thing.
+     `src/arena.mc` stayed host-neutral on purpose (so `lexdump`/`tomldump`/`tools/bundle.mc`/
+     `site/gen` need no host file): its one non-portable value, the anonymous-mapping flag, is now
+     `0x1022` -- `MAP_PRIVATE|MAP_ANON` on macOS and `MAP_PRIVATE|MAP_ANONYMOUS` on Linux, each
+     with one ignored bit, measured on both.
+     What the layer decides: `[target]` with no section = the host pair; `mc x.mc -o x.o` uses the
+     host's OBJECT backend (was hardcoded `macho`); the dumps start on `host_machine()`; and
+     `mc build` links the taught compiler with the host's exe backend when it has one and with
+     `[linker]` when it does not. `backend_macho`/`backend_exe` now call `machine_use("arm64")`
+     first, like every backend since M17 -- without it an x86_64-hosted `mc` lowered Mach-O with
+     the x86 machine. New flags: `mc --host` (os/arch/sys) and `--include=DIR`.
+     Bundle: `mc/host_macos`, `mc/host_linux`, `mc/host_linux_aarch64`, `mc/host_linux_x86_64`
+     (40 entries) plus the synthetic **`<mc/host>`**, resolved in `src/main.mc`
+     (`host_bundle_open`) to the running compiler's own host file -- which is what `mc build`
+     writes above `#include <mc/core>`, so one `mc.toml` teaches a macOS compiler on macOS and a
+     Linux one on Linux.
+  2. **The chain.** `src/mc.linux-aarch64.toml` / `src/mc.linux-x86_64.toml` cross-build
+     `build/mc-linux-arm64` (730168 B) and `build/mc-linux-x86_64` (726184 B) from macOS (ELF,
+     musl, `ld.lld`); `make mc-linux` / `mc-linux-x86_64`. `scripts/bootstrap-linux.sh [SEED]`
+     (232) is the Linux fixed point -- seed -> `mc1l` -> `mc2l` -> `mc3l`, `cmp`, golden
+     `tests/golden/mc2-linux-<target>.sha256`, then the whole suite natively. With no argument it
+     takes `build/mc-linux-<target>`, else a release asset (`gh release download` or curl of
+     `mc-<VER>-linux-<arch>.tar.gz`), **unpacked only after the SHA-256 matches**; it refuses a
+     seed whose `mc --host` is not `linux/<this machine>` and checks that `mc1l` and `mc2l` agree
+     on `--dump-asm`. `scripts/link-linux.sh`, `scripts/link-host.sh` (uname dispatch) and
+     `scripts/build-exe.sh` (`--exe` on macOS, object + linker on Linux) are what let the same
+     cross-check scripts run on both hosts.
+  3. **The Makefile switches on `uname -s`.** `REF`/`MC` name the two compilers a cross-check uses
+     -- `mc0`/`mc1` on macOS, `mc1l`/`mc2l` on Linux. Linux `check` = `budget bootstrap-linux
+     check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-limits
+     check-skipped`, and `check-skipped` prints one line per macOS-only target with its reason.
+     `make check-linux-host` (macOS, self-skips without Docker) cross-builds both compilers and
+     runs the whole thing per architecture inside `alpine:3`, ending with the **cross proof**.
+  4. **Examples.** `examples/conc`'s platform layer split into `lib/macos/thread.mc` (libdispatch
+     semaphores) and `lib/linux/thread.mc` (`sem_init`/`sem_wait`/`sem_post`, all-zero pthread
+     initializers, `getauxval(AT_HWCAP)` for the LSE probe), picked by `[include].paths` --
+     `mc.toml` vs the new `mc.linux.toml` -- and by `--include=` for the single-file CLI.
+     `examples/api/mc.linux.toml` links SQLite statically and is documented as NOT exercised
+     (the musl sysroot is `apk add musl-dev`, four files, no SQLite).
+  5. **CI/releases.** `ci.yml`: the macOS job cross-builds both Linux compilers and uploads them
+     with `build/mc2.o`; two new jobs, `mc on linux/arm64 host` (ubuntu-24.04-arm) and
+     `mc on linux/x86_64 host` (ubuntu-latest), run `make check SEED=...` plus the cross proof.
+     `release.yml` packages the two Linux tarballs alongside the macOS one; `build-future-hosts`
+     keeps `if: false` with only the Windows entries.
+  — Acceptance, measured here: macOS `make check` green end to end (RC 0) -- `test` 32/32,
+  `check-lex`/`check-ast`/`check-asm` 80/80, `check-obj` **32/32 identical to the frozen seed**,
+  `bootstrap` at a fixed point (`mc2.o == mc3.o`, `--dump-asm` diff empty), `check-surface` 32/32,
+  `test-exe` 32/32, `check-mc` 6/6, `check-standalone` (`<mc/host> + <mc/core> + <user_default> ==
+  src/mc.mc`, byte for byte), `check-toml` 10/10, `check-build` 11/11, `check-limits` 17/17 under
+  90%, `check-minimal`, `test-linux` 32/32, `test-linux-x86_64` 29/29, `check-examples`,
+  `check-lang`, `check-conc` 21, `check-desktop`, `check-docs` (138 symbols, 17 flags, 16 TOML
+  keys, 10 directives, 46 samples, 153 links), `site` 69 pages + `check-site`. Golden rewritten
+  ONCE, to `e958ceab11064dd16fc3306937744c744548bfff49b323d09bc1a7baf942adbe`, after the empty asm
+  diff. `make check-linux-host` green for both architectures (RC 0): fixed point
+  `mc2l.o == mc3l.o` (817280 B on aarch64, 757112 B on x86_64), goldens
+  `55402bcb…cfe9e7` and `9c142589…5f8f7`, suites 32/32 and 29/29 native, `check-lex/ast/asm`
+  80/80, `check-obj` 31/31 and 29/29 (the rest skipped by `// skip-` header), and the **cross
+  proof**: `mc2l --backend=macho src/mc.mc` is byte for byte the macOS `build/mc2.o` on both.
+  Known gaps, on record: on Linux `check-build`, `check-examples`, `check-lang`, `check-conc`,
+  `check-desktop`, `check-docs`, `site` and `check-surface` are skipped with a printed reason --
+  each builds `--exe` binaries or macOS dylibs -- and `check-lex`/`check-ast` there compare the
+  compiler against itself rather than against the frozen C oracle.
 - Next: M18/M19/M20 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
   sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is
   one more motivating case).

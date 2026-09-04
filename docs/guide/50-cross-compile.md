@@ -257,3 +257,12 @@ not running, it prints `test-linux: SKIPPED (...)` and the build stays green.
 ## Next
 
 Two complete programs that use everything so far: [60-examples.md](60-examples.md).
+
+---
+
+## Hosting `mc` on Linux
+
+Everything above is *cross-compilation*: a macOS `mc` writing Linux objects. Since M37 `mc` also
+**runs** on Linux — same source, same fixed point, `src/host_linux.mc` instead of
+`src/host_macos.mc`. Cross-building the Linux compiler, the seed, the Linux bootstrap chain and
+what `make check` covers there are in [90-linux-host.md](90-linux-host.md).

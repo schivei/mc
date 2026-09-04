@@ -14,8 +14,9 @@
 #          golden, and the suite run natively by the compiler that came out) and
 #          then runs the cross-checks (Makefile, HOST switch)
 #   3. the CROSS PROOF: the Linux-hosted compiler compiles src/mc.mc (a macOS
-#      program) and the Mach-O object it writes is compared with `cmp` against
-#      build/mc2.o, the one macOS wrote for itself.
+#      program) with --backend=macho -- its DEFAULT backend is now this host's,
+#      which is ELF -- and the Mach-O object it writes is compared with `cmp`
+#      against build/mc2.o, the one macOS wrote for itself.
 #
 # Recorded goldens (tests/golden/mc2-linux-*.sha256) are copied back out of the
 # container, so a first run records them and every later one verifies them.
@@ -71,12 +72,14 @@ for arch in $arches; do
         echo ''
         echo '### make check (the Linux subset: bootstrap-linux first, then the cross-checks)'
         make check SEED=$bin
+        # copied back BEFORE the cross proof: a first run records the golden and
+        # a later failure must not throw it away
+        cp -f tests/golden/mc2-linux-*.sha256 /w/tests/golden/ 2>/dev/null || true
         echo ''
-        echo '### cross proof: build/mc2l src/mc.mc == the macOS build/mc2.o'
-        build/mc2l src/mc.mc -o build/x-cross.o
+        echo '### cross proof: build/mc2l --backend=macho src/mc.mc == the macOS build/mc2.o'
+        build/mc2l --backend=macho src/mc.mc -o build/x-cross.o
         cmp build/x-cross.o build/mc2-macos.o
         echo 'ok: the Mach-O object written on linux/$arch is byte for byte the one macOS writes'
-        cp -f tests/golden/mc2-linux-*.sha256 /w/tests/golden/ 2>/dev/null || true
     "
     echo "== linux/$arch host: ok =========================================="
 done

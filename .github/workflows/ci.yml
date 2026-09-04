@@ -321,7 +321,7 @@ jobs:
       - name: Cross proof against the macOS object
         run: |
           set -eu
-          build/mc2l src/mc.mc -o build/x-cross.o
+          build/mc2l --backend=macho src/mc.mc -o build/x-cross.o
           cmp build/x-cross.o build/mc2.o
           echo "ok: the Mach-O object written on linux/arm64 is the one macOS writes"
 
@@ -384,7 +384,7 @@ jobs:
       - name: Cross proof against the macOS object
         run: |
           set -eu
-          build/mc2l src/mc.mc -o build/x-cross.o
+          build/mc2l --backend=macho src/mc.mc -o build/x-cross.o
           cmp build/x-cross.o build/mc2.o
           echo "ok: the Mach-O object written on linux/x86_64 is the one macOS writes"
 
