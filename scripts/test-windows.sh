@@ -31,11 +31,11 @@
 #                         (tests/025-linecount.mc does).
 #
 # The default mode is what `make test-windows` runs on the development machine:
-# cross-compile everything, check every object's COFF header with `llvm-readobj`,
-# and LINK three of them with `lld-link` -- one per link mode, plus the one that
-# pulls the layer in through an extern -- to prove the objects are linkable. It does
-# not run anything -- there is no Windows host here, and the CI leg is the
-# runtime oracle.
+# cross-compile everything, check every object's COFF header with `llvm-readobj`
+# when it is available, and LINK three of them with `lld-link` -- one per link
+# mode, plus the one that pulls the layer in through an extern -- to prove the
+# objects are linkable. It does not run anything -- there is no Windows host
+# here, and the CI leg is the runtime oracle.
 #
 # Headers, the same ones scripts/test.sh and scripts/test-linux.sh read:
 #

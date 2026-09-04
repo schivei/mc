@@ -5,7 +5,7 @@
 //
 // Unlike the other two there is no syscall instruction here: Windows has no
 // stable system-call numbers, and the documented boundary is kernel32.dll. So
-// this file is ordinary mc code over eight `extern`s, and the link needs an
+// this file is ordinary mc code over seven `extern`s, and the link needs an
 // import library (`kernel32.lib`, built by scripts/sysroot-windows.sh with
 // `llvm-dlltool`).
 //
