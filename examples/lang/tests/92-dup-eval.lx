@@ -1,0 +1,35 @@
+// A virtual call must evaluate its receiver exactly ONCE. The receiver here is
+// a call with a side effect, `pick(s)`, and `calls` counts it: the answer is 1.
+//
+// Before the post-M41 review it was 2 -- and silently so, because the value was
+// right. The module put the same receiver node in two argument lists (the
+// vtable `ld64` and the `callp`), so the walker lowered the expression twice;
+// `new C().m()` allocated two objects. The whole corpus missed it because every
+// other test calls a method on a plain name, where a second evaluation cannot
+// be seen.
+// expect-exit: 0
+// expect-stdout: 5
+// expect-stdout: 1
+#include "../lib/prelude.lx"
+
+i64 calls = 0;
+
+class Shape {
+    i64 k;
+    virtual i64 area(self) { return self.k; }
+}
+
+fn pick(Shape s) -> Shape {
+    calls = calls + 1;
+    return s;
+}
+
+fn main() -> i64 {
+    {
+        Shape s = new Shape();
+        s.k = 5;
+        print(pick(s).area());
+        print(calls);
+    }
+    return 0;
+}

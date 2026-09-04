@@ -1,0 +1,31 @@
+// An interface method that takes an argument -- the same blind spot as 90, on
+// the other dispatch path: `lg_call_iface` had the identical aliasing, through
+// `rt_itab` instead of the vtable offset.
+//
+// 3 * 7 * 2 = 42, through the interface.
+// expect-exit: 42
+
+#include "../lib/prelude.lx"
+
+interface Scaler {
+    i64 scaled(self, i64 f);
+}
+
+class Circle : Scaler {
+    i64 k;
+    i64 scaled(self, i64 f) { return self.k * f * 2; }
+}
+
+fn use(Scaler s) -> i64 {
+    return s.scaled(7);
+}
+
+fn main() -> i64 {
+    i64 r = 0;
+    {
+        Circle c = new Circle();
+        c.k = 3;
+        r = use(c);
+    }
+    return r;
+}

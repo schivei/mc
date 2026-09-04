@@ -1,0 +1,36 @@
+// A virtual method that takes an argument -- the case the corpus never
+// exercised, and the one that made the aliasing visible instead of silent.
+//
+// The receiver node used to sit in two argument lists at once, and
+// `list_append` links by mutating `nd_next`: appending the method's arguments
+// after it also appended them to the vtable `ld64`, which then had two
+// arguments (`wrong arity in intrinsic`, at this file's line 16). With arity 0
+// the two lists could not be told apart, which is why fourteen tests passed.
+//
+// 3 * 7 * 2 = 42, through the override.
+// expect-exit: 42
+
+#include "../lib/prelude.lx"
+
+class Shape {
+    i64 k;
+    virtual i64 scaled(self, i64 f) { return self.k * f; }
+}
+
+class Circle : Shape {
+    override i64 scaled(self, i64 f) { return self.k * f * 2; }
+}
+
+fn use(Shape s) -> i64 {
+    return s.scaled(7);
+}
+
+fn main() -> i64 {
+    i64 r = 0;
+    {
+        Circle c = new Circle();
+        c.k = 3;
+        r = use(c);
+    }
+    return r;
+}
