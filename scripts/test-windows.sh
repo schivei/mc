@@ -116,6 +116,14 @@ if [ "$mode" = "run" ] && [ -z "$linker" ]; then
 fi
 
 root=$(pwd)
+# Every absolute path below reaches a NATIVE tool (mc, lld-link), and under Git
+# Bash `pwd` answers /c/a/... -- a form only MSYS understands. The CI jobs set
+# MSYS2_ARG_CONV_EXCL so that lld-link's options are never rewritten, which also
+# means no path is; so the script hands over C:/a/... itself (cygpath -m),
+# which both the shell and the native side accept. The v0.6.0 release lost
+# both Windows legs to exactly this (lld-link: could not open '/c/a/mc/...').
+winpath() { case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" ;; *) printf '%s\n' "$1" ;; esac; }
+root=$(winpath "$root")
 tmp="${TMPDIR:-/tmp}/test-windows.$$"
 # Under Git Bash on Windows, MSYS hands TMPDIR to this shell in /d/... form, a
 # path the native mc cannot open; cygpath -m gives D:/... which both accept.
@@ -132,6 +140,7 @@ else
     mkdir -p "$split" || exit 1
 fi
 split=$(cd "$split" && pwd) || exit 1
+split=$(winpath "$split")
 
 # kernel32.lib travels with the objects, so the Windows half normally needs no
 # dlltool and no SDK; when it did not travel, this half builds its own.

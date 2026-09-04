@@ -775,6 +775,10 @@ library `llvm-dlltool` generates from a list of names. The two objects cannot be
 runner, because they need `mc` — the compiler that is being built — so the macOS job verifies each
 of them is non-empty and, when `llvm-readobj` is available, that the machine of each object is the
 right one: a wrong machine would otherwise only surface on the Windows runner, far from its cause.
+Paths handed to a native tool from the scripts are in `C:/a/...` form (`cygpath -m`), never the
+`/c/a/...` form `pwd` answers under Git Bash: with `MSYS2_ARG_CONV_EXCL` set nothing is rewritten
+on the way to `lld-link` or `mc`, and the v0.6.0 release lost both Windows legs to a `/c/a/...`
+object path the linker could not open.
 `kernel32.lib` is the exception: GitHub's macOS runners have no `llvm-dlltool`, so it is usually
 absent from the artifact (the step prints a notice, not an error) and `scripts/link-windows.sh`
 regenerates it on the Windows runner, whose LLVM install carries the tool — the same arrangement
