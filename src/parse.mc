@@ -704,7 +704,7 @@ i64 parse_primary() {
     }
     if (tok_id(cur) == T_INT || tok_id(cur) == T_CHAR) {
         // M24: the taught numeric literal. The handler reads the raw source at
-        // p_start(), consumes what the lexer left with p_extend_lit(), and
+        // p_start(), consumes what the lexer left with p_take_lit(), and
         // returns its node; 0 means "not mine" and the core builds the N_INT it
         // always did. nonlit == 0 short-circuits, so an untaught compiler does
         // not even make the callp.

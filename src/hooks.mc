@@ -301,7 +301,7 @@ i64 syntax_expr_find(i64 tok) {
 // comparable over the whole tree (scripts/check-lex.sh).
 //
 // The handler reads the raw source with p_start(), consumes what the lexer did
-// not with p_extend_lit(), and returns an ordinary node. The documented
+// not with p_take_lit(), and returns an ordinary node. The documented
 // fallback -- `#token "."` plus syntax_infix(".", prec, &f) -- costs zero core
 // lines and is rejected as the mechanism because it reserves `.` program-wide
 // (colliding head-on with examples/lang, whose lg_dot owns it) and cannot spell
