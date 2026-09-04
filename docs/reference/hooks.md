@@ -597,6 +597,8 @@ included before the core by the entry point, answers all of it (M37,
 | `src/mc.mc` | `src/host_macos.mc` |
 | `src/mc_linux.mc` | `src/host_linux_aarch64.mc` (+ `src/host_linux.mc`) |
 | `src/mc_linux_x86_64.mc` | `src/host_linux_x86_64.mc` (+ `src/host_linux.mc`) |
+| `src/mc_windows.mc` | `src/host_windows_aarch64.mc` (+ `src/host_windows.mc`) |
+| `src/mc_windows_x86_64.mc` | `src/host_windows_x86_64.mc` (+ `src/host_windows.mc`) |
 
 A taught compiler gets one from the bundle: `mc build` writes `#include <mc/host>` above
 `#include <mc/core>`, and `<mc/host>` is the host file of the compiler that is running
@@ -604,19 +606,24 @@ A taught compiler gets one from the bundle: `mc build` writes `#include <mc/host
 
 | function | returns |
 |---|---|
-| `host_os()` | the operating system this binary runs on, in `[target].os` vocabulary: `"macos"` or `"linux"` |
+| `host_os()` | the operating system this binary runs on, in `[target].os` vocabulary: `"macos"`, `"linux"` or `"windows"` |
 | `host_arch()` | its architecture, in `[target].arch` vocabulary: `"aarch64"` or `"x86_64"` |
-| `host_machine()` | the machine name the walker drives for it (`machine_use`): `"arm64"` or `"x86_64"` |
-| `host_sys()` | the bundled system layer a program on this host includes for its I/O: `"sys"` or `"sys_linux"` |
+| `host_machine()` | the machine name the walker drives for it (`machine_use`): `"arm64"`, `"x86_64"` or `"x86_64-win"` |
+| `host_sys()` | the bundled system layer a program on this host includes for its I/O: `"sys"`, `"sys_linux"` or `"sys_windows"` |
 | `host_include()` | the bundle name `<mc/host>` resolves to for this host |
-| `host_environ()` | the environment block, ready for `posix_spawnp` — `ld64(_NSGetEnviron())` on macOS, the `envp` `main` was called with on Linux |
-| `host_init(envp)` | called by `main` before anything else, with the third argument the C runtime passed. macOS ignores it; Linux stores it |
+| `host_environ()` | the environment block, ready for `posix_spawnp` — `ld64(_NSGetEnviron())` on macOS, the `envp` `main` was called with on Linux, `0` on Windows (a null `lpEnvironment` makes `CreateProcessA` give the child this process's own) |
+| `host_init(envp)` | called by `main` before anything else, with the third argument the C runtime passed. macOS and Windows ignore it; Linux stores it |
+| `host_exe_suffix()` | what this host appends to the name of an executable it is about to write and then run: `""` on macOS and Linux, `".exe"` on Windows. `mc build` is the only caller — `[compiler].out` names a taught compiler the driver links and immediately spawns (M38) |
 | `host_has_sdk()` | 1 when `xcrun --show-sdk-path` exists, which is what the `{sdk}` placeholder of `[linker].args` runs. 0 makes `{sdk}` a config error instead of a failed spawn |
 | `host_bundle_open(name, base, pcanon, plen)` | the lexer's one door into the bundle (`src/main.mc`): resolves `mc/host` to `host_include()` and passes everything else through to `bundle_open` |
 
 The host file also declares `posix_spawnp`, `posix_spawn_file_actions_*`, `waitpid`, `mkdir` and
-`unlink` — identical on both systems, because musl has them under the same names — and the two
-`O_*` values that differ (`O_CREAT`, `O_TRUNC`).
+`unlink` — the same declarations on all three systems, so the compiler's own code does not change
+shape between hosts — and the two `O_*` values that differ (`O_CREAT`, `O_TRUNC`: `0x200`/`0x400`
+on macOS, `0x40`/`0x200` on Linux, `0x100`/`0x200` on Windows). On macOS and Linux those seven
+names are in libSystem and in musl; on Windows none of them exists, and they are shims over
+kernel32 in `lib/sys_windows_host.mc`, compiled once into `build/mcrt-windows-<arch>.obj` and
+linked next to the compiler ([../specs/M38.md](../specs/M38.md) § 2).
 
 What the host layer decides, in the driver and the CLI:
 

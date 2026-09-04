@@ -70,3 +70,9 @@ uptr host_include() { return "mc/host_macos"; }
 // 1 when `xcrun --show-sdk-path` exists, which is what the `{sdk}` placeholder
 // of [linker].args runs (src/driver.mc)
 i64 host_has_sdk() { return 1; }
+
+// M38: what this host appends to the name of an executable it is about to write
+// and then run -- nothing here, ".exe" on Windows (src/host_windows.mc). The one
+// caller is `mc build`, for the taught compiler [compiler].out names
+// (src/driver.mc, drv_teach).
+uptr host_exe_suffix() { return ""; }
