@@ -1,0 +1,25 @@
+# mc.nolibc.toml — linux/aarch64 with no libc at all: the true floor.
+#
+#   ../../build/mc1 build examples/minimal --config examples/minimal/mc.nolibc.toml
+#
+# Same `elf-obj` backend as mc.linux.toml, but the entry is nolibc.mc
+# (main.mc + `#include <sys_linux>`) and the link is `-nostdlib -e _start`:
+# no crt objects, no libc.a, no [sysroot] — the linker only ever sees the one
+# object mc wrote. What runs is the kernel jumping at _start, _start calling
+# main, and main's return value going into exit_group.
+#
+# This is the same link scripts/test-linux.sh uses for tests/linux/070-nolibc.mc.
+
+[project]
+name  = "minimal"
+entry = "nolibc.mc"
+out   = "build/nolibc/minimal"
+kind  = "exe"
+
+[target]
+os   = "linux"
+arch = "aarch64"
+
+[linker]
+cmd  = "ld.lld"
+args = ["-nostdlib", "-e", "_start", "-o", "{out}", "{obj}"]

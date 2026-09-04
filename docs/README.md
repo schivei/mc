@@ -23,6 +23,7 @@ nothing to a running signed binary in about two minutes.
 | [Cross-compiling](guide/50-cross-compile.md) | Linux arm64 targets, sysroots, external linkers |
 | [Two worked examples](guide/60-examples.md) | `examples/api` and `examples/lang`, walked through |
 | [How `mc` compiles itself](guide/70-bootstrap.md) | the bootstrap chain, the fixed point, and the determinism rules for contributors |
+| [Footprint](guide/80-footprint.md) | what the smallest program costs per target, floor by floor, and the ceilings that guard it |
 
 ## The reference — exhaustive, read by lookup
 

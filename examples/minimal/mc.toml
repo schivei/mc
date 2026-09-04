@@ -1,0 +1,23 @@
+# mc.toml — the macOS variant: `mc build` writes the signed executable itself.
+#
+#   ../../build/mc1 build examples/minimal      # from the repository root
+#   ../../build/mc1 build                       # from inside examples/minimal
+#
+# No [linker] and no [compiler]: `kind = "exe"` on `os = "macos"` is the
+# `macho-exe` backend (M11), which does the layout, the relocations, the bind
+# opcodes and the ad-hoc signature by itself. `ld` never runs.
+#
+# The ad-hoc signature's identifier is the BASENAME of the output, so the file
+# size depends on how long that name is. `minimal` is 7 characters; a longer
+# name is a longer CodeDirectory. measure.sh keeps every output name the same
+# length so the numbers in its table compare like with like.
+
+[project]
+name  = "minimal"
+entry = "main.mc"
+out   = "build/exe/minimal"
+kind  = "exe"
+
+[target]
+os   = "macos"
+arch = "aarch64"
