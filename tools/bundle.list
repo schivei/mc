@@ -18,6 +18,11 @@ mc/backend_exe	src/backend_exe.mc
 mc/bundle	src/bundle.mc
 mc/cli	src/cli.mc
 mc/core	src/core.mc
+mc/core_build	src/core_build.mc
+mc/core_bundle	src/core_bundle.mc
+mc/core_machines	src/core_machines.mc
+mc/core_min	src/core_min.mc
+mc/core_writers	src/core_writers.mc
 mc/driver	src/driver.mc
 mc/gen_resolve	src/gen_resolve.mc
 mc/gen_walk	src/gen_walk.mc

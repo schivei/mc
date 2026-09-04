@@ -436,7 +436,7 @@ runs into C features the `.mc` core doesn't have. Each item below is a real case
   that's what `src/macho.mc` uses today.
 - **adjacent string literals** — C concatenates `"a" "b"` at compile time; `.mc` has no such rule.
   `out_str(2, "usage: mc0 ... " "source.mc [-o out.o]\n");` (`stage0/main.c`) became a single
-  literal in `src/main.mc`.
+  literal in `src/cli.mc`.
 - **`&arr[i]` (address of an indexed element)** — `&` only accepts a direct name (`&name`), not an
   indexing expression — `.mc` has no `p[i]` or `p->f` (§ Operators above). `Node *p =
   &nodes[nnodes]; p->kind = k;` (`stage0/ast.c`, `node_new`) became passing the **index** along

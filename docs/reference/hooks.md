@@ -203,7 +203,7 @@ always goes through `[linker]` — which is what `os = "linux"` and `os = "windo
 `obj = 0` says there is no separable object step, which is what a bare board registers when the
 image it writes *is* the artefact. Asking the driver for the role that is 0 is a diagnostic at the
 `[target]` value's own position ([diagnostics.md](diagnostics.md) § 10), never a null handed to
-`backend_find()`. **Five** are registered before `user_init()` runs (`src/main.mc`):
+`backend_find()`. **Five** are registered before `user_init()` runs (`src/core_writers.mc`, `mc_writers_init`):
 
 ```c
 target("macos", "aarch64", "macho", "macho-exe");
@@ -780,7 +780,7 @@ A taught compiler gets one from the bundle: `mc build` writes `#include <mc/host
 | `host_home()` | the user's home directory, or 0 when there is none. `HOME` out of `host_environ()` on macOS and Linux; on Windows `host_environ()` is 0, so `src/host_windows.mc` asks kernel32 for `USERPROFILE` through `GetEnvironmentVariableA`. The one caller is the sysroot cache, `~/.mc/sysroots/<os>-<arch>` (M25, [sysroot.md](sysroot.md) § 4) |
 | `host_downloader()` | the program `mc sysroot fetch` spawns to download a pinned archive: `"curl"` on macOS and Linux, `"curl.exe"` on Windows. `mc` speaks no HTTP and no TLS |
 | `host_downloader_alt()` | the one to try when the first is not on `PATH`: `"wget"` on Linux, 0 on macOS and Windows, where `curl` ships with the system |
-| `host_bundle_open(name, base, pcanon, plen)` | the lexer's one door into the bundle (`src/main.mc`): resolves `mc/host` to `host_include()` and passes everything else through to `bundle_open` |
+| `host_bundle_open(name, base, pcanon, plen)` | the lexer's one door into the bundle (`src/core_bundle.mc`): resolves `mc/host` to `host_include()` and passes everything else through to `bundle_open` |
 
 The host file also declares `posix_spawnp`, `posix_spawn_file_actions_*`, `waitpid`, `mkdir` and
 `unlink` — the same declarations on all three systems, so the compiler's own code does not change
@@ -799,3 +799,83 @@ What the host layer decides, in the driver and the CLI:
   with `[linker]` when it does not.
 * `{sysroot}` probes the running system only when `host_os()`/`host_arch()` equal the target's,
   and caches under `host_home()` when nothing else answered ([sysroot.md](sysroot.md)).
+
+## 7. M41 — the composable core
+
+Eight registrations, all in `src/hooks.mc`, all called from `user_init()` (or,
+for the ones a PART owns, from that part's own `*_init`). They exist so that a
+compiler assembled from a subset of `<mc/core>`'s parts still has a working
+command line, and so that a dialect can take a word out of the language.
+
+See `docs/reference/bundle.md` § The parts for what the parts are, and
+`docs/guide/98-recreating-the-compiler.md` for the whole shape.
+
+### `void backend_default(uptr name)` · `uptr backend_default_name()`
+
+Names the backend `mc x.mc -o x.o` uses when there is no `--backend=` and no
+`--exe`. `mc_main` asks the target registry first — a host that is a registered
+`target()` keeps behaving exactly as before — and falls back to this. With
+neither, it dies with `no backend: use --backend=NAME`.
+
+There is deliberately no "if exactly one backend is registered, use it": the
+module says which one.
+
+```
+void user_init() {
+    backend("avr-image", &backend_avr);
+    backend_default("avr-image");
+}
+```
+
+`backend_default_name()` is the read side; it answers 0 when nobody called it.
+
+### `i64 machine_use_if(uptr name)`
+
+`machine_use(name)` for a name that may not exist: 1 when it was found and is
+now current, 0 when there is nothing by that name. `mc_main` uses it for the
+HOST's machine, which a compiler built for a foreign target does not have and
+must not die at startup for.
+
+`machine_use` itself is unchanged and still dies with `unknown machine`, which
+is what `--machine=` and an object backend want.
+
+### `void subcommand(uptr name, uptr fn, uptr use)` · `i64 subcommand_find(uptr name)` · `void subcommand_usage()`
+
+The eighth registry of the same shape: a linear table in registration order,
+the last registration of a name winning. `fn` is `i64 f(i64 argc, uptr argv)`
+and its result is `mc`'s exit code; `use` is the exact text `usage()` prints
+for it, newline included, with several lines allowed in the one string.
+
+`mc build`, `mc limits` and `mc sysroot` are three of these, registered by
+`<mc/core_build>`. A compiler without that part has none, and `mc` with no
+argument prints two usage lines instead of six — which is the honest answer,
+since those subcommands are not in it.
+
+The ceiling is fixed (16), like `machine()` and `target()`: the number of
+subcommands is a property of the compiler, not of the program it compiles.
+
+### `void on_plan(uptr fn)` · `void run_on_plan(uptr src, uptr label)`
+
+`f` is `void f(uptr src, uptr label)`, called by `mc_main` exactly where M23's
+`lim_plan` call used to be — before `tok_init()`, so that every table can be
+pre-sized before the first one exists. `<mc/core_build>` registers one, which
+is `lim_plan` with the default tolerance.
+
+Unregistered, nothing is pre-sized and the tables grow from the seeds in
+`src/arena.mc`. That is not a degradation to be afraid of: it is what
+`src/astdump.mc` has always done.
+
+### `i64 mc_main(i64 argc, uptr argv, uptr envp)`
+
+Not a registration, but the other half of the same idea: the whole command line
+of `mc`, in `<mc/core_min>`, so that a recreated compiler writes a five-line
+`main()` instead of copying two hundred. Its contract:
+
+* it must be called after every part's `*_init` and after `host_init(envp)`;
+* it calls `user_init()` after `tok_init()` (the ids `K_U8..K_EXTERN` are
+  frozen there) and before the first token, which is the timing every Tier 3
+  registration depends on;
+* nothing before it may call `tok_add` — a part that needs to is a `user_init`
+  client like everyone else;
+* with no machine registered it says `no machine registered` before it lowers
+  anything.

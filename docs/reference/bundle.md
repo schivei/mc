@@ -87,7 +87,8 @@ and supplying that function *is* a taught compiler ([hooks.md](hooks.md)).
 | `<mc/gen_walk>` | `src/gen_walk.mc` |
 | `<mc/machine_arm64>` | `src/machine_arm64.mc` |
 | `<mc/machine_x86_64>` | `src/machine_x86_64.mc` |
-| `<mc/macho>` | `src/macho.mc` |
+| `<mc/objmodel>` | `src/objmodel.mc` — the object model (M41) |
+| `<mc/macho>` | `src/macho.mc` — the Mach-O writer alone since M41 |
 | `<mc/backend_exe>` | `src/backend_exe.mc` |
 | `<mc/backend_coff>` | `src/backend_coff.mc` |
 | `<mc/backend_elf>` | `src/backend_elf.mc` |
@@ -99,6 +100,7 @@ and supplying that function *is* a taught compiler ([hooks.md](hooks.md)).
 | `<mc/stubs>` | `src/stubs.mc` |
 | `<mc/limits>` | `src/limits.mc` |
 | `<mc/bundle>` | `src/bundle.mc` |
+| `<mc/cli>` | `src/cli.mc` — `mc_main()` (M41) |
 | `<mc/main>` | `src/main.mc` |
 | `<mc/bundle_data>` | `src/bundle_data.mc` — see below |
 
@@ -109,7 +111,7 @@ values or which `(os, arch)` pair the binary is. That comes from a host file, an
 exactly one of them, included **before** the core.
 
 `<mc/host>` is how a source asks for "the one that matches whichever `mc` is compiling me". It is
-resolved in `src/main.mc` (`host_bundle_open`) to `host_include()`, which each host file answers
+resolved in `src/core_bundle.mc` (`host_bundle_open`) to `host_include()`, which each host file answers
 for itself — `mc/host_macos`, `mc/host_linux_aarch64`, `mc/host_linux_x86_64`,
 `mc/host_windows_aarch64` or `mc/host_windows_x86_64` — and the entry it
 lands on is what the once-only include list records, so writing `<mc/host>` and
@@ -183,6 +185,62 @@ downloaded binary with no checkout:
 | `<embed_demo.txt>` | `tests/mc/bundle/embed_demo.txt` — its payload |
 
 ---
+
+### The parts of the core (M41)
+
+`<mc/core>` is the **sum of five parts**, each a bundled name of its own. A recreated compiler
+names the parts it wants and writes its own `main()`; `src/core.mc` is literally those five plus
+`src/main.mc`, and `scripts/check-parts.sh` compiles both spellings and `cmp`s the two objects, so
+this table cannot drift from the code.
+
+| name | file | members, in order | what it gives you |
+|---|---|---|---|
+| `<mc/core_min>` | `src/core_min.mc` | `arena` `lz` `objmodel` `lex` `ast` `parse` `gen_resolve` `gen_walk` `hooks` `cli` | the compiler that has no target: lexer, parser, resolver, walker, every registry, and `mc_main()` |
+| `<mc/core_machines>` | `src/core_machines.mc` | `machine_arm64` `machine_x86_64` | `mc_machines_init()` — the two host machines |
+| `<mc/core_writers>` | `src/core_writers.mc` | `sha256` `macho` `backend_exe` `backend_elf` `backend_coff` | `mc_writers_init()` — the six `backend()` and five `target()` registrations |
+| `<mc/core_build>` | `src/core_build.mc` | `sha256` `toml` `driver` `sysroots` `sysroot` `stubs` `limits` | `mc_build_init()` — `mc build`, `mc limits`, `mc sysroot`, and the pre-scan |
+| `<mc/core_bundle>` | `src/core_bundle.mc` | `bundle_data` `bundle` | `mc_bundle_init()` — `#include <name>` itself |
+
+The two files M41 split out are bundled under their own names too: `<mc/objmodel>`
+(`src/objmodel.mc`, the section/symbol/relocation model every writer reads) and `<mc/cli>`
+(`src/cli.mc`, `mc_main()`). `<mc/macho>` is now the Mach-O writer alone.
+
+Spelled out, the whole compiler is:
+
+```
+#include <mc/host>
+#include <mc/core_min>
+#include <mc/core_machines>
+#include <mc/core_writers>
+#include <mc/core_build>
+#include <mc/core_bundle>
+#include <mc/main>
+#include <user_default>
+```
+
+and `docs/guide/98-recreating-the-compiler.md` is what each omitted line costs, in bytes and in
+capability.
+
+**The naming rule.** A bundle name's last path component is the file's basename, because a
+relative `#include` inside a bundled file resolves by joining and then, failing that, by last
+component (see below), and `tools/bundle.mc` refuses a manifest where two entries share one. That
+is why the parts are `core_min` and not `core-min`: `src/core_min.mc` cannot be reached as
+`core-min`, so a hyphenated bundle name would be a name nothing inside the bundle could include.
+
+### Your own bundle
+
+A debloated compiler can keep `#include <name>` with its own, much smaller library, at **zero core
+lines**. `tools/bundle.mc` is four includes — `<mc/arena>`, `<lz>`, `<mc/bundle_data>`,
+`<mc/bundle>` — over a manifest of `NAME<TAB>PATH` lines, and all four are bundled names. So:
+
+1. write the same four-line tool against those names and build it with `mc --exe`;
+2. run it over your own manifest to generate your own `bundle_data.mc`;
+3. have your compiler include that file plus `<mc/bundle>` instead of `<mc/core_bundle>`, and call
+   `lex_set_bundle(&bundle_open)` from its `main()`.
+
+`src/bundle.mc` needs nothing but `BUNDLE_COUNT` and the two arrays the generator emits. The one
+thing you give up is `<mc/host>`: that name is resolved by `host_bundle_open` in
+`src/core_bundle.mc`, which is four lines you copy if you want it.
 
 ## Relative includes inside a bundled file
 
