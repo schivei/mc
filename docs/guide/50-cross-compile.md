@@ -195,6 +195,38 @@ With no network, or with no `curl` and no `wget`, that same command prints the U
 the exact `curl`/`tar` lines to run by hand, and exits 2. `scripts/sysroot-linux.sh` (Docker,
 `apk add musl-dev`) is still there and still works — it is the road that needs no CDN.
 
+### Linking on macOS with no SDK
+
+Read this only if you are on the `.o` + `ld` road. `mc --exe` writes and signs the Mach-O
+executable itself and needs no SDK, no linker and no sysroot at all — on macOS that is what an
+`mc.toml` with no `[linker]` uses, and none of this stands between you and a binary.
+
+If you do link, `mc` can write the import files for you. It knows every symbol your program
+declared `extern` and which library each one belongs to, and a library is, to a linker, exactly a
+name plus a symbol list:
+
+```sh
+mc sysroot stub .            # writes build/stubs/libSystem.tbd, and one per [libs] entry
+```
+
+Or let the build do it: `{stubs}` in `[linker].args` expands to that directory and writes the
+files on first use, the same way `{sdk}` runs `xcrun` on first use.
+
+```toml
+[linker]
+cmd  = "ld64.lld"
+args = ["-arch", "arm64", "-platform_version", "macos", "13.0", "13.0",
+        "-e", "_main", "-o", "{out}", "{obj}",
+        "{stubs}/libSystem.tbd", "{stubs}/libsqlite3.tbd"]
+```
+
+No `-syslibroot`, no `-lSystem`, no `xcrun`. `dyld_stub_binder` goes into the libSystem stub
+automatically — you never declare it, and every lazily-bound image needs it. The same machinery
+writes `.def` files and runs `llvm-dlltool` over them for a Windows target, which is how a program
+reaches `user32` or `ws2_32` with nothing downloaded. What it cannot do —  data exports,
+frameworks, symbols from third-party objects `mc` never saw — is listed in
+[../reference/sysroot.md](../reference/sysroot.md) § 9.
+
 ## No libc at all
 
 `<sys_linux>` is `<sys_svc>`'s Linux sibling: `open`/`creat`/`read`/`write`/`close`/`fchmod`/

@@ -21,6 +21,7 @@
 //   driver.mc    `mc build`: reads mc.toml and drives the whole build (M14)
 //   sysroots.mc  the pinned list of downloadable sysroots (M25)
 //   sysroot.mc   where a cross link finds its files, and `mc sysroot` (M25)
+//   stubs.mc     .tbd and .def stubs written from the program (M25)
 //   bundle_data.mc GENERATED (tools/bundle.mc): lib/ and the core, LZ-compressed
 //   bundle.mc    `#include <name>` served from that blob (M15)
 //   limits.mc    the estimate, the reserve and `mc limits` (M23)
@@ -61,6 +62,7 @@
 #include "driver.mc"
 #include "sysroots.mc"
 #include "sysroot.mc"
+#include "stubs.mc"
 #include "bundle_data.mc"
 #include "bundle.mc"
 #include "limits.mc"

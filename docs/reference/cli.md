@@ -11,6 +11,7 @@ usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--back
 usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits] [--sysroot-dir DIR]
        mc limits [DIR|FILE.mc]
        mc sysroot list|path <target>|fetch <target> [--yes] [--sysroot-dir DIR]
+       mc sysroot stub [DIR] [--config FILE]
 ```
 
 ---
@@ -201,6 +202,7 @@ least once); the report's verdict is the worst row.
 mc sysroot list
 mc sysroot path <os>-<arch>
 mc sysroot fetch <os>-<arch> [--yes] [--sysroot-dir DIR]
+mc sysroot stub [DIR] [--config FILE]
 ```
 
 | subcommand | what it does |
@@ -208,13 +210,15 @@ mc sysroot fetch <os>-<arch> [--yes] [--sysroot-dir DIR]
 | `list` | one line per registered target and the source `fetch` would use. Walks the target registry and the pinned table and touches no file, so the output is the same on every host (`tests/golden/sysroot-list.txt`) |
 | `path <target>` | run the resolution chain for that target and print the directory on stdout; the `no sysroot` message and exit 2 when nothing answered |
 | `fetch <target>` | print the plan (url, size, sha256, destination). With `--yes`, download it, verify the sha256 with `mc`'s own SHA-256, extract it and write `manifest.toml` |
+| `stub [DIR]` | read `DIR/mc.toml` (or `--config FILE`), parse `[project].entry`, and write one import stub per library it uses — a `.tbd` on macOS, a `.def` plus the `.lib` `llvm-dlltool` builds from it on Windows. No object and no link; `[linker]` is not required |
 
 | flag | meaning |
 |---|---|
 | `--yes` | actually download. Without it `fetch` prints the plan, says `nothing was downloaded: re-run with --yes` and exits 0. There is no prompt: `mc` has no `isatty` |
 | `--sysroot-dir DIR` | DIR is the destination (`fetch`) or the candidate (`path`), instead of `~/.mc/sysroots/<os>-<arch>` |
 
-`fetch` is the **only** thing in `mc` that reaches the network, and it does it by spawning
+`mc sysroot stub` is the same thing `{stubs}` in `[linker].args` does on its own during a build,
+without the build. `fetch` is the **only** thing in `mc` that reaches the network, and it does it by spawning
 `curl`/`wget`/`curl.exe` — there is no HTTP and no TLS in this language. `mc build` never
 downloads. Everything about the chain, the cache and the pinned rows is in
 [sysroot.md](sysroot.md).

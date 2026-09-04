@@ -27,8 +27,9 @@
 // diagnostic, 3 is the limits verdict, 2 is "the environment is not ready"
 // (docs/reference/cli.md § Exit codes).
 //
-// The second half of this file is the `mc sysroot` subcommand -- `list`, `path`
-// and `fetch`. `fetch` is the ONLY thing in `mc` that reaches the network, it
+// The second half of this file is the `mc sysroot` subcommand -- `list`, `path`,
+// `fetch` and `stub` (the last one is the front half of a build, handing the
+// program to src/stubs.mc). `fetch` is the ONLY thing that reaches the network, it
 // requires `--yes`, and it downloads by spawning `curl`/`wget`/`curl.exe`
 // (host_downloader) rather than speaking HTTP: there is no TLS in this language
 // and an `http://` fetch of a checksummed file would still be a downgrade
@@ -344,6 +345,7 @@ void sysroot_usage() {
     out_str(2, "usage: mc sysroot list\n");
     out_str(2, "       mc sysroot path <os>-<arch>\n");
     out_str(2, "       mc sysroot fetch <os>-<arch> [--yes] [--sysroot-dir DIR]\n");
+    out_str(2, "       mc sysroot stub [DIR] [--config FILE]\n");
 }
 
 // ---- list ----
@@ -619,15 +621,23 @@ i64 sysroot_fetch(uptr name, i64 yes) {
 }
 
 // ---- the dispatch ----
+// `stub` is here rather than in src/stubs.mc because it is a subcommand and
+// this is where subcommands live; the writing itself is stubs_write().
 i64 sysroot_cmd(i64 argc, uptr argv) {
     if (argc < 3) { sysroot_usage(); return 1; }
     uptr sub = ld64(argv + 2 * 8);
     uptr name = 0;
+    uptr cfg = 0;
     i64 yes = 0;
     i64 i = 3;
     while (i < argc) {
         uptr a = ld64(argv + i * 8);
         if (str_eq(a, "--yes")) yes = 1;
+        else if (str_eq(a, "--config")) {
+            if (i + 1 >= argc) die("--config requires an argument");
+            i = i + 1;
+            cfg = ld64(argv + i * 8);
+        }
         else if (str_eq(a, "--sysroot-dir")) {
             if (i + 1 >= argc) die("--sysroot-dir requires an argument");
             i = i + 1;
@@ -650,6 +660,18 @@ i64 sysroot_cmd(i64 argc, uptr argv) {
     if (str_eq(sub, "fetch")) {
         if (name == 0) { sysroot_usage(); return 1; }
         return sysroot_fetch(name, yes);
+    }
+    // M25: the stub writers (src/stubs.mc). This is the front half of a build
+    // -- read mc.toml, parse [project].entry, write one import file per library
+    // the program declares `extern`s for -- and nothing else. `--entry-only` is
+    // passed because it is the entry's externs that are wanted, never the
+    // taught compiler's.
+    if (str_eq(sub, "stub")) {
+        drv_stub_mode = 1;
+        uptr dir = name;
+        if (dir == 0) dir = ".";
+        if (cfg == 0) cfg = tm_cat(dir, "/mc.toml");
+        return drv_run(dir, cfg, 1, 0);
     }
     sysroot_usage();
     return 1;

@@ -104,6 +104,7 @@ for cross-compiling; it does not stand between you and a macOS binary.
 mc sysroot list
 mc sysroot path <os>-<arch>
 mc sysroot fetch <os>-<arch> [--yes] [--sysroot-dir DIR]
+mc sysroot stub [DIR] [--config FILE]
 ```
 
 **`list`** walks the target registry crossed with the pinned table of § 8 and touches no file at
@@ -154,6 +155,11 @@ text to get right and one to document.
 
 Where the files land, when `--sysroot-dir` is not given, is § 4's cache: `[sysroot].cache` is not
 consulted (there is no config here), so it is `host_home()/.mc/sysroots/<os>-<arch>` or nothing.
+
+**`stub`** is the fourth one and the only one that reads an `mc.toml`: it is the front half of a
+build — parse `[project].entry`, work out which library each `extern` belongs to, write one import
+file per library — and stops there. No object, no link, and no `[linker]` required. § 9 is what it
+writes.
 
 ## 8. The pinned sources
 
@@ -206,6 +212,80 @@ network request. Alpine prunes old point releases when a branch ages out; when t
 row changes in a commit with its new hash in the same diff, and until then the message of § 5
 prints the URL so a mirror can be substituted by hand.
 
+## 9. The stub writers — a link needs a name list, not a library
+
+A linker wants two things from a library: its **name** and the list of symbols it exports.
+Neither is code, and neither is anything that has to be downloaded — and `mc` already knows both
+at the moment the link line is assembled, because the program declared its `extern`s and
+`#dylib` / `[libs]` / `[externs]` said which library each one belongs to. `src/stubs.mc` turns
+that into files a linker accepts.
+
+| `[target].os` | what is written, per library |
+|---|---|
+| `macos` | `<stubs>/<lib>.tbd`, a TBD v4 text file listing exactly the symbols this program asks for |
+| `windows` | `<stubs>/<lib>.def`, then `llvm-dlltool -m <machine> -d <def> -D <dll> -l <lib>.lib` spawned over it |
+| `linux` | nothing: `mc: no stub writer for: linux: a static libc is code, not a name list`. That is what `mc sysroot fetch linux-<arch>` is for |
+
+The library a symbol belongs to is `extern_lib_find` — the same answer the executable backend uses
+for its bind ordinals. Ordinal 1 is the default every unclaimed `extern` falls to: `libSystem` on
+macOS, `kernel32` on Windows.
+
+```
+$ mc sysroot stub tests/proj --config tests/proj/stub.toml
+stubs 2 -> tests/proj/build/stubs
+
+$ cat tests/proj/build/stubs/libSystem.tbd
+--- !tapi-tbd
+tbd-version: 4
+targets: [ arm64-macos ]
+install-name: '/usr/lib/libSystem.B.dylib'
+current-version: 1.0
+exports:
+  - targets: [ arm64-macos ]
+    symbols: [ _open, _creat, _read, _write, _close, _exit, _mmap, _munmap, _posix_spawnp, _waitpid, __NSGetEnviron, dyld_stub_binder ]
+...
+```
+
+`dyld_stub_binder` is added unconditionally to the libSystem stub: no program declares it, and it
+is what `-lSystem` really contributes to a lazily-bound image.
+
+### `{stubs}` in `[linker].args`
+
+The placeholder that makes a build use them. It expands to
+`<dirname of [project].out>/stubs` — `build/stubs` for the usual `out = "build/app"` — and is
+**lazy** in exactly the way `{sdk}` is: the files are written on the first argument that mentions
+it, once per build, and never otherwise.
+
+```toml
+[linker]
+cmd  = "ld64.lld"
+args = ["-arch", "arm64", "-platform_version", "macos", "13.0", "13.0",
+        "-e", "_main", "-o", "{out}", "{obj}",
+        "{stubs}/libSystem.tbd", "{stubs}/libsqlite3.tbd"]
+```
+
+That is `tests/proj/stub.toml`, and `scripts/check-stubs.sh` builds it with a `PATH` holding one
+single program, `ld64.lld` — no `xcrun`, no SDK, no `-lSystem` — then **runs** the binary and
+compares its output. `otool -L` shows `/usr/lib/libSystem.B.dylib` and `/usr/lib/libsqlite3.dylib`,
+the two install names the stubs recorded.
+
+`ld64.lld` and not Apple's `ld`, deliberately: a machine that has `ld` has the Command Line Tools,
+and the CLT bring an SDK with them. "macOS with a linker and no SDK" is honestly the LLVM linker,
+and that is the shape these stubs are for.
+
+### What the synthesizer cannot do
+
+* **Data exports.** A `.def` entry for a data symbol needs a `DATA` keyword that cannot be
+  inferred from an `extern` declaration. A program importing a variable rather than a function
+  needs a real import library — which is what `mc sysroot fetch windows-<arch>` is still for.
+* **Frameworks, re-exports, umbrellas, ObjC classes.** The `.tbd` writer emits one `exports`
+  block with a symbol list and nothing else.
+* **Anything `mc` never saw.** The stub lists what the program declares. A third-party object
+  linked in beside it brings symbols `mc` has no declaration for; those need the real library.
+
+Nothing here redistributes anything: a symbol NAME is not SDK content, and the files carry no
+code at all.
+
 ---
 
 ## Files
@@ -214,6 +294,7 @@ prints the URL so a mirror can be substituted by hand.
 |---|---|
 | `src/sysroot.mc` | `path_exists`, the markers, the probes, the cache, the message, and `mc sysroot` |
 | `src/sysroots.mc` | the pinned rows of § 8 |
+| `src/stubs.mc` | the `.tbd` and `.def` writers of § 9 |
 | `src/driver.mc` | `drv_sysroot()`, the one call site — `{sysroot}` in `drv_ph` |
 | `src/host_*.mc` | `host_home()`, `host_downloader()`, `host_downloader_alt()` |
 | `scripts/sysroot-linux.sh` | the local road for a Linux sysroot: `apk add musl-dev` in `alpine:3` |
@@ -221,6 +302,8 @@ prints the URL so a mirror can be substituted by hand.
 | `tests/proj/sysroot-*.toml` | the three cases `scripts/check-build.sh` runs |
 | `tests/golden/sysroot-list.txt` | what `mc sysroot list` must print, on every host |
 | `scripts/check-sysroots.sh` | the table and the golden, checked (`make check-sysroots`) |
+| `scripts/check-stubs.sh` | the stub writers, linked and run (`make check-stubs`) |
+| `tests/proj/stub.toml`, `stub-windows.toml` | the two configs it builds |
 
 ## See also
 

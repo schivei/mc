@@ -67,6 +67,11 @@ uptr drv_sdk_cache = 0;               // {sdk}, resolved at most once
 i64  drv_target = -1;                 // index in the target registry (hooks.mc)
 uptr drv_os = 0;                      // [target].os, as the file wrote it
 uptr drv_arch = 0;                    // [target].arch, likewise (M25: {sysroot})
+uptr drv_stubs_cache = 0;             // {stubs}, written at most once (M25)
+i64  drv_unit = 0;                    // the unit the last parse produced -- what
+                                      // the stub writer reads its externs from
+i64  drv_stub_mode = 0;               // `mc sysroot stub`: parse, write the
+                                      // stubs, and neither compile nor link
 
 // the backends that write for the target in effect. M17 replaced the whitelist
 // this file used to carry -- an `i64 drv_linux` flag and two literal messages --
@@ -253,7 +258,12 @@ uptr drv_usage_file() { return drv_path("build/.mc-usage.toml"); }
 // `label` is the source as the TOML names it (`main.mc`, `build/mc-api.mc`):
 // the key of this compilation's section in build/.mc-usage.toml, stable no
 // matter which directory `mc build` was run from.
-void drv_compile(uptr src, uptr out, uptr bname, i64 cfg, uptr label) {
+// M25: the front half on its own, because `mc sysroot stub` needs exactly this
+// much -- the program parsed, its `extern`s and their libraries known -- and
+// nothing that follows. It also leaves the unit in `drv_unit`, which is what
+// {stubs} reads at link time: the compile and the link happen in one process,
+// so the externs are still in memory when the link line is assembled.
+i64 drv_parse(uptr src, i64 cfg, uptr label) {
     lim_plan(src, drv_tol, drv_usage_file(), label);   // M23: before any table exists
     tok_init();
     lex_init(src);
@@ -262,6 +272,12 @@ void drv_compile(uptr src, uptr out, uptr bname, i64 cfg, uptr label) {
     i64 unit = parse_unit();
     unit = run_passes(unit);
     unit = fold(unit);
+    drv_unit = unit;
+    return unit;
+}
+
+void drv_compile(uptr src, uptr out, uptr bname, i64 cfg, uptr label) {
+    i64 unit = drv_parse(src, cfg, label);
     i64 bi = backend_find(bname);
     if (bi < 0) backend_die(bname);
     drv_mkdirs(out);
@@ -368,14 +384,58 @@ uptr drv_sysroot() {
     return sysroot_for(drv_os, drv_arch);
 }
 
-// {out} {obj} {sysroot} {sdk} substituted anywhere inside an argument. {sdk} is
-// lazy: it is what makes `xcrun --show-sdk-path` run, and only if some argument
-// asks for it.
+// everything of `p` before its last '/', or "." when it has none
+uptr drv_dirname(uptr p) {
+    i64 last = -1;
+    i64 i = 0;
+    loop {
+        i64 c = ld8(p + i);
+        if (c == 0) break;
+        if (c == '/') last = i;
+        i = i + 1;
+    }
+    if (last < 0) return ".";
+    u8 b[BUF_SIZE];
+    buf_init(b);
+    buf_put(b, p, last);
+    buf_u8(b, 0);
+    return buf_p(b);
+}
+
+// {stubs}: the directory holding one synthesized import file per library the
+// program uses -- a TBD v4 `.tbd` on macOS, a `.def` plus the `.lib`
+// llvm-dlltool builds from it on Windows (src/stubs.mc). Written from the
+// program's own `extern`s, at most once per build, and only because some
+// [linker].args value asked for it -- the same laziness {sdk} has.
+//
+// It sits beside the output, `<dirname of [project].out>/stubs`, which for the
+// usual `out = "build/app"` is `build/stubs`.
+uptr drv_stubs() {
+    if (drv_stubs_cache != 0) return drv_stubs_cache;
+    uptr out = toml_get("project.out");
+    if (out == 0) toml_err_key("project.out", "missing key");
+    uptr d = drv_path(tm_cat(drv_dirname(out), "/stubs"));
+    drv_mkdirs(tm_cat(d, "/x"));
+    i64 n = stubs_write(drv_unit, d, drv_os, drv_arch);
+    out_str(1, "stubs ");
+    out_num(1, n);
+    out_str(1, " -> ");
+    out_str(1, d);
+    out_str(1, "\n");
+    drv_stubs_cache = d;
+    return d;
+}
+
+// {out} {obj} {sysroot} {sdk} {stubs} substituted anywhere inside an argument.
+// {sdk} is lazy: it is what makes `xcrun --show-sdk-path` run, and only if some
+// argument asks for it. {stubs} is lazy in the same way, and for the same
+// reason: it writes files.
 uptr drv_ph(uptr a, uptr obj, uptr out) {
     a = drv_subst(a, "{out}", out);
     a = drv_subst(a, "{obj}", obj);
     if (drv_has(a, "{sysroot}")) a = drv_subst(a, "{sysroot}", drv_sysroot());
     if (drv_has(a, "{sdk}")) a = drv_subst(a, "{sdk}", drv_sdk(tm_cat(out, ".sdk")));
+    if (drv_has(a, "{stubs}")) a = drv_subst(a, "{stubs}", drv_stubs());
     return a;
 }
 
@@ -419,6 +479,14 @@ void drv_link(uptr obj, uptr out) {
 void drv_entry(uptr entry, uptr out, uptr kind) {
     uptr src = drv_path(entry);
     uptr has_linker = toml_get("linker.cmd");
+    // M25: `mc sysroot stub` is the front half of a build and no more -- parse
+    // the entry, write one stub per library it uses, stop. No object, no link,
+    // and no [linker] required.
+    if (drv_stub_mode) {
+        drv_parse(src, 1, entry);
+        drv_stubs();
+        return;
+    }
     if (str_eq(kind, "obj")) {
         drv_step("compile", entry, out);
         drv_compile(src, drv_path(out), drv_obj_backend(), 1, entry);

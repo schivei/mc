@@ -195,9 +195,10 @@ args = ["-arch", "arm64", "-platform_version", "macos", "13.0", "13.0",
 | `{obj}` | the object `mc` just wrote, `<out>.o` |
 | `{sdk}` | the output of `xcrun --show-sdk-path`, run **lazily**: only if some argument mentions it, and at most once per build |
 | `{sysroot}` | the sysroot for `[target]` (M16), found since M25 by a resolution chain rather than by one key: `[sysroot].path` **checked** against the target's marker files, then the running system when the host is the target, then `--sysroot-dir` / `[sysroot].cache` / `~/.mc/sysroots/<os>-<arch>`, then the `no sysroot` message and exit 2. Run at most once per build, and only when some argument mentions the placeholder (`docs/reference/sysroot.md`) |
+| `{stubs}` | the directory of the `.tbd` / `.def`+`.lib` import stubs `mc` writes from the program's own `extern`s (M25), `<dirname of [project].out>/stubs`. Lazy like `{sdk}`; `docs/reference/sysroot.md` § 9 |
 | `{libs}` | one argument per `[libs]` entry, in the order the keys are written |
 
-`{out}`, `{obj}`, `{sdk}` and `{sysroot}` are substituted **inside** an argument, so
+`{out}`, `{obj}`, `{sdk}`, `{sysroot}` and `{stubs}` are substituted **inside** an argument, so
 `-L{sdk}/usr/lib` and `{sysroot}/crt1.o` both work.
 `{libs}` is the one that has to be a whole argument, because it expands to several; each expanded
 value goes through the same substitution, so a library can be written as

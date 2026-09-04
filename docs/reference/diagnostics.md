@@ -315,6 +315,15 @@ Causes, in the order the chain runs them ([sysroot.md](sysroot.md) § 1):
 | the host *is* the target but the system has no musl | on Debian/Ubuntu `apt-get install musl-dev`, on Alpine `apk add musl-dev` |
 | no `HOME`, no `[sysroot].cache` and no `--sysroot-dir` | the `tried:` line says exactly that; give the chain one of the three |
 
+The stub writers (`{stubs}`, `mc sysroot stub`, [sysroot.md](sysroot.md) § 9) have three of their
+own, all exit 1:
+
+| message | cause | fix |
+|---|---|---|
+| `mc: no stub writer for: linux: a static libc is code, not a name list` | `{stubs}` or `mc sysroot stub` on a Linux target | a `libc.a` cannot be synthesized from a name list; `mc sysroot fetch linux-<arch> --yes` |
+| `mc: cannot run llvm-dlltool for: PATH` | the Windows stub writer could not start `llvm-dlltool` | put it on `PATH` (Homebrew keeps it in `opt/llvm/bin`) |
+| `mc: llvm-dlltool failed for: PATH` | it started and returned non-zero | its own diagnostic came out on stderr just above; the `.def` it was given is the named file |
+
 ## 12. Runtime and I/O
 
 | message | cause | fix |

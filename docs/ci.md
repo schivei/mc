@@ -80,12 +80,19 @@ breath, or `main` starts requiring a check that no longer exists and nothing can
 
 Runs `make check` unchanged: `budget`, `test`, `check-lex`, `check-ast`, `check-bundle`,
 `check-asm`, `check-obj`, `bootstrap` (the fixed point plus the golden SHA-256), `check-surface`,
-`test-exe`, `check-mc`, `check-standalone`, `check-toml`, `check-build`, `check-limits`,
+`test-exe`, `check-mc`, `check-standalone`, `check-toml`, `check-build`, `check-sysroots`,
+`check-stubs`, `check-limits`,
 `test-linux`, `test-linux-x86_64`, `test-windows`, `test-windows-x86_64`, `check-examples`,
 `check-lang`, `check-docs`,
 `site` and `check-site`. No environment variable is passed and the `Makefile` is not touched: the
-three cross-target suites already guard themselves, and `check-site` skips
-`checkhtml.py`/`contrast.py` when `python3` is absent (the link check still runs).
+three cross-target suites already guard themselves, `check-stubs` skips whichever of its two
+linker cases is missing a linker, and `check-site` skips `checkhtml.py`/`contrast.py` when
+`python3` is absent (the link check still runs).
+
+`check-stubs` is M25's macOS acceptance and needs no network: it links a program that uses `write`
+and `sqlite3_libversion` with `ld64.lld`, against the `.tbd` stubs `mc` wrote from that program's
+own `extern`s, with a `PATH` holding one single program — so no `xcrun`, no SDK, no `-lSystem` —
+and then runs it ([reference/sysroot.md](reference/sysroot.md) § 9).
 
 `site.yml` therefore duplicates only the last two: the deploy job needs the rendered tree as an
 artifact, not merely the proof that it renders.

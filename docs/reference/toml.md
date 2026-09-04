@@ -140,9 +140,10 @@ build with exit 1.
 | `{obj}` | the object just written, `<out>.o` |
 | `{sdk}` | the output of `xcrun --show-sdk-path`, run **lazily** — only if some argument mentions it, at most once per build |
 | `{sysroot}` | the sysroot for `[target]`, found by the resolution chain of [sysroot.md](sysroot.md): `[sysroot].path` (checked), then the running system, then the cache |
+| `{stubs}` | the directory of the import stubs `mc` writes from the program's own `extern`s — `<dirname of [project].out>/stubs`. Written **lazily**, like `{sdk}`: only if some argument mentions it, and at most once per build ([sysroot.md](sysroot.md) § 9) |
 | `{libs}` | one argument per `[libs]` entry, in key order |
 
-`{out}`, `{obj}`, `{sdk}` and `{sysroot}` are substituted **inside** an argument, so
+`{out}`, `{obj}`, `{sdk}`, `{sysroot}` and `{stubs}` are substituted **inside** an argument, so
 `-L{sdk}/usr/lib` and `{sysroot}/crt1.o` both work. `{libs}` is the one that must be a whole
 argument, since it expands to several; each expanded value then goes through the same
 substitution, so a library may be written `"{sdk}/usr/lib/libsqlite3.tbd"`.
