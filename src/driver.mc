@@ -66,6 +66,7 @@ uptr cfg_file = 0;                    // path of mc.toml, as it will appear in e
 uptr drv_sdk_cache = 0;               // {sdk}, resolved at most once
 i64  drv_target = -1;                 // index in the target registry (hooks.mc)
 uptr drv_os = 0;                      // [target].os, as the file wrote it
+uptr drv_arch = 0;                    // [target].arch, likewise (M25: {sysroot})
 
 // the backends that write for the target in effect. M17 replaced the whitelist
 // this file used to carry -- an `i64 drv_linux` flag and two literal messages --
@@ -338,13 +339,17 @@ uptr drv_runnable(uptr p) {
 }
 
 // ---- linking ----
-// {sysroot}: [sysroot].path, resolved against the config's directory like every
-// other path in the file. M16 uses it for the musl crt objects and libc.a that
-// scripts/sysroot-linux.sh copies out of Alpine.
+// {sysroot}: where the musl crt objects and libc.a (or the Windows import
+// library, or the macOS SDK) come from.
+// M25: this used to be `toml_get` plus a path join, with no existence check --
+// a wrong directory was reported by the linker, in the linker's words, halfway
+// through a build. It is now one call into the resolution chain
+// (src/sysroot.mc): [sysroot].path checked against the target's marker files,
+// then the running system when host == target, then the cache
+// (--sysroot-dir / [sysroot].cache / ~/.mc/sysroots), then the message and exit
+// 2. `mc build` still never downloads: only `mc sysroot fetch --yes` does.
 uptr drv_sysroot() {
-    uptr p = toml_get("sysroot.path");
-    if (p == 0) toml_err_key("sysroot.path", "missing key");
-    return drv_path(p);
+    return sysroot_for(drv_os, drv_arch);
 }
 
 // {out} {obj} {sysroot} {sdk} substituted anywhere inside an argument. {sdk} is
@@ -490,7 +495,7 @@ i64 drv_finish(uptr what) {
 
 // ---- CLI ----
 void drv_usage() {
-    out_str(2, "usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits]\n");
+    out_str(2, "usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits] [--sysroot-dir DIR]\n");
     out_str(2, "       mc limits [DIR|FILE.mc]\n");
 }
 
@@ -517,6 +522,7 @@ i64 drv_run(uptr dir, uptr cfg, i64 entry_only, i64 compiler_only) {
     drv_target = target_find(os, arch);
     if (drv_target < 0) toml_err_key("target.arch", target_arch_list(os));
     drv_os = os;
+    drv_arch = arch;
 
     uptr entry = toml_get("project.entry");
     if (entry == 0) toml_err_key("project.entry", "missing key");
@@ -553,6 +559,14 @@ i64 drv_build(i64 argc, uptr argv) {
             if (i + 1 >= argc) die("--config requires an argument");
             i = i + 1;
             cfg = ld64(argv + i * 8);
+        }
+        else if (str_eq(a, "--sysroot-dir")) {
+            // M25: the sysroot for THIS target, as a directory, overriding both
+            // [sysroot].cache and ~/.mc/sysroots. CI passes it so that no job
+            // depends on HOME (docs/reference/sysroot.md).
+            if (i + 1 >= argc) die("--sysroot-dir requires an argument");
+            i = i + 1;
+            sr_dir_opt = ld64(argv + i * 8);
         }
         else if (str_eq(a, "--entry-only"))    entry_only = 1;
         else if (str_eq(a, "--compiler-only")) compiler_only = 1;

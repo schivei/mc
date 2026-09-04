@@ -1,0 +1,18 @@
+# sysroot-cache.toml — no [sysroot].path at all. The host is not linux/aarch64,
+# so the running-system probe is skipped by construction and the chain lands on
+# the cache: [sysroot].cache is the ROOT, and the sysroot is <root>/<os>-<arch>.
+# check-build.sh populates build/sysroots/linux-aarch64 with the two markers.
+[project]
+entry = "lin.mc"
+out   = "build/lin-cache"
+
+[target]
+os   = "linux"
+arch = "aarch64"
+
+[linker]
+cmd  = "echo"
+args = ["sysroot={sysroot}", "-o", "{out}", "{obj}"]
+
+[sysroot]
+cache = "build/sysroots"

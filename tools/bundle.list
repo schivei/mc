@@ -29,6 +29,7 @@ mc/macho	src/macho.mc
 mc/main	src/main.mc
 mc/parse	src/parse.mc
 mc/sha256	src/sha256.mc
+mc/sysroot	src/sysroot.mc
 mc/toml	src/toml.mc
 mc_syntax_demo	lib/mc_syntax_demo.mc
 pass_demo	lib/pass_demo.mc

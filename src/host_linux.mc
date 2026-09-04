@@ -43,3 +43,24 @@ i64 host_has_sdk() { return 0; }
 // M38: what this host appends to the name of an executable it is about to write
 // and then run -- nothing here, ".exe" on Windows (src/host_windows.mc).
 uptr host_exe_suffix() { return ""; }
+
+// M25: the user's home directory, where the sysroot cache lives
+// (`~/.mc/sysroots/<os>-<arch>`, docs/reference/sysroot.md). Same shape as the
+// macOS host: there is no `getenv` here either, only the `KEY=VALUE` array
+// musl's crt1.o passed to main().
+uptr host_home() {
+    uptr e = host_environ();
+    if (e == 0) return 0;
+    i64 i = 0;
+    loop {
+        uptr s = ld64(e + i * 8);
+        if (s == 0) return 0;
+        if (mem_eq(s, "HOME=", 5)) return s + 5;
+        i = i + 1;
+    }
+}
+
+// M25: the downloader `mc sysroot fetch` spawns, and its fallback. A
+// distribution ships one of the two; the CI runners have both.
+uptr host_downloader()     { return "curl"; }
+uptr host_downloader_alt() { return "wget"; }

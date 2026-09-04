@@ -7,7 +7,7 @@ subcommands). Running `mc` with no argument prints exactly this and exits 1:
 ```
 usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] source.mc [-o out]
        mc --host
-usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits]
+usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits] [--sysroot-dir DIR]
        mc limits [DIR|FILE.mc]
 ```
 
@@ -140,7 +140,7 @@ only the self-hosted compiler has the handler column that `syntax_infix` fills i
 ## 2. `mc build` — the project driver
 
 ```
-mc build [DIR] [--config FILE] [--entry-only] [--compiler-only] [--limits | --fix-limits]
+mc build [DIR] [--config FILE] [--entry-only] [--compiler-only] [--limits | --fix-limits] [--sysroot-dir DIR]
 ```
 
 `DIR` defaults to `.`, the config to `DIR/mc.toml`. Every path inside the file is relative to the
@@ -154,6 +154,7 @@ thing as `mc build` from inside `examples/api`. Every key is in [toml.md](toml.m
 | `--compiler-only` | build the taught compiler from `[compiler].modules`, print its path on stdout and stop — no spawn, no entry. This is the flag a `test.sh` wants when it drives the taught compiler over its own suite, and the one an editor server needs. Without a `[compiler].modules` it is an error (`missing key: compiler.modules`), not a silent full build; together with `--entry-only` it is `mc: --entry-only and --compiler-only are exclusive`. |
 | `--limits` | after the build, print the table report and return a verdict (see below). |
 | `--fix-limits` | the same report, and rewrite **only** the `[limits]` section of `mc.toml` with the smallest tolerance that would have avoided `grew` and `tight`. |
+| `--sysroot-dir DIR` | DIR **is** the sysroot for `[target]`, ahead of `[sysroot].cache` and of `~/.mc/sysroots` in the resolution chain — but behind `[sysroot].path`, which still wins. CI passes it so that no job depends on `HOME`. Missing argument: `mc: --sysroot-dir requires an argument`. See [sysroot.md](sysroot.md). |
 
 A second bare argument is `mc: duplicate directory: <arg>`; any other `-flag` reprints the usage
 and exits 1.
@@ -198,10 +199,15 @@ least once); the report's verdict is the worst row.
 |---|---|
 | `0` | success — and, under `--limits`, verdict `ok` |
 | `1` | any diagnostic: a compile error, a TOML error, a spawned tool that failed |
+| `2` | the environment is not ready: no sysroot for the target ([sysroot.md](sysroot.md) § 5) |
 | `3` | verdict `tight` or `grew` (`--limits` / `mc limits` only) |
 
 `--fix-limits` exits 0 when it managed to write a tolerance that fits, and 3 when even `1.0`
 would not have been enough (the file is left alone in that case).
+
+Code **2** is one message and nothing else — the `no sysroot for <os>-<arch>` block of
+[sysroot.md](sysroot.md) § 5. It is a separate code so that a script can tell "your machine is
+missing files" from "your program does not compile" without reading the text.
 
 ---
 

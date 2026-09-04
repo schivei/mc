@@ -277,7 +277,7 @@ does not:
 
 | message | key | fix |
 |---|---|---|
-| `missing key` | `project.entry`, `project.out`, `compiler.modules`, `compiler.out`, `sysroot.path` | add it. `compiler.out` is only required when there is no `project.name` to default from; `sysroot.path` only when `{sysroot}` is actually used |
+| `missing key` | `project.entry`, `project.out`, `compiler.modules`, `compiler.out` | add it. `compiler.out` is only required when there is no `project.name` to default from. `sysroot.path` is **not** on this list since M25: an absent `[sysroot]` is not an error, it is step 1 of the chain of § 11 falling through to the next step |
 | `must be exe or obj` | `project.kind` | those are the two values |
 | `only macos, linux and windows (see docs/build.md)` | `target.os` | the list is built from the `target()` registry, so a target a module registers appears in it |
 | `only aarch64 and x86_64 (see docs/build.md)` | `target.arch` | the architectures that operating system was registered with (macOS and Windows have only `aarch64`) |
@@ -287,7 +287,35 @@ does not:
 | `library not declared in [libs]` | an `[externs]` value | the value must name a `[libs]` key |
 | `tolerance must be between 0 and 1` | `limits.tolerance` | a float in `[0, 1]`, at most four fraction digits |
 
-## 11. Runtime and I/O
+## 11. The sysroot, and exit code 2
+
+One message, printed by `sysroot_missing()` (`src/sysroot.mc`) and shared by `mc build` and by
+`mc sysroot`. It is the only thing that exits **2** — "the environment is not ready", as opposed
+to 1 (a diagnostic) and 3 (the limits verdict), [cli.md](cli.md) § Exit codes.
+
+```
+mc: no sysroot for linux-aarch64
+  tried: build/sysroot/linux-aarch64 (no crt1.o)
+         /Users/me/.mc/sysroots/linux-aarch64 (absent)
+  run:   sh scripts/sysroot-linux.sh --arch aarch64
+```
+
+| line | what it says |
+|---|---|
+| `no sysroot for <os>-<arch>` | the target whose `{sysroot}` could not be resolved |
+| `tried:` | one line per candidate the chain looked at, with the reason it was refused: `absent` (the path does not open at all) or `no <marker>` (it opens but is not a sysroot) |
+| `run:` | the command that would produce one, per operating system |
+
+Causes, in the order the chain runs them ([sysroot.md](sysroot.md) § 1):
+
+| cause | fix |
+|---|---|
+| `[sysroot].path` names a directory that is not a sysroot | fix the path, or populate the directory. An explicit path stops the chain: nothing else is tried after it |
+| the host is not the target, and nothing is cached | `mc sysroot fetch <os>-<arch> --yes`, or `sh scripts/sysroot-linux.sh --arch <arch>`, or point `--sysroot-dir` at a directory you already have |
+| the host *is* the target but the system has no musl | on Debian/Ubuntu `apt-get install musl-dev`, on Alpine `apk add musl-dev` |
+| no `HOME`, no `[sysroot].cache` and no `--sysroot-dir` | the `tried:` line says exactly that; give the chain one of the three |
+
+## 12. Runtime and I/O
 
 | message | cause | fix |
 |---|---|---|

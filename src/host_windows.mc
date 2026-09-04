@@ -55,3 +55,25 @@ i64 host_has_sdk() { return 0; }
 // taught compiler that the driver links and immediately spawns, and on Windows
 // a file without the suffix is not a program (src/driver.mc, drv_teach).
 uptr host_exe_suffix() { return ".exe"; }
+
+// M25: the user's home directory, where the sysroot cache lives
+// (`~/.mc/sysroots/<os>-<arch>`, docs/reference/sysroot.md). This host cannot
+// do what the other two do -- host_environ() is 0 here (Decision 5 of M38), so
+// there is no array to walk -- and asks kernel32 for USERPROFILE instead. The
+// name has to be in scripts/sysroot-windows.sh's kernel32.def, like every other
+// import this layer declares.
+extern i64 GetEnvironmentVariableA(uptr name, uptr buf, i64 size);
+
+u8 hw_home[512];
+
+uptr host_home() {
+    i64 n = GetEnvironmentVariableA("USERPROFILE", hw_home, 512);
+    if (n <= 0) return 0;                 // absent, or the buffer is too small
+    if (n >= 512) return 0;
+    return hw_home;
+}
+
+// M25: `curl.exe` ships in System32 since Windows 10 1803 and is on PATH under
+// Git Bash. There is no second one to try.
+uptr host_downloader()     { return "curl.exe"; }
+uptr host_downloader_alt() { return 0; }

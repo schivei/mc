@@ -58,8 +58,9 @@ cmd  = "ld"                # without it, kind = "exe" uses the built-in macho-ex
 args = ["-arch", "arm64", "-syslibroot", "{sdk}", "-lSystem",
         "-o", "{out}", "{obj}", "{libs}"]
 
-[sysroot]                  # M16: what {sysroot} expands to in [linker].args
-path = "build/sysroot/linux-aarch64"
+[sysroot]                  # M16: where {sysroot} comes from -- M25 made it a chain
+path  = "build/sysroot/linux-aarch64"   # step 1, checked; absent is fine
+cache = "build/sysroots"                # step 3 root: <cache>/<os>-<arch>
 
 [libs]                     # named libraries, in the order the ordinals are handed out
 sqlite3 = "/usr/lib/libsqlite3.dylib"
@@ -193,7 +194,7 @@ args = ["-arch", "arm64", "-platform_version", "macos", "13.0", "13.0",
 | `{out}` | `[project].out`, resolved against the config's directory |
 | `{obj}` | the object `mc` just wrote, `<out>.o` |
 | `{sdk}` | the output of `xcrun --show-sdk-path`, run **lazily**: only if some argument mentions it, and at most once per build |
-| `{sysroot}` | `[sysroot].path`, resolved against the config's directory (M16). A missing `[sysroot].path` is an error only when some argument actually uses the placeholder |
+| `{sysroot}` | the sysroot for `[target]` (M16), found since M25 by a resolution chain rather than by one key: `[sysroot].path` **checked** against the target's marker files, then the running system when the host is the target, then `--sysroot-dir` / `[sysroot].cache` / `~/.mc/sysroots/<os>-<arch>`, then the `no sysroot` message and exit 2. Run at most once per build, and only when some argument mentions the placeholder (`docs/reference/sysroot.md`) |
 | `{libs}` | one argument per `[libs]` entry, in the order the keys are written |
 
 `{out}`, `{obj}`, `{sdk}` and `{sysroot}` are substituted **inside** an argument, so
@@ -716,6 +717,15 @@ there it does nothing, so `make test-linux` does not pull an image on every run.
 `make sysroot-linux` and `make sysroot-linux-x86_64` run it; `scripts/test-linux.sh` runs it by
 itself when any of the four files is missing (the same check the script itself makes, so a
 half-populated sysroot is repaired instead of failing every test).
+
+That script is now the *local* road, not the only one. Since M25 the driver resolves `{sysroot}`
+through a chain instead of reading one key: an explicit `[sysroot].path` (checked against
+`crt1.o` and `libc.a`, so a wrong directory is `mc`'s diagnostic and not the linker's), then the
+running system when the host is the target (`/usr/lib/<arch>-linux-musl`, `/usr/lib/musl/lib`,
+`/usr/lib`), then `--sysroot-dir` / `[sysroot].cache` / `~/.mc/sysroots/linux-<arch>`, and then
+one message with the exact command to run, at exit code **2**. `mc build` itself never
+downloads. The whole chain, the cache layout and every message are in
+`docs/reference/sysroot.md`.
 
 ### What the ELF writer says
 

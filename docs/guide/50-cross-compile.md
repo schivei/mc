@@ -146,13 +146,26 @@ It is a cache: with the four files already present it does nothing, so repeated 
 image. `scripts/test-linux.sh` calls it by itself whenever a file is missing, so a half-populated
 sysroot is repaired instead of failing every test.
 
-`{sysroot}` in `[linker].args` expands to `[sysroot].path`, resolved against the config's
-directory like every other path. A missing `sysroot.path` is only an error when some argument
-actually uses the placeholder.
+### You do not have to assemble this by hand
 
-> **Planned (M25):** `mc sysroot fetch` / `mc sysroot list`, with checksums and an offline
-> fallback, plus synthesized text stubs for Apple SDKs so a macOS link needs no SDK at all. Not
-> in this checkout: today the sysroot is a directory you point at.
+`{sysroot}` used to be one key. Since M25 it is a chain, and `[sysroot].path` is only its first
+step:
+
+1. **`[sysroot].path`**, resolved against the config's directory — and *checked*. A directory
+   that does not hold `crt1.o` and `libc.a` is `mc`'s own diagnostic now, not a puzzle from the
+   linker halfway through the build. An explicit path that is wrong stops the chain: nothing
+   else is tried after it.
+2. **the running system**, but only when the host *is* the target: `/usr/lib/<arch>-linux-musl`,
+   `/usr/lib/musl/lib`, `/usr/lib`. A cross build never picks up the host's own `libc.a`.
+3. **the cache** — `--sysroot-dir DIR` (DIR itself), else `[sysroot].cache/<os>-<arch>`, else
+   `~/.mc/sysroots/<os>-<arch>`.
+4. **the message**, naming every directory it looked at and the command that would produce one,
+   at exit code **2**.
+
+So an `mc.toml` with no `[sysroot]` at all is normal now: point `--sysroot-dir` at a directory
+you have, or let the cache answer. `mc build` never downloads — the whole chain only looks at
+directories. [../reference/sysroot.md](../reference/sysroot.md) is the full story: the markers,
+the probes, the cache layout and every message.
 
 ## No libc at all
 

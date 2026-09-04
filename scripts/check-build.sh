@@ -14,6 +14,11 @@
 # the build stops, which is the check for that key. `sqlite3_libversion` has no
 # `#dylib` anywhere -- the library comes from [libs] + [externs].
 #
+# M25 adds four more over tests/proj/lin.mc and the three sysroot-*.toml: the
+# resolution chain of src/sysroot.mc -- an explicit path that is not a sysroot
+# (exit 2, naming the missing marker), the cache road, the populated explicit
+# path (same object, byte for byte) and --sysroot-dir.
+#
 # The last section checks the diagnostics: a foreign [target].os, os = "linux"
 # with no [linker] (M16), a missing key and a bad [project].kind have to come
 # out with file:line:col and exit 1.
@@ -104,6 +109,67 @@ else
     else
         ok "obj.toml"
     fi
+fi
+
+# ---- M25: the [sysroot] resolution chain (src/sysroot.mc) ----
+# Three cases over tests/proj/lin.mc, a linux/aarch64 program whose [linker] is
+# `echo`, so the resolved directory comes out on stdout and nothing here needs
+# ld.lld, musl or Docker.
+#
+#   sysroot-bad.toml    [sysroot].path at a directory that is not a sysroot ->
+#                       exit 2, and the message names the missing marker
+#   sysroot-cache.toml  no [sysroot].path: the chain falls through the probe
+#                       (skipped -- the host is not linux/aarch64) to the cache
+#   sysroot-ok.toml     [sysroot].path at a populated directory: what an mc.toml
+#                       written before M25 says, still doing what it did
+mkdir -p "$dir/build/sysroots/linux-aarch64"
+: > "$dir/build/sysroots/linux-aarch64/crt1.o"
+: > "$dir/build/sysroots/linux-aarch64/libc.a"
+
+total=$((total + 1))
+"$mc" build "$dir" --config "$dir/sysroot-bad.toml" > "$tmp/o" 2>&1
+rc=$?
+if [ "$rc" != "2" ]; then
+    fail "sysroot-bad.toml" "exit $rc, expected 2"
+elif ! grep -q "no sysroot for linux-aarch64" "$tmp/o"; then
+    fail "sysroot-bad.toml" "no 'no sysroot for linux-aarch64' in: $(cat "$tmp/o")"
+elif ! grep -q "tests/proj/inc (no crt1.o)" "$tmp/o"; then
+    fail "sysroot-bad.toml" "the message does not name the missing marker: $(cat "$tmp/o")"
+else
+    ok "sysroot-bad.toml -> exit 2, names the missing marker"
+    sed -n '/no sysroot/,$p' "$tmp/o" | sed 's|^|  |'
+fi
+
+total=$((total + 1))
+if ! "$mc" build "$dir" --config "$dir/sysroot-cache.toml" > "$tmp/o" 2>&1; then
+    fail "sysroot-cache.toml" "$(cat "$tmp/o")"
+elif ! grep -q "sysroot=$dir/build/sysroots/linux-aarch64 " "$tmp/o"; then
+    fail "sysroot-cache.toml" "{sysroot} did not resolve to the cache: $(cat "$tmp/o")"
+else
+    ok "sysroot-cache.toml -> [sysroot].cache/<os>-<arch>"
+    sed 's|^|  |' "$tmp/o"
+fi
+
+total=$((total + 1))
+if ! "$mc" build "$dir" --config "$dir/sysroot-ok.toml" > "$tmp/o" 2>&1; then
+    fail "sysroot-ok.toml" "$(cat "$tmp/o")"
+elif ! grep -q "sysroot=$dir/build/sysroots/linux-aarch64 " "$tmp/o"; then
+    fail "sysroot-ok.toml" "{sysroot} did not resolve to [sysroot].path: $(cat "$tmp/o")"
+elif ! cmp -s "$dir/build/lin-ok.o" "$dir/build/lin-cache.o"; then
+    fail "sysroot-ok.toml" "the object differs from the one the cache road wrote"
+else
+    ok "sysroot-ok.toml -> [sysroot].path, same object byte for byte"
+fi
+
+# --sysroot-dir names the directory ITSELF, and wins over [sysroot].cache
+total=$((total + 1))
+if ! "$mc" build "$dir" --config "$dir/sysroot-cache.toml" \
+        --sysroot-dir "$dir/build/sysroots/linux-aarch64" > "$tmp/o" 2>&1; then
+    fail "--sysroot-dir" "$(cat "$tmp/o")"
+elif ! grep -q "sysroot=$dir/build/sysroots/linux-aarch64 " "$tmp/o"; then
+    fail "--sysroot-dir" "not honoured: $(cat "$tmp/o")"
+else
+    ok "--sysroot-dir DIR"
 fi
 
 # ---- diagnostics ----
