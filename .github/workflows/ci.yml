@@ -16,9 +16,10 @@ permissions:
 # cancels the previous run. The job names below are the required status checks
 # on `main` -- "make check (macOS arm64)", "Link and run the suite
 # (linux/arm64)", "Link and run the suite (linux/x86_64)", "Link and run the
-# suite (windows/arm64)" and, since M37, "mc on linux/arm64 host" and "mc on
-# linux/x86_64 host" -- so they must not be renamed without updating the
-# branch protection (docs/ci.md § Branch protection).
+# suite (windows/arm64)", "mc on linux/arm64 host", "mc on linux/x86_64 host"
+# and, since M38, "mc on windows/arm64 host" and "mc on windows/x86_64 host" --
+# so they must not be renamed without updating the branch protection
+# (docs/ci.md § Branch protection).
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -102,6 +103,37 @@ jobs:
             file build/mc-linux-x86_64.o | grep -q 'ELF 64-bit.*x86-64'
           fi
 
+      # M38: `mc` hosted on Windows. Same split, same reason as the Linux pair
+      # above: what is cross-built HERE is the two COFF OBJECTS plus the two
+      # objects every Windows link line carries (winstart.obj, the entry point,
+      # and mcrt.obj, the POSIX shims over kernel32) and the kernel32 import
+      # library. The Windows runners have lld-link and no `mc` at all, so they
+      # could not produce any of it: the compiler they link IS the artifact.
+      - name: Cross-compile mc for the Windows hosts
+        run: |
+          set -eu
+          make mc-windows-obj
+          make mc-windows-x86_64-obj
+          make mcrt-windows
+          make mcrt-windows-x86_64
+          ls -l build/mc-windows-arm64.obj build/mc-windows-x86_64.obj
+          ls -l build/sysroot/windows-aarch64 build/sysroot/windows-x86_64
+          for f in build/mc-windows-arm64.obj build/mc-windows-x86_64.obj \
+                   build/sysroot/windows-aarch64/winstart.obj \
+                   build/sysroot/windows-aarch64/mcrt.obj \
+                   build/sysroot/windows-aarch64/kernel32.lib \
+                   build/sysroot/windows-x86_64/winstart.obj \
+                   build/sysroot/windows-x86_64/mcrt.obj \
+                   build/sysroot/windows-x86_64/kernel32.lib; do
+            [ -s "$f" ] || { echo "::error::$f was not produced"; exit 1; }
+          done
+          # A wrong machine here would only surface on the Windows runner, far
+          # from its cause.
+          if command -v llvm-readobj >/dev/null 2>&1; then
+            llvm-readobj --file-headers build/mc-windows-arm64.obj  | grep -q IMAGE_FILE_MACHINE_ARM64
+            llvm-readobj --file-headers build/mc-windows-x86_64.obj | grep -q IMAGE_FILE_MACHINE_AMD64
+          fi
+
       # M19: the same for windows/aarch64 -- the `coff-obj-arm64` backend over
       # the same arm64 machine. This step also produces winrt.obj (the compiled
       # lib/sys_windows.mc) and kernel32.lib, the two files the Windows half has
@@ -142,6 +174,20 @@ jobs:
           path: |
             build/mc-linux-arm64.o
             build/mc-linux-x86_64.o
+          if-no-files-found: error
+          retention-days: 14
+
+      # The two objects the Windows host jobs link, plus everything else those
+      # links need. Named for what they become, not for what they are.
+      - name: Upload the cross-built Windows compilers
+        uses: actions/upload-artifact@v4
+        with:
+          name: mc-windows-hosts
+          path: |
+            build/mc-windows-arm64.obj
+            build/mc-windows-x86_64.obj
+            build/sysroot/windows-aarch64
+            build/sysroot/windows-x86_64
           if-no-files-found: error
           retention-days: 14
 
@@ -529,15 +575,16 @@ jobs:
         shell: bash
         run: scripts/test-windows.sh --run-only build/windows-objs
 
-  # M20: the x64 half of the same story. windows-latest is an x86-64 runner and
-  # ships LLVM under C:\Program Files\LLVM, so the "Tool facts" step below
-  # normally finds lld-link and nothing is downloaded; the download branch is
-  # kept because this job must FAIL rather than skip -- it is the only place a
-  # windows/x86_64 binary is ever executed (docs/plan.md § Rule for every new
-  # target).
+  # M20: the x64 half of the same story. The runner ships LLVM under
+  # C:\Program Files\LLVM, so the "Tool facts" step below normally finds
+  # lld-link and nothing is downloaded; the download branch is kept because this
+  # job must FAIL rather than skip -- it is the only place a windows/x86_64
+  # binary is ever executed (docs/plan.md § Rule for every new target).
+  # M38 pins it to windows-2025 (Decision 9): `windows-latest` moves under the
+  # project, and the host job below has to be on a named image anyway.
   windows-x86_64:
     name: Link and run the suite (windows/x86_64)
-    runs-on: windows-latest
+    runs-on: windows-2025
     needs: check
     timeout-minutes: 30
     env:
@@ -600,6 +647,310 @@ jobs:
       - name: Link with lld-link and run natively
         shell: bash
         run: scripts/test-windows.sh --arch x86_64 --run-only build/windows-objs-x86_64
+
+  # M38: `mc` HOSTED on Windows. Not "a Windows target built from macOS" -- the
+  # object downloaded here is the compiler; this job links it and it compiles
+  # itself to a fixed point on this machine before anything else runs. See
+  # docs/guide/95-windows-host.md.
+  windows-arm64-host:
+    name: mc on windows/arm64 host
+    runs-on: windows-11-arm
+    needs: check
+    timeout-minutes: 60
+    env:
+      LLVM_VERSION: "20.1.8"
+      # MSYS rewrites an argument that looks like a path -- and every dash-form
+      # lld-link option does. The dash form is already the belt; this is the
+      # braces (docs/specs/M38.md § 7).
+      MSYS2_ARG_CONV_EXCL: "*"
+      MC_WINTESTS: build/windows-objs
+    steps:
+      # GitHub's Windows images ship core.autocrlf=true, and this job COMPILES
+      # .mc sources and RUNS shell scripts straight out of the checkout, where a
+      # `#!/bin/sh\r` is a hard failure. .gitattributes says `* -text`, and this
+      # says it again for a checkout made before that file is read.
+      - name: Never translate line endings
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - name: Check out
+        # Everything is run from the repository root: 025-linecount opens its
+        # own source by a relative path.
+        uses: actions/checkout@v4
+
+      - name: Download the cross-compiled Windows compiler and its sysroot
+        uses: actions/download-artifact@v4
+        with:
+          name: mc-windows-hosts
+          path: build
+
+      - name: Download the cross-built suite objects
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-arm64-objects
+          path: build/windows-objs
+
+      - name: Download the macOS reference object
+        uses: actions/download-artifact@v4
+        with:
+          name: mc2-macos-arm64
+          path: build
+
+      # Facts first: the runner image may already carry LLVM, in which case
+      # nothing has to be downloaded at all. This step never fails -- it only
+      # reports, and sets `found` for the step below.
+      - name: Tool facts
+        id: tools
+        shell: bash
+        run: |
+          echo "runner: $windows-11-arm_OS $windows-11-arm_ARCH"
+          uname -s
+          uname -m
+          if where lld-link 2>/dev/null; then
+            echo "found=1" >> "$GITHUB_OUTPUT"
+          elif [ -x "/c/Program Files/LLVM/bin/lld-link.exe" ]; then
+            echo "/c/Program Files/LLVM/bin" >> "$GITHUB_PATH"
+            echo "found=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "lld-link: absent -- the next step downloads LLVM $LLVM_VERSION"
+            echo "found=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache the LLVM toolchain
+        if: steps.tools.outputs.found != '1'
+        uses: actions/cache@v4
+        with:
+          path: build/llvm
+          key: llvm-woa64-${{ env.LLVM_VERSION }}
+
+      # Two shapes have shipped over the years -- a tarball and an NSIS
+      # installer -- so both are tried. This job must FAIL rather than skip.
+      - name: Obtain lld-link
+        if: steps.tools.outputs.found != '1'
+        shell: bash
+        run: |
+          set -e
+          if [ ! -x build/llvm/bin/lld-link.exe ]; then
+            mkdir -p build/llvm
+            base="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION"
+            if curl -fSL -o /tmp/llvm.tar.xz "$base/clang+llvm-$LLVM_VERSION-aarch64-pc-windows-msvc.tar.xz"; then
+              tar -xf /tmp/llvm.tar.xz -C build/llvm --strip-components=1
+            else
+              curl -fSL -o /tmp/llvm.exe "$base/LLVM-$LLVM_VERSION-woa64.exe"
+              7z x -obuild/llvm /tmp/llvm.exe > /dev/null
+            fi
+          fi
+          echo "$PWD/build/llvm/bin" >> "$GITHUB_PATH"
+          build/llvm/bin/lld-link.exe --version || true
+
+      # The Makefile subset below is GNU make; the image does not ship one
+      # (Decision 7). Chocolatey's package is the plain GNU make, and it lands
+      # on PATH for the Git Bash shell too.
+      - name: Install GNU make
+        shell: bash
+        run: |
+          set -e
+          if ! command -v make >/dev/null 2>&1; then
+            choco install make --no-progress -y
+          fi
+          make --version | head -1
+
+      # The half the macOS runner could not do. Everything the link needs
+      # besides the compiler object came in the artifact, inside the sysroot.
+      - name: Link the cross-compiled object into the Windows compiler
+        shell: bash
+        run: |
+          set -eu
+          ls -l build/mc-windows-arm64.obj build/sysroot/windows-aarch64
+          scripts/link-windows.sh --arch aarch64 \
+              build/mc-windows-arm64.exe build/mc-windows-arm64.obj
+          ls -l build/mc-windows-arm64.exe
+
+      - name: What this binary says it is
+        shell: bash
+        run: |
+          set -eu
+          build/mc-windows-arm64.exe --host
+          os=$(build/mc-windows-arm64.exe --host | sed -n 's|^os *||p')
+          arch=$(build/mc-windows-arm64.exe --host | sed -n 's|^arch *||p')
+          if [ "$os" != "windows" ] || [ "$arch" != "aarch64" ]; then
+            echo "::error::the binary says it is hosted on '$os/$arch', not windows/aarch64"
+            exit 1
+          fi
+
+      # `make check` on a Windows host is the subset in the Makefile, and it
+      # STARTS with scripts/bootstrap-windows.sh: seed -> mc1w -> mc2w -> mc3w,
+      # cmp, the golden, --host, and the whole suite run with the compiler that
+      # came out (the objects downloaded above, linked and executed here).
+      # check-skipped prints one line per target that does not run.
+      - name: Bootstrap and run the Windows make check subset
+        shell: bash
+        run: make check SEED=build/mc-windows-arm64.exe
+
+      # The proof that a Windows-hosted mc is the SAME compiler: the Mach-O
+      # object it writes for src/mc.mc is byte for byte the one the macOS job
+      # wrote for itself (build/mc2.o, uploaded above). bootstrap-windows.sh
+      # already does this; it is repeated here so the signal has its own line.
+      - name: Cross proof against the macOS object
+        shell: bash
+        run: |
+          set -eu
+          rm -f build/x-cross.o
+          build/mc2w.exe --backend=macho src/mc.mc -o build/x-cross.o
+          cmp build/x-cross.o build/mc2.o
+          echo "ok: the Mach-O object written on windows/arm64 is the one macOS writes"
+
+  # M38: `mc` HOSTED on Windows. Not "a Windows target built from macOS" -- the
+  # object downloaded here is the compiler; this job links it and it compiles
+  # itself to a fixed point on this machine before anything else runs. See
+  # docs/guide/95-windows-host.md.
+  windows-x86-64-host:
+    name: mc on windows/x86_64 host
+    runs-on: windows-2025
+    needs: check
+    timeout-minutes: 60
+    env:
+      LLVM_VERSION: "20.1.8"
+      # MSYS rewrites an argument that looks like a path -- and every dash-form
+      # lld-link option does. The dash form is already the belt; this is the
+      # braces (docs/specs/M38.md § 7).
+      MSYS2_ARG_CONV_EXCL: "*"
+      MC_WINTESTS: build/windows-objs
+    steps:
+      # GitHub's Windows images ship core.autocrlf=true, and this job COMPILES
+      # .mc sources and RUNS shell scripts straight out of the checkout, where a
+      # `#!/bin/sh\r` is a hard failure. .gitattributes says `* -text`, and this
+      # says it again for a checkout made before that file is read.
+      - name: Never translate line endings
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - name: Check out
+        # Everything is run from the repository root: 025-linecount opens its
+        # own source by a relative path.
+        uses: actions/checkout@v4
+
+      - name: Download the cross-compiled Windows compiler and its sysroot
+        uses: actions/download-artifact@v4
+        with:
+          name: mc-windows-hosts
+          path: build
+
+      - name: Download the cross-built suite objects
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-x86_64-objects
+          path: build/windows-objs
+
+      - name: Download the macOS reference object
+        uses: actions/download-artifact@v4
+        with:
+          name: mc2-macos-arm64
+          path: build
+
+      # Facts first: the runner image may already carry LLVM, in which case
+      # nothing has to be downloaded at all. This step never fails -- it only
+      # reports, and sets `found` for the step below.
+      - name: Tool facts
+        id: tools
+        shell: bash
+        run: |
+          echo "runner: $windows-2025_OS $windows-2025_ARCH"
+          uname -s
+          uname -m
+          if where lld-link 2>/dev/null; then
+            echo "found=1" >> "$GITHUB_OUTPUT"
+          elif [ -x "/c/Program Files/LLVM/bin/lld-link.exe" ]; then
+            echo "/c/Program Files/LLVM/bin" >> "$GITHUB_PATH"
+            echo "found=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "lld-link: absent -- the next step downloads LLVM $LLVM_VERSION"
+            echo "found=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache the LLVM toolchain
+        if: steps.tools.outputs.found != '1'
+        uses: actions/cache@v4
+        with:
+          path: build/llvm
+          key: llvm-win64-${{ env.LLVM_VERSION }}
+
+      # Two shapes have shipped over the years -- a tarball and an NSIS
+      # installer -- so both are tried. This job must FAIL rather than skip.
+      - name: Obtain lld-link
+        if: steps.tools.outputs.found != '1'
+        shell: bash
+        run: |
+          set -e
+          if [ ! -x build/llvm/bin/lld-link.exe ]; then
+            mkdir -p build/llvm
+            base="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION"
+            if curl -fSL -o /tmp/llvm.tar.xz "$base/clang+llvm-$LLVM_VERSION-x86_64-pc-windows-msvc.tar.xz"; then
+              tar -xf /tmp/llvm.tar.xz -C build/llvm --strip-components=1
+            else
+              curl -fSL -o /tmp/llvm.exe "$base/LLVM-$LLVM_VERSION-win64.exe"
+              7z x -obuild/llvm /tmp/llvm.exe > /dev/null
+            fi
+          fi
+          echo "$PWD/build/llvm/bin" >> "$GITHUB_PATH"
+          build/llvm/bin/lld-link.exe --version || true
+
+      # The Makefile subset below is GNU make; the image does not ship one
+      # (Decision 7). Chocolatey's package is the plain GNU make, and it lands
+      # on PATH for the Git Bash shell too.
+      - name: Install GNU make
+        shell: bash
+        run: |
+          set -e
+          if ! command -v make >/dev/null 2>&1; then
+            choco install make --no-progress -y
+          fi
+          make --version | head -1
+
+      # The half the macOS runner could not do. Everything the link needs
+      # besides the compiler object came in the artifact, inside the sysroot.
+      - name: Link the cross-compiled object into the Windows compiler
+        shell: bash
+        run: |
+          set -eu
+          ls -l build/mc-windows-x86_64.obj build/sysroot/windows-x86_64
+          scripts/link-windows.sh --arch x86_64 \
+              build/mc-windows-x86_64.exe build/mc-windows-x86_64.obj
+          ls -l build/mc-windows-x86_64.exe
+
+      - name: What this binary says it is
+        shell: bash
+        run: |
+          set -eu
+          build/mc-windows-x86_64.exe --host
+          os=$(build/mc-windows-x86_64.exe --host | sed -n 's|^os *||p')
+          arch=$(build/mc-windows-x86_64.exe --host | sed -n 's|^arch *||p')
+          if [ "$os" != "windows" ] || [ "$arch" != "x86_64" ]; then
+            echo "::error::the binary says it is hosted on '$os/$arch', not windows/x86_64"
+            exit 1
+          fi
+
+      # `make check` on a Windows host is the subset in the Makefile, and it
+      # STARTS with scripts/bootstrap-windows.sh: seed -> mc1w -> mc2w -> mc3w,
+      # cmp, the golden, --host, and the whole suite run with the compiler that
+      # came out (the objects downloaded above, linked and executed here).
+      # check-skipped prints one line per target that does not run.
+      - name: Bootstrap and run the Windows make check subset
+        shell: bash
+        run: make check SEED=build/mc-windows-x86_64.exe
+
+      # The proof that a Windows-hosted mc is the SAME compiler: the Mach-O
+      # object it writes for src/mc.mc is byte for byte the one the macOS job
+      # wrote for itself (build/mc2.o, uploaded above). bootstrap-windows.sh
+      # already does this; it is repeated here so the signal has its own line.
+      - name: Cross proof against the macOS object
+        shell: bash
+        run: |
+          set -eu
+          rm -f build/x-cross.o
+          build/mc2w.exe --backend=macho src/mc.mc -o build/x-cross.o
+          cmp build/x-cross.o build/mc2.o
+          echo "ok: the Mach-O object written on windows/x86_64 is the one macOS writes"
 
   docs-updated:
     name: Docs updated

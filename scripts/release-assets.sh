@@ -8,7 +8,8 @@
 #
 # The tarball holds a single directory, mc-VERSION-TARGET/, containing:
 #
-#   mc            the binary, mode 755
+#   mc            the binary, mode 755 (mc.exe on a windows-* target: a file
+#                 that is not called *.exe cannot be launched there)
 #   INSTALL.txt   generated here: where to put it, how to clear the macOS
 #                 quarantine flag, how to check the checksum
 #   README.md     the repository's README, if there is one (everything before a
@@ -58,8 +59,16 @@ stage="$outdir/.stage/$name"
 rm -rf "$outdir/.stage"
 mkdir -p "$stage"
 
-cp "$binary" "$stage/mc"
-chmod 755 "$stage/mc"
+# M38: the name inside the archive is the name the program has to have on the
+# target, which on Windows means the suffix. Everything else -- the layout, the
+# checksum, the reproducibility rules -- is the same for all five targets.
+binname="mc"
+case "$target" in
+    windows-*) binname="mc.exe" ;;
+esac
+
+cp "$binary" "$stage/$binname"
+chmod 755 "$stage/$binname"
 
 # INSTALL.txt is generated, never dated: a date would make the tarball differ
 # between two builds of the same tag.
@@ -71,7 +80,15 @@ chmod 755 "$stage/mc"
     echo
     echo "Install"
     echo "-------"
-    echo "  install -m 755 mc /usr/local/bin/mc      # or anywhere on your PATH"
+    case "$target" in
+    windows-*)
+        # printf '%s\n', not echo: a `\t` in a Windows path is a tab to echo
+        printf '%s\n' '  copy mc.exe C:\tools\mc.exe            # or anywhere on your PATH'
+        ;;
+    *)
+        echo "  install -m 755 mc /usr/local/bin/mc      # or anywhere on your PATH"
+        ;;
+    esac
     echo
     case "$target" in
     macos-*)
@@ -85,6 +102,22 @@ chmod 755 "$stage/mc"
         echo "Then check the signature is intact:"
         echo
         echo "  codesign --verify --verbose=4 mc"
+        echo
+        ;;
+    windows-*)
+        echo "Windows"
+        echo "-------"
+        echo "The binary needs nothing but kernel32.dll: no C runtime, no Visual Studio"
+        echo "redistributable, no Windows SDK. There is no direct-executable backend on"
+        echo "Windows, so a program is an object plus a linker:"
+        echo
+        echo "  mc hello.mc -o hello.obj"
+        echo "  lld-link -subsystem:console -entry:mc_start -nodefaultlib \\"
+        echo "           -out:hello.exe hello.obj winstart.obj kernel32.lib"
+        echo
+        echo "or, the usual way, 'mc build .' with a [linker] section in mc.toml. The"
+        echo "import library is generated from a list of names by llvm-dlltool; there is"
+        echo "nothing to download."
         echo
         ;;
     linux-*)
