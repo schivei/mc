@@ -35,7 +35,7 @@ root in order.
 
 ## The catalogue
 
-The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 55 entries,
+The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 61 entries,
 plus `mc/bundle_data`, which is regenerated on demand (see below). Those are the names `<...>`
 accepts.
 
@@ -125,6 +125,21 @@ void user_init() { }
 That is a complete compiler, and it is exactly what `mc build` generates for a `[compiler]`
 section ([../build.md](../build.md)). See [../guide/90-linux-host.md](../guide/90-linux-host.md)
 for what the host layer answers.
+
+### `<float>` — f32 and f64 (M24)
+
+A LIBRARY, not a compiler feature. The stock `mc` has no floats: nothing here is in
+`lib/user_default.mc`, and a float program is built by a taught compiler the way `examples/api`
+and `examples/lang` are.
+
+| name | file | what it gives you |
+|---|---|---|
+| `<float>` | `lib/float.mc` | the compiler half: `type_new` for `f64`, `f32` and `f64raw`, the `syntax_lit` handler with a correctly-rounded decimal-to-binary conversion in integers, and the eight `intrinsic` registrations |
+| `<machine_arm64_float>` | `lib/machine_arm64_float.mc` | the AArch64 machine, derived from `arm64` |
+| `<machine_x86_64_float>` | `lib/machine_x86_64_float.mc` | the SSE2 machine, derived from `x86_64` **and** `x86_64-win` |
+| `<user_float>` | `lib/user_float.mc` | the three of them plus the `user_init` that registers them — this is what `[compiler] modules` names |
+| `<mc_float>` | `lib/mc_float.mc` | the same as a standalone compiler entry, for `mc --exe` |
+| `<float_rt>` | `lib/float_rt.mc` | the RUN-TIME half, which a **program** includes: `putf64`, `fmt_f64`, `puthexf`. It is the one bundled file the frozen seed cannot lex (it spells float literals) and it carries a `seed-skip` header saying so |
 
 ### The demonstrations
 

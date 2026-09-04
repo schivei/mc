@@ -1345,6 +1345,23 @@ ok   heap        29Mi / 64Mi    46%  (HEAP_SIZE, max RSS of build/mc0)
 17/17 seed limits under 90%
 ```
 
+### `<float>`: a taught compiler in `[compiler] modules`
+
+`f32` and `f64` are a LIBRARY (M24 step 1, [reference/bundle.md](reference/bundle.md) § `<float>`).
+A project that wants them names the module and gets a compiler that has them:
+
+```toml
+[compiler]
+modules = ["user_float.mc"]
+out     = "build/mc-float"
+```
+
+...or, without a project, `mc --exe lib/mc_float.mc -o mc-float` and then `mc-float --exe prog.mc`.
+The program includes `<float_rt>` beside its system layer for `putf64`/`fmt_f64`. Every target
+`mc` has works: macOS and Linux on aarch64, Linux and Windows on x86-64, Windows on aarch64 — the
+module brings a machine derived from each of the three bundled ones, and `make check-float` runs
+the same twelve `tests/float/*.mc` on every leg this host can reach.
+
 ### The seventeenth row: the seed's arena
 
 The last row is not a table, and it is the one that bit. At M17 every `MAX*` above was under 57%

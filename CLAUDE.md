@@ -1662,6 +1662,62 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `docs/reference/cli.md` (§ "the six dumps", with the `--dump-machine` example),
   `docs/reference/machine.md` § 3 and § 4, `docs/reference/diagnostics.md`,
   `docs/reference/bundle.md`, `docs/guide/96-a-new-primitive.md`.
+- M24 step 1 ✔ (`docs/specs/M24.md` § "Step 1 -- `<float>`, the first library"):
+  **`f32` and `f64`, taught to `mc` from outside the compiler.** `git diff src/` for this step is
+  **empty** apart from the generated `src/bundle_data.mc`; `stage0/` untouched, 2846/3000.
+  * `lib/float.mc` (432): `type_new` for `f64` (8, 8, TK_FLOAT), `f32` (4, 4) and `f64raw` (8, 8,
+    TK_INT -- the same bytes as an integer, so `(f64raw) x` is one `fmov`/`movq` and a NaN can be
+    written down in a language with no NaN literal); the `syntax_lit` handler; and eight
+    `intrinsic` registrations (`ldf32 ldf64 stf32 stf64 sqrt_f64 fabs fmin fmax`).
+    **The decimal-to-binary conversion is correctly rounded and written in integers**, because the
+    compiler that runs it has no floats: the literal is the exact rational `U/V`, and a 2048-bit
+    big integer in fixed arrays takes the quotient with one guard bit and lets the remainder decide
+    the tie. `f32` is produced by running the same routine with a 24-bit significand, never by
+    narrowing an `f64`, so there is no double rounding. Verified bit for bit on `0.1 + 0.2`
+    (...334, not ...333), pi to fifteen digits, `1e308`, the smallest **subnormal** `5e-324`,
+    `1e20` and an exact value.
+  * `lib/machine_arm64_float.mc` (669) and `lib/machine_x86_64_float.mc` (775): two derived
+    machines, 21 slots each, everything else delegating through a pristine copy. Float depths in
+    `v16..v23` (never the callee-saved `v8..v15`) / `xmm8..xmm13` on SysV / `xmm0..xmm5` on Win64,
+    where `xmm6..xmm15` are callee-saved. The **whole ABI comes out of `walk_depth_type`**: two
+    counters on AAPCS64 and SysV, one shared position on Win64, and the overflow in argument order.
+    `walk_ret_type()` is what tells `MTASK_CALL` what the call returns, since by then depth `d`
+    holds argument 0.
+    Two things worth keeping: the AArch64 float conditions are `mi/ls/gt/ge/eq`, never `lt/le`, so
+    a NaN makes all six ordered predicates false; on x86-64 `<` and `<=` SWAP their operands and
+    use `a`/`ae` for the same reason, and only `==`/`!=` need the parity mask.
+  * `lib/user_float.mc` (17) is the `[compiler] modules` entry, `lib/mc_float.mc` (12) the
+    standalone one, and `lib/float_rt.mc` (71) the RUN-TIME half a program includes -- `putf64`
+    (fixed precision, half-up, `nan`/`inf` by bit pattern, a hex fallback past 2^63),
+    `fmt_f64` and `puthexf`. It is a separate include and NOT a source the module pushes:
+    pushing it would put a call to `write` into every program the taught compiler compiles,
+    including `lib/sys_windows_start.mc`, which has no system layer at all. It is the first user of
+    the `seed-skip` escape step A added to `scripts/check-lex.sh` -- it spells float literals, so
+    the frozen seed cannot lex it, and it says so in its own header.
+  * `tests/float/` (12 files) and `scripts/check-float.sh` (369), inside `make check`. Every test
+    is **bit-exact**: it stores with `stf64`, reads back with `ld64` and prints sixteen hex digits
+    against a value recorded in its header (produced once by `python3`, so the suite has no python3
+    dependency).
+  Results, the same twelve sources on every leg: **macos/aarch64 12/12, linux/aarch64 12/12,
+  linux/x86_64 12/12** (run for real in Docker), **windows/aarch64 11/11 and windows/x86_64 11/11
+  objects linked** with `lld-link` (1 skipped: `extern f64 sqrt` -- there is no C runtime on that
+  target). `.github/workflows/ci.yml` puts the float objects into the SAME four artifacts the
+  suites use, so the two Windows jobs and the two Linux jobs RUN them.
+  **The llvm-mc sweep**, mandatory for a machine that lands in `lib/`: every distinct float
+  instruction the two machines emit over the whole corpus, fed back through the assembler --
+  **37 (mach-o arm64), 37 (elf aarch64), 181 (elf x86_64), 166 (coff x86_64), 0 mismatches**.
+  `sqrt(2.0)` through `extern f64 sqrt(f64)` -- the case that is flatly unreachable without M24,
+  because `MTASK_CALL` could not be told an argument was a double -- comes back
+  `0x3ff6a09e667f3bcd`, bit for bit what the `sqrt_f64` intrinsic produces and what libm produces.
+  `make check` green end to end (RC 0), with `check-float` added: `test` 32/32, `check-lex`
+  101/101 (2 skipped), `check-ast` 101/101, `check-asm` 101/101, `check-obj` **32/32 identical to
+  the frozen seed**, `check-bundle` (61 files), `bootstrap` at a fixed point, `check-surface`
+  32/32, `test-exe` 32/32, `check-limits` 17/17 under 90%, `test-linux` 33/33,
+  `test-linux-x86_64` 30/30, `check-float` ok, `check-examples`, `check-lang`, `check-conc`,
+  `check-desktop`, `check-docs`, `site` + `check-site`. `scripts/check-inert.sh` between the
+  step-B compiler and this one: identical everywhere. All five goldens rewritten once.
+  Docs: `docs/guide/96-a-new-primitive.md` § 5 (`<float>`, worked), `docs/build.md`,
+  `docs/reference/bundle.md` § `<float>`, `docs/reference/language.md`, `docs/ci.md`.
 - Next: M18 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
   sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is
   one more motivating case).

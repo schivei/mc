@@ -453,7 +453,8 @@ varargs, `+=` and `++`, multiple assignment, the ternary operator, operator over
 namespaces, generics, classes, and a standard library.
 
 Most of them are reachable **through the surface** instead: `while`/`for`/`+=`/`++` from the
-prelude, `bool` from `type_alias`, `f32`/`f64` from `<float>` — a library, not a keyword — over
+prelude, `bool` from `type_alias`, `f32`/`f64` from `<float>` — a library, not a keyword, with its
+literals, its four ABIs and its instructions in `lib/` and nothing in `src/` — over
 M24's `type_new`/`syntax_lit`/`intrinsic` and a derived machine ([hooks.md](hooks.md) § 3,
 [../guide/96-a-new-primitive.md](../guide/96-a-new-primitive.md)), classes and generics from
 `syntax`/`syntax_expr` (`examples/lang` teaches all of the last row). What is genuinely absent is `struct` — it would

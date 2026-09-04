@@ -240,6 +240,16 @@ check-sysroots: $(MC)
 check-stubs: build/mc1
 	scripts/check-stubs.sh build/mc1
 
+# M24 step 1: <float> -- f32 and f64 taught to `mc` from outside the compiler.
+# Builds the taught compiler from lib/mc_float.mc, runs tests/float/ on macOS
+# with --exe, cross-compiles and runs them on linux/aarch64 and linux/x86_64 in
+# Docker, cross-compiles and LINKS them for windows/aarch64 and windows/x86_64
+# (the two CI legs are the runtime oracle there), and sweeps every distinct float
+# instruction the two machines emit back through llvm-mc. Each leg self-skips
+# with a reason.
+check-float: build/mc1
+	scripts/check-float.sh build/mc1
+
 # M23: the seed guard -- `mc limits src/mc.mc` against the fixed MAX* constants
 # still in stage0/mc.h and stage0/*.c. Fails when any of them is over 90% used,
 # which is the early warning that the C seed has to be raised before it stops
@@ -442,7 +452,7 @@ else ifneq (,$(WINHOST))
 # Docker or python3 -- and `check-skipped` prints the reason for each one.
 check: budget bootstrap-windows check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-sysroots check-limits check-skipped
 else
-check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-sysroots check-stubs check-limits check-minimal test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-desktop check-kernel check-docs site check-site
+check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-sysroots check-stubs check-limits check-minimal test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-desktop check-float check-kernel check-docs site check-site
 endif
 
 budget:
@@ -455,6 +465,8 @@ clean:
 .PHONY: check-linux-host check-skipped
 .PHONY: bootstrap-windows mc-windows mc-windows-x86_64 mc-windows-obj mc-windows-x86_64-obj
 .PHONY: mcrt-windows mcrt-windows-x86_64
+.PHONY: check-float
+.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-limits sysroot-linux sysroot-linux-x86_64 sysroot-windows sysroot-windows-x86_64 test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal
 
 .PHONY: check-kernel
 .PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-sysroots check-stubs check-limits sysroot-linux sysroot-linux-x86_64 sysroot-windows sysroot-windows-x86_64 test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal

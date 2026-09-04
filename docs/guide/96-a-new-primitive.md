@@ -138,8 +138,43 @@ hidden. Two mechanisms are deferred with a price written down in `docs/specs/M24
 `MTASK_BYTES` for naming a VEX3 instruction from a source file, and `MTASK_DEPTH_SPAN` for a value
 that lives in a register **pair** rather than in a 16-byte slot.
 
-## 5. Where to look
+## 5. `<float>`, worked
 
+```
+build/mc1 --exe lib/mc_float.mc -o build/mc-float     # the taught compiler
+build/mc-float --exe prog.mc -o prog                  # ...and a float program
+```
+
+or, from `mc.toml`, `[compiler] modules = ["user_float.mc"]`. The program says
+
+```
+#include <sys>
+#include <float_rt>
+
+i64 main() { putf64(1.5 + 2.5, 3); return 0; }        // 4.000
+```
+
+Three types are registered: `f64` (8 bytes), `f32` (4) and `f64raw` (8, an integer) — the last is
+the reinterpretation, so `(f64raw) x` and `(f64) r` are one `fmov`/`movq` and not a numeric
+conversion, which is how a NaN is written down in a source that has no NaN literal. Eight
+intrinsics name the instructions the core's operator set does not have: `ldf32` `ldf64` `stf32`
+`stf64` `sqrt_f64` `fabs` `fmin` `fmax`. `%` on a float is `no float remainder`, raised by the
+module's own machine — the core's `bin_op` maps `%` to `MOP_UMOD` for any non-`i64` type and has no
+opinion beyond that.
+
+The run-time half is `<float_rt>`, a separate include and not a source the module pushes: pushing
+it would put `putf64` — and therefore a call to `write` — into every program the taught compiler
+compiles, including ones with no system layer at all. `putf64(x, digits)` is fixed-precision and
+says so; `fmt_f64(buf, x, digits)` is the half that needs no `write`.
+
+What it cost in `src/`: nothing. What it cost in mechanism: the eight of M24, which is the point.
+
+## 6. Where to look
+
+- `lib/float.mc`, `lib/machine_arm64_float.mc`, `lib/machine_x86_64_float.mc`,
+  `lib/user_float.mc`, `lib/float_rt.mc` — the first library built on all of this: `f32` and `f64`,
+  their literals, their arithmetic, and their ABI on four targets. `git diff src/` for the whole of
+  it is empty.
 - `lib/machine_probe.mc` — the smallest complete derived machine: it changes no instruction and
   asserts the depth-type contract on every task.
 - `lib/user_badmach.mc` — the same, with one slot deliberately wrong, so the override is visible
