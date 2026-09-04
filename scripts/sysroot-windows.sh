@@ -60,9 +60,10 @@ fi
 mkdir -p "$dir" || exit 1
 
 # The kernel32 entry points the two layers declare, one per line: the seven of
-# lib/sys_windows.mc (M19) and the six more lib/sys_windows_host.mc needs for a
-# HOSTED compiler (M38) -- spawning a tool, waiting for it, creating and
-# deleting a file, and the arena's mapping -- plus GetEnvironmentVariableA,
+# lib/sys_windows.mc (M19) and the seven more lib/sys_windows_host.mc needs for
+# a HOSTED compiler (M38) -- spawning a tool, asking why a spawn failed, waiting
+# for it, creating and deleting a file, and the arena's mapping -- plus
+# GetEnvironmentVariableA,
 # which is how src/host_windows.mc answers host_home() (M25: there is no
 # environment array on this host, so USERPROFILE is asked for by name). Keep
 # this list and the `extern`s in those two files in step: a name here that no
@@ -80,6 +81,7 @@ ExitProcess
 GetCommandLineA
 GetEnvironmentVariableA
 GetExitCodeProcess
+GetLastError
 GetStdHandle
 ReadFile
 VirtualAlloc

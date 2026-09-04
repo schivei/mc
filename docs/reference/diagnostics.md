@@ -248,6 +248,7 @@ notatype main() { return 0; }
 | `--entry-only and --compiler-only are exclusive` | both halves of a taught build asked for at once | `--compiler-only` builds the compiler and stops; `--entry-only` compiles the entry with the running binary. Pick one |
 | `unknown backend: NAME` (then `registered: …`) | `--backend=` naming something not registered | the message lists what exists |
 | `cannot run` | `posix_spawnp` could not start the linker or the taught compiler | check the `cmd` in `[linker]`, and that a relative compiler path starts with `./` |
+| `cannot spawn: <tool> (error N)` | a tool `mc` may legitimately find missing — `curl`, `wget`, `tar`, `llvm-dlltool` — is there and could not be started anyway. `N` is the number `posix_spawnp` returned: 13 `EACCES` (not executable), 8 `ENOEXEC` (not a program), 7 `E2BIG` (on a Windows host, a command line past `WH_CMDMAX`). Only `ENOENT` (2) is silent, and means "not on `PATH`" | fix the permissions on the tool, or take the broken copy off the `PATH` |
 | `waitpid failed` | the spawned process could not be waited for | a system-level failure |
 | `posix_spawn_file_actions_init failed` | the spawn could not be set up | same |
 | `xcrun --show-sdk-path failed` | `{sdk}` was used and `xcrun` failed | install the command line tools, or write the SDK path literally |
@@ -296,14 +297,14 @@ to 1 (a diagnostic) and 3 (the limits verdict), [cli.md](cli.md) § Exit codes.
 ```
 mc: no sysroot for linux-aarch64
   tried: build/sysroot/linux-aarch64 (no crt1.o)
-         /Users/me/.mc/sysroots/linux-aarch64 (absent)
+         /Users/me/.mc/sysroots/linux-aarch64 (no crt1.o)
   run:   sh scripts/sysroot-linux.sh --arch aarch64
 ```
 
 | line | what it says |
 |---|---|
 | `no sysroot for <os>-<arch>` | the target whose `{sysroot}` could not be resolved |
-| `tried:` | one line per candidate the chain looked at, with the reason it was refused: `absent` (the path does not open at all) or `no <marker>` (it opens but is not a sysroot) |
+| `tried:` | one line per candidate the chain looked at, with the reason it was refused: `no <marker>`, the first of that target's marker files ([sysroot.md](sysroot.md) § 2) that the directory does not hold. A directory that does not exist at all is refused with the same words, and deliberately — the chain probes the marker FILES and never the directory, because `open` on a directory is not portable to a Windows host |
 | `run:` | the command that would produce one, per operating system |
 
 It is the one diagnostic in this compiler with **no `file:line:col`**, on purpose: the chain runs
@@ -316,7 +317,7 @@ first line:
 
 | message | cause |
 |---|---|
-| `mc: no downloader on this PATH (tried curl)` | neither `host_downloader()` nor its alternative could be spawned |
+| `mc: no downloader on this PATH (tried curl)` | neither `host_downloader()` nor its alternative is on the `PATH` — `ENOENT` from both spawns, and nothing else: a downloader that is there and refuses to start is the `cannot spawn` of § 9 instead |
 | `mc: the download failed (exit N)` | the downloader ran and returned non-zero. `curl` exit 1 here is the `--proto '=https'` guard refusing a redirect to plaintext |
 | `mc: checksum mismatch for <file>` | the bytes are not the pinned row's. Both digests are printed |
 | `mc: wrong size for <file>` | the length is not the pinned row's |

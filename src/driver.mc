@@ -158,10 +158,28 @@ uptr drv_subst(uptr s, uptr pat, uptr rep) {
 // on PATH at all. `mc sysroot fetch` tries curl and then wget, and "not
 // installed" is a case it handles rather than a failure -- see
 // sysroot_download (src/sysroot.mc).
+//
+// -1 means EXACTLY that, and nothing else. posix_spawnp returns the error
+// number rather than setting errno, so ENOENT is the one value that says "no
+// such program"; EACCES (a file that is there and not executable), ENOEXEC (a
+// file that is there and not a program) and everything else are real failures,
+// and turning them into -1 sent the caller looking for a second downloader, or
+// printing `no downloader on this PATH` about a curl that is on the PATH. They
+// stop the build here instead, with the tool and the number
+// (docs/reference/diagnostics.md § 10).
+//
+// The Windows shim (lib/sys_windows_host.mc) answers in the same vocabulary:
+// ENOENT when CreateProcessA could not find the program, another non-zero
+// otherwise. See docs/reference/sysroot.md § 7.
+#define ENOENT 2
+
 i64 drv_spawn_ok(uptr file, uptr av, uptr fa) {
     u8 pid[8];
     st64(pid, 0);
-    if (posix_spawnp(pid, file, fa, 0, av, host_environ()) != 0) return -1;
+    i64 e = posix_spawnp(pid, file, fa, 0, av, host_environ());
+    if (e == ENOENT) return -1;
+    if (e != 0)
+        die2("cannot spawn", tm_cat(file, tm_cat(" (error ", tm_cat(tm_num_str(e), ")"))));
     u8 st[8];
     st64(st, 0);
     if (waitpid(ld64(pid), st, 0) < 0) die2("waitpid failed", file);
@@ -582,6 +600,7 @@ void drv_usage() {
     out_str(2, "usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits] [--sysroot-dir DIR]\n");
     out_str(2, "       mc limits [DIR|FILE.mc]\n");
     out_str(2, "       mc sysroot list|path <target>|fetch <target> [--yes] [--sysroot-dir DIR]\n");
+    out_str(2, "       mc sysroot stub [DIR] [--config FILE]\n");
 }
 
 // everything after the flags: one shape for `mc build` and for `mc limits`

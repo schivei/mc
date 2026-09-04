@@ -46,6 +46,14 @@ followed by `close`, and each target declares the names that say a directory is 
 `crt1.o` alone is not enough: Alpine's `musl` package has the loader and the startup object,
 `musl-dev` has `libc.a` as well, and only the second one can link.
 
+**The directory itself is never probed** — only the marker files, which are files. On a Windows
+host `open` is `CreateFileA(..., FILE_ATTRIBUTE_NORMAL, ...)` (`lib/sys_windows.mc`), and that
+call will not open a directory: a probe of the directory would report every populated sysroot on
+the machine as absent. Nothing is lost by dropping it, because a directory that is not there is a
+directory none of whose markers open, and `no crt1.o` is as true of a missing directory as of an
+empty one. The same rule governs the `fetch` check of § 7: a row member that lands *as* the
+destination directory is not probed either.
+
 The Windows marker names two files because there are two roads to the same thing:
 `scripts/sysroot-windows.sh` builds `kernel32.lib` with `llvm-dlltool`, and `mc sysroot fetch`
 unpacks llvm-mingw's `libkernel32.a`. Either one makes the directory a sysroot; the message
@@ -85,13 +93,14 @@ of `host_environ()` on macOS and Linux; on Windows there is no environment array
 ```
 mc: no sysroot for linux-aarch64
   tried: build/sysroot/linux-aarch64 (no crt1.o)
-         /Users/me/.mc/sysroots/linux-aarch64 (absent)
+         /Users/me/.mc/sysroots/linux-aarch64 (no crt1.o)
   run:   sh scripts/sysroot-linux.sh --arch aarch64
 ```
 
 One text, shared by every road into the chain. Each `tried:` line is a directory and the reason it
-was refused — `absent` when it does not open at all, `no <marker>` when it does but is not a
-sysroot.
+was refused: `no <marker>`, the first marker file of § 2 that the directory does not hold. A
+directory that does not exist at all reads the same, because there is no separate directory probe
+— see § 2.
 
 **Exit code 2** is this message and nothing else. `docs/reference/cli.md` § Exit codes: 1 is a
 diagnostic, 3 is the limits verdict, 2 is "the environment is not ready". A script may therefore
@@ -166,9 +175,10 @@ check guards the bytes either way; the flags guard the connection.
 all the resolution chain has, because a directory somebody built by hand has no row behind it. A
 fetch knows more: it has the archive's own file list. An extraction cut short — a full disk, a
 killed `tar` — can land `crt1.o` and `libc.a` and stop before `crti.o`, and the marker test would
-call that directory a sysroot. So `fetch` tests each landed member (the member path with the row's
-`--strip-components` removed; for the llvm-mingw rows nothing is left and the member *is* the
-directory), and only then the markers.
+call that directory a sysroot. So `fetch` tests each landed member — the member path with the
+row's `--strip-components` removed — and only then the markers. For the llvm-mingw rows nothing is
+left of the path and the member *is* the destination directory; that one is skipped, for the
+reason § 2 gives, and the markers it would have stood in for are tested a line later anyway.
 
 Anything that goes wrong — no downloader on `PATH`, a non-zero `curl`, a checksum or size
 mismatch, a `tar` that failed, an archive that did not carry one of its own members or a marker —
@@ -180,6 +190,25 @@ it is the claim that this directory holds what the row says, and that claim does
 extraction that did not finish. And a refused extraction has its **marker files removed**, so the
 partial directory cannot pass the chain's marker test on the next `mc build` — the rest of the
 debris is inert, and a second `fetch` extracts over it.
+
+**Only a missing program makes `fetch` try the second downloader.** `drv_spawn_ok`
+(`src/driver.mc`) returns -1 for `ENOENT` and for nothing else: `posix_spawnp` hands back the
+error number rather than setting `errno`, so an `EACCES` (a `curl` that is there and not
+executable) or an `ENOEXEC` (a `curl` that is there and not a program) is a real failure and stops
+the build with `mc: cannot spawn: curl (error 13)`, instead of being reported as
+`no downloader on this PATH` about a `curl` that is on the `PATH`.
+
+The Windows shim answers in the same vocabulary (`lib/sys_windows_host.mc`, `posix_spawnp` over
+`CreateProcessA`), which is the only reason the rule holds on that host too:
+
+| `GetLastError()` after a failed `CreateProcessA` | returned |
+|---|---|
+| `ERROR_FILE_NOT_FOUND` (2), `ERROR_PATH_NOT_FOUND` (3) | `ENOENT` (2) — the program is not there, try the next tool |
+| anything else | that value, unchanged (a 0 becomes 1) — a real failure, named with its number |
+
+and the command line that did not fit in `WH_CMDMAX` returns `E2BIG` (7) before any process is
+created, because running a truncated command line would run the *wrong* command.
+`GetLastError` is therefore one of the names `scripts/sysroot-windows.sh` puts in `kernel32.def`.
 
 Where the files land, when `--sysroot-dir` is not given, is § 4's cache: `[sysroot].cache` is not
 consulted (there is no config here), so it is `host_home()/.mc/sysroots/<os>-<arch>` or nothing.

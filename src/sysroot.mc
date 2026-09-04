@@ -23,6 +23,12 @@
 // it has `open` (src/arena.mc), so path_exists() is open + close and each target
 // declares the one or two names that say a directory is populated.
 //
+// It is a test on FILES and never on a directory. On a Windows host `open` is
+// CreateFileA(..., FILE_ATTRIBUTE_NORMAL, ...) (lib/sys_windows.mc), which
+// cannot open a directory at all: a probe of the directory itself would report
+// every existing sysroot as absent there. The markers ARE the criterion, and a
+// directory that is not there is a directory whose markers do not open.
+//
 // Exit code 2 is new with M25 and belongs to this file alone: 1 is a
 // diagnostic, 3 is the limits verdict, 2 is "the environment is not ready"
 // (docs/reference/cli.md § Exit codes).
@@ -43,9 +49,11 @@
 // differs between hosts comes from the host layer:
 // host_os/host_arch/host_home/host_has_sdk/host_downloader.
 
-// ---- the one primitive: does this path open? ----
-// O_RDONLY on a directory succeeds on macOS, Linux and Windows alike, so the
-// same call answers for a file and for a directory.
+// ---- the one primitive: does this FILE open? ----
+// Every caller in this file passes a marker or an archive member, never a
+// directory: `open` on a directory is a portability trap (it succeeds on macOS
+// and Linux, and CreateFileA refuses it on Windows), and there is nothing a
+// directory probe would add -- a missing directory is a missing marker.
 i64 path_exists(uptr p) {
     i64 fd = open(p, O_RDONLY, 0);
     if (fd < 0) return 0;
@@ -138,9 +146,15 @@ void sr_note(uptr dir, uptr why) {
 }
 
 // one candidate: accepted when every marker is there, remembered with the
-// reason it was not otherwise
+// reason it was not otherwise.
+//
+// The directory itself is NOT tested. It used to be, and on a Windows host that
+// test answered "absent" for every directory that exists, because `open` there
+// is CreateFileA and a directory is not a file it will open. The marker probes
+// alone are the criterion and they answer for both cases: a directory that is
+// not there holds none of its markers, and `no crt1.o` is as true of a missing
+// directory as of an empty one.
 i64 sr_try(uptr dir, uptr os) {
-    if (!path_exists(dir)) { sr_note(dir, "absent"); return 0; }
     uptr m = sysroot_missing_marker(dir, os);
     if (m != 0) { sr_note(dir, tm_cat("no ", m)); return 0; }
     return 1;
@@ -537,11 +551,14 @@ uptr sysroot_missing_file(i64 r, uptr dest) {
                 buf_u8(b, 0);
                 uptr word = buf_p(b);
                 uptr name = sysroot_landed(word, ss_strip_at(r));
-                uptr p = dest;
-                if (ld8(name) != 0) p = tm_cat(tm_cat(dest, "/"), name);
-                if (!path_exists(p)) {
-                    if (ld8(name) == 0) return word;
-                    return name;
+                // An empty name means the member IS `dest` (the llvm-mingw rows
+                // name `<triple>/lib` and strip exactly as many components), and
+                // there is nothing to probe: `open` on a directory is refused by
+                // CreateFileA on a Windows host, so testing it would report every
+                // successful extraction as incomplete there. The markers are
+                // checked right after this walk and they are files.
+                if (ld8(name) != 0) {
+                    if (!path_exists(tm_cat(tm_cat(dest, "/"), name))) return name;
                 }
                 buf_init(b);
             }

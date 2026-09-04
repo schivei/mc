@@ -912,13 +912,13 @@ A Windows program does not link against a copy of `kernel32.dll`. It links again
 library** — a small archive holding one thunk per exported name and no code from the DLL — and
 that archive can be generated from a plain list of names. So `scripts/sysroot-windows.sh
 [--arch aarch64] [DIR]` writes `kernel32.def` (the entry points `lib/sys_windows.mc` declares,
-and since M38 the six more `lib/sys_windows_host.mc` needs: `CreateProcessA`,
-`WaitForSingleObject`, `GetExitCodeProcess`, `CreateDirectoryA`, `DeleteFileA`, `VirtualAlloc`)
-and builds `kernel32.lib` from it with `llvm-dlltool -m arm64`. No network, no Windows
+and since M38 the seven more `lib/sys_windows_host.mc` needs: `CreateProcessA`,
+`WaitForSingleObject`, `GetExitCodeProcess`, `GetLastError`, `CreateDirectoryA`, `DeleteFileA`,
+`VirtualAlloc`) and builds `kernel32.lib` from it with `llvm-dlltool -m arm64`. No network, no Windows
 SDK, no mingw. Like the musl one it is a cache: with `kernel32.lib` already there it does nothing.
 `make sysroot-windows` runs it, and `scripts/test-windows.sh` runs it by itself.
 
-A program that needs more than those thirteen names — a whole SDK, other DLLs — is what
+A program that needs more than those fifteen names — a whole SDK, other DLLs — is what
 `mc sysroot fetch windows-*` will be for; this is the toolchain the test suite and the
 Windows-hosted compiler need.
 

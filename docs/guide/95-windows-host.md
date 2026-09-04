@@ -129,7 +129,12 @@ written by hand — and is compiled once per architecture. What it does:
   `lpApplicationName = 0` so that `PATH` is searched and `.exe` is appended for us — which is why
   `cmd = "lld-link"` in an `mc.toml` works with no suffix written anywhere. `dwFlags` stays 0, so
   the child inherits this process's console and its three standard handles and a spawned linker's
-  diagnostics reach you unchanged.
+  diagnostics reach you unchanged. It answers in POSIX's vocabulary, because that is what
+  `posix_spawnp` returns and what `drv_spawn_ok` reads: **`ENOENT` (2)** when `GetLastError()` is
+  `ERROR_FILE_NOT_FOUND` (2) or `ERROR_PATH_NOT_FOUND` (3) — the one value that means "try the next
+  tool" — `E2BIG` (7) when the joined command line did not fit in `WH_CMDMAX`, and otherwise the
+  `GetLastError()` value itself, which is more use in a diagnostic than a POSIX number invented for
+  it. Anything but 0 and `ENOENT` stops the build with `cannot spawn <tool> (error N)`.
 * **`waitpid`** waits on the process HANDLE, reads the exit code and stores `(code & 255) << 8`.
   `src/driver.mc` takes the code from bits 8..15 and treats the low seven as a signal number;
   Windows has no signals, so those seven stay 0 and the shape is exact. The mask is what keeps a
