@@ -180,7 +180,7 @@ before `user_init()` even runs:
 | name | writes | alias |
 |---|---|---|
 | `macho` (default) | `MH_OBJECT`, the `.o` the system linker takes | — |
-| `macho-exe` | an ad-hoc signed `MH_EXECUTE`, no `ld` | `--exe` |
+| `macho-exe` | an ad-hoc signed `MH_EXECUTE`, no `ld` | `--exe` on a macOS host |
 | `elf-obj` | ELF64 `ET_REL` for `EM_AARCH64` | — |
 
 An unknown name lists what exists:

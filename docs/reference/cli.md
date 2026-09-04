@@ -29,7 +29,7 @@ Arguments are read left to right. The first non-flag argument is the source; a s
 | flag | meaning |
 |---|---|
 | `-o OUT` | output path. Default `out.o`. `-o` with nothing after it is `mc: -o requires an argument`. |
-| `--exe` | alias for `--backend=macho-exe`: write a signed Mach-O executable directly, no `ld`. |
+| `--exe` | write a direct executable for the HOST, no linker. The backend is the exe slot of the host's `target()` registration, resolved after `user_init()` (post-M41 review) — `macho-exe` on macOS, a signed Mach-O binary. A host registered with 0 in that slot has no direct executable at all, and the flag is refused with `<os> requires a linker: there is no direct executable` instead of writing a binary for another operating system; that is the case on Linux and on Windows, where the road is an object plus `[linker]`. `--exe` and `--backend=` write the same decision, so the last one on the command line wins. |
 | `--backend=NAME` | pick a registered backend. Built in: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64`, `coff-obj-arm64`, `coff-obj-x86_64`. The default is the HOST's object backend — `macho` on macOS, `elf-obj`/`elf-obj-x86_64` on Linux (M37). A taught compiler adds its own with `backend("name", &f)`. An unknown name lists what exists and exits 1. |
 | `--include=DIR` | add one `#include "…"` search root, exactly like a `[include].paths` entry does for `mc build`. Repeatable; roots are tried in the order given, after the includer's own directory. It is what lets one source tree carry two platform layers in different directories and pick one without a `mc.toml` (`examples/conc/lib/macos`, `lib/linux`). |
 | `--host` | print what this binary is and exit 0 — three lines, no source needed. |
@@ -279,6 +279,12 @@ missing files" from "your program does not compile" without reading the text.
   asks the target registry for the host's pair, as before; a compiler with no target registry at
   all uses whatever `backend_default("name")` recorded, and with neither says
   `no backend: use --backend=NAME`. See `docs/guide/98-recreating-the-compiler.md`.
+- **`--exe` is the host's, not Mach-O's (post-M41 review).** It used to be written in `src/cli.mc` as the
+  literal name `macho-exe`, so a Linux- or Windows-hosted `mc --exe` wrote a Mach-O binary its own
+  kernel refuses with `ENOEXEC` — the same class of bug M37 fixed for the object backend. It reads
+  the exe slot of `target(host_os(), host_arch(), …)` now, and refuses when that slot is 0. The
+  resolution happens after `user_init()` and after the `--dump-*` modes have returned, so a target
+  a module registered counts and `--exe --dump-asm` still dumps.
 - **There is no `--target=`**: the target is `[target]` in `mc.toml`. Cross-compiling is
   [../guide/50-cross-compile.md](../guide/50-cross-compile.md).
 - **There is no `--help`**: any bad invocation prints the usage above.

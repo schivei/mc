@@ -11,8 +11,8 @@ the `.mc` compiler — the C stage0 is the seed and isn't teachable via Tier 2. 
 replay: `p_skip_balanced`/`p_push_source`/`p_subst_*`/`p_resplit_punct`) is likewise implemented,
 `.mc`-only, and proven end to end by `examples/api` and by `lib/user_syntax_demo.mc`. See the
 section at the end, which also describes the three built-in backends: `macho` (the `.o`, default),
-`macho-exe` (M11's direct executable, alias `--exe`) and `elf-obj` (M16's ELF64 relocatable for
-Linux arm64).
+`macho-exe` (M11's direct executable, what `--exe` resolves to on a macOS host) and `elf-obj`
+(M16's ELF64 relocatable for Linux arm64).
 
 ## Tier 1 — `#...` directives
 
@@ -556,7 +556,7 @@ somebody doing it again.
 | name | writes | alias |
 |---|---|---|
 | `macho` (default) | `MH_OBJECT` — the `.o` that `scripts/link.sh` links with `ld` | — |
-| `macho-exe` (M11) | ad-hoc signed arm64 `MH_EXECUTE`, no `ld` | `--exe` |
+| `macho-exe` (M11) | ad-hoc signed arm64 `MH_EXECUTE`, no `ld` | `--exe` on a macOS host |
 | `elf-obj` (M16) | ELF64 `ET_REL` for `EM_AARCH64` — the `.o` a Linux linker takes | — |
 | `elf-obj-x86_64` (M17) | the same file for `EM_X86_64` | — |
 | `coff-obj-arm64` (M19) | COFF `IMAGE_FILE_MACHINE_ARM64` — the `.obj` a Windows linker takes | — |

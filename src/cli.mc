@@ -145,6 +145,7 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
     uptr bname = 0;                             // 0 = the host's object backend
     uptr mname = 0;                             // --machine=, for the dump modes
     i64 mode = M_COMPILE;
+    i64 want_exe = 0;                           // --exe: the HOST's exe backend
 
     // M17: the machines were registered before this call. `machine()` also
     // makes each one current, so the host's is named again here -- when it
@@ -176,7 +177,13 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
         else if (str_eq(a, "--dump-syms"))  mode = M_SYMS;
         else if (str_eq(a, "--dump-rules")) mode = M_RULES;
         else if (str_eq(a, "--dump-machine")) mode = M_MACHINE;
-        else if (str_eq(a, "--exe"))        bname = "macho-exe";
+        // post-M41 review: `--exe` asks for A DIRECT EXECUTABLE FOR THE HOST,
+        // which is not a synonym for "macho-exe": it used to be written here
+        // as that name, and a Linux- or Windows-hosted mc then wrote a Mach-O
+        // binary its own kernel refuses. The name is resolved from the target
+        // registry below, after user_init(), so a module's registration counts
+        // (M39.5). Both flags write the same decision, so the LAST one wins.
+        else if (str_eq(a, "--exe"))        { want_exe = 1; bname = 0; }
         else if (str_eq(a, "-o")) {
             if (i + 1 >= argc) die("-o requires an argument");
             i = i + 1;
@@ -190,7 +197,7 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
             // without `mc build` (examples/conc/lib/macos, lib/linux).
             uptr ip = opt_val(a, "--include=");
             if (mn)      mname = mn;
-            else if (bn) bname = bn;
+            else if (bn) { bname = bn; want_exe = 0; }
             else if (ip) { }                    // applied after lex_init, below
             else         die2("unknown option", a);
         }
@@ -207,7 +214,7 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
     // M41: a compiler with no target registry at all -- one machine, one
     // writer, nothing to look up -- says which backend is its default instead
     // (backend_default, src/hooks.mc). With neither there is nothing to guess.
-    if (bname == 0) {
+    if (bname == 0 && want_exe == 0) {
         i64 ht = target_find(host_os(), host_arch());
         if (ht >= 0)                     bname = tgt_obj_at(ht);
         else if (backend_default_name()) bname = backend_default_name();
@@ -255,6 +262,24 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
     if (mach_tab == 0) die("no machine registered");
     if (mode == M_ASM) { gen_lower(unit); gen_dump_asm(); return 0; }
     if (mode == M_SYMS) { gen_lower(unit); gen_encode_all(); dump_syms(); return 0; }
+
+    // post-M41 review: `--exe`, resolved here and not where the flag was read.
+    // Here means after user_init() -- a target a module registered counts, the
+    // rule M39.5 wrote for `mc build` -- and after the dumps have returned, so
+    // `--exe --dump-asm` still dumps on a host that has no executable backend.
+    // A 0 in the exe slot is a REGISTRATION saying this target has no direct
+    // executable (linux and windows, src/core_writers.mc): it must never reach
+    // backend_find(), which takes a name and would dereference it. The message
+    // is the driver's, with `[linker]` -- a TOML section this command line does
+    // not have -- replaced by what the user has to run instead.
+    if (want_exe) {
+        i64 he = target_find(host_os(), host_arch());
+        if (he < 0) die2("the host is not a registered target", host_os());
+        if (tgt_exe_at(he) == 0)
+            die(tm_cat(host_os(),
+                       " requires a linker: there is no direct executable"));
+        bname = tgt_exe_at(he);
+    }
 
     i64 bi = backend_find(bname);
     if (bi < 0) backend_die(bname);

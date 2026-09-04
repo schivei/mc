@@ -432,7 +432,7 @@ check-skipped:
 	@echo "stage0/mc0: the C seed is macOS-first -- it emits Mach-O only (docs/bootstrap.md)"
 	@echo "bootstrap: SKIPPED (macOS chain: mc0 -> mc1 -> mc2 -> mc3; bootstrap-windows is the Windows one)"
 	@echo "test: SKIPPED (bootstrap-windows already ran the suite with the compiler it built)"
-	@echo "test-exe: SKIPPED (--exe is the Mach-O direct-executable backend; Windows links with lld-link)"
+	@echo "test-exe: SKIPPED (--exe is refused on this host: windows has no direct executable; it links with lld-link)"
 	@echo "check-standalone: SKIPPED (its criterion is a signed Mach-O executable)"
 	@echo "check-surface: SKIPPED (its cases build taught compilers with --exe)"
 	@echo "check-build: SKIPPED (tests/proj targets macos/aarch64 through ld)"
@@ -446,7 +446,7 @@ else
 check-skipped:
 	@echo "budget/stage0: the C seed is macOS-first -- it emits Mach-O only (docs/bootstrap.md)"
 	@echo "bootstrap: SKIPPED (macOS chain: mc0 -> mc1 -> mc2 -> mc3; bootstrap-linux is the Linux one)"
-	@echo "test-exe: SKIPPED (--exe is the Mach-O direct-executable backend; Linux links with ld.lld)"
+	@echo "test-exe: SKIPPED (--exe is refused on this host: linux has no direct executable; it links with ld.lld)"
 	@echo "check-standalone: SKIPPED (its criterion is a signed Mach-O executable)"
 	@echo "check-surface: SKIPPED (its cases build taught compilers with --exe)"
 	@echo "check-build: SKIPPED (tests/proj targets macos/aarch64 through ld)"

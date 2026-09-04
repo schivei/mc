@@ -153,6 +153,54 @@ else
     run_check "$dir/build/app-toy" "toy.toml -> kind = \"exe\" through the taught target"
 fi
 
+# ---- post-M41: `--exe` resolves the HOST's exe slot, and a 0 there is refused ----
+# The third entry point into the same registry, and the reason it belongs in
+# this script: `mc build` (above), `mc sysroot stub` (below) and the single-file
+# `--exe` all have to reach the same registration and say the same thing about
+# it. Until the post-M41 review batch `--exe` was the literal name `macho-exe`
+# in src/cli.mc, so a Linux- or Windows-hosted mc answered it with a Mach-O
+# binary its own kernel refuses with ENOEXEC (reproduced with
+# build/mc-linux-arm64 under Docker).
+# The host this script runs on always has an exe backend, so the empty slot is
+# reached the way M39.5 reached the empty object one -- a taught compiler,
+# tests/proj/mc-noexe.mc, which re-registers the host pair with that slot at 0.
+os=$("$mc" --host | sed -n 's|^os ||p')
+noexe="$tmp/mc-noexe"
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) noexe="$noexe.exe" ;; esac
+
+total=$((total + 1))
+if ! msg=$(scripts/build-exe.sh "$mc" "$noexe" "$dir/mc-noexe.mc" 2>&1); then
+    fail "mc-noexe.mc" "$msg"
+else
+    ok "mc-noexe.mc -> a compiler whose host target has no exe backend"
+
+    # the refusal: exit 1 and the message, byte for byte
+    total=$((total + 1))
+    "$noexe" --exe tests/001-return42.mc -o "$tmp/noexe-out" > "$tmp/o" 2>&1
+    rc=$?
+    got=$(tail -1 "$tmp/o")
+    want="mc: $os requires a linker: there is no direct executable"
+    if [ "$rc" != "1" ]; then
+        fail "--exe with an empty exe slot" "exit $rc, expected 1"
+    elif [ "$got" != "$want" ]; then
+        fail "--exe with an empty exe slot" "got '$got', expected '$want'"
+    elif [ -e "$tmp/noexe-out" ]; then
+        fail "--exe with an empty exe slot" "it wrote $tmp/noexe-out anyway"
+    else
+        ok "--exe with an empty exe slot -> a diagnostic, and no file written"
+        echo "  $got"
+    fi
+
+    # and the object road of the SAME compiler is untouched: the refusal is
+    # about the exe slot, not about the target being unusable.
+    total=$((total + 1))
+    if ! msg=$("$noexe" tests/001-return42.mc -o "$tmp/noexe.o" 2>&1); then
+        fail "the object road of the same compiler" "$msg"
+    else
+        ok "the object road of the same compiler still writes an object"
+    fi
+fi
+
 # ---- M25: the [sysroot] resolution chain (src/sysroot.mc) ----
 # Three cases over tests/proj/lin.mc, a linux/aarch64 program whose [linker] is
 # `echo`, so the resolved directory comes out on stdout and nothing here needs
