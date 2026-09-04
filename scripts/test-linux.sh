@@ -339,7 +339,7 @@ else
     done
 
     # M38: the one tests/mc/ case that belongs to every target. It lives there
-    # because the frozen C seed refuses it (`at most 12 parameters`), not because
+    # because the frozen C seed refuses it (`at most 8 parameters`), not because
     # it needs anything the other tests do not -- twelve parameters, four of them
     # on the stack, is an ABI claim and every ABI has to answer it.
     why=$(skip_reason tests/mc/080-twelve-params.mc)

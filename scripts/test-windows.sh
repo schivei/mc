@@ -327,7 +327,7 @@ else
 
     # M38: the one tests/mc/ case that belongs to every target -- twelve
     # parameters, four of them on the stack. It lives in tests/mc/ because the
-    # frozen C seed refuses it (`at most 12 parameters`), not because it needs
+    # frozen C seed refuses it (`at most 8 parameters`), not because it needs
     # anything Windows cannot give: it links like every other test here.
     f="tests/mc/080-twelve-params.mc"
     why=$(skip_reason "$f")

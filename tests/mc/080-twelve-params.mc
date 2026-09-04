@@ -3,7 +3,7 @@
 // MAXPARAMS went from 8 to 12 in src/ so that a Windows-hosted compiler can
 // declare CreateProcessA, which takes ten (docs/specs/M38.md § 1). The frozen C
 // seed keeps 8, which is why this test lives in tests/mc/ and not in tests/:
-// build/mc0 refuses it with `at most 12 parameters`, and the four cross-checks
+// build/mc0 refuses it with `at most 8 parameters`, and the four cross-checks
 // that compare mc0 against mc1 over tests/*.mc would report that as a failure.
 //
 // It is portable to every target the project has: the only thing outside the
