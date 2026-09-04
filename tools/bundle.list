@@ -16,7 +16,13 @@ mc/backend_coff	src/backend_coff.mc
 mc/backend_elf	src/backend_elf.mc
 mc/backend_exe	src/backend_exe.mc
 mc/bundle	src/bundle.mc
+mc/cli	src/cli.mc
 mc/core	src/core.mc
+mc/core_build	src/core_build.mc
+mc/core_bundle	src/core_bundle.mc
+mc/core_machines	src/core_machines.mc
+mc/core_min	src/core_min.mc
+mc/core_writers	src/core_writers.mc
 mc/driver	src/driver.mc
 mc/gen_resolve	src/gen_resolve.mc
 mc/gen_walk	src/gen_walk.mc
@@ -34,6 +40,7 @@ mc/machine_arm64	src/machine_arm64.mc
 mc/machine_x86_64	src/machine_x86_64.mc
 mc/macho	src/macho.mc
 mc/main	src/main.mc
+mc/objmodel	src/objmodel.mc
 mc/parse	src/parse.mc
 mc/sha256	src/sha256.mc
 mc/stubs	src/stubs.mc

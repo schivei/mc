@@ -46,11 +46,10 @@
 #define XC_E   4                      // condition codes: the low nibble of setcc/jcc
 #define XC_NE  5
 
-// relocation kinds this machine produces. They travel in the same Reloc record
-// as the Mach-O ones, so their numbers only have to avoid R_UNSIGNED..R_ADDEND
-// (0..4 and 10); src/backend_elf.mc maps them to R_X86_64_PC32 / PLT32.
-#define R_X86_PC32   16
-#define R_X86_PLT32  17
+// The relocation kinds this machine produces, R_X86_PC32 and R_X86_PLT32, are
+// in src/objmodel.mc with the others since M41: the machine emits them and
+// src/backend_elf.mc maps them, and those two are different parts
+// (<mc/core_machines> and <mc/core_writers>).
 
 // ---- opcodes. 0 is I_LABEL and belongs to the walker, so these start at 1.
 // The numbers overlap machine_arm64.mc's I_* on purpose: only one machine ever

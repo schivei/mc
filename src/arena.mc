@@ -318,6 +318,47 @@ uptr xstrdup(uptr s, i64 n) {
     return d;
 }
 
+// concatenation of two NUL-terminated strings into a fresh arena block. It was
+// tm_cat in src/toml.mc until M41, and moved here because src/cli.mc uses it
+// for --include= and <mc/core_min> must not depend on <mc/core_build>: the name
+// is kept so that every other caller (the driver, the sysroot, the stubs) reads
+// as it did.
+uptr tm_cat(uptr a, uptr b) {
+    i64 la = cstrlen(a);
+    i64 lb = cstrlen(b);
+    uptr s = xalloc(la + lb + 1);
+    mem_copy(s, a, la);
+    mem_copy(s + la, b, lb);
+    st8(s + la + lb, 0);
+    return s;
+}
+
+// decimal representation of v in the arena. It was tm_num_str in src/toml.mc
+// (integers are stored there as text, so every value in the table has the same
+// shape) and moved here at M41 for the same reason as tm_cat: src/backend_coff.mc
+// spells a long section name with it, and <mc/core_writers> must not depend on
+// <mc/core_build>.
+uptr tm_num_str(i64 v) {
+    u8 t[24];
+    i64 i = 24;
+    i64 neg = v < 0;
+    u64 u = v;
+    if (neg) u = 0 - v;
+    loop {
+        i = i - 1;
+        st8(t + i, '0' + u % 10);
+        u = u / 10;
+        if (u == 0) break;
+    }
+    if (neg) { i = i - 1; st8(t + i, '-'); }
+    return xstrdup(t + i, 24 - i);
+}
+
+// 0755 in decimal: there is no octal literal. Used by the executable writer
+// (chmod on an -o that already existed) and by the driver (mkdir -p); they are
+// in two different parts since M41, so the constant lives here.
+#define MODE_755 493
+
 // ---- Buf: flat record { p, len, cap } ----
 #define BUF_P    0
 #define BUF_LEN  8

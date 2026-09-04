@@ -478,7 +478,7 @@ gen_global_count()/gen_global_sym(g)   globals already allocated
 gen_str_count()/gen_str_sym(s)         literals already emitted into __cstring
 ```
 
-and writes with the primitives in `src/macho.mc`, which are ordinary functions: `sec_new`,
+and writes with the primitives in `src/objmodel.mc`, which are ordinary functions: `sec_new`,
 `sec_at`, `sec_data`, `sym_new`, `sym_ref`, `sym_set_value`, `reloc_add`, `buf_u32`, `buf_pad`,
 `buf_len`, `macho_write`.
 
@@ -529,7 +529,7 @@ generator, keeps producing **identical** objects (`check-obj` 32/32) and identic
 
 The other half of M17's step A is `target(os, arch, obj_backend, exe_backend)`: `src/driver.mc`
 used to carry the whitelist itself (`only macos, linux and windows`, `only aarch64`), and now reads a
-registry filled in `src/main.mc`, with those same messages generated from it.
+registry filled in `src/core_writers.mc`, with those same messages generated from it.
 
 M17's **step B** is the payoff: `src/machine_x86_64.mc`, a second machine behind the same walker,
 and `linux/x86_64` as a third registered target. Not one line of `src/gen_walk.mc` is
@@ -551,7 +551,7 @@ somebody doing it again.
 
 ### The six built-in backends: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64`, `coff-obj-arm64` and `coff-obj-x86_64`
 
-`src/main.mc` registers six backends before calling `user_init()`:
+`src/core_writers.mc` (`mc_writers_init`) registers six backends before `user_init()` runs:
 
 | name | writes | alias |
 |---|---|---|
@@ -572,7 +572,7 @@ registered: macho macho-exe elf-obj elf-obj-x86_64 coff-obj-arm64
 ```
 
 `elf-obj` lives in `src/backend_elf.mc` and is built the same way `macho-exe` is: `gen_lower` +
-`gen_encode_all` and then only the public API of `src/macho.mc` (sections, symbols, relocations,
+`gen_encode_all` and then only the public API of `src/objmodel.mc` (sections, symbols, relocations,
 `sym_order`). It is the proof that the object model in the middle of the compiler really is
 format-neutral — see `docs/build.md` § Linux targets for the whole mapping, and
 `scripts/test-linux.sh` for the suite it passes. `elf-obj-x86_64` is the same file: it names its
@@ -586,7 +586,7 @@ numbering. `docs/build.md` § Windows targets has the whole mapping.
 `macho-exe` lives in `src/backend_exe.mc` and is **part of the compiler**, not a user module: it's
 M11's answer, not a Tier 2 demo. But it's written exactly the way a surface backend would be — it
 calls `gen_lower(root)` and `gen_encode_all()` (the gen's two public halves) and then only uses
-`src/macho.mc`'s public API to read sections, symbols, and relocations. What it adds on top is
+`src/objmodel.mc`'s public API to read sections, symbols, and relocations. What it adds on top is
 what `ld` used to do: choosing addresses, resolving the four relocations, creating
 `__TEXT,__stubs` + `__DATA,__got` for imported symbols, emitting `dyld`'s bind/rebase opcodes, and
 signing ad-hoc (its own SHA-256, in `src/sha256.mc`). The fields, with verified values, are in
@@ -1393,3 +1393,37 @@ compile main.mc -> build/api
 The first line built the compiler that knows `class`/`interface`; the second used it. Nothing in
 `src/` changed, and neither `make` nor `ld` ran. The whole format, the driver and the limits are in
 **`docs/build.md`**.
+
+## M41 — the core becomes composable, and a compiler can remove what it does not want
+
+Tier 3 said a taught compiler is its own file. M41 says the same about the *core* it includes:
+`<mc/core>` is the sum of five parts (`<mc/core_min>`, `<mc/core_machines>`, `<mc/core_writers>`,
+`<mc/core_build>`, `<mc/core_bundle>`), each a bundled name, and a compiler for one target names
+the ones it wants. `src/core.mc` is those five plus `src/main.mc` — the full assembly is literally
+the parts, and `scripts/check-parts.sh` `cmp`s the two spellings.
+
+Three things made that possible, and all three are ordinary surface:
+
+* **`mc_main(argc, argv, envp)`** (`src/cli.mc`, in `<mc/core_min>`) is the whole command line, so
+  a recreated compiler writes a five-line `main()` instead of copying two hundred. What used to be
+  an `if` in that file is a registration now: `machine_use_if` for the host's machine,
+  `backend_default()` for the default backend, and a `subcommand()` table for `build`/`limits`/
+  `sysroot`, whose usage strings reassemble the old text byte for byte.
+* **Removal** is two functions. `type_disable(TY_U32)` takes the *word* out of the surface —
+  `u32: removed by this compiler` — while leaving the type in the model, and
+  `intrinsic_disable("ld64")` takes a *name* out of the call position. Neither has a counterpart
+  for backends, machines or targets: once the registrations live in the parts, "not registered" is
+  the default and `*_remove` has no caller.
+* **One override.** `type_set_width(TY_UPTR, w)` declares how wide a pointer is; the frame
+  granule, the frame alignment and the pointer initializer follow it. Every other type is refused.
+
+Inert by construction, and proved so: with nothing declared and nothing disabled, the compiler
+before M41 and the compiler after it produce byte-identical objects for the whole `tests/` corpus,
+for `src/mc.mc`, and — through the taught compiler each of them builds — for `examples/api`,
+`examples/lang`, `examples/conc`, `examples/desktop` and `examples/kernel`
+(`scripts/check-inert.sh`). The last is the widest of the five: its module registers a machine, a
+backend and an `os`/`arch` pair the running compiler does not have, so a part boundary that moved
+under a recreated compiler would show up there as a changed byte in a flat image.
+
+See `docs/guide/98-recreating-the-compiler.md`, `docs/reference/bundle.md` § The parts of the core
+and `docs/reference/hooks.md` § 7.

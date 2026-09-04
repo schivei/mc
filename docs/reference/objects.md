@@ -1,7 +1,7 @@
 # The object model and the codegen API
 
 Between the AST and the file on disk there is one format-neutral layer: sections, symbols and
-relocations in `src/macho.mc`, and a per-function buffer of `Ins` records in `src/gen_walk.mc`.
+relocations in `src/objmodel.mc`, and a per-function buffer of `Ins` records in `src/gen_walk.mc`.
 Five backends are built on nothing but this — `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64`
 and `coff-obj-arm64` — and so is `lib/backend_arm64.mc`, which reimplements the whole AArch64
 encoder from outside and produces byte-identical objects.

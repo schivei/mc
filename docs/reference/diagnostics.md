@@ -170,6 +170,13 @@ notatype main() { return 0; }
 | `type_new with a width below 1` | M24: a registered type has to occupy at least one byte | the detail is the type's name |
 | `type_new with an alignment below 1` | the same for the alignment | |
 | `type_new with an unknown kind` | the kind is not `TK_INT`, `TK_FLOAT`, `TK_WIDE` or `TK_OPAQUE` | |
+| `type_set_width only declares the width of uptr` | M41: `type_set_width` with any `ty` but `TY_UPTR` | `i64` folds in 64 bits at parse time and u8/u16/u32/u64 are their own names; register a new primitive with `type_new()` instead |
+| `uptr width must be 1, 2, 4 or 8` | M41: `type_set_width(TY_UPTR, w)` with any other `w` | a word the relocation length can be the log2 of |
+| `type_disable with an unknown type` | M41: the id is negative or past `type_count()` | pass a `TY_*` constant, or an id `type_new` returned |
+| `type_disable beyond the mask` | M41: a type id above 62 — the disable set is one `i64` of bits | disable it before registering 60 other types, or leave the word in |
+| `too many intrinsic_disable` | M41: more than 32 `intrinsic_disable()` names | the ceiling is fixed on purpose, like the subcommand table |
+| `too many subcommands` | M41: more than 16 `subcommand()` registrations | the ceiling is fixed on purpose: the number of subcommands is a property of the compiler |
+| `too many on_plan hooks` | M41: more than 8 `on_plan()` registrations | same |
 | `p_skip_balanced expects the opening token` | the parse was not sitting on the opening token | position the handler on the `{`/`<`/`(` before calling |
 | `unterminated region` | `p_skip_balanced` reached end of file — reported at the **opening** token | close the region; the position points at what never closed |
 | `region crosses a file boundary` | the region began in one source and ended in another | a span is a slice of one buffer; keep a recorded region inside one file |
@@ -200,7 +207,8 @@ notatype main() { return 0; }
 | `unary operator with no codegen` / `binary operator with no codegen` / `expression with no codegen` / `statement with no codegen` | a node kind the generator has no rule for | reachable when a module builds a node the core does not lower; check the node kind the handler produced |
 | `instruction with no encoder` / `instruction with no dump` | an `I_*` opcode the encoder or the dumper does not handle | the same, one layer down: a backend produced an instruction the core cannot encode |
 | `x86 instruction with no encoder` / `x86 instruction with no dump` | the same two, from the x86-64 machine and its `X_*` opcodes. There is no third: `MTASK_INS_SIZE` is the encoder over a scratch buffer, so an opcode with no encoder has no size either | see [machine.md](machine.md) |
-| `no machine registered` | the walker was asked to lower with no machine table in effect | `main()` registers both and calls `machine_use("arm64")`; a taught compiler that replaced the table has to register one |
+| `no machine registered` | the walker was asked to lower with no machine table in effect. Since M41 `mc_main` says it before `gen_lower` as well, so a compiler that registered none fails at a defined point instead of mid-lowering | `main()` registers both and `mc_main` makes the host's current; a recreated compiler registers its own from `user_init()` |
+| `<word>: removed by this compiler` | M41: a type word `type_disable()` removed, at the token that used it, or an intrinsic name `intrinsic_disable()` removed, at the call. The detail is the word | this dialect does not have it. `type_disable` removes the WORD, not the type: `ld32()` still yields `TY_U32` internally |
 | `cannot shadow a core intrinsic` | M24: `intrinsic()` was given the name of a built-in one (`ld64`, `st64`, `emit`, `reloc`, `callp`, …), which the dispatch would never reach | pick another name; the detail is the one asked for |
 | `intrinsic with an impossible arity` | the arity is negative or above `MAXPARAMS` | |
 | `intrinsic with an unknown result type` | the result type is not a type id that exists | register the type first |
@@ -255,6 +263,7 @@ notatype main() { return 0; }
 | `duplicate directory` | two directories after `mc build` / `mc limits` | pass one |
 | `--entry-only and --compiler-only are exclusive` | both halves of a taught build asked for at once | `--compiler-only` builds the compiler and stops; `--entry-only` compiles the entry with the running binary. Pick one |
 | `unknown backend: NAME` (then `registered: …`) | `--backend=` naming something not registered | the message lists what exists |
+| `no backend: use --backend=NAME` | M41: no `--backend=`, no `--exe`, no `target()` registered for this host and no `backend_default()` — a recreated compiler that registered a writer and forgot to name it | call `backend_default("name")` from `user_init()`, or pass `--backend=` |
 | `cannot run` | `posix_spawnp` could not start the linker or the taught compiler | check the `cmd` in `[linker]`, and that a relative compiler path starts with `./` |
 | `cannot spawn: <tool> (error N)` | a tool `mc` may legitimately find missing — `curl`, `wget`, `tar`, `llvm-dlltool` — is there and could not be started anyway. `N` is the number `posix_spawnp` returned: 13 `EACCES` (not executable), 8 `ENOEXEC` (not a program), 7 `E2BIG` (on a Windows host, a command line past `WH_CMDMAX`). Only `ENOENT` (2) is silent, and means "not on `PATH`" | fix the permissions on the tool, or take the broken copy off the `PATH` |
 | `waitpid failed` | the spawned process could not be waited for | a system-level failure |

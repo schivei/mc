@@ -347,9 +347,22 @@ void el(i64 op, i64 label)               { ins_add(op, 0, 0, 0, 0, label, 0); }
 void elr(i64 op, i64 rd, i64 label)      { ins_add(op, rd, 0, 0, 0, label, 0); }
 void em(i64 op, i64 rt, i64 rn, i64 off) { ins_add(op, rt, rn, 0, off, 0, 0); }
 
+// ---- M41: the declared word, and the three things that follow it ----
+// How wide a pointer is is the one fixed decision of the core a machine may
+// override (type_set_width, src/hooks.mc; M40 § 1b). Three things in this file
+// follow it: the granule a frame slot is rounded to (C3), the alignment of a
+// frame, of a local array and of a zerofill placement (C4), and the size of the
+// pointer a string literal writes into a `uptr[]` initializer (C5). With
+// nothing declared the word is 8, the alignment 16 and the initializer 8 bytes
+// -- byte for byte what the walker did before the mechanism existed.
+i64 walk_word()  { return type_width(TY_UPTR); }
+i64 walk_align() { return walk_word() * 2; }
+
+i64 align_up(i64 v, i64 a) { return (v + a - 1) & ~(a - 1); }
+
 // ---- the frame, in bytes ----
 i64 slot_new(i64 size) {              // returns the positive offset from the frame base
-    frame_off = frame_off + ((size + 7) & ~7);
+    frame_off = frame_off + align_up(size, walk_word());
     return frame_off;
 }
 
@@ -430,8 +443,8 @@ uptr usym(uptr name) {                // the compiler prefixes _
 i64 glob_place(i64 g, i64 sec, i64 size, i64 width) {
     uptr sp = sec_at(sec);
     if ((sec_flags(sp) & 0xff) == S_ZEROFILL) {
-        i64 zoff = (sec_zsize(sp) + 15) & ~15;
-        set_sec_zsize(sp, zoff + ((size + 15) & ~15));
+        i64 zoff = align_up(sec_zsize(sp), walk_align());
+        set_sec_zsize(sp, zoff + align_up(size, walk_align()));
         return zoff;
     }
     uptr b = sec_data(sp);
@@ -444,9 +457,17 @@ i64 glob_place(i64 g, i64 sec, i64 size, i64 width) {
         if (e == 0) break;
         if (nd_kind(e) == N_BLOB) {              // M21.5: #embed's payload, copied whole
             buf_put(b, nd_name(e), nd_val(e));
-        } else if (nd_kind(e) == N_STR) {        // pointer to l_strN: 8 zeros + R_UNSIGNED
-            reloc_add(sec, buf_len(b), str_sym(nd_name(e), nd_val(e)), R_UNSIGNED, 0, 3);
-            buf_u64(b, 0);
+        } else if (nd_kind(e) == N_STR) {        // pointer to l_strN: a zeroed word + R_UNSIGNED
+            i64 w = walk_word();                 // M41 (C5): 8 unless a machine declared otherwise
+            i64 rl = 0;                          // the relocation's length is log2 of the word
+            if (w == 8) rl = 3;
+            if (w == 4) rl = 2;
+            if (w == 2) rl = 1;
+            reloc_add(sec, buf_len(b), str_sym(nd_name(e), nd_val(e)), R_UNSIGNED, 0, rl);
+            if (w == 8)      buf_u64(b, 0);
+            else if (w == 4) buf_u32(b, 0);
+            else if (w == 2) buf_u16(b, 0);
+            else             buf_u8(b, 0);
         } else {
             i64 v = nd_val(e);
             if (width == 1)      buf_u8(b, v);
@@ -793,7 +814,7 @@ void gen_var(i64 n) {
         if (nel < 1 || nel > 4095 || nel * type_width(ty) > 4095)
             err_node(n, "local array too large");
         i64 size = nel * type_width(ty);
-        local_add(nd_name(n), ty, slot_new((size + 15) & ~15), nel);
+        local_add(nd_name(n), ty, slot_new(align_up(size, walk_align())), nel);
         return;
     }
     if (nd_a(n)) gen_value(nd_a(n), 0);          // initializer before the name exists
@@ -1001,7 +1022,7 @@ void gen_func(i64 f, i64 text) {
     callp(mach(MTASK_LABEL), lepi);
     callp(mach(MTASK_EPILOGUE));
 
-    i64 frame = (frame_off + 15) & ~15;          // the stack always aligned to 16
+    i64 frame = align_up(frame_off, walk_align());  // the stack aligned to the word pair
     if (frame > 4095) err_node(f, "frame too large");
     callp(mach(MTASK_FRAME_FIX), frame);
 

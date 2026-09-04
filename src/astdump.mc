@@ -6,7 +6,7 @@
 // So directives do not appear (they do not become a node), but functions, globals, externs
 // and prototypes do appear, in source order and with #include already expanded.
 //
-// macho.mc comes in because parse.mc uses sec_new (in sec_make) and the
+// objmodel.mc comes in because parse.mc uses sec_new (in sec_make) and the
 // R_UNSIGNED/BRANCH26/PAGE21/PAGEOFF12 constants that defs_init registers; and also the
 // #include order src/core.mc uses. hooks.mc came in at M12: parse.mc consults the
 // syntax/syntax_stmt/type_alias tables that live there. None of them is populated
@@ -16,7 +16,7 @@
 // registers it here, so `#include <name>` fails the same way it does in mc0.
 #include "arena.mc"
 #include "lz.mc"
-#include "macho.mc"
+#include "objmodel.mc"
 #include "lex.mc"
 #include "ast.mc"
 #include "parse.mc"

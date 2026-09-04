@@ -33,8 +33,6 @@
 // when it creates it, so rewriting an existing -o would keep the old permission
 extern i64 chmod(uptr path, i64 mode);
 
-#define MODE_755 493                       // 0755 in decimal: there is no octal literal
-
 // ---- Mach-O constants that MH_OBJECT does not use ----
 #define MH_EXECUTE   2
 #define MH_NOUNDEFS  0x1

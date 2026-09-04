@@ -1768,9 +1768,97 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   legs after the kind-based generalisation (12/12, 12/12, 12/12, 11/11, 11/11 and the four sweeps).
   All five goldens rewritten once. Docs: `docs/guide/96-a-new-primitive.md` § 5,
   `docs/reference/bundle.md` § "The generality proofs", `examples/avx/README.md` (new).
-- Next: M18 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
-  sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is
-  one more motivating case).
+- M41 done (`docs/specs/M41.md` + its § Implementation notes, `docs/guide/98-recreating-the-compiler.md`,
+  `docs/reference/bundle.md` § The parts of the core, `docs/reference/hooks.md` § 7,
+  `docs/reference/machine.md` § 6): **`<mc/core>` becomes composable, and a recreated compiler is
+  smaller than `mc` by exactly what it omits.** `stage0/` untouched (2848/3000); everything is in
+  `src/`, `lib/`, `scripts/`, `site/gen/` and `docs/`. Four gated commits, `make check` green after
+  each one.
+  * **Two splits, byte-neutral by construction** (commit 1). `src/macho.mc` became
+    `src/objmodel.mc` (321 lines: the three record layouts, `R_*`/`S_*`/`TEXT_FLAGS`, `sec_new`,
+    `sym_new`, `sym_set_value`, `reloc_add`, `sym_class`, `sym_order`, `out_name16`, `dump_syms`)
+    plus `src/macho.mc` (172: the `MH_*`/`LC_*`/`N_*`/`CPU_*` defines and `macho_write`), and
+    `src/main.mc` became `src/cli.mc` + a `main()`. Both are single cuts, so the function
+    DEFINITION ORDER of the whole program did not move: with the bundle held at its pre-split
+    content, `build/mc1 src/mc.mc` produced `build/mc2.o` byte for byte
+    (`c1249acab30099cb52fe4ebdc1c547a0b2fc2e2cbdc2032390c88bf6bdf563a2`). `src/astdump.mc` now
+    includes `objmodel.mc` alone -- it never needed a writer.
+  * **Five parts, and `src/core.mc` is their sum** (commit 2): `src/core_min.mc` (arena lz objmodel
+    lex ast parse gen_resolve gen_walk hooks cli), `core_machines.mc`, `core_writers.mc`,
+    `core_build.mc`, `core_bundle.mc`, then `main.mc` -- six `#include` lines, so the full assembly
+    IS the parts. `main.mc` (36 lines) calls `host_init`, `mc_machines_init()`,
+    `mc_writers_init()`, `mc_bundle_init()`, `mc_build_init()` and hands over to
+    `i64 mc_main(i64 argc, uptr argv, uptr envp)`, which is `src/cli.mc`'s and therefore
+    `<mc/core_min>`'s. Four `if`s in that file became registrations (`src/hooks.mc` +119):
+    `machine_use_if` (the host's machine, when it exists), `backend_default` (the default object
+    backend when there is no target registry), `subcommand(name, fn, usage)` (the eighth registry;
+    `build`/`limits`/`sysroot` are `<mc/core_build>`'s, each carrying its own usage line, and
+    `drv_usage()` is now `subcommand_usage()`), and `on_plan` (M23's `lim_plan`). Plus the
+    architect's addition (b): `no machine registered` before `gen_lower`. `src/driver.mc`: a
+    `[compiler].core` starting with `<` is emitted verbatim, which is how a project asks for a part.
+  * **Removal and one override** (commit 3), all inert with nothing declared: `type_disable(ty)`
+    (a bitmask in `src/ast.mc`, one test at the head of `type_of_token` --
+    `u32: removed by this compiler`, at the token; it removes the WORD from the surface, not the
+    type from the model), `intrinsic_disable(name)` (a fixed 32-entry table, one test at the head
+    of `res_call`, so core and taught intrinsics are refused the same way), and
+    `type_set_width(ty, w)`, which accepts `TY_UPTR` alone. M40 § 1b C1/C3/C4/C5:
+    `type_width(TY_UPTR)` reads `ty_uptr_w`, `slot_new`'s granule is `walk_word()`, the three
+    roundings to 16 are `align_up(v, walk_align())` and a string in a `uptr[]` initializer writes
+    `w` zero bytes with an `R_UNSIGNED` of length log2(w).
+  * **The gate** (commit 4): `scripts/check-parts.sh` (`make check-parts`, inside `make check`)
+    proves five things -- the two spellings `cmp` equal (849856 bytes); each part compiles on
+    `<mc/core_min>` ALONE; the measured table; the two refusals; the width. That per-part case is
+    not in the spec's acceptance list and it earned its keep at once: **four names had to move**
+    for the parts to be parts -- `tm_cat` and `tm_num_str` (`toml.mc` -> `arena.mc`), `MODE_755`
+    (`backend_exe.mc` -> `arena.mc`) and `R_X86_PC32`/`R_X86_PLT32` (`machine_x86_64.mc` ->
+    `objmodel.mc`). `site/gen/util.mc` lost its own `MODE_755` for the same reason.
+  **Measured** (`sh scripts/check-parts.sh`, and the cumulative spellings behind
+  `docs/guide/98-recreating-the-compiler.md` § 3):
+
+  | spelling | `__text` | `__cstring` | `__data` | on disk |
+  |---|---|---|---|---|
+  | `<mc/core_min>` + probe machine + null writer | 147 224 | 7 034 | 2 496 | **219 417** |
+  | + `<mc/core_machines>` | 183 664 | 7 795 | 6 224 | 260 543 |
+  | + `<mc/core_writers>` | 232 712 | 8 683 | 6 640 | 315 934 |
+  | + `<mc/core_build>` | 289 484 | 15 093 | 6 936 | 395 820 |
+  | + `<mc/core_bundle>` | 293 180 | 15 454 | 374 800 | 760 013 |
+  | `mc` itself | 292 968 | 15 443 | 374 800 | **759 875** |
+
+  A compiler with one machine and one writer of its own is **29% of `mc`** -- of the 540 KB it does
+  not pay, 364 KB is the bundle blob and 146 KB is code.
+  Probes: `lib/user_core_min.mc` (a two-slot probe machine and a null writer), `user_nold64.mc`,
+  `user_nou32.mc`, `user_uptr2.mc`, `user_badwidth.mc` -- files in `lib/`, deliberately NOT
+  bundled (they are fixtures; bundling them would move the blob and the five goldens for something
+  no compiler includes).
+  **Inertness**, in M17 step A's protocol: `scripts/check-inert.sh` between the compiler before
+  each step and the one after -- 33 objects identical (`tests/*.mc` and `src/mc.mc`) and the five
+  taught examples (`api`, `lang`, `conc`, `desktop`, `kernel`) identical through the compiler each
+  side builds. `examples/kernel` was the one Acceptance 3 named and the script did not run: it is
+  untouched and still includes `<mc/core>`, and it is now asserted like the other four -- the
+  widest of the five, since its module registers a machine, a backend and an `os`/`arch` pair the
+  running compiler does not have, and its artefact is a flat image where one byte shows.
+  — `make check` green end to end (RC 0, 0 FAIL): `test` 32/32, `check-lex` 120/120 (2 skipped),
+  `check-ast` 120/120, `check-bundle` (75 files, raw 776601 -> lz 364543, blob 365449 B),
+  `check-asm` 120/120, `check-obj` 32/32 against the frozen seed, `bootstrap` at a fixed point
+  (`cmp mc2.o mc3.o`; the `--dump-asm` diff between `mc1` and `mc2` empty), `check-surface` 32/32,
+  `test-exe` 32/32, `check-mc` 7/7, `check-standalone`, **`check-parts`**, `check-toml` 10/10,
+  `check-build` 21/21, `check-sysroots`, `check-stubs` 9/9, `check-limits` 17/17 under 90%,
+  `check-minimal`, `test-linux` 33/33, `test-linux-x86_64` 30/30, `test-windows`,
+  `test-windows-x86_64`, `check-examples`, `check-lang`, `check-conc`, `check-desktop`,
+  `check-float`, `check-wide`, `check-kernel`, `check-docs` (178 symbols, 19 flags, 17 TOML keys,
+  10 directives, 47 samples, 243 links), `site` (80 pages) + `check-site`. `make check-linux-host`
+  green on both architectures. The five goldens were rewritten once **per commit** (four times, not
+  once): every commit that touches `src/` regenerates `src/bundle_data.mc`, which is part of
+  `src/mc.mc`, so `build/mc2.o` moves in each of them -- recorded in `docs/specs/M41.md`
+  § Implementation notes 9, each rewrite after an empty `--dump-asm` diff and a passing
+  `cmp build/mc2.o build/mc3.o`.
+- Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
+  `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
+  from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:
+  M24 gave it the depth type for narrow `u8`/`u16` arithmetic and M41 gave it
+  `type_set_width(TY_UPTR, w)` plus the five parts. M18 (Linux x86 32-bit) stays optional; M13
+  stays in the backlog (`docs/specs/M13.md`: sizing a program's memory at compile time -- the
+  fixed 4 MiB arena in `examples/api/lib/rt.mc` is one more motivating case).
   Update this section when each milestone closes.
 - i18n done (2026-09-03): the repository is fully in English — diagnostics, program/script
   output, identifiers, comments, and docs (`docs/*.md`, `docs/specs/*.md`, `CLAUDE.md`,

@@ -133,6 +133,23 @@ Since M15 the core comes from the **bundle inside the binary** (`<mc/core>`, see
 project needs no path into this repository to teach the compiler. `core = "..."` is still
 accepted and still wins — that is how a project pins its own checkout of `src/core.mc` instead of
 the copy the binary carries.
+**M41 — a bundled name instead of a path.** A `core` value that starts with `<` is emitted
+verbatim rather than rewritten with `../`, which is how a project asks for a *part* of the core
+instead of all of it:
+
+```toml
+[compiler]
+core    = "<mc/core_min>"          # the compiler that has no target
+modules = ["machine_avr.mc", "image_avr.mc"]
+out     = "build/mc-avr"
+```
+
+`mc build` then writes `#include <mc/host>` + `#include <mc/core_min>` + the modules. The taught
+compiler is still built with the HOST's executable backend — it is a tool that has to run here —
+so a compiler assembled from `<mc/core_min>` and an AVR machine is a macOS (or Linux, or Windows)
+binary that emits AVR. What it gives up is listed in
+`docs/guide/98-recreating-the-compiler.md`; the five parts are in
+`docs/reference/bundle.md` § The parts of the core.
 
 compiles it with the built-in `macho-exe` backend, and then **spawns the binary that came out**:
 
@@ -1531,7 +1548,7 @@ message. It asks for the role `DRV_ROLE_NONE` — the two checks, no backend —
 `scripts/check-build.sh` are the five checks that hold all of it.
 
 The single-file CLI still does the second half on its own — `--backend=` and `--machine=` are
-resolved after `user_init()` in `src/main.mc` — and `examples/kernel/test.sh` uses it for every
+resolved after `user_init()` in `src/cli.mc` — and `examples/kernel/test.sh` uses it for every
 source that is not `[project].entry`, then checks that the two roads write the same bytes.
 
 Everything else about the project is ordinary: `[compiler].modules`, `[limits].tolerance = 1.0`

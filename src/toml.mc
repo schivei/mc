@@ -92,33 +92,12 @@ void set_tme_line(uptr e, i64 v)  { st64(e + TM_LINE, v); }
 void set_tme_col(uptr e, i64 v)   { st64(e + TM_COL, v); }
 
 // ---- small string helpers (the arena is the only allocator) ----
-uptr tm_cat(uptr a, uptr b) {
-    i64 la = cstrlen(a);
-    i64 lb = cstrlen(b);
-    uptr s = xalloc(la + lb + 1);
-    mem_copy(s, a, la);
-    mem_copy(s + la, b, lb);
-    st8(s + la + lb, 0);
-    return s;
-}
+// tm_cat moved to src/arena.mc at M41: src/cli.mc needs it for --include= and
+// cli.mc is <mc/core_min>, which must not depend on <mc/core_build>.
 
-// decimal representation of v in the arena (integers are stored as text, so
-// every value in the table has the same shape)
-uptr tm_num_str(i64 v) {
-    u8 t[24];
-    i64 i = 24;
-    i64 neg = v < 0;
-    u64 u = v;
-    if (neg) u = 0 - v;
-    loop {
-        i = i - 1;
-        st8(t + i, '0' + u % 10);
-        u = u / 10;
-        if (u == 0) break;
-    }
-    if (neg) { i = i - 1; st8(t + i, '-'); }
-    return xstrdup(t + i, 24 - i);
-}
+// tm_num_str moved to src/arena.mc at M41 as well: src/backend_coff.mc uses it
+// for a long section name, and <mc/core_writers> must not depend on
+// <mc/core_build> either.
 
 i64 tm_atoi(uptr s) {
     i64 n = 0;

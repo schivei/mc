@@ -1,7 +1,7 @@
 # Every command, flag and dump
 
 `mc` has one binary and four entry points: the single-file compiler, `mc build`, `mc limits` and
-`mc sysroot`. Everything below is read off `src/main.mc` (the single-file CLI), `src/driver.mc`
+`mc sysroot`. Everything below is read off `src/cli.mc` (the single-file CLI), `src/driver.mc`
 (the first two subcommands) and `src/sysroot.mc` (the third). Running `mc` with no argument
 prints exactly this and exits 1:
 
@@ -270,6 +270,15 @@ missing files" from "your program does not compile" without reading the text.
 - **`{sdk}` in `[linker].args`** makes the driver run `xcrun --show-sdk-path`, once per build and
   only if some argument mentions the placeholder. That is the only external command `mc` runs on
   its own; the others are the linker and the taught compiler, both named in `mc.toml`.
+- **The subcommands are registrations, not `if`s (M41).** `build`, `limits` and `sysroot` come
+  from a `subcommand()` table that `<mc/core_build>` fills, and the usage text `mc` prints with no
+  arguments is the two fixed lines plus one entry per registered subcommand. A compiler assembled
+  without that part prints two lines and accepts no subcommand — which is the honest answer, since
+  it has none. Same text, byte for byte, for `mc` itself.
+- **The default backend has a second source (M41).** With no `--backend=` and no `--exe`, `mc`
+  asks the target registry for the host's pair, as before; a compiler with no target registry at
+  all uses whatever `backend_default("name")` recorded, and with neither says
+  `no backend: use --backend=NAME`. See `docs/guide/98-recreating-the-compiler.md`.
 - **There is no `--target=`**: the target is `[target]` in `mc.toml`. Cross-compiling is
   [../guide/50-cross-compile.md](../guide/50-cross-compile.md).
 - **There is no `--help`**: any bad invocation prints the usage above.

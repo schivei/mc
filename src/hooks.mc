@@ -95,6 +95,22 @@ void backend_die(uptr name) {
     _exit(1);
 }
 
+// ---- M41: the default backend ----
+// `mc x.mc -o x.o` with no --backend writes an object for the target this
+// binary is RUNNING on, looked up in the target registry (src/cli.mc). A
+// recreated compiler may have no target registry at all -- one machine, one
+// writer, nothing to look up -- and backend_default("name") is what it says
+// instead. The registry still wins when the host is in it, so `mc` itself is
+// unchanged; with neither, mc_main says `no backend: use --backend=NAME`.
+//
+// No "if exactly one backend is registered" magic: the module says which one.
+uptr backend_dflt = 0;
+
+void backend_default(uptr name) { backend_dflt = name; }
+
+// the name backend_default() recorded, or 0 when nobody called it
+uptr backend_default_name() { return backend_dflt; }
+
 // ---- M21.5: on_stmt, the statement hook ----
 // `on_stmt(&f)` registers `i64 f(i64 n)`, called by parse_stmt after EVERY
 // statement node is produced -- core or taught -- with the node's index. The
@@ -414,6 +430,79 @@ i64 type_new(uptr name, i64 width, i64 align, i64 kind) {
     return t;
 }
 
+// ---- M41: the machine-declared width of uptr ----
+// The one fixed decision of the core a module may override, and the reason M24
+// D8 (which refused type_set_width for having no caller) is reversed: M40's AVR
+// module is the caller. It follows into src/gen_walk.mc's slot granule, frame
+// alignment and pointer initializer, and into src/parse.mc's array bound --
+// M40 § 1b C1/C3/C4/C5, and nothing else.
+//
+// Every other type refuses, deliberately: `i64` folds in 64 bits at parse time
+// (src/parse.mc, fold_binary) and would disagree with the machine, and u8/u16/
+// u32/u64 are their own names. A module that wants a different primitive
+// registers one with type_new().
+//
+// Declared from user_init(), before a byte of the source is read, and inert
+// when nobody calls it: the width stays 8, the granule 8 and the alignment 16.
+void type_set_width(i64 ty, i64 w) {
+    if (ty != TY_UPTR) die("type_set_width only declares the width of uptr");
+    if (w != 1 && w != 2 && w != 4 && w != 8) die("uptr width must be 1, 2, 4 or 8");
+    ty_set_uptr_width(w);
+}
+
+// ---- M41: removing a core primitive ----
+// Two removals, both consulted before the core's own answer, both meant for a
+// RECREATED compiler that does not want a word its target cannot honour.
+//
+// type_disable(TY_U32) removes the WORD `u32` from the surface: every position
+// that goes through type_of_token refuses it with `u32: removed by this
+// compiler`, at the token. It does NOT remove the type from the model -- ld8()
+// still yields TY_U8, type_width(TY_U32) is still 4 and a machine still sees
+// the id -- so read it as "this dialect has no such declaration" and never as
+// "the type is gone".
+//
+// Disabling i64, uptr or void is permitted and makes the language unusable: a
+// literal is TY_I64, `&f` and every pointer are TY_UPTR, and a function with no
+// result is TY_VOID. There is no special case; a compiler that does it finds
+// out on its first declaration.
+void type_disable(i64 ty) {
+    if (ty < 0 || ty >= type_count()) die("type_disable with an unknown type");
+    ty_disable_set(ty);
+}
+
+// intrinsic_disable("ld64") removes the NAME: a call is refused with
+// `ld64: removed by this compiler`, at the call site. It covers the core
+// intrinsics (src/gen_resolve.mc's IN_*) and the ones intrinsic() registered,
+// by name, so the rule is the same for both. The named caller is M40 § 2B: on a
+// two-byte word `ld64`/`st64` are silently wrong, and a portable source uses
+// the module's own `ldw`/`stw` instead -- which only works if the wide pair can
+// be made unreachable.
+//
+// Fixed ceiling, like the subcommand table: what a compiler removes is a
+// property of the compiler.
+#define MAXNOINTRIN 32
+
+uptr nointrin[MAXNOINTRIN];
+i64  nnointrin = 0;
+
+void intrinsic_disable(uptr name) {
+    if (nnointrin >= MAXNOINTRIN) die2("too many intrinsic_disable", name);
+    st64(nointrin + nnointrin * 8, name);
+    nnointrin = nnointrin + 1;
+}
+
+// 1 when `name` was passed to intrinsic_disable; src/gen_resolve.mc asks before
+// it dispatches a call to anything at all
+i64 intrin_disabled(uptr name) {
+    i64 i = 0;
+    loop {
+        if (i >= nnointrin) break;
+        if (str_eq(ld64(nointrin + i * 8), name)) return 1;
+        i = i + 1;
+    }
+    return 0;
+}
+
 // type of alias `id`, or -1 if the token is not an alias; the last registration wins
 i64 alias_find(i64 id) {
     i64 i = nalias - 1;
@@ -528,6 +617,17 @@ void machine_use(uptr name) {
     i64 i = machine_find(name);
     if (i < 0) die2("unknown machine", name);
     mach_tab = mach_tabs_at(i);
+}
+
+// M41: like machine_use, but a name that is not registered is not an error --
+// 1 when it was found and is now current, 0 when there is nothing by that name.
+// src/cli.mc uses it for the HOST's machine, which a compiler built for a
+// foreign target does not have and must not die at startup for.
+i64 machine_use_if(uptr name) {
+    i64 i = machine_find(name);
+    if (i < 0) return 0;
+    mach_tab = mach_tabs_at(i);
+    return 1;
 }
 
 // ---- M24: deriving a machine ----
@@ -669,3 +769,95 @@ uptr target_os_list() { return tgt_list(0); }
 
 // the same, restricted to the architectures one os was registered with
 uptr target_arch_list(uptr os) { return tgt_list(os); }
+
+// ---- M41: subcommands ----
+// `mc build`, `mc limits` and `mc sysroot` are not flags: each is the first
+// argument, and each belongs to a PART (<mc/core_build>). The eighth registry
+// of the same shape -- linear table, registration order, the last registration
+// of a name wins -- is what lets src/cli.mc dispatch them without naming the
+// driver, and what makes `mc` with no argument print one usage entry per
+// subcommand that exists in THIS binary.
+//
+// `use` is the exact text usage() prints for the subcommand, newline included;
+// a subcommand whose usage takes more than one line carries them all in that
+// one string. Nothing here reformats it -- which is what keeps the text byte
+// for byte what src/driver.mc's drv_usage() printed before M41.
+//
+// The ceiling is fixed on purpose, like machine() and target(): the number of
+// subcommands is a property of the compiler, not of the program it compiles,
+// so M23's growable-table rule does not apply (docs/determinism.md § capacity).
+#define MAXSUBCMD 16
+
+uptr sub_names[MAXSUBCMD];
+uptr sub_fns[MAXSUBCMD];
+uptr sub_uses[MAXSUBCMD];
+i64  nsubcmd = 0;
+
+uptr sub_name_at(i64 i) { return ld64(sub_names + i * 8); }
+uptr sub_fn_at(i64 i)   { return ld64(sub_fns + i * 8); }
+uptr sub_use_at(i64 i)  { return ld64(sub_uses + i * 8); }
+
+// subcommand("build", &drv_build, "usage: mc build ...\n"): f is
+// `i64 f(i64 argc, uptr argv)` and its result is mc_main's result.
+void subcommand(uptr name, uptr fn, uptr use) {
+    if (nsubcmd >= MAXSUBCMD) die2("too many subcommands", name);
+    st64(sub_names + nsubcmd * 8, name);
+    st64(sub_fns + nsubcmd * 8, fn);
+    st64(sub_uses + nsubcmd * 8, use);
+    nsubcmd = nsubcmd + 1;
+}
+
+// index of the subcommand named `name`, -1 if none; back to front, so that the
+// last registration of a name applies
+i64 subcommand_find(uptr name) {
+    i64 i = nsubcmd - 1;
+    loop {
+        if (i < 0) break;
+        if (str_eq(sub_name_at(i), name)) return i;
+        i = i - 1;
+    }
+    return -1;
+}
+
+// the usage text of every registered subcommand, in registration order
+void subcommand_usage() {
+    i64 i = 0;
+    loop {
+        if (i >= nsubcmd) break;
+        out_str(2, sub_use_at(i));
+        i = i + 1;
+    }
+}
+
+// ---- M41: on_plan, the pre-scan hook ----
+// M23's lim_plan sizes every table before the first one exists, and it lives in
+// <mc/core_build>: a compiler assembled without that part has no planner at
+// all, and its tables simply grow from the seeds in src/arena.mc -- which is
+// what src/astdump.mc has always done. on_plan(&f) registers
+// `void f(uptr src, uptr label)`, called by src/cli.mc exactly where the
+// lim_plan call used to be, and by nothing else.
+//
+// Fixed ceiling, for the same reason as the subcommand table: the number of
+// planners is a property of the compiler.
+#define MAXONPLAN 8
+
+uptr onplan_fns[MAXONPLAN];
+i64  nonplan = 0;
+
+uptr onplan_fn_at(i64 i) { return ld64(onplan_fns + i * 8); }
+
+void on_plan(uptr fn) {
+    if (nonplan >= MAXONPLAN) die("too many on_plan hooks");
+    st64(onplan_fns + nonplan * 8, fn);
+    nonplan = nonplan + 1;
+}
+
+// every planner, in registration order; nothing when none is registered
+void run_on_plan(uptr src, uptr label) {
+    i64 i = 0;
+    loop {
+        if (i >= nonplan) break;
+        callp(onplan_fn_at(i), src, label);
+        i = i + 1;
+    }
+}

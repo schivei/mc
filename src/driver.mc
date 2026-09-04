@@ -412,9 +412,17 @@ uptr drv_gen_compiler(uptr cout) {
     // right now (src/main.mc, host_bundle_open), so this same generated source
     // teaches a macOS compiler on macOS and a Linux one on Linux.
     drv_put(b, "#include <mc/host>\n");
+    // M41: a value that starts with `<` is a BUNDLED name, not a path -- it is
+    // emitted verbatim, so a project can ask for a part instead of the whole
+    // core: `core = "<mc/core_min>"` (docs/build.md § [compiler]).
     uptr core = toml_get("compiler.core");
-    if (core != 0) drv_include(b, up, core);
-    else           drv_put(b, "#include <mc/core>\n");
+    if (core != 0 && ld8(core) == '<') {
+        drv_put(b, "#include ");
+        drv_put(b, core);
+        drv_put(b, "\n");
+    }
+    else if (core != 0) drv_include(b, up, core);
+    else                drv_put(b, "#include <mc/core>\n");
     i64 n = toml_count("compiler.modules");
     if (n == 0) toml_err_key("compiler.modules", "missing key");
     i64 i = 0;
@@ -655,12 +663,11 @@ i64 drv_finish(uptr what) {
 }
 
 // ---- CLI ----
-void drv_usage() {
-    out_str(2, "usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits] [--sysroot-dir DIR]\n");
-    out_str(2, "       mc limits [DIR|FILE.mc]\n");
-    out_str(2, "       mc sysroot list|path <target>|fetch <target> [--yes] [--sysroot-dir DIR]\n");
-    out_str(2, "       mc sysroot stub [DIR] [--config FILE]\n");
-}
+// M41: the text is not written here any more -- each subcommand carries its own
+// usage string in the registration src/core_build.mc makes, and this prints
+// them all, in registration order. Same four lines, byte for byte; the
+// difference is that a compiler without one of them does not advertise it.
+void drv_usage() { subcommand_usage(); }
 
 // everything after the flags: one shape for `mc build` and for `mc limits`
 i64 drv_run(uptr dir, uptr cfg, i64 entry_only, i64 compiler_only) {
