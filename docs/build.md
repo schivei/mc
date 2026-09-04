@@ -1633,8 +1633,8 @@ differences that are the milestone.
 **The compiler is assembled, not extended.** `[compiler].core = "<mc/core_min>"` (M41), and
 `mc-avr.mc` names `<mc/core_build>` and its own three modules and nothing else: no
 `<mc/core_machines>`, no `<mc/core_writers>`, no `<mc/core_bundle>`. What that leaves out is
-two host machines, four object writers and a 350 KB bundle — **339 171 bytes against `mc`'s
-759 875**, the same `macho-exe` backend building both —
+two host machines, four object writers and a 350 KB bundle — **339 187 bytes against `mc`'s
+776 467**, the same `macho-exe` backend building both —
 and what it means for the sources is that `#include <name>` does not exist in this project, so
 every include in it is a relative path.
 

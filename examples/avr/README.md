@@ -60,7 +60,7 @@ void user_init() {
 }
 ```
 
-**339 171 bytes against `mc`'s 759 875** (`build/mc1 --exe src/mc.mc`, the same
+**339 187 bytes against `mc`'s 776 467** (`build/mc1 --exe src/mc.mc`, the same
 backend building both), and the difference is not compression: it is four object
 writers, two machines and a 350 KB bundle that this compiler does not contain. `docs/guide/98-recreating-the-compiler.md` is the walkthrough.
 

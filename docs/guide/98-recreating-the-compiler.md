@@ -24,7 +24,7 @@ bundled name you include or leave out:
 
 [`examples/avr`](../../examples/avr/README.md) is this page done for real, and the
 numbers in it are measured: `<mc/core_min>` + `<mc/core_build>` + an AVR machine
-+ an ELF32 writer + four taught words is **339 171 bytes against `mc`'s 759 875**
++ an ELF32 writer + four taught words is **339 187 bytes against `mc`'s 776 467**
 (the same `macho-exe` backend building both), and
 because it leaves `<mc/core_bundle>` out, every `#include` in that project is a
 relative path.
