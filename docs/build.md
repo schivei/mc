@@ -1494,6 +1494,21 @@ opened and lexed, so the `compile x -> y` step line comes first. The message, it
 column are the same, and `scripts/check-build.sh` asserts the last line of output for exactly that
 reason.
 
+Two things came out of the review of that change, and both are about a slot a module can leave
+empty. **A 0 in the object slot is now a diagnostic, not a crash**: `target(os, arch, 0, exe)` is
+a legitimate registration — it is what `none/riscv64` would be if the image writer were not also
+the object writer — and asking such a target for `kind = "obj"` used to hand the 0 to
+`backend_find()`, whose `str_eq` dereferenced it (the child died of `SIGSEGV`, and `mc build`
+reported nothing but exit 1). It now says `<os>/<arch> has no object backend: use kind = "exe"` at
+the value's own position, the mirror of the `requires [linker]` message the empty exe slot has
+always had. **And `mc sysroot stub` resolves `[target]` where a build does**: it reaches
+`drv_parse` without going through `drv_compile`, so it used to skip the resolution entirely and a
+foreign `[target].os` surfaced as `no stub writer for: haiku: ...` instead of the positioned
+message. It asks for the role `DRV_ROLE_NONE` — the two checks, no backend — because writing a
+`.tbd` or a `.def` needs the operating system and the architecture and nothing else.
+`tests/proj/noobj.mc` + `noobj.toml` + `toy.toml` and two `sysroot stub` diagnostics in
+`scripts/check-build.sh` are the five checks that hold all of it.
+
 The single-file CLI still does the second half on its own — `--backend=` and `--machine=` are
 resolved after `user_init()` in `src/main.mc` — and `examples/kernel/test.sh` uses it for every
 source that is not `[project].entry`, then checks that the two roads write the same bytes.

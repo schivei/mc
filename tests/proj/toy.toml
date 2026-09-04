@@ -1,0 +1,27 @@
+# toy.toml — noobj.toml with the fix the diagnostic asks for: kind = "exe".
+#
+# Same source, same taught compiler, same `toy/toy` target -- and this time the
+# role the driver asks the registry for is the one the module filled, so the
+# build goes through the `macho-exe` slot and writes a signed binary that runs.
+# That is what makes the message actionable rather than decorative.
+[project]
+entry = "app.mc"
+out   = "build/app-toy"
+kind  = "exe"
+
+[target]
+os   = "toy"
+arch = "toy"
+
+[compiler]
+out     = "build/mc-toy"
+modules = ["noobj.mc"]
+
+[libs]
+sqlite3 = "/usr/lib/libsqlite3.dylib"
+
+[externs]
+"sqlite3_*" = "sqlite3"
+
+[include]
+paths = ["inc"]

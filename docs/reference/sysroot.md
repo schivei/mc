@@ -218,6 +218,13 @@ build — parse `[project].entry`, work out which library each `extern` belongs 
 file per library — and stops there. No object, no link, and no `[linker]` required. § 9 is what it
 writes.
 
+It resolves `[target]` against the registry exactly where a compiling build does — after
+`user_init()`, before the unit is parsed — so an `(os, arch)` the registry does not hold is the
+positioned message of [diagnostics.md](diagnostics.md) § 10 and not a stub written for a target
+that does not exist. What it does **not** ask for is a backend: the writers of § 9 need the
+operating system and the architecture, nothing more, so a target registered with no object
+backend stubs fine.
+
 ## 8. The pinned sources
 
 One row per (target, host). Pinned by version **and** by sha256 — never resolved through an index

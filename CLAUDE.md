@@ -1477,6 +1477,65 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `docs/guide/97-a-new-architecture.md` (four registrations now, and the gap removed from "what
   this does not buy yet"), `examples/kernel/README.md` + `mc.toml`, `docs/specs/M39.md` (G1 marked
   taken, with the real line count).
+- Post-M39.5 batch (review): the two findings the PR review raised, both confirmed by reading and
+  both about a backend slot a module can leave at 0. Only `src/driver.mc` changed (+35/-6, 12 of
+  them code).
+  1. **`drv_backend_for(DRV_ROLE_OBJ)` handed a null to `backend_find`.** `target(os, arch, 0,
+     exe)` is a legitimate registration -- it is what a board whose flat image IS the artefact
+     writes -- and asking such a target for an object (`kind = "obj"`, or `kind = "exe"` with a
+     `[linker]`, which goes through the object step) returned `tgt_obj_at() == 0` unchecked;
+     `backend_find` compares that against every registered name with `str_eq` and dereferenced it.
+     Reproduced on the pre-fix compiler: the spawned child died of **SIGSEGV (exit 139)** with the
+     `compile app.mc -> build/app-toy.o` step line as its last word, and `mc build` reported
+     nothing but exit 1. Now `toy/toy has no object backend: use kind = "exe"` through
+     `toml_err_key("target.os", ...)`, at the value's own position and exit 1 -- the mirror of the
+     `<os> requires [linker]: there is no direct executable` message the empty EXE slot has always
+     had.
+  2. **`mc sysroot stub` never resolved `[target]`.** That path reaches `drv_parse` directly
+     (`src/sysroot.mc`), not through `drv_compile`, so `drv_bname` was never one of the M39.5 role
+     markers and the resolution inside `drv_parse` was skipped: a foreign `[target].os` came out
+     of the stub writer as `mc: no stub writer for: haiku: a static libc is code, not a name list`
+     and an unregistered arch was not diagnosed at all. A third marker, **`DRV_ROLE_NONE`**, is
+     set on that path: `drv_backend_for` runs the two registry checks and returns 0 without
+     touching a slot -- deliberately not `DRV_ROLE_OBJ`, since a `.tbd`/`.def` needs the os and
+     the arch and never a backend, so a target with no object backend still stubs. `mc sysroot
+     stub` and `mc build` now print the same message, same `file:line:col`, same exit 1, checked
+     side by side.
+  Proofs, all in `scripts/check-build.sh` (16/16 -> **21/21**): `tests/proj/noobj.mc` is the whole
+  taught compiler (`target("toy", "toy", 0, "macho-exe")`, the only way to get a 0 into a slot,
+  since every target `src/main.mc` registers has an object backend), `noobj.toml` asserts the new
+  message as the exact last line (`tests/proj/noobj.toml:19:8: toy/toy has no object backend: use
+  kind = "exe": target.os`), `toy.toml` is the same project with the fix the message names --
+  `kind = "exe"`, built through the taught target and RUN, so the advice is proved and not
+  asserted -- plus a `[target].arch` diagnostic in build mode and the two `sysroot stub` ones. The
+  `diag` helper gained one variable (`diag_cmd`) so both subcommands go through the same
+  assertion. `check-stubs` stays 9/9: the `no stub writer for: linux` case is a REGISTERED target
+  and reaches the writer exactly as before.
+  Docs: `docs/reference/diagnostics.md` (the new row, plus the note that `mc sysroot stub` runs
+  the same resolution -- and the § 10 table, split in two by M39.5's paragraph, put back together),
+  `docs/reference/hooks.md` § `target()` (what a 0 in EITHER slot means; the stale "`mc build`
+  will not reach it yet" paragraph, which M39.5 had already made false, rewritten),
+  `docs/reference/toml.md` § `[target]`, `docs/reference/sysroot.md` § 7, `docs/build.md`
+  § M39 / M39.5, `docs/specs/M39.md` § G1.
+  -- `stage0/` untouched, 2848/3000; `make bundle` re-run (`src/driver.mc` is bundled as
+  `mc/driver`): 50 files, raw 616002 -> LZ 286592, blob 287208 B. `make check` green end to end
+  (RC 0, zero FAIL, 3m54s): `test` 32/32, `check-lex` 92/92, `check-ast` 91/91, `check-asm` 91/91,
+  `check-obj` 32/32 against the frozen seed, `check-bundle` (reproducible + fresh), `bootstrap` at
+  a fixed point (`mc2.o == mc3.o`, 750704 bytes; the `--dump-asm` diff between `mc1` and `mc2` is
+  **empty**), `check-surface` 32/32 + inert, `test-exe` 32/32, `check-mc` 7/7, `check-standalone`,
+  `check-toml` 10/10, **`check-build` 21/21**, `check-stubs` 9/9, `check-sysroots` (13 rows),
+  `check-limits` **17/17 under 90%** (the tightest is `globals` 330/512 = 64%),
+  `check-minimal`, `test-linux` 33/33, `test-linux-x86_64` 30/30, `test-windows` 35/35 +
+  33/33 cross-compiled,
+  `check-examples`, `check-lang` 14, `check-conc` 21, `check-desktop`, `check-kernel`
+  (`mc build examples/kernel` -> 3304 B, QEMU 11.0.1 transcript and exit 0),
+  `check-docs` (144 symbols, 18 flags, 17 TOML keys, 10 directives, 47 samples, 224 links),
+  `site` + `check-site` (77 files, 0 problems; 50 contrast pairs, 0 below the minimum).
+  The five goldens rewritten **once more**, superseding the values in the entry above, only after
+  the empty `--dump-asm` diff and `cmp build/mc2.o build/mc3.o`: `mc2.sha256`
+  `5836c1fd...c0344` -> `d73a2861da0233e9c99b17ab3ace4104a97d21f0113f08251be024d4e849b79b`, the
+  Linux pair re-recorded by `make check-linux-host` (Docker, both arches, each after its own fixed
+  point) and the Windows pair cross-computed per `tests/golden/README.md`.
 - Next: M18 or M24 (`docs/plan.md`); M40 (the word-size sweep AVR/PIC need) is
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
   sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is

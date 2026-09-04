@@ -19,9 +19,20 @@
 # (exit 2, naming the missing marker), the cache road, the populated explicit
 # path (same object, byte for byte) and --sysroot-dir.
 #
+# M39.5 adds two configs over a TAUGHT compiler (tests/proj/noobj.mc, which
+# registers `target("toy", "toy", 0, "macho-exe")` and nothing else), because a
+# module is the only thing that can write a 0 into one of the two backend slots:
+#
+#   noobj.toml  kind = "obj" -> the object slot is 0: a diagnostic, at the
+#               value's position (it used to be a null dereference)
+#   toy.toml    the same project with the fix the message asks for,
+#               kind = "exe" -> the exe slot is `macho-exe`, and it runs
+#
 # The last section checks the diagnostics: a foreign [target].os, os = "linux"
 # with no [linker] (M16), a missing key and a bad [project].kind have to come
-# out with file:line:col and exit 1.
+# out with file:line:col and exit 1 -- and the same two [target] messages,
+# byte for byte, from `mc sysroot stub`, which reaches the same resolution
+# without going through a compile (M39.5).
 mc="${1:-build/mc1}"
 
 if [ ! -x "$mc" ]; then
@@ -111,6 +122,37 @@ else
     fi
 fi
 
+# ---- M39.5: a target a module registered, with one of the two slots at 0 ----
+# tests/proj/noobj.mc is the whole taught compiler: `target("toy", "toy", 0,
+# "macho-exe")`. The pair IS registered -- what is missing is the object
+# backend, which only a module can express, since every target src/main.mc
+# registers has one. Asking for that role used to hand the 0 to backend_find(),
+# whose str_eq dereferenced it: the child died of SIGSEGV with the `compile
+# x -> y` step line as its last word (exit 139, seen through drv_teach as
+# exit 1). Now it is the message below, and toy.toml proves the advice in it is
+# a build this same compiler can do.
+total=$((total + 1))
+"$mc" build "$dir" --config "$dir/noobj.toml" > "$tmp/o" 2>&1
+rc=$?
+got=$(tail -1 "$tmp/o")
+want="$dir/noobj.toml:19:8: toy/toy has no object backend: use kind = \"exe\": target.os"
+if [ "$rc" != "1" ]; then
+    fail "noobj.toml" "exit $rc, expected 1"
+elif [ "$got" != "$want" ]; then
+    fail "noobj.toml" "got '$got', expected '$want'"
+else
+    ok "noobj.toml -> the object slot is 0, and it is a diagnostic"
+    echo "  $got"
+fi
+
+total=$((total + 1))
+if ! "$mc" build "$dir" --config "$dir/toy.toml" > "$tmp/o" 2>&1; then
+    fail "toy.toml" "$(cat "$tmp/o")"
+else
+    sed 's|^|  |' "$tmp/o"
+    run_check "$dir/build/app-toy" "toy.toml -> kind = \"exe\" through the taught target"
+fi
+
 # ---- M25: the [sysroot] resolution chain (src/sysroot.mc) ----
 # Three cases over tests/proj/lin.mc, a linux/aarch64 program whose [linker] is
 # `echo`, so the resolved directory comes out on stdout and nothing here needs
@@ -183,10 +225,15 @@ fi
 # lexed. With an unreachable entry the first error would be `cannot open`, and
 # the [target] diagnostic under test would never be reached. The messages
 # themselves are unchanged, and so is the rule that the error is the last line.
+#
+# `diag_cmd` is the subcommand under test: `build` for all of them but the two
+# `sysroot stub` cases at the end, which have to produce the SAME two messages.
+# It is deliberately unquoted below -- `sysroot stub` is two arguments.
+diag_cmd="build"
 diag() {
     total=$((total + 1))
     printf '%s' "$3" > "$2"
-    "$mc" build "$dir" --config "$2" > "$tmp/o" 2>&1
+    "$mc" $diag_cmd "$dir" --config "$2" > "$tmp/o" 2>&1
     rc=$?
     got=$(tail -1 "$tmp/o")
     want=$(printf '%s' "$4" | sed "s|CFG|$2|")
@@ -209,6 +256,20 @@ out   = "build/x"
 os = "haiku"
 ' \
     'CFG:6:6: only macos, linux and windows (see docs/build.md): target.os'
+
+# the other half of the pair: a known os with an architecture it was never
+# registered with. The list is the one the registry holds FOR THAT OS, which is
+# why it is `only aarch64` and not the full set.
+diag "diag [target].arch" "$dir/build/d.toml" \
+    '[project]
+entry = "../app.mc"
+out   = "build/x"
+
+[target]
+os   = "macos"
+arch = "sparc"
+' \
+    'CFG:7:8: only aarch64 (see docs/build.md): target.arch'
 
 # M16: os = "linux" is valid, but there is no direct executable for it -- a
 # Linux build always hands the object to [linker].
@@ -256,6 +317,39 @@ entry = "../app.mc"
 out   = "noinc-out"
 ' \
     'mc: cannot open: tests/proj/db.mc'
+
+# M39.5: `mc sysroot stub` is the front half of a build -- it parses the entry
+# and writes one import file per library, with no backend anywhere in sight. It
+# reaches drv_parse without going through drv_compile, so until this batch the
+# [target] resolution never ran on that path and a foreign os came out of the
+# stub writer as `no stub writer for: haiku: a static libc is code, not a name
+# list`. The two cases below are the same two configs as the [target] cases
+# above, through the other subcommand: same message, same file:line:col, same
+# exit 1.
+diag_cmd="sysroot stub"
+
+diag "diag stub [target].os" "$dir/build/d.toml" \
+    '[project]
+entry = "../app.mc"
+out   = "build/x"
+
+[target]
+os = "haiku"
+' \
+    'CFG:6:6: only macos, linux and windows (see docs/build.md): target.os'
+
+diag "diag stub [target].arch" "$dir/build/d.toml" \
+    '[project]
+entry = "../app.mc"
+out   = "build/x"
+
+[target]
+os   = "macos"
+arch = "sparc"
+' \
+    'CFG:7:8: only aarch64 (see docs/build.md): target.arch'
+
+diag_cmd="build"
 
 rm -rf "$tmp"
 echo "$((total - fails))/$total mc build checks passed"

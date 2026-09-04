@@ -283,18 +283,23 @@ does not:
 | `only macos, linux and windows (see docs/build.md)` | `target.os` | the list is built from the `target()` registry, so a target a module registers appears in it |
 | `only aarch64 and x86_64 (see docs/build.md)` | `target.arch` | the architectures that operating system was registered with (macOS and Windows have only `aarch64`) |
 | `linux requires [linker]: there is no direct executable` | `target.os` | add a `[linker]` section: there is no `--exe` equivalent for ELF |
-
-Since M39.5 those three are raised **after** `user_init()` has run and after the entry source has
-been opened and lexed — that is what lets a taught compiler register its own `(os, arch)` pair and
-be driven by `mc build` (`docs/build.md` § M39 / M39.5). They therefore come out *after* the
-`compile x -> y` step line, and after nothing else: the resolution happens before the unit is
-parsed, so an unknown target is still reported ahead of any error in the program itself. The
-message, its file, its line and its column are what they always were.
+| `<os>/<arch> has no object backend: use kind = "exe"` | `target.os` | the mirror of the row above: the pair is registered, its **object** slot is 0. Only a module can register that — `target(os, arch, 0, exe)` is what a board whose flat image is the whole artefact writes — so it is reached by asking such a target for `kind = "obj"`, or for an `exe` through a `[linker]` (which goes through the object step). Drop the `[linker]` and use `kind = "exe"` |
 
 | `must be a relative path` | `compiler.out` | the generated compiler source lives next to it and includes by relative path |
 | `must not contain ..` | `compiler.out` | same reason; the `..` check runs on the string as written |
 | `library not declared in [libs]` | an `[externs]` value | the value must name a `[libs]` key |
 | `tolerance must be between 0 and 1` | `limits.tolerance` | a float in `[0, 1]`, at most four fraction digits |
+
+Since M39.5 the four `target.*` rows are raised **after** `user_init()` has run and after the
+entry source has been opened and lexed — that is what lets a taught compiler register its own
+`(os, arch)` pair and be driven by `mc build` (`docs/build.md` § M39 / M39.5). They therefore come
+out *after* the `compile x -> y` step line, and after nothing else: the resolution happens before
+the unit is parsed, so an unknown target is still reported ahead of any error in the program
+itself. The message, its file, its line and its column are what they always were.
+
+`mc sysroot stub` ([sysroot.md](sysroot.md) § 7) runs the same resolution at the same point, so
+the first two rows come out of it byte for byte as they come out of a build. It asks for no
+backend at all, which is why the two rows about a missing slot cannot be reached from it.
 
 ## 11. The sysroot, and exit code 2
 

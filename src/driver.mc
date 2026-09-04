@@ -89,14 +89,37 @@ i64  drv_stub_mode = 0;               // `mc sysroot stub`: parse, write the
 // are the ones this file has always printed, moved and not rewritten.
 #define DRV_ROLE_OBJ 1                // the object backend of [target]
 #define DRV_ROLE_EXE 2                // its direct-executable backend
+#define DRV_ROLE_NONE 3               // no backend at all: check [target] and
+                                      // stop (`mc sysroot stub`, below)
 uptr drv_bname = 0;                   // what drv_compile writes with: a role
                                       // until the resolution below names it
 
-uptr drv_backend_for(i64 role) {
+// the (os, arch) pair against the registry, and nothing about backends. Split
+// out of drv_backend_for so that `mc sysroot stub` -- which needs the target's
+// os and arch and no backend whatsoever -- runs the SAME two checks, in the
+// same place and with the same two messages, instead of walking on with an
+// unvalidated [target] (docs/reference/sysroot.md § 7).
+void drv_target_resolve() {
     if (!target_os_known(drv_os)) toml_err_key("target.os", target_os_list());
     drv_target = target_find(drv_os, drv_arch);
     if (drv_target < 0) toml_err_key("target.arch", target_arch_list(drv_os));
-    if (role == DRV_ROLE_OBJ) return tgt_obj_at(drv_target);
+}
+
+uptr drv_backend_for(i64 role) {
+    drv_target_resolve();
+    if (role == DRV_ROLE_NONE) return 0;
+    // a zero slot is a REGISTRATION saying that role does not exist for this
+    // target, and both are reachable from a module: `target(os, arch, 0, "x")`
+    // is what a board with no separable object step registers (the image is
+    // the artefact), and `target(os, arch, "x", 0)` is Linux. Neither may reach
+    // backend_find(), which takes a name and would dereference the 0.
+    if (role == DRV_ROLE_OBJ) {
+        if (tgt_obj_at(drv_target) == 0)
+            toml_err_key("target.os", tm_cat(tm_cat(drv_os, "/"),
+                         tm_cat(drv_arch,
+                                " has no object backend: use kind = \"exe\"")));
+        return tgt_obj_at(drv_target);
+    }
     if (tgt_exe_at(drv_target) == 0)
         toml_err_key("target.os", tm_cat(drv_os,
                      " requires [linker]: there is no direct executable"));
@@ -310,7 +333,8 @@ i64 drv_parse(uptr src, i64 cfg, uptr label) {
     // M39.5: HERE. After user_init(), so a [target] a module registered is in
     // the registry; before parse_unit(), so an unknown pair is still reported
     // ahead of anything the source itself might be wrong about.
-    if (drv_bname == DRV_ROLE_OBJ || drv_bname == DRV_ROLE_EXE)
+    if (drv_bname == DRV_ROLE_OBJ || drv_bname == DRV_ROLE_EXE
+        || drv_bname == DRV_ROLE_NONE)
         drv_bname = drv_backend_for(drv_bname);
     if (cfg) drv_apply_config();
     i64 unit = parse_unit();
@@ -530,6 +554,15 @@ void drv_entry(uptr entry, uptr out, uptr kind) {
     // the entry, write one stub per library it uses, stop. No object, no link,
     // and no [linker] required.
     if (drv_stub_mode) {
+        // M39.5: the role marker is what makes drv_parse resolve [target] after
+        // user_init(), the same way a compiling build does. Without it this
+        // path reached the stub writer with a pair nobody had checked, and a
+        // foreign [target].os came out as `no stub writer for: haiku: ...`
+        // instead of the positioned message the registry builds. DRV_ROLE_NONE
+        // and not DRV_ROLE_OBJ: writing a .tbd/.def needs the os and the arch,
+        // never a backend, so a target registered with no object backend must
+        // not be refused here.
+        drv_bname = DRV_ROLE_NONE;
         drv_parse(src, 1, entry);
         drv_stubs();
         return;

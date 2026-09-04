@@ -95,6 +95,12 @@ executable`). `arch` then decides the instruction set inside that object.
 (`windows requires [linker]: there is no direct executable`).
 See [../guide/50-cross-compile.md](../guide/50-cross-compile.md).
 
+A registered pair may be missing the *other* half instead: `target(os, arch, 0, exe)` is a target
+with no separable object step, which is what a board writing a flat image registers. Then
+`kind = "obj"` — and `kind = "exe"` with a `[linker]`, which goes through the object first — is
+`<os>/<arch> has no object backend: use kind = "exe"`, at the same position and with the same
+exit 1. `kind = "exe"` and no `[linker]` is the shape such a target is for.
+
 ## `[compiler]` — build the compiler that will compile the entry
 
 | key | type | default | meaning |

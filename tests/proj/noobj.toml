@@ -1,0 +1,27 @@
+# noobj.toml — kind = "obj" against a target whose object slot is 0.
+#
+# The taught compiler (tests/proj/noobj.mc) registers
+# `target("toy", "toy", 0, "macho-exe")`, so `toy/toy` is a real pair -- it just
+# has no object backend. Before M39.5's review batch the driver handed that 0 to
+# `backend_find()`, which compares it against every registered name with
+# `str_eq` and dereferenced the null. It is a diagnostic now, at the value's own
+# position, and it names the way out:
+#
+#   noobj.toml:19:8: toy/toy has no object backend: use kind = "exe": target.os
+#
+# tests/proj/toy.toml is the same project with that fix applied.
+[project]
+entry = "app.mc"
+out   = "build/app-toy.o"
+kind  = "obj"
+
+[target]
+os   = "toy"
+arch = "toy"
+
+[compiler]
+out     = "build/mc-toy"
+modules = ["noobj.mc"]
+
+[include]
+paths = ["inc"]
