@@ -8,7 +8,7 @@
 //
 // The default compiler (`build/mc1`) refuses both halves: `--backend=rv-image`
 // is `unknown backend`, and the source is `type expected at top level` at the
-// first `mmio` line. See docs/surface.md § Tier 3 and docs/guide/95-a-new-
+// first `mmio` line. See docs/surface.md § Tier 3 and docs/guide/97-a-new-
 // architecture.md.
 
 // M37: `<mc/host>` is the host file of whichever `mc` compiles this line -- the

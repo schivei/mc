@@ -549,9 +549,9 @@ the milestone's headline. Two ways in and out of the compiler — a machine and 
 of. [`docs/guide/97-a-new-architecture.md`](guide/97-a-new-architecture.md) is the path for
 somebody doing it again.
 
-### The five built-in backends: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64` and `coff-obj-arm64`
+### The six built-in backends: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64`, `coff-obj-arm64` and `coff-obj-x86_64`
 
-`src/main.mc` registers four backends before calling `user_init()`:
+`src/main.mc` registers six backends before calling `user_init()`:
 
 | name | writes | alias |
 |---|---|---|
@@ -560,6 +560,7 @@ somebody doing it again.
 | `elf-obj` (M16) | ELF64 `ET_REL` for `EM_AARCH64` — the `.o` a Linux linker takes | — |
 | `elf-obj-x86_64` (M17) | the same file for `EM_X86_64` | — |
 | `coff-obj-arm64` (M19) | COFF `IMAGE_FILE_MACHINE_ARM64` — the `.obj` a Windows linker takes | — |
+| `coff-obj-x86_64` (M20) | COFF `IMAGE_FILE_MACHINE_AMD64` over the `x86_64-win` machine — the `.obj` for Windows x64 | — |
 
 ```
 $ build/mc1 --exe tests/001-return42.mc -o tmp/t1 && tmp/t1; echo $?
