@@ -4,7 +4,7 @@
 # A step of M24 is INERT when the compiler from before it and the compiler after
 # it produce byte-identical objects for everything that registers nothing: the
 # whole tests/ corpus, the compiler's own source, and -- through the taught
-# compiler each of them BUILDS -- the four examples that do register something,
+# compiler each of them BUILDS -- the five examples that do register something,
 # but nothing this milestone adds.
 #
 # PRE is a copy of build/mc1 taken before the first edit of the step
@@ -72,6 +72,12 @@ taught examples/api     build/api
 taught examples/lang    build/lang-demo
 taught examples/conc    build/conc-demo
 taught examples/desktop build/desktop-ui --config examples/desktop/ui.toml
+# examples/kernel is the widest of the five: a machine, a backend and a target
+# pair that the running compiler does not have, all registered from a module
+# (M39, M39.5). It is what M41's Acceptance 3 names alongside api/lang/conc, and
+# it is the one that would notice a part boundary moving under a recreated
+# compiler -- the artefact is a flat image, so a single byte out of place shows.
+taught examples/kernel  build/kernel.bin
 
 if [ "$fails" != 0 ]; then
     echo "check-inert: $fails differences"

@@ -1420,7 +1420,10 @@ Three things made that possible, and all three are ordinary surface:
 Inert by construction, and proved so: with nothing declared and nothing disabled, the compiler
 before M41 and the compiler after it produce byte-identical objects for the whole `tests/` corpus,
 for `src/mc.mc`, and — through the taught compiler each of them builds — for `examples/api`,
-`examples/lang`, `examples/conc` and `examples/desktop` (`scripts/check-inert.sh`).
+`examples/lang`, `examples/conc`, `examples/desktop` and `examples/kernel`
+(`scripts/check-inert.sh`). The last is the widest of the five: its module registers a machine, a
+backend and an `os`/`arch` pair the running compiler does not have, so a part boundary that moved
+under a recreated compiler would show up there as a changed byte in a flat image.
 
 See `docs/guide/98-recreating-the-compiler.md`, `docs/reference/bundle.md` § The parts of the core
 and `docs/reference/hooks.md` § 7.

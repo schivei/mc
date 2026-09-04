@@ -1831,9 +1831,12 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   bundled (they are fixtures; bundling them would move the blob and the five goldens for something
   no compiler includes).
   **Inertness**, in M17 step A's protocol: `scripts/check-inert.sh` between the compiler before
-  each step and the one after -- 33 objects identical (`tests/*.mc` and `src/mc.mc`) and the four
-  taught examples (`api`, `lang`, `conc`, `desktop`) identical through the compiler each side
-  builds. `examples/kernel` is untouched and still includes `<mc/core>`.
+  each step and the one after -- 33 objects identical (`tests/*.mc` and `src/mc.mc`) and the five
+  taught examples (`api`, `lang`, `conc`, `desktop`, `kernel`) identical through the compiler each
+  side builds. `examples/kernel` was the one Acceptance 3 named and the script did not run: it is
+  untouched and still includes `<mc/core>`, and it is now asserted like the other four -- the
+  widest of the five, since its module registers a machine, a backend and an `os`/`arch` pair the
+  running compiler does not have, and its artefact is a flat image where one byte shows.
   — `make check` green end to end (RC 0, 0 FAIL): `test` 32/32, `check-lex` 120/120 (2 skipped),
   `check-ast` 120/120, `check-bundle` (75 files, raw 776601 -> lz 364543, blob 365449 B),
   `check-asm` 120/120, `check-obj` 32/32 against the frozen seed, `bootstrap` at a fixed point
