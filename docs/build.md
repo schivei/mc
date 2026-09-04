@@ -1598,9 +1598,16 @@ message. It asks for the role `DRV_ROLE_NONE` — the two checks, no backend —
 `tests/proj/noobj.mc` + `noobj.toml` + `toy.toml` and two `sysroot stub` diagnostics in
 `scripts/check-build.sh` are the five checks that hold all of it.
 
-The single-file CLI still does the second half on its own — `--backend=` and `--machine=` are
-resolved after `user_init()` in `src/cli.mc` — and `examples/kernel/test.sh` uses it for every
-source that is not `[project].entry`, then checks that the two roads write the same bytes.
+The single-file CLI does the same thing in its own file — the backend the HOST answers for is
+resolved in `src/cli.mc` after `user_init()`, like `--backend=` and `--machine=` — and
+`examples/kernel/test.sh` uses it for every source that is not `[project].entry`, then checks that
+the two roads write the same bytes. That alignment is younger than M39.5: until the post-M41
+review the CLI resolved the DEFAULT object backend while it was reading the flags, so a module
+that re-registered the host pair was honoured by `mc build` and silently ignored by
+`mc x.mc -o x.o`, and moving the resolution exposed the same empty-slot crash on this road, with
+the same fix — `<os>/<arch> has no object backend: use --exe`, the command line's wording of the
+message above. `tests/proj/objswap.mc` and `tests/proj/noobjhost.mc` in `scripts/check-build.sh`
+are the two cases.
 
 Everything else about the project is ordinary: `[compiler].modules`, `[limits].tolerance = 1.0`
 and `[include].paths = ["lib"]` mean exactly what they mean everywhere else, and

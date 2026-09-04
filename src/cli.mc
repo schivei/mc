@@ -207,21 +207,6 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
     }
     if (in == 0) { usage(); return 1; }
 
-    // M37: with no --backend and no --exe, `mc x.mc -o x.o` writes an object
-    // for the machine it is RUNNING on -- Mach-O on macOS, ELF on Linux, each
-    // with that host's architecture. It comes out of the same target registry
-    // `mc build` reads, so a host is supported exactly when it is registered.
-    // M41: a compiler with no target registry at all -- one machine, one
-    // writer, nothing to look up -- says which backend is its default instead
-    // (backend_default, src/hooks.mc). With neither there is nothing to guess.
-    if (bname == 0 && want_exe == 0) {
-        i64 ht = target_find(host_os(), host_arch());
-        if (ht >= 0)                     bname = tgt_obj_at(ht);
-        else if (backend_default_name()) bname = backend_default_name();
-        else if (ntargets)               die2("the host is not a registered target", host_os());
-        else                             die("no backend: use --backend=NAME");
-    }
-
     // M23/M41: the pre-scan sizes every table before the first one exists. It
     // lives in <mc/core_build> and reaches here through on_plan(); with that
     // part absent nothing is pre-sized and the tables grow from the seeds in
@@ -263,15 +248,22 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
     if (mode == M_ASM) { gen_lower(unit); gen_dump_asm(); return 0; }
     if (mode == M_SYMS) { gen_lower(unit); gen_encode_all(); dump_syms(); return 0; }
 
-    // post-M41 review: `--exe`, resolved here and not where the flag was read.
-    // Here means after user_init() -- a target a module registered counts, the
-    // rule M39.5 wrote for `mc build` -- and after the dumps have returned, so
-    // `--exe --dump-asm` still dumps on a host that has no executable backend.
-    // A 0 in the exe slot is a REGISTRATION saying this target has no direct
-    // executable (linux and windows, src/core_writers.mc): it must never reach
-    // backend_find(), which takes a name and would dereference it. The message
-    // is the driver's, with `[linker]` -- a TOML section this command line does
-    // not have -- replaced by what the user has to run instead.
+    // post-M41 review: the backend the HOST answers for -- the exe slot for
+    // `--exe`, the object slot for a plain `mc x.mc -o x.o` -- is resolved here
+    // and not where the flags were read. Here means after user_init(), so a
+    // target a module registered counts (the rule M39.5 wrote for `mc build`,
+    // which resolves inside drv_parse for the same reason), and after the dumps
+    // have returned, so `--dump-asm` still dumps on a host that answers for no
+    // backend at all. `--backend=NAME` skips the whole block: it named one.
+    //
+    // A 0 in either slot is a REGISTRATION saying this target does not have
+    // that role -- 0 in the exe slot is linux and windows (src/core_writers.mc),
+    // 0 in the object slot is what a board whose flat image is the whole
+    // artefact writes (examples/kernel) -- and neither may reach backend_find(),
+    // which takes a name and would dereference it. Both messages are the
+    // driver's (drv_backend_for, src/driver.mc), with what a TOML file would do
+    // replaced by what a command line can: `[linker]` becomes "a linker" and
+    // `kind = "exe"` becomes `--exe`.
     if (want_exe) {
         i64 he = target_find(host_os(), host_arch());
         if (he < 0) die2("the host is not a registered target", host_os());
@@ -279,6 +271,26 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
             die(tm_cat(host_os(),
                        " requires a linker: there is no direct executable"));
         bname = tgt_exe_at(he);
+    } else if (bname == 0) {
+        // M37: with no --backend and no --exe, `mc x.mc -o x.o` writes an
+        // object for the machine it is RUNNING on -- Mach-O on macOS, ELF on
+        // Linux, each with that host's architecture -- out of the same registry
+        // `mc build` reads, so a host is supported exactly when it is
+        // registered. M41: a compiler with no target registry at all -- one
+        // machine, one writer, nothing to look up -- says which backend is its
+        // default instead (backend_default, src/hooks.mc). With neither there
+        // is nothing to guess.
+        i64 ht = target_find(host_os(), host_arch());
+        if (ht >= 0) {
+            if (tgt_obj_at(ht) == 0)
+                die(tm_cat(tm_cat(host_os(), "/"),
+                           tm_cat(host_arch(),
+                                  " has no object backend: use --exe")));
+            bname = tgt_obj_at(ht);
+        }
+        else if (backend_default_name()) bname = backend_default_name();
+        else if (ntargets)               die2("the host is not a registered target", host_os());
+        else                             die("no backend: use --backend=NAME");
     }
 
     i64 bi = backend_find(bname);
