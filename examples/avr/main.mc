@@ -16,8 +16,8 @@
 //
 // `boot` is the UART working, which means the startup copy out of flash worked
 // -- the string is in SRAM only because `_start` put it there. `blink` is
-// PORTB5 driven through the taught `sbi`/`cbi`. `tick` comes from a TIMER0
-// overflow interrupt: the vector table, the ISR frame and `sei` all working,
+// PORTB5 driven through the taught `sbi`/`cbi`. `tick` comes from a TIMER1
+// overflow interrupt (vector 13): the vector table, the ISR frame and `sei` all working,
 // and it is printed through a POINTER READ OUT OF A `uptr[]` -- two bytes per
 // element, because this compiler declared `uptr` to be two bytes. `sum 352` is
 // the 64-bit multiply, divide and remainder that an AVR does not have, done by
@@ -29,7 +29,7 @@
 
 #include "sys_avr.mc"                    // the UART, halt, _start, the registers
 #include "rt_avr.mc"                     // multiply, divide, remainder
-#include "isr.mc"                        // the vector 16 frame
+#include "isr.mc"                        // the vector 13 frame
 
 // __DATA,__bss: the ISR writes it, `_start` clears it, and it is the only
 // thing the two of them share.

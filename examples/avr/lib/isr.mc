@@ -4,7 +4,7 @@
 // An ISR is not a function. It must save SREG and every register its body can
 // touch -- including the ones a called function clobbers -- and it must end in
 // `reti` and not in `ret`. Neither is expressible in the language, so
-// `vector_16` below is an `#opcode`-only leaf: it pushes the save set, calls an
+// `vector_13` below is an `#opcode`-only leaf: it pushes the save set, calls an
 // ORDINARY mc function through a hand-written `call`, pops, and executes a bare
 // `reti`. The walker's own epilogue is emitted behind that `reti` and is dead
 // code, which is exactly the shape examples/kernel/lib/trap.mc has.
