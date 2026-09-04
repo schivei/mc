@@ -135,11 +135,17 @@ jobs:
           for f in build/mc-windows-arm64.obj build/mc-windows-x86_64.obj \
                    build/sysroot/windows-aarch64/winstart.obj \
                    build/sysroot/windows-aarch64/mcrt.obj \
-                   build/sysroot/windows-aarch64/kernel32.lib \
                    build/sysroot/windows-x86_64/winstart.obj \
-                   build/sysroot/windows-x86_64/mcrt.obj \
-                   build/sysroot/windows-x86_64/kernel32.lib; do
+                   build/sysroot/windows-x86_64/mcrt.obj; do
             [ -s "$f" ] || { echo "::error::$f was not produced"; exit 1; }
+          done
+          # kernel32.lib needs llvm-dlltool, which this runner may not have (the
+          # suite step above has the same caveat): when it is absent here,
+          # scripts/link-windows.sh regenerates it on the Windows runner, where
+          # the LLVM install carries the tool.
+          for a in aarch64 x86_64; do
+            [ -s "build/sysroot/windows-$a/kernel32.lib" ] \
+              || echo "::notice::build/sysroot/windows-$a/kernel32.lib absent (no llvm-dlltool here); the Windows runner regenerates it"
           done
 
       # The suite objects the Windows jobs run: cross-compiled here, linked and
