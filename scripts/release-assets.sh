@@ -18,6 +18,10 @@
 # OUTDIR defaults to dist/. Run it from the repository root: README.md and
 # LICENSE are looked up relative to the working directory.
 #
+# VERSION comes from the release tag -- there is no VERSION file in the
+# repository (docs/ci.md § Versioning). A leading `v` is stripped, so both
+# `v0.1.0` and `0.1.0` produce mc-0.1.0-TARGET.tar.gz.
+#
 # Determinism. Two runs from the same tree must produce the same bytes, so:
 #   * the member list is explicit and sorted here, never a directory walk;
 #   * every staged file gets mtime 0 (`TZ=UTC touch -t 197001010000`), which is
@@ -32,7 +36,9 @@
 # touch above for the timestamps. Both are pinned to `--format ustar`.
 set -e
 
-version="$1"
+# the tag name and the bare version are both accepted; `v` never reaches a
+# file name
+version="${1#v}"
 target="$2"
 binary="$3"
 outdir="${4:-dist}"
