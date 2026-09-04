@@ -452,9 +452,13 @@ jobs:
       # The release gate: the binary being shipped compiles itself to a fixed
       # point on this machine and then runs the whole suite. It is the Windows
       # equivalent of the macOS job's `scripts/test.sh dist/mc`, and stronger.
+      # TMPDIR in D:/a/_temp form and the architecture stated, for the same
+      # reasons the CI host jobs give (docs/guide/95-windows-host.md).
       - name: Bootstrap to a fixed point with the binary being shipped
         shell: bash
-        run: scripts/bootstrap-windows.sh build/mc-${{ matrix.target }}.exe
+        run: |
+          export TMPDIR="$(cygpath -m "$RUNNER_TEMP")"
+          scripts/bootstrap-windows.sh --arch ${{ matrix.larch }} build/mc-${{ matrix.target }}.exe
 
       - name: Package
         shell: bash

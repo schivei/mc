@@ -804,9 +804,18 @@ jobs:
           build/mc-windows-arm64.exe src/mc_windows.mc -o build/smoke-big.obj; echo "compile src: exit $?"
           ls -l build/smoke-small.obj build/smoke-big.obj 2>/dev/null || true
 
+      # Two things the native mc needs from the shell around it: a temporary
+      # directory it can open (with MSYS2_ARG_CONV_EXCL set, `mktemp -d` hands
+      # the check scripts /tmp/..., a path only MSYS understands -- so TMPDIR is
+      # the runner's own temp in D:/a/_temp form, which both sides accept), and
+      # the architecture stated rather than guessed (Git Bash runs emulated on
+      # windows-11-arm and reports x86_64; scripts/host-arch.sh).
       - name: Bootstrap and run the Windows make check subset
         shell: bash
-        run: make check SEED=build/mc-windows-arm64.exe
+        run: |
+          export TMPDIR="$(cygpath -m "$RUNNER_TEMP")"
+          echo "TMPDIR=$TMPDIR  HOSTARCH=aarch64"
+          make check SEED=build/mc-windows-arm64.exe HOSTARCH=aarch64
 
       # The proof that a Windows-hosted mc is the SAME compiler: the Mach-O
       # object it writes for src/mc.mc is byte for byte the one the macOS job
@@ -971,9 +980,18 @@ jobs:
           build/mc-windows-x86_64.exe src/mc_windows_x86_64.mc -o build/smoke-big.obj; echo "compile src: exit $?"
           ls -l build/smoke-small.obj build/smoke-big.obj 2>/dev/null || true
 
+      # Two things the native mc needs from the shell around it: a temporary
+      # directory it can open (with MSYS2_ARG_CONV_EXCL set, `mktemp -d` hands
+      # the check scripts /tmp/..., a path only MSYS understands -- so TMPDIR is
+      # the runner's own temp in D:/a/_temp form, which both sides accept), and
+      # the architecture stated rather than guessed (Git Bash runs emulated on
+      # windows-11-arm and reports x86_64; scripts/host-arch.sh).
       - name: Bootstrap and run the Windows make check subset
         shell: bash
-        run: make check SEED=build/mc-windows-x86_64.exe
+        run: |
+          export TMPDIR="$(cygpath -m "$RUNNER_TEMP")"
+          echo "TMPDIR=$TMPDIR  HOSTARCH=x86_64"
+          make check SEED=build/mc-windows-x86_64.exe HOSTARCH=x86_64
 
       # The proof that a Windows-hosted mc is the SAME compiler: the Mach-O
       # object it writes for src/mc.mc is byte for byte the one the macOS job

@@ -343,10 +343,16 @@ program that wants to spawn a process can.
 ## Two facts about the Windows runners
 
 * **`uname -m` lies on Windows on ARM.** Git for Windows is an x64 program and runs emulated
-  there, so `uname -m` answers `x86_64` on an ARM64 machine. `scripts/host-arch.sh` reads
-  `PROCESSOR_ARCHITEW6432` (the real architecture of an emulated process) and
-  `PROCESSOR_ARCHITECTURE` first, and the Makefile's `HOSTARCH` and `scripts/bootstrap-windows.sh`
-  both go through it; `--arch` and `MC_HOSTARCH` override it.
+  there, so `uname -m` answers `x86_64` on an ARM64 machine -- and so does the process's own
+  `PROCESSOR_ARCHITECTURE`, with no `PROCESSOR_ARCHITEW6432` at all (measured on
+  `windows-11-arm`). `scripts/host-arch.sh` therefore reads `RUNNER_ARCH` (GitHub Actions), then
+  the SYSTEM environment in the registry, then the process environment; the Makefile's `HOSTARCH`
+  and `scripts/bootstrap-windows.sh` go through it, and the CI jobs do not even rely on that: they
+  pass `HOSTARCH=aarch64` / `--arch aarch64` explicitly. `MC_HOSTARCH` overrides everything.
+* **`/tmp` is not a path the native `mc` can open.** The CI jobs set `MSYS2_ARG_CONV_EXCL='*'` so
+  that MSYS never rewrites an `lld-link` option into a path, which also stops it from translating
+  the `/tmp/...` directories `mktemp -d` hands the check scripts. The jobs export
+  `TMPDIR=$(cygpath -m "$RUNNER_TEMP")` (`D:/a/_temp`), a form both the shell and `mc` accept.
 * **The default stack is 1 MiB**, against 8 MiB on macOS and Linux. The compiler is built for the
   latter, so every `mc` executable is linked with `-stack:8388608` (`scripts/link-windows.sh` and the
   two `src/mc.windows-*.toml`).
