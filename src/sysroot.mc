@@ -182,8 +182,12 @@ uptr sysroot_probe(uptr os, uptr arch) {
     }
     if (str_eq(os, "windows")) {
         // `mc` cannot regenerate an import library (that is llvm-dlltool), so
-        // the only thing to probe is where scripts/sysroot-windows.sh writes one
-        uptr d = tm_cat("build/sysroot/windows-", arch);
+        // the only thing to probe is where scripts/sysroot-windows.sh writes one.
+        // Through sr_path(), because it is the ONE relative candidate in this
+        // step: `build/sysroot/...` is written relative to the project, and a
+        // `mc build DIR` run from anywhere else would otherwise probe a
+        // `build/` beside the working directory instead of beside mc.toml.
+        uptr d = sr_path(tm_cat("build/sysroot/windows-", arch));
         if (sr_try(d, os)) return d;
         return 0;
     }
@@ -425,15 +429,29 @@ uptr sysroot_hex(uptr d) {
 
 // curl first, then the host's alternative. -1 says neither program is on PATH,
 // which is a case with its own message and not a failed spawn.
+//
+// `--proto =https --proto-redir =https` is the HTTPS-only rule of
+// docs/specs/M25.md § 2 stated to the program that does the transfer, and not
+// only to the table: every row is an `https://` URL, but `-L` follows redirects
+// and without those two flags a 3xx to an `http://` mirror would be followed
+// silently. The sha256 check below still guards the BYTES; this guards the
+// connection. The `wget` fallback keeps its two flags: busybox's `wget` is what
+// an Alpine host has and it knows neither `--https-only` nor `--proto`, so
+// refusing plaintext there would cost the fallback itself. That difference is
+// written down in docs/reference/sysroot.md § 7.
 i64 sysroot_download(uptr file, uptr url) {
     uptr d = host_downloader();
-    u8 av[6 * 8];
+    u8 av[10 * 8];
     st64(av + 0, d);
-    st64(av + 8, "-fLsS");
-    st64(av + 16, "-o");
-    st64(av + 24, file);
-    st64(av + 32, url);
-    st64(av + 40, 0);
+    st64(av + 8, "--proto");
+    st64(av + 16, "=https");
+    st64(av + 24, "--proto-redir");
+    st64(av + 32, "=https");
+    st64(av + 40, "-fLsS");
+    st64(av + 48, "-o");
+    st64(av + 56, file);
+    st64(av + 64, url);
+    st64(av + 72, 0);
     i64 rc = drv_spawn_ok(d, av, 0);
     if (rc >= 0) return rc;
     uptr a = host_downloader_alt();
@@ -441,6 +459,9 @@ i64 sysroot_download(uptr file, uptr url) {
     st64(av + 0, a);
     st64(av + 8, "-q");
     st64(av + 16, "-O");
+    st64(av + 24, file);
+    st64(av + 32, url);
+    st64(av + 40, 0);
     return drv_spawn_ok(a, av, 0);
 }
 
@@ -477,6 +498,90 @@ i64 sysroot_extract(i64 r, uptr archive, uptr dest) {
     }
     st64(av + n * 8, 0);
     return drv_spawn_ok("tar", av, 0);
+}
+
+// where a member lands: its archive path with the row's --strip-components
+// leading components removed. Empty when the member IS the directory -- the
+// llvm-mingw rows name `<triple>/lib` and strip exactly as many components, so
+// what lands is that directory's contents, directly in dest.
+uptr sysroot_landed(uptr member, i64 strip) {
+    i64 i = 0;
+    i64 dropped = 0;
+    while (dropped < strip) {
+        i64 c = ld8(member + i);
+        if (c == 0) return member + i;
+        if (c == '/') dropped = dropped + 1;
+        i = i + 1;
+    }
+    return member + i;
+}
+
+// The first member of the row that did not land in `dest`, or 0 when they all
+// did. This is what `fetch` verifies with, and it is stricter than the marker
+// test on purpose: the markers are all the CHAIN can use, because a directory
+// somebody built by hand has no row behind it, but a fetch knows the archive's
+// own file list. An extraction cut short -- a full disk, a killed `tar` -- can
+// land crt1.o and libc.a and stop before crti.o, and the marker test would call
+// that a sysroot, write a manifest over it and let the next `mc build` hand it
+// to the linker, which is the linker-speaks-first failure this milestone exists
+// to remove (docs/specs/M25.md § "What exists").
+uptr sysroot_missing_file(i64 r, uptr dest) {
+    uptr m = ss_member_at(r);
+    u8 b[BUF_SIZE];
+    buf_init(b);
+    i64 i = 0;
+    loop {
+        i64 c = ld8(m + i);
+        if (c == 0 || c == ' ') {
+            if (buf_len(b) > 0) {
+                buf_u8(b, 0);
+                uptr word = buf_p(b);
+                uptr name = sysroot_landed(word, ss_strip_at(r));
+                uptr p = dest;
+                if (ld8(name) != 0) p = tm_cat(tm_cat(dest, "/"), name);
+                if (!path_exists(p)) {
+                    if (ld8(name) == 0) return word;
+                    return name;
+                }
+                buf_init(b);
+            }
+            if (c == 0) return 0;
+        } else {
+            buf_u8(b, c);
+        }
+        i = i + 1;
+    }
+}
+
+// `fetch` refused what it unpacked, so the directory must not go on looking
+// like a sysroot to the next `mc build`: the chain has only the marker test,
+// and the files `tar` did manage to write would pass it. Removing the markers
+// is the whole of the cleanup -- the rest of the debris is inert, and a second
+// `fetch` extracts over it. Nothing here can fail in a way worth reporting: a
+// marker that was never written is an unlink that returns non-zero and means
+// exactly what it says.
+void sysroot_unbless(uptr dir, uptr os) {
+    u8 b[BUF_SIZE];
+    i64 k = 0;
+    loop {
+        uptr m = sysroot_marker(os, k);
+        if (m == 0) return;
+        buf_init(b);
+        i64 i = 0;
+        loop {
+            i64 c = ld8(m + i);
+            if (c == 0 || c == '|') {
+                buf_u8(b, 0);
+                unlink(tm_cat(tm_cat(dir, "/"), buf_p(b)));
+                if (c == 0) break;
+                buf_init(b);
+            } else {
+                buf_u8(b, c);
+            }
+            i = i + 1;
+        }
+        k = k + 1;
+    }
 }
 
 // manifest.toml beside the files: where they came from and what they hashed to,
@@ -604,14 +709,20 @@ i64 sysroot_fetch(uptr name, i64 yes) {
         sysroot_fetch_failed(os, arch);
     }
     unlink(file);
-    sysroot_manifest(r, name, dest);
-    uptr miss = sysroot_missing_marker(dest, os);
+    // Verified BEFORE the manifest is written: manifest.toml is the claim that
+    // this directory holds what the row says it holds, and that claim is not to
+    // be written over an extraction that did not finish. Every member of the
+    // row first, then the markers the chain itself will test later.
+    uptr miss = sysroot_missing_file(r, dest);
+    if (miss == 0) miss = sysroot_missing_marker(dest, os);
     if (miss != 0) {
+        sysroot_unbless(dest, os);
         out_str(2, "mc: the archive did not carry ");
         out_str(2, miss);
         out_str(2, "\n");
         sysroot_fetch_failed(os, arch);
     }
+    sysroot_manifest(r, name, dest);
     out_str(1, "sysroot ");
     out_str(1, name);
     out_str(1, " -> ");

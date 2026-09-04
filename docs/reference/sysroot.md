@@ -61,6 +61,12 @@ Tried in order, first populated one wins:
 | `macos` | `xcrun --show-sdk-path` — the same value `{sdk}` expands to, and cached the same way, so asking for both runs `xcrun` once. Nothing is probed when `host_has_sdk()` is 0 |
 | `windows` | `build/sysroot/windows-<arch>`, where `scripts/sysroot-windows.sh` writes the import library. `mc` cannot regenerate one — that is `llvm-dlltool` — so a miss points at the script |
 
+The Windows row is the one **relative** candidate in this step (the Linux ones are absolute, the
+macOS one comes back absolute from `xcrun`), and like every relative path in `mc.toml` it is taken
+against the **config's directory**, not the working directory: `mc build ../myapp` probes
+`../myapp/build/sysroot/windows-aarch64`. With no config — `mc sysroot list|path` — there is
+nothing to be relative to and it is the working directory.
+
 ## 4. The cache
 
 | what | where |
@@ -143,15 +149,37 @@ printed, `nothing was downloaded: re-run with --yes` follows, and the exit code 
 
 | step | how |
 |---|---|
-| download | `curl -fLsS -o FILE URL` is spawned (`curl.exe` on Windows), falling back to `wget -q -O FILE URL` where the host layer names one. `mc` speaks no HTTP and no TLS: an `http://` fetch of a checksummed file would still be a downgrade nobody should ship |
+| download | `curl --proto '=https' --proto-redir '=https' -fLsS -o FILE URL` is spawned (`curl.exe` on Windows), falling back to `wget -q -O FILE URL` where the host layer names one. `mc` speaks no HTTP and no TLS: an `http://` fetch of a checksummed file would still be a downgrade nobody should ship |
 | verify | `sha256` from `src/sha256.mc`, over the bytes just written, plus the length. One implementation on three hosts, and part of the compiler rather than of a script |
 | extract | one `tar` spawn, no shell: `-xzf` for an Alpine `.apk` (a gzip tar), `-xJf` for a `.tar.xz`, `-xf` for the `.zip` rows, which exist only for a Windows host — its bundled `tar.exe` is libarchive and reads zip, and is not to be trusted with xz |
+| check | **every member of the row**, not just the markers, then the markers. See below |
 | manifest | `manifest.toml` beside the files: target, kind, url, sha256, size, strip and the member list. **No date** ([../determinism.md](../determinism.md)), so two fetches of the same row write the same file |
 
+Every row is an `https://` URL, but `-L` follows redirects, so the two `--proto` flags say the
+HTTPS-only rule to the program that does the transfer and not only to the table: a 3xx to an
+`http://` mirror is refused rather than followed. The `wget` fallback keeps its two flags and has
+no equivalent restriction — busybox's `wget` is what an Alpine host has, and it knows neither
+`--https-only` nor `--proto`, so demanding one there would cost the fallback itself. The sha256
+check guards the bytes either way; the flags guard the connection.
+
+**The check step is stricter than the marker test of § 2**, and deliberately so. The markers are
+all the resolution chain has, because a directory somebody built by hand has no row behind it. A
+fetch knows more: it has the archive's own file list. An extraction cut short — a full disk, a
+killed `tar` — can land `crt1.o` and `libc.a` and stop before `crti.o`, and the marker test would
+call that directory a sysroot. So `fetch` tests each landed member (the member path with the row's
+`--strip-components` removed; for the llvm-mingw rows nothing is left and the member *is* the
+directory), and only then the markers.
+
 Anything that goes wrong — no downloader on `PATH`, a non-zero `curl`, a checksum or size
-mismatch, a `tar` that failed, an archive that did not carry the marker — deletes the download,
-says which of those happened, prints the `run:`/`or:` block of § 5 and exits **2**. There is one
-text to get right and one to document.
+mismatch, a `tar` that failed, an archive that did not carry one of its own members or a marker —
+deletes the download, says which of those happened, prints the `run:`/`or:` block of § 5 and exits
+**2**. There is one text to get right and one to document.
+
+Two orderings matter on that road. `manifest.toml` is written **after** the check, never before:
+it is the claim that this directory holds what the row says, and that claim does not go over an
+extraction that did not finish. And a refused extraction has its **marker files removed**, so the
+partial directory cannot pass the chain's marker test on the next `mc build` — the rest of the
+debris is inert, and a second `fetch` extracts over it.
 
 Where the files land, when `--sysroot-dir` is not given, is § 4's cache: `[sysroot].cache` is not
 consulted (there is no config here), so it is `host_home()/.mc/sysroots/<os>-<arch>` or nothing.

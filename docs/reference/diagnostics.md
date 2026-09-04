@@ -306,6 +306,23 @@ mc: no sysroot for linux-aarch64
 | `tried:` | one line per candidate the chain looked at, with the reason it was refused: `absent` (the path does not open at all) or `no <marker>` (it opens but is not a sysroot) |
 | `run:` | the command that would produce one, per operating system |
 
+It is the one diagnostic in this compiler with **no `file:line:col`**, on purpose: the chain runs
+lazily, the first time an `[linker].args` value asks for `{sysroot}`, so there is no single key to
+blame — and `mc sysroot path <target>` prints the same text with no config open at all. Every
+`tried:` line names an absolute directory instead. `docs/specs/M25.md` § Deviations records it.
+
+`mc sysroot fetch` fails through the same `run:`/`or:` block and the same exit 2, under its own
+first line:
+
+| message | cause |
+|---|---|
+| `mc: no downloader on this PATH (tried curl)` | neither `host_downloader()` nor its alternative could be spawned |
+| `mc: the download failed (exit N)` | the downloader ran and returned non-zero. `curl` exit 1 here is the `--proto '=https'` guard refusing a redirect to plaintext |
+| `mc: checksum mismatch for <file>` | the bytes are not the pinned row's. Both digests are printed |
+| `mc: wrong size for <file>` | the length is not the pinned row's |
+| `mc: tar could not extract <file>` | the `tar` spawn returned non-zero; its own diagnostic came out on stderr just above |
+| `mc: the archive did not carry <name>` | `tar` returned 0 but a member of the row, or a marker, is not there. The download and the directory's marker files are removed, so the partial directory cannot be mistaken for a sysroot later |
+
 Causes, in the order the chain runs them ([sysroot.md](sysroot.md) § 1):
 
 | cause | fix |
