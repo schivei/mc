@@ -200,7 +200,11 @@ build_one() {
     echo "built $name"
 }
 
-# link one object. $1 = name, $2 = link mode; leaves the .exe next to it
+# link one object. $1 = name, $2 = link mode; leaves the .exe next to it.
+# lld-link takes its options with either prefix; the dash form is used because
+# the CI leg runs this script under Git Bash on Windows, where MSYS rewrites a
+# leading "/out:" or "/nodefaultlib" into "C:/Program Files/Git/..." before the
+# linker ever sees it (0/32 on the first run of the windows-11-arm job).
 link_one() {
     if [ -z "$implib" ] || [ ! -f "$implib" ]; then
         echo "no kernel32.lib (run scripts/sysroot-windows.sh)"
@@ -208,11 +212,11 @@ link_one() {
     fi
     rm -f "$split/$1.exe"
     if [ "$2" = "self" ]; then
-        set -- "/out:$split/$1.exe" "$split/$1.obj" "$implib"
+        set -- "-out:$split/$1.exe" "$split/$1.obj" "$implib"
     else
-        set -- "/out:$split/$1.exe" "$split/$1.obj" "$split/winrt.obj" "$implib"
+        set -- "-out:$split/$1.exe" "$split/$1.obj" "$split/winrt.obj" "$implib"
     fi
-    "$linker" /machine:$lmachine /subsystem:console /entry:mc_start /nodefaultlib "$@" 2>&1
+    "$linker" -machine:$lmachine -subsystem:console -entry:mc_start -nodefaultlib "$@" 2>&1
 }
 
 # --run-only: link one object and run it. $1 = name, $2 = link mode
