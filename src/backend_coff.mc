@@ -318,8 +318,13 @@ void coff_write(uptr path) {
         set_ivec_at(reloff, i, 0);
         i64 nr = sec_nrel(sec_at(i));
         if (nr > 0) {
-            if (nr > 0xffff) die2("more than 65535 relocations in one section",
-                                  coff_sec_name(i));
+            // 0xffff is not a count: it is the sentinel that says the real
+            // count is in the VirtualAddress field of an extra leading
+            // IMAGE_RELOCATION, with IMAGE_SCN_LNK_NRELOC_OVFL set. Writing it
+            // as a count would be read back as that overflow form, so the
+            // ceiling is 65534 relocations, not 65535.
+            if (nr >= 0xffff) die2("65535 or more relocations in one section",
+                                   coff_sec_name(i));
             cur = exe_up(cur, 4);
             set_ivec_at(reloff, i, cur);
             cur = cur + COFF_REL_SIZE * nr;

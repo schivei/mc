@@ -146,6 +146,12 @@ i64 win_split(uptr cl) {
         }
         if (ld8(cl + i) == 0) break;
         if (n >= WIN_MAXARG) break;
+        // and the same ceiling on the bytes: once o has reached WIN_CMDMAX
+        // there is no room left for even the terminator, so `win_cmd + o` is
+        // one past the array. Truncating the command line here is what keeps
+        // every argv pointer inside win_cmd and NUL-terminated -- clamping o
+        // instead would hand the same trailing slot to every later argument.
+        if (o >= WIN_CMDMAX) break;
         st64(win_args + n * 8, win_cmd + o);
         n = n + 1;
         i64 q = 0;
