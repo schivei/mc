@@ -369,6 +369,8 @@ i64 abispill(i64 a, i64 b, i64 c, i64 d, i64 e, i64 f, i64 g, i64 h) {
 }
 i64 abimod(i64 a, i64 b) { return a % b; }
 i64 abicallp(uptr p, i64 a) { return callp(p, a); }
+i64 abi12(i64 a, i64 b, i64 c, i64 d, i64 e, i64 f, i64 g, i64 h, i64 i, i64 j, i64 k, i64 l) { return l; }
+i64 abicall12(i64 a) { return abi12(a, a, a, a, a, a, a, a, a, a, a, a); }
 ABIEOF
 "$mc1" --dump-asm "$abi_src" > "$tmp/abi.asm" 2>&1
 
@@ -386,7 +388,7 @@ abi_case() {                        # abi_case CLAIM FUNCTION EXPECTED
     fi
 }
 
-abi_case "parameters arrive in x0..x7 and the prologue does not clobber them" abi8 "$(cat <<'EOF'
+abi_case "parameters 1..8 arrive in x0..x7 and the prologue does not clobber them" abi8 "$(cat <<'EOF'
   stp x29, x30, [sp, #-16]!
   mov x29, sp
   sub sp, sp, #64
@@ -526,6 +528,91 @@ abi_case "callp puts the pointer in x16, the arguments in x0.., and reads the re
   b L1
 L1:
   add sp, sp, #16
+  ldp x29, x30, [sp], #16
+  ret
+EOF
+)"
+
+# M38: parameters 9..12 are not in a register at all. The CALLEE reads them
+# above its own frame record, at [x29 + 16 + 8*(i-8)]; the CALLER leaves them at
+# the bottom of its frame, at [sp, #0..#24], and reserves those bytes as part of
+# the frame instead of moving sp around the call -- REG_FRAME is only turned into
+# an sp-relative address at the end of the function, so an sp that moved inside
+# the body would break every spilled depth (docs/reference/objects.md § 4).
+abi_case "parameters 9..12 are read at [x29 + 16 + 8*(i-8)]" abi12 "$(cat <<'EOF'
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  sub sp, sp, #96
+  str x0, [sp, #88]
+  str x1, [sp, #80]
+  str x2, [sp, #72]
+  str x3, [sp, #64]
+  str x4, [sp, #56]
+  str x5, [sp, #48]
+  str x6, [sp, #40]
+  str x7, [sp, #32]
+  ldr x16, [x29, #16]
+  str x16, [sp, #24]
+  ldr x16, [x29, #24]
+  str x16, [sp, #16]
+  ldr x16, [x29, #32]
+  str x16, [sp, #8]
+  ldr x16, [x29, #40]
+  str x16, [sp]
+  ldr x9, [sp]
+  mov x0, x9
+  b L1
+L1:
+  add sp, sp, #96
+  ldp x29, x30, [sp], #16
+  ret
+EOF
+)"
+
+abi_case "arguments 9..12 are stored at [sp, #0..#24] before x0..x7 are written" abicall12 "$(cat <<'EOF'
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  sub sp, sp, #80
+  str x0, [sp, #72]
+  ldr x9, [sp, #72]
+  ldr x10, [sp, #72]
+  ldr x11, [sp, #72]
+  ldr x12, [sp, #72]
+  ldr x13, [sp, #72]
+  ldr x14, [sp, #72]
+  ldr x15, [sp, #72]
+  ldr x16, [sp, #72]
+  str x16, [sp, #64]
+  ldr x16, [sp, #72]
+  str x16, [sp, #56]
+  ldr x16, [sp, #72]
+  str x16, [sp, #48]
+  ldr x16, [sp, #72]
+  str x16, [sp, #40]
+  ldr x16, [sp, #72]
+  str x16, [sp, #32]
+  ldr x16, [sp, #56]
+  str x16, [sp]
+  ldr x16, [sp, #48]
+  str x16, [sp, #8]
+  ldr x16, [sp, #40]
+  str x16, [sp, #16]
+  ldr x16, [sp, #32]
+  str x16, [sp, #24]
+  mov x0, x9
+  mov x1, x10
+  mov x2, x11
+  mov x3, x12
+  mov x4, x13
+  mov x5, x14
+  mov x6, x15
+  ldr x7, [sp, #64]
+  bl _abi12
+  mov x9, x0
+  mov x0, x9
+  b L1
+L1:
+  add sp, sp, #80
   ldp x29, x30, [sp], #16
   ret
 EOF

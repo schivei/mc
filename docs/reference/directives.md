@@ -236,7 +236,7 @@ i64 main() {
 ```
 
 Errors: `#opcode expects a name`, `expected ( in #opcode`, `parameter name expected in #opcode`,
-`at most 8 parameters in #opcode`, `expected ) in #opcode`, `duplicate #opcode`,
+`at most 12 parameters in #opcode`, `expected ) in #opcode`, `duplicate #opcode`,
 `#opcode argument not constant`, `wrong number of arguments in #opcode`,
 `operator without constant folding`, `emitted word does not fit in 32 bits`.
 

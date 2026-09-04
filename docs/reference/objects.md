@@ -94,8 +94,8 @@ is a direct subscript into it and nothing searches by name during lowering.
 `fs_*`) and the globals (`global_find`, `global_add`, `glb_*`), with `GLB_SYM` filled in later by
 `gen_globals` when it places the data. Every diagnostic that is about a name rather than about an
 instruction is raised here — `unknown name`, `call to unknown function`, `wrong number of
-arguments`, `wrong arity in intrinsic`, `callp expects 1 to 8 arguments`, `assignment to array`,
-`at most 8 parameters`, `function declared twice`, `declaration does not match prototype`,
+arguments`, `wrong arity in intrinsic`, `callp expects 1 to 12 arguments`, `assignment to array`,
+`at most 12 parameters`, `function declared twice`, `declaration does not match prototype`,
 `prototype with no definition`, `global name declared twice` — in the order `gen_lower` raised
 them: signatures, then globals, then each body.
 
@@ -202,11 +202,11 @@ diagnostic at all. They are written down here so that a change to the code gener
 a documented contract, and `scripts/check-surface.sh` asserts every claim on this page against
 `--dump-asm`, one function at a time.
 
-### Parameters arrive in `x0..x7` and the prologue does not clobber them
+### Parameters 1..8 arrive in `x0..x7` and the prologue does not clobber them
 
-At most eight parameters, never one on the stack (`MAXPARAMS`, `at most 8 parameters`). The
-prologue is three instructions, then one store per parameter, in declaration order, and it **reads**
-the argument registers without writing any of them:
+At most twelve parameters (`MAXPARAMS`, `at most 12 parameters`); the first eight in `x0..x7`, the
+rest on the stack. The prologue is three instructions, then one store per parameter, in declaration
+order, and it **reads** the argument registers without writing any of them:
 
 ```
 _abi8:
@@ -221,6 +221,41 @@ _abi8:
 That is what lets `lib/sys_svc.mc` write a whole syscall as two `#opcode` words: when
 `write(i64 fd, uptr buf, i64 n)` reaches its first body instruction, `x0`, `x1` and `x2` still hold
 the caller's arguments, and only `x16` has to be set.
+
+### Parameters 9..12 arrive on the stack, at `[x29 + 16 + 8*(i-8)]`
+
+M38 raised `MAXPARAMS` from 8 to 12 so that a Windows-hosted compiler could declare
+`CreateProcessA`, which takes ten ([M38](../specs/M38.md) § 1). The **callee** reads the extra ones
+just above its own frame record — `[x29, #16]` is the ninth, `[x29, #24]` the tenth, and so on —
+because `stp x29, x30, [sp, #-16]!` is what moved `sp` by 16, so `x29 + 16` is the caller's `sp`.
+Each is loaded through `x16` and stored into its slot with the parameter's own width, exactly as a
+register parameter is:
+
+```
+_abi12:
+  ...
+  str x7, [sp, #32]
+  ldr x16, [x29, #16]      // the ninth
+  str x16, [sp, #24]
+  ldr x16, [x29, #40]      // the twelfth
+  str x16, [sp]
+```
+
+The **caller** leaves them at `[sp, #0]`, `[sp, #8]`, … — the bottom of its own frame — and writes
+them **before** it fills `x0..x7`, so the stores can still read the depth registers and use `x16` to
+carry a spilled one. Those bytes are part of the frame, not a `sub sp` around the call: every slot
+is addressed through the fictitious `REG_FRAME` base that `fix_frame()` turns into `sp + (frame -
+off)` only at the end of the function, so an `sp` that moved inside the body would make every
+spilled depth read the wrong address. `a64_frame_fix` adds the outgoing area (16 or 32 bytes,
+always a multiple of 16) to the frame, which keeps the lowest `slot_new()` offset above it. A
+function that never passes more than eight arguments reserves nothing and its frame is byte for byte
+what it was before M38.
+
+The frozen C seed keeps `MAXPARAMS 8` and refuses a thirteenth… and a ninth: `stage0` only ever
+compiles `src/mc.mc`, which has no function with more than eight parameters. That is why
+`tests/mc/080-twelve-params.mc` lives in `tests/mc/` — the four cross-checks that compare `mc0` with
+`mc1` over `tests/*.mc` would otherwise report the divergence as a failure. It runs on all five
+targets: macOS, `linux/{aarch64,x86_64}` and `windows/{arm64,x86_64}`.
 
 ### The epilogue leaves `x0` alone
 
@@ -267,10 +302,12 @@ them. A taught runtime may therefore keep state in `x19..x28` across generated c
 switch, a thread pointer — and a future register allocator that spent them would silently break
 every such runtime, which is exactly why the claim is written down and tested.
 
-### `callp(p, a1..a7)`
+### `callp(p, a1..a11)`
 
-The pointer goes to `x16`, the arguments to `x0..x6` — one fewer than a direct call, because `x16`
-is taken — and the call is `blr x16`; the result is read from `x0` as `i64`. Live depths are spilled
+The pointer goes to `x16`, the arguments follow the ordinary rule — `x0..x7`, then the outgoing
+area — because the callee is an ordinary function and reads them where a `bl` would have left them.
+`x16` is not an argument register, so `callp` carries one argument fewer than `MAXPARAMS`, not one
+fewer per register. The call is `blr x16`; the result is read from `x0` as `i64`. Live depths are spilled
 around it exactly as they are around a `bl`.
 
 ```
@@ -301,8 +338,8 @@ puts a frame store and a `ret` between them.
 register vocabulary; they are written here for the same reason — a taught runtime depends on them
 and nothing would diagnose a violation.
 
-- **Parameters arrive in `rdi rsi rdx rcx r8 r9`** (the seventh and eighth at `[rbp+16]` and
-  `[rbp+24]`, pushed by the caller) **and the prologue does not clobber them.** The prologue is
+- **Parameters arrive in `rdi rsi rdx rcx r8 r9`** (the seventh and later at `[rbp+16]`,
+  `[rbp+24]`, … up to the twelfth, pushed by the caller) **and the prologue does not clobber them.** The prologue is
   `push rbp; mov rbp, rsp; sub rsp, N`, then one store per parameter in declaration order.
 - **The epilogue leaves `rax` alone.** It is exactly `leave; ret`, so a body that ends without a
   `return` hands back whatever `rax` holds.
@@ -325,8 +362,8 @@ Depth 4 and beyond spills to the frame through `rax`/`rcx`. The `frame too large
 bytes) is AArch64's 12-bit immediate and x86 has no such bound, but the walker keeps it so the
 diagnostic is the same on every target.
 
-`callp(p, a1..a6)` puts the pointer in `rax` and the arguments in `rdi..r9`; a seventh goes on the
-stack. `#opcode` writes a raw 4-byte little-endian word wherever it stands, exactly as on AArch64 —
+`callp(p, a1..a11)` puts the pointer in `rax` and the arguments in `rdi..r9`; a seventh and later go
+on the stack, through the same `x86_push_args` a direct call uses. `#opcode` writes a raw 4-byte little-endian word wherever it stands, exactly as on AArch64 —
 but the words themselves are an instruction set, so a source that uses it is not portable between
 the two.
 
@@ -339,7 +376,8 @@ encoder, the size task, the dump and the two relocation tasks are shared with §
 the calling convention, and it changes in exactly five places
 ([machine.md](machine.md) § The x86-64 implementation).
 
-- **Parameters arrive in `rcx rdx r8 r9`**, and the fifth and later at `[rbp+48]`, `[rbp+56]`, … —
+- **Parameters arrive in `rcx rdx r8 r9`**, and the fifth and later (up to the twelfth) at
+  `[rbp+48]`, `[rbp+56]`, … —
   16 bytes for the saved `rbp` and the return address, plus the 32 bytes of **shadow space** the
   caller reserved below them. The prologue does not clobber them; it is the same
   `push rbp; mov rbp, rsp; sub rsp, N` followed by one store per parameter in declaration order.

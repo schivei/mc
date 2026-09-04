@@ -1291,7 +1291,10 @@ examples/api/mc.toml:46:13: tolerance must be between 0 and 1
 ### What this replaces
 
 `MAX*` is gone from `src/`, with four exceptions that are not tables that scale with a program:
-`MAXPARAMS` (8, the ABI), `MAXDEPTH` (64, the expression depth that produces `expression too
+`MAXPARAMS` (12, the ABI — 8 in registers and 9..12 on the stack since M38; the frozen seed keeps
+8, a documented divergence of the same kind as `MAXSTRS`/`MAXGLOBALS`/`MAXOPEN`, because `stage0`
+only ever compiles `src/mc.mc` and no function there has more than eight parameters),
+`MAXDEPTH` (64, the expression depth that produces `expression too
 deep`), `MAXBIND`/`MAXRDEPTH`/`MAXITEMS`/`MAXNAMES`, which bound **one** `#rule` and size the
 inline fields of a rule's record, and `MAXSUBST` (16, M21), which bounds **one** lexer frame's
 substitutions and produces `too many substitutions`. The two tables M23 did not see, because they

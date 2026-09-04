@@ -620,7 +620,7 @@ void gen_reloc(i64 n) {
     pend_node = n;
 }
 
-// callp(p, a1..a7): the pointer is argument 0; the machine says where each one
+// callp(p, a1..a11): the pointer is argument 0; the machine says where each one
 // goes and saves whatever it has live, exactly as it does for a direct call.
 void gen_callp(i64 n, i64 depth) {
     i64 i = 0;

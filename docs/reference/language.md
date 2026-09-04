@@ -265,8 +265,8 @@ i64 main() {
 
 ### Functions
 
-`type name(type a, …) { }`, at most **8** parameters (`at most 8 parameters`) so an argument
-never goes on the stack; there are no varargs. A parameter of type `void` is refused. The unit is
+`type name(type a, …) { }`, at most **12** parameters (`at most 12 parameters`): the first eight
+travel in registers and the rest on the stack ([objects.md](objects.md) § 4). There are no varargs. A parameter of type `void` is refused. The unit is
 read in two top-level passes, so a function may be called before it is defined and mutual
 recursion needs no forward declaration.
 
@@ -294,9 +294,10 @@ build time. `#dylib` ([directives.md](directives.md)) says which library an `ext
 The core has no function type. `&name` on a function or an `extern` is a `uptr` like any other
 (`adrp`/`add`, relocations `PAGE21` + `PAGEOFF12`), and the indirect call is an intrinsic:
 
-`callp(p, a1, …, a7)` puts `a1..a7` in `x0..x6`, `p` in `x16`, and issues `blr x16`. Live depth
-registers are saved exactly as for a `bl`. The result is `x0`, typed `i64`; converting it is the
-caller's job. Arity is 1 to 8 counting the pointer (`callp expects 1 to 8 arguments`).
+`callp(p, a1, …, a11)` puts `p` in `x16` and the arguments where a direct call would put them —
+`x0..x7`, then the stack — and issues `blr x16`. Live depth registers are saved exactly as for a
+`bl`. The result is `x0`, typed `i64`; converting it is the caller's job. Arity is 1 to 12 counting
+the pointer (`callp expects 1 to 12 arguments`).
 
 ```mc
 // expect-exit: 42
@@ -389,8 +390,8 @@ Everything here is a real diagnostic; the full catalogue is [diagnostics.md](dia
 
 | limit | value | error |
 |---|---|---|
-| parameters per function | 8 | `at most 8 parameters` |
-| `callp` arity | 8 including the pointer | `callp expects 1 to 8 arguments` |
+| parameters per function | 12 (8 in registers) | `at most 12 parameters` |
+| `callp` arity | 12 including the pointer | `callp expects 1 to 12 arguments` |
 | expression depth | 64 | `expression too deep` |
 | frame size | 4095 bytes | `frame too large` |
 | local array | 4095 bytes | `local array too large` |

@@ -505,7 +505,7 @@ void x86_call(i64 d, i64 na, i64 sym) {
     x86_dst_done(d, rd);
 }
 
-// callp(p, a1..a7): the pointer (argument 0) goes to rax, outside the ABI, and
+// callp(p, a1..a11): the pointer (argument 0) goes to rax, outside the ABI, and
 // has to move BEFORE any argument register is written, because it may itself be
 // living in r8..r11.
 void x86_callp(i64 d, i64 na) {
