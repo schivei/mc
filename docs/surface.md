@@ -537,6 +537,18 @@ architecture-specific, and the ELF writer is shared down to the section table �
 difference is a register partition, an ABI and thirty-odd encoders
 (`docs/reference/machine.md` § The x86-64 implementation).
 
+**M39 is the seam's real test, because the machine is not in the compiler.**
+`examples/kernel/machine_riscv64.mc` registers `riscv64` from a module under `examples/`, and
+`examples/kernel/image.mc` registers `rv-image`, a writer that lays a flat bare-metal image out
+itself — no linker, no object format, no header. Together with four Tier 3 words they make
+`build/mc-kernel`, a compiler that turns `examples/kernel/main.mc` into an image that boots under
+QEMU, prints, takes a trap, switches between two stacks and exits with a code of its own choosing.
+`src/`, `stage0/`, `lib/` and `tests/` gained **zero lines**: `git diff --stat` over those four is
+the milestone's headline. Two ways in and out of the compiler — a machine and a backend — plus
+`syntax`/`syntax_stmt`/`syntax_expr` are enough for an architecture the language had never heard
+of. [`docs/guide/95-a-new-architecture.md`](guide/95-a-new-architecture.md) is the path for
+somebody doing it again.
+
 ### The five built-in backends: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64` and `coff-obj-arm64`
 
 `src/main.mc` registers four backends before calling `user_init()`:

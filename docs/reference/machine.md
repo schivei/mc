@@ -1,10 +1,12 @@
 # The machine task contract
 
-> **Contract version 2 — the integer tasks, for two instruction sets (M17).**
+> **Contract version 2 — the integer tasks, for three instruction sets (M17, M39).**
 > `src/gen_walk.mc` is the target-independent walker; `src/machine_arm64.mc` (step A) and
-> `src/machine_x86_64.mc` (step B, and M20's Win64 half) are the three machines behind it —
-> `arm64`, `x86_64`, `x86_64-win` — and `machine(name, tab)` in
-> `src/hooks.mc` is the seam. The float tasks at the end of this page are still specification
+> `src/machine_x86_64.mc` (step B, and M20's Win64 half) are the three machines behind it in the
+> compiler — `arm64`, `x86_64`, `x86_64-win` — and `machine(name, tab)` in
+> `src/hooks.mc` is the seam. Since M39 there is a fourth, and it is **not** in the compiler:
+> `examples/kernel/machine_riscv64.mc` registers `riscv64` from a module under `examples/`,
+> which is the proof that the seam is real from outside. The float tasks at the end of this page are still specification
 > (`docs/specs/M24.md`), and so is `#machine`.
 >
 > A version is the list of `MTASK_*` slots below, in that order and with those signatures. Adding a
@@ -154,9 +156,12 @@ of six.
 
 The four divide operations say nothing about a **zero divisor** or about `INT64_MIN / -1`: a
 machine emits its target's divide instruction and the ISA answers, so a new machine owes no guard
-and is not judged on the answer it gives
+and is not judged on the answer it gives — but it does owe the row in the table below.
+Three answers exist today and they are all different: AArch64's `sdiv`/`udiv` give `0`, `x` and
+`INT64_MIN` and never trap; x86-64's `idiv`/`div` raise `SIGFPE` and the process dies; RV64M's
+`div`/`divu`/`rem`/`remu` give `-1`, `x` and `INT64_MIN` and never trap
 ([../core-language.md](../core-language.md) § "Division by zero, and `INT64_MIN / -1`"). Shift
-counts are the opposite case: mc and both machines mask them modulo 64.
+counts are the opposite case: mc and all three machines mask them modulo 64.
 
 ### What the walker keeps, and what it hands over
 
@@ -173,6 +178,15 @@ counts are the opposite case: mc and both machines mask them modulo 64.
 `frame too large` is deliberately kept in the walker even though the 12-bit limit is AArch64's:
 `docs/specs/M17.md` § step B says a machine with no such limit should keep the language limit
 anyway, so the diagnostic is the same on every target.
+
+**And a machine with a SMALLER limit pays for it itself.** RISC-V's load/store displacement is a
+*signed* 12-bit field and reaches 2047, where 4095 is AArch64's *unsigned* one; frames of
+2048..4095 are legal to the walker and unencodable by a naive machine — a silent wrong address,
+not a diagnostic. The obligation is on the machine, not on the walker (`docs/specs/M39.md` § G7):
+`examples/kernel/machine_riscv64.mc` materialises any offset past 2047 in `t2` and adds it, which
+is what makes `V_ADDI`, the eight memory forms and the frame reserve variable-length, and
+therefore what makes running the real encoder for `MTASK_INS_SIZE` mandatory rather than tidy. A
+machine that cannot encode the whole 0..4095 range has to say so on this page.
 
 ### The AArch64 implementation
 
@@ -261,6 +275,61 @@ place the callee's `MTASK_PARAM` reads it from. The alignment rule does not chan
 `0 mod 16` exactly when `np` is even. [objects.md](objects.md) § 4c is the full Win64 contract,
 including why `r8`/`r9` being argument registers 3 and 4 **and** depth registers 0 and 1 is safe.
 
+### The RISC-V 64 implementation (M39) — from outside the compiler
+
+`examples/kernel/machine_riscv64.mc` fills the same thirty-one slots from a module under
+`examples/`, with its own two-line setter (`rv_task`), and `examples/kernel/image.mc` is the
+writer that consumes it. Nothing in `src/` changed to make it possible.
+
+| | AArch64 | x86-64 System V | RISC-V 64 (RV64IM) |
+|---|---|---|---|
+| machine name | `arm64` | `x86_64` | `riscv64` |
+| depth registers | `x9..x15` (0..6) | `r8..r11` (0..3) | `t3..t6` (0..3) |
+| why those | caller-saved, not argument registers | the same rule leaves exactly four | the same rule again: `s1..s11` are callee-saved and `a0..a7` are arguments |
+| scratch | `x16`, `x17`, `x8` | `rax`, `rcx`, `rdx` | `t0` (left/dst), `t1` (right), `t2` (addresses only) |
+| why three | — | `idiv` writes `rdx`, shifts count in `cl` | `t2` is what the four big-offset fallbacks borrow, so nothing else may live in it |
+| locals | `[sp, #k]`, fixed up at the end | `[rbp - k]`, correct at once | `[s0 - k]`, correct at once |
+| frame | `stp x29, x30` + `sub sp` | `push rbp; mov rbp,rsp; sub rsp` / `leave` | `addi sp,sp,-16; sd ra,8(sp); sd s0,0(sp); mv s0,sp` + `addi sp,sp,-F` |
+| epilogue patched? | yes, the `add sp` | no, `leave` | no: `mv sp, s0` releases any frame |
+| arguments | `x0..x7`, then `[sp]`, `[sp+8]`, … | `rdi rsi rdx rcx r8 r9`, then pushed | `a0..a7`, then `[sp]`, `[sp+8]`, … |
+| stack parameters | `[x29+16]`, `[x29+24]`, … | `[rbp+16]`, `[rbp+24]`, … | `[s0+16]`, `[s0+24]`, … |
+| outgoing area | the bottom of the frame, `sp` never moves | `push`, given back with `add rsp` | the bottom of the frame, `sp` never moves |
+| callee-saved, never touched | `x18..x28` | `rbx`, `r12..r15` | `s1..s11`, `gp`, `tp` |
+| result | `x0` | `rax` | `a0` |
+| `callp` pointer | `x16`, moved first | `rax`, moved first | `t0`, moved **last** — its source cannot be an argument register |
+| instruction width | 4 bytes | 1..10 bytes | 4 bytes, except `li`, the frame reserve and the offset fallbacks |
+| `x / 0`, `x % 0`, `INT64_MIN / -1` | `0`, `x`, `INT64_MIN`, no trap | `SIGFPE`, the process dies | `-1`, `x`, `INT64_MIN`, no trap |
+| relocations | `BRANCH26` `PAGE21` `PAGEOFF12` `UNSIGNED` | `R_X86_64_PLT32` `PC32` `64` | two module-private kinds, 32 and 33 |
+| relocation offset | 0 | 1 (`call`), 3 (`lea [rip+d32]`) | 0 |
+
+Three things are worth reading it for, beyond the columns.
+
+**`MTASK_BIN` has no special case at all.** All thirteen `MOP_*` are one R-type instruction each:
+no `msub` for the remainder, no `cqo`/`idiv` pair, no ModRM. `sll`/`srl`/`sra` already mask the
+count modulo 64 and `lbu`/`lhu`/`lwu`/`ld` already zero-extend, which is exactly what
+`MTASK_LOAD` asks for. RV64IM is the friendliest set the walker has met.
+
+**Two relocations are fused into one instruction.** `MTASK_SYM_ADDR` is a single 8-byte `Ins`
+holding `auipc rd,0` + `addi rd,rd,0`, and `MTASK_CALL` a single one holding
+`auipc ra,0` + `jalr ra,ra,0`, each carrying ONE relocation at offset 0. Emitting the two words as
+two instructions would need a second relocation against a **local label naming the `auipc`** —
+RISC-V's `%pcrel_lo(L)` — which is a shape neither `reloc_add` nor `sym_*` has a name for; fusing
+avoids it entirely (`docs/specs/M39.md` § G3, decision D4). The kinds are 32 and 33, chosen by the
+module the way `src/machine_x86_64.mc` chose 16 and 17.
+
+**Addressing is pc-relative and not absolute.** `lui t2, 0x80000` on RV64 yields
+`0xFFFFFFFF80000000` — the immediate is sign-extended — so the `lui`/`%hi` route is wrong at
+exactly the address a `virt` board loads a kernel at, while `auipc` at the same place yields
+`0x0000000080000000` (decision D3).
+
+**Verification.** Every distinct instruction the machine emits while compiling
+`examples/kernel/main.mc` (234), `examples/kernel/tests/sweep.mc` (262) and a generated source of
+800 functions (1057) re-assembles byte-identically under `llvm-mc -triple=riscv64 -mattr=+m`; the
+pc-relative displacements — 58, 34 and 34 fused pairs plus 51, 53 and 3253 branches — are checked
+against a placement of the sections recomputed independently from `--dump-syms`. And the image
+boots: `examples/kernel/test.sh` asserts the transcript *and* the exit code under QEMU, on the
+owner's machine and on the `baremetal-riscv64` CI leg.
+
 `#opcode`, `emit()` and `reloc()` are architecture-specific by nature — a source full of
 hand-encoded AArch64 words is portable to Linux arm64 and nowhere else — so the tests that use them
 carry a `// skip-x86_64:` header with the reason, which `scripts/test-linux.sh --arch x86_64`
@@ -338,7 +407,11 @@ unconditional `stp x29, x30` frame record. Every machine added here has to keep 
 plainly that it does not — they are what a `#opcode` syscall wrapper, an atomic and a stack walker
 are built on, and `scripts/check-surface.sh` asserts them against `--dump-asm`.
 
-That contract is **per machine**, and the assertions are AArch64's. The x86-64 machine states its
+That contract is **per machine**, and the assertions are AArch64's. The RISC-V machine states its
+own in [`examples/kernel/README.md`](../../examples/kernel/README.md) § The ABI, and
+`examples/kernel/test.sh` asserts every line of it against `--dump-asm --machine=riscv64` over the
+whole kernel — which is what makes the two-instruction context switch in
+`examples/kernel/lib/sched.mc` legitimate rather than lucky. The x86-64 machine states its
 own, in the table above and in [objects.md](objects.md) § 4b: parameters untouched in
 `rdi rsi rdx rcx r8 r9`, `rax` untouched by `leave; ret`, depths in `r8..r11`, scratch
 `rax`/`rcx`/`rdx`, `rbx` and `r12..r15` never written, an unconditional `push rbp; mov rbp, rsp`

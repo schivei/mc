@@ -1338,7 +1338,58 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   **What only the Windows runners can prove**: that the kernel32 shims BEHAVE — a spawn, a wait,
   an exit code, a `VirtualAlloc`ed arena — and therefore the fixed point, the suite and the cross
   proof on a real Windows machine. Nothing Windows executes on this Mac.
-- Next: M18 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
+- M39 done (`docs/specs/M39.md`, `docs/guide/95-a-new-architecture.md`): **an architecture taught
+  from the surface** -- `examples/kernel`, a bare-metal RISC-V 64 micro-kernel compiled by a taught
+  compiler and booted under QEMU. **`git diff --stat src/ stage0/ lib/ tests/` is empty**: that is
+  the milestone. Everything is under `examples/kernel/` (2450 lines):
+  `machine_riscv64.mc` (767) fills the same 31 slots `src/machine_arm64.mc` and
+  `src/machine_x86_64.mc` fill -- depths 0..3 in `t3..t6`, scratch `t0`/`t1` and `t2` reserved for
+  address materialisation, arguments `a0..a7` with 9..12 at `[s0 + 16 + 8*(i-8)]`, locals at
+  `[s0 - off]`, an epilogue that starts with `mv sp, s0` and is therefore NEVER patched, and two
+  module-private relocation kinds (32, 33) each carried by ONE fused 8-byte `Ins`
+  (`auipc`+`addi`, `auipc`+`jalr`) so the walker's one-relocation-per-instruction rule is not bent
+  (D4). Addressing is pc-relative because `lui t2, 0x80000` sign-extends to
+  `0xFFFFFFFF80000000`, which is wrong at exactly the base a `virt` board loads at (D3).
+  RV's store displacement is a SIGNED 12-bit field (2047) against the walker's 4095, so the
+  MACHINE pays (G7): above 2047 the offset goes through `t2`, which is what makes `V_ADDI`, the
+  eight memory forms and the frame reserve variable-length and what makes running the real encoder
+  for `MTASK_INS_SIZE` mandatory. `image.mc` (246) is `backend("rv-image", ...)`: sections placed
+  from `IMG_BASE 0x80000000` in creation order, bss past the file, every symbol rebased, the three
+  relocation kinds resolved in place, six symbols synthesized (`_bss_start`/`_bss_end`/
+  `_data_start`/`_data_end`/`_data_lma`/`_stack_top`) and raw bytes out -- no header, no
+  signature. `kernel_syntax.mc` (117) teaches `mmio` / `csrw` / `csrr(...)` / `yield`.
+  `lib/sys_bare.mc` (148), `lib/trap.mc` (95), `lib/sched.mc` (90), `main.mc` (90),
+  `tests/sweep.mc` (177), `mc-kernel.mc` (30), `mc.toml` (53), `test.sh` (432), `README.md` (205).
+  **Two deviations from the spec's sketch, both on record.** (1) The reset stub is
+  `li sp, _stack_top` + `j _start`, padded to a fixed 32 bytes, not `jal x0, _start` alone: a
+  RISC-V hart comes out of reset with every register zero and the compiler's frame record is
+  unconditional, so `_start`'s own `sd ra, 8(sp)` would fault on the kernel's first instruction.
+  (2) **The context switch is TWO instructions, not the ~25 the spec priced** -- `sd s0, 0(a0)` +
+  `ld s0, 0(a1)` -- because `s1..s11` are never written, `ra`/`s0` are already on the suspended
+  task's stack (the unconditional record), and `sp` is derived from `s0` by the epilogue. It was
+  written and QEMU-tested FIRST, by hand in assembler, before the machine existed (risk 4).
+  Proof: `boot / trap / t0 t1 x5 / ok`, **exit 0**, and the same kernel with `halt(42)` **exit 42**
+  (QEMU 11.0.1 here, 8.2.2 on `ubuntu-latest`); two builds `cmp`-identical; the default compiler
+  refuses both halves (`unknown backend: rv-image`, `type expected at top level`); seven ABI
+  assertions over `--dump-asm --machine=riscv64` (25 functions, 0 mentions of `s1..s11`/`gp`/`tp`
+  in 751 lines); the llvm-mc sweep -- **234 + 262 + 1057 distinct instructions re-assembled byte
+  for byte, 0 mismatches**, and 58 + 34 + 34 pc-relative pairs plus 51 + 53 + 3253 branches checked
+  against a placement recomputed independently from `--dump-syms`, 0 wrong. `make check-kernel` is
+  inside `make check` and self-skips without QEMU; the `baremetal-riscv64` CI leg on
+  `ubuntu-latest` boots the image the macOS job uploads.
+  Gaps priced and NOT taken: G1 (`mc build` cannot drive a bare target -- `[target]` is resolved
+  before `user_init()`; deferred to M39.5), G2 (`reloc()`'s four hard-coded kinds), G3 (a second
+  relocation per instruction, which `linux/riscv64` ELF would need), G7 (kept in the machine on
+  purpose). G9 taken as documentation only (D7): `docs/reference/hooks.md`'s recipe told a module
+  to call `machine_task`, which writes `m_arm64` BY NAME -- corrected, along with "Four are
+  registered" -> five.
+  -- `stage0/` untouched, 2846/3000; goldens NOT rewritten (`src/` untouched, so nothing can
+  move); `make bundle` not needed (`lib/` untouched). Docs: `docs/guide/95-a-new-architecture.md`
+  (new), `docs/reference/machine.md` (the riscv64 column, the third division answer, the G7
+  obligation), `docs/reference/hooks.md` (the two corrections), `docs/build.md` § M39,
+  `docs/surface.md`, `docs/README.md`, `docs/ci.md`, `examples/kernel/README.md`.
+- Next: M18 or M24 (`docs/plan.md`); M39.5 (G1) and M40 (the word-size sweep AVR/PIC need) are
+  named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
   sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is
   one more motivating case).
   Update this section when each milestone closes.
