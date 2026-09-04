@@ -35,6 +35,7 @@ sys	lib/sys.mc
 sys_linux	lib/sys_linux.mc
 sys_svc	lib/sys_svc.mc
 sys_windows	lib/sys_windows.mc
+sys_windows_start	lib/sys_windows_start.mc
 user_default	lib/user_default.mc
 user_demo	lib/user_demo.mc
 user_dupop	lib/user_dupop.mc

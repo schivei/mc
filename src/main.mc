@@ -129,6 +129,7 @@ i64 main(i64 argc, uptr argv, uptr envp) {
     backend("elf-obj", &backend_elf);
     backend("elf-obj-x86_64", &backend_elf_x86);
     backend("coff-obj-arm64", &backend_coff);
+    backend("coff-obj-x86_64", &backend_coff_x86);
     // M17/M33: the (os, arch) pairs `mc build` accepts, with the backend each
     // one writes objects and direct executables with. `0` as the executable
     // backend says the target has none and always goes through [linker] --
@@ -137,6 +138,7 @@ i64 main(i64 argc, uptr argv, uptr envp) {
     target("linux", "aarch64", "elf-obj", 0);
     target("linux", "x86_64", "elf-obj-x86_64", 0);
     target("windows", "aarch64", "coff-obj-arm64", 0);
+    target("windows", "x86_64", "coff-obj-x86_64", 0);
     // M15: the lexer only reaches the bundle through this pointer, so
     // src/lexdump.mc and src/astdump.mc keep compiling without src/bundle.mc.
     // Registered here, before any lex_init -- including the one inside

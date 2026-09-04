@@ -1,5 +1,7 @@
-// sys_windows.mc — the same interface as sys.mc, on Windows on ARM and with no
-// C runtime at all: every call is a kernel32 entry point. It is lib/sys_svc.mc's
+// sys_windows.mc — the same interface as sys.mc, on Windows and with no C
+// runtime at all: every call is a kernel32 entry point. Since M20 it is
+// architecture-neutral -- arm64 and x64 alike -- because the one AArch64
+// instruction it used to contain moved to lib/sys_windows_start.mc. It is lib/sys_svc.mc's
 // and lib/sys_linux.mc's sibling — same five functions, another system
 // (M19, docs/build.md § Windows targets).
 //
@@ -11,11 +13,13 @@
 //
 // Link with:
 //
-//   lld-link /machine:arm64 /subsystem:console /entry:mc_start /nodefaultlib \
-//            /out:prog.exe prog.obj <sysroot>/kernel32.lib
+//   lld-link -machine:<arm64|x64> -subsystem:console -entry:mc_start \
+//            -nodefaultlib -out:prog.exe prog.obj winstart.obj \
+//            <sysroot>/kernel32.lib
 //
-// `mc_start` is the entry point this file provides, so a program needs no crt
-// object of any kind.
+// `mc_start` is not here: it is lib/sys_windows_start.mc, compiled on its own
+// into winstart.obj (see the comment above win_setup below). A program still
+// needs no crt object of any kind.
 //
 // It does NOT include io.mc, and that is the one place where it differs from
 // lib/sys_linux.mc. On Linux the wrappers come out of libc.a, an archive the
@@ -35,8 +39,8 @@
 
 // ---- kernel32 ----
 // All non-variadic. A DWORD parameter travels in the low half of its register,
-// which is what AAPCS64 does with a 32-bit argument anyway, so an i64 is the
-// right shape for every one of them.
+// which is what AAPCS64 and Win64 both do with a 32-bit argument anyway, so an
+// i64 is the right shape for every one of them.
 extern uptr GetStdHandle(i64 nStdHandle);
 extern i64 WriteFile(uptr hFile, uptr buf, i64 n, uptr written, uptr overlapped);
 extern i64 ReadFile(uptr hFile, uptr buf, i64 n, uptr got, uptr overlapped);
@@ -179,18 +183,15 @@ i64 win_split(uptr cl) {
     return n;
 }
 
-// `main` is called through a raw `bl`, the way lib/sys_linux.mc calls it, and
-// not through an `extern` declaration: a program that includes this file
-// defines `main` itself, and a file cannot both declare a function extern and
-// define it. The two parameters are already in x0 and x1 when the body starts
-// -- the prologue does not touch them (docs/reference/objects.md § 4) -- and the
-// epilogue does not touch x0, so the result comes straight back.
-i64 win_call_main(i64 argc, uptr argv) {
-    reloc(BRANCH26, "_main");
-    emit(0x94000000);                 // bl main
+// The two halves of the entry point that CAN live here, because neither of them
+// names `main`. `mc_start` itself is lib/sys_windows_start.mc, compiled on its
+// own into winstart.obj and linked next to every Windows program: a file cannot
+// both declare `main` extern and define it, and a program that includes this
+// file defines it (M20, docs/specs/M20.md § 3).
+i64 win_setup() {
+    return win_split(GetCommandLineA());
 }
 
-i64 mc_start() {
-    i64 argc = win_split(GetCommandLineA());
-    ExitProcess(win_call_main(argc, win_args));
+uptr win_argv() {
+    return win_args;
 }

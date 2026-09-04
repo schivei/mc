@@ -330,7 +330,58 @@ stack. `#opcode` writes a raw 4-byte little-endian word wherever it stands, exac
 but the words themselves are an instruction set, so a source that uses it is not portable between
 the two.
 
-One promise § 4 does **not** make on either machine: nothing is guaranteed about a division whose
+---
+
+## 4c. The same contract on x86-64, Win64
+
+`windows/x86_64` uses the same x86-64 machine through a second task table, `x86_64-win` (M20). Every
+encoder, the size task, the dump and the two relocation tasks are shared with § 4b; what changes is
+the calling convention, and it changes in exactly five places
+([machine.md](machine.md) § The x86-64 implementation).
+
+- **Parameters arrive in `rcx rdx r8 r9`**, and the fifth and later at `[rbp+48]`, `[rbp+56]`, … —
+  16 bytes for the saved `rbp` and the return address, plus the 32 bytes of **shadow space** the
+  caller reserved below them. The prologue does not clobber them; it is the same
+  `push rbp; mov rbp, rsp; sub rsp, N` followed by one store per parameter in declaration order.
+- **The caller reserves 32 bytes of shadow space below the arguments** before every `call`, and
+  gives them back with the stack arguments in one `add rsp, N` afterwards. `rsp` is 16-byte aligned
+  at the `call`: `8*np + 32` is `0 mod 16` exactly when `np`, the number of stack arguments, is
+  even, which is the same "pad 8 when the count is odd" rule § 4b already had.
+- **The epilogue leaves `rax` alone**, and **the frame record is unconditional** — unchanged.
+- **The register partition** is unchanged from § 4b except for the argument column: `rax`, `rcx`,
+  `rdx` and `r8..r11` are volatile in both ABIs, so the depths stay in `r8..r11` and the scratch
+  stays `rax`/`rcx`/`rdx`. `rdi` and `rsi` become callee-saved on Win64 and the machine simply
+  stops naming them — they appear only in the System V argument table.
+
+| registers | role |
+|---|---|
+| `rcx rdx r8 r9` | arguments in, `rax` the result out; the fifth and later on the stack above the shadow space |
+| `rax` | spill scratch (left/destination), the `callp` pointer, the quotient of `idiv`/`div` |
+| `rcx` | spill scratch (right), and the count of every shift |
+| `rdx` | the remainder of `idiv`/`div`; zeroed before an unsigned one |
+| `r8..r11` | expression depths 0..3 |
+| `rbx`, `rsi`, `rdi`, `r12..r15` | **never written, never read** — the callee-saved half |
+| `rbp` | the frame pointer; locals live at `[rbp - k]` |
+| `rsp` | moved only by the prologue, the epilogue and the argument area of a call |
+
+**`r8` and `r9` are argument registers 3 and 4 and depth registers 0 and 1 at the same time, and
+that is safe.** The argument table is written in **ascending** index, and each depth register's own
+argument index is smaller than its position in the table: `argreg[2]` is `r8`, the register of depth
+0, whose index is `-dbase <= 0 < 2`; `argreg[3]` is `r9`, depth 1, index `1 - dbase <= 1 < 3`. So
+the source has always been consumed before the destination is written. For `callp` the pointer
+moves to `rax` before any argument register is touched, because it may itself be living in
+`r8..r11`, and the same argument then holds with `dbase + 1`. `tests/windows/071-nested-args.mc`
+makes it executable rather than only written down; `tests/windows/072-six-params.mc` does the same
+for the shadow space and the `[rbp+48]` offsets, against a real seven-argument kernel32 call.
+
+The `callp` pointer, `#opcode`, the `frame too large` bound and the division caveats are all
+exactly as § 4b states them.
+
+---
+
+## The division caveat
+
+One promise § 4 does **not** make on any machine: nothing is guaranteed about a division whose
 divisor is zero, or about `INT64_MIN / -1`. `x86_divmod` emits `cqo; idiv r` and
 `xor edx, edx; div r` with no check, so both cases raise `SIGFPE` and kill the process, where
 AArch64's `sdiv`/`udiv` answer `0`, `x` and `INT64_MIN` without trapping. That divergence is the
@@ -444,10 +495,21 @@ The other two backends are the same idea with a different envelope:
 | `elf-obj` | ELF64 `ET_REL`, `EM_AARCH64` | section names mapped (`__TEXT,__text` → `.text`, `__TEXT,__cstring` → `.rodata`, …), the leading `_` dropped from symbols, `l_strN` → `.LstrN`, and the four relocations mapped to `CALL26`/`ADR_PREL_PG_HI21`/`ADD_ABS_LO12_NC`/`LDST*_ABS_LO12_NC`/`ABS64` |
 | `elf-obj-x86_64` | the same file, `EM_X86_64` | `R_X86_64_64` / `PC32` / `PLT32`, addend −4 on both pc-relative kinds because a `rel32` counts from the end of its field |
 | `coff-obj-arm64` | COFF, `IMAGE_FILE_MACHINE_ARM64` | `src/backend_coff.mc` (M19): `.text`/`.rdata`/`.data`/`.bss`, alignment as three bits of `Characteristics`, no leading `_` on a symbol, `l_strN` → `$str.N`, and the four relocations mapped to `BRANCH26`/`PAGEBASE_REL21`/`PAGEOFFSET_12A`/`PAGEOFFSET_12L`/`ADDR64`. `TimeDateStamp` is 0 |
+| `coff-obj-x86_64` | the same file, `IMAGE_FILE_MACHINE_AMD64` | M20: `coff_machine` selects the header value and the relocation table, the way `elf_em` does in the ELF writer. `R_X86_PLT32` and `R_X86_PC32` both become `IMAGE_REL_AMD64_REL32` (`0x0004`) and `R_UNSIGNED` becomes `IMAGE_REL_AMD64_ADDR64` (`0x0001`, **not** ARM64's `0x000E`). The backend names the `x86_64-win` machine as its first statement |
 
-### No `.pdata`/`.xdata` (accepted M19 gap)
+**Why COFF carries no addend where ELF carries −4.** `IMAGE_REL_AMD64_REL32` is defined as the
+32-bit relative address from the byte **following** the four-byte field — `S + A - (P + 4)` — where
+ELF's `R_X86_64_PC32` computes `S + A - P` from the field's **start**. The −4 that
+`elf_rel_addend` writes is exactly that difference, and it is already inside COFF's definition.
+The addend `A` is whatever the field holds in place, and mc leaves it zero: both relocated
+instructions put their `disp32` at the very end (`call rel32` is `E8` plus four bytes, reloc offset
+1; `lea r, [rip+disp32]` is `REX.W 8D modrm` plus four, reloc offset 3), and the encoder writes
+`buf_u32(o, 0)` in both. `IMAGE_REL_AMD64_REL32_1..5`, for a field followed by 1..5 further bytes
+of immediate operand, are never needed: mc emits no such shape.
 
-`coff-obj-arm64` writes no unwind data. Windows on ARM64 has no frame-pointer-walking fallback: the
+### No `.pdata`/`.xdata` (accepted M19 gap, M20 included)
+
+Neither `coff-obj-arm64` nor `coff-obj-x86_64` writes unwind data. Windows on ARM64 has no frame-pointer-walking fallback: the
 OS unwinder (`RtlLookupFunctionEntry` / `RtlVirtualUnwind`) finds a function's frame shape through
 the exception directory, a `.pdata` array of `RUNTIME_FUNCTION` records pointing at `.xdata` unwind
 codes. `clang --target=aarch64-windows-msvc -c` of a non-leaf function emits both sections; mc emits
@@ -464,6 +526,12 @@ debugger's stack walk. Emitting it means one `RUNTIME_FUNCTION` per function plu
 `IMAGE_REL_ARM64_ADDR32NB` relocation each, and either the packed form (which cannot describe mc's
 prologue when the frame is small enough that MSVC would fold the allocation into the `stp`) or the
 full unwind codes — a milestone of its own, not a field of this writer.
+
+x64 Windows is the same gap for the same reason: its unwinding is table-driven too, with no
+frame-pointer fallback, and `clang --target=x86_64-windows-msvc -c` emits `.pdata` and `.xdata` for
+every non-leaf function. `coff-obj-x86_64` emits neither. What that costs and when it starts to
+matter is unchanged from the paragraph above; it is recorded here rather than opened as a second
+gap note.
 
 Two things `--exe` does that `.o` + `ld` does not: `&name` for a dylib `extern` works (it points
 the `adrp`/`add` at the symbol's stub), and the binary comes out `0755` and signed, ready to run.
@@ -487,9 +555,10 @@ void user_init() {
 }
 ```
 
-The three writers the core registers itself have exactly this shape and no other: `backend_exe(root, out)`,
-`backend_elf(root, out)` / `backend_elf_x86(root, out)` and `backend_coff(root, out)` each name
-their machine with `machine_use`, call `gen_lower` and `gen_encode_all`, and then write. An object
+The writers the core registers itself have exactly this shape and no other: `backend_exe(root, out)`,
+`backend_elf(root, out)` / `backend_elf_x86(root, out)` and `backend_coff(root, out)` /
+`backend_coff_x86(root, out)` each name their machine with `machine_use` — `arm64`, `x86_64`, or
+`x86_64-win` for the last — call `gen_lower` and `gen_encode_all`, and then write. An object
 backend picks the machine because the file format already records the architecture; a backend that
 consumes the AST directly needs none.
 

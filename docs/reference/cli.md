@@ -27,10 +27,10 @@ Arguments are read left to right. The first non-flag argument is the source; a s
 |---|---|
 | `-o OUT` | output path. Default `out.o`. `-o` with nothing after it is `mc: -o requires an argument`. |
 | `--exe` | alias for `--backend=macho-exe`: write a signed Mach-O executable directly, no `ld`. |
-| `--backend=NAME` | pick a registered backend. Built in: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64`, `coff-obj-arm64`. The default is the HOST's object backend — `macho` on macOS, `elf-obj`/`elf-obj-x86_64` on Linux (M37). A taught compiler adds its own with `backend("name", &f)`. An unknown name lists what exists and exits 1. |
+| `--backend=NAME` | pick a registered backend. Built in: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64`, `coff-obj-arm64`, `coff-obj-x86_64`. The default is the HOST's object backend — `macho` on macOS, `elf-obj`/`elf-obj-x86_64` on Linux (M37). A taught compiler adds its own with `backend("name", &f)`. An unknown name lists what exists and exits 1. |
 | `--include=DIR` | add one `#include "…"` search root, exactly like a `[include].paths` entry does for `mc build`. Repeatable; roots are tried in the order given, after the includer's own directory. It is what lets one source tree carry two platform layers in different directories and pick one without a `mc.toml` (`examples/conc/lib/macos`, `lib/linux`). |
 | `--host` | print what this binary is and exit 0 — three lines, no source needed. |
-| `--machine=NAME` | pick the instruction set the `--dump-*` modes lower with: `arm64` (default) or `x86_64`. A compile does **not** need it — an object backend names its own machine, because the file records the architecture — so this flag exists for looking at what a machine selects (`--dump-asm --machine=x86_64`). An unknown name is `mc: unknown machine: NAME`. |
+| `--machine=NAME` | pick the machine the `--dump-*` modes lower with: `arm64` (the host's, default), `x86_64` (System V) or `x86_64-win` (Win64 — the same instruction set, the Windows calling convention). A compile does **not** need it — an object backend names its own machine, because the file records the architecture — so this flag exists for looking at what a machine selects (`--dump-asm --machine=x86_64-win`). An unknown name is `mc: unknown machine: NAME`. |
 
 ```
 $ mc --host

@@ -35,7 +35,7 @@ root in order.
 
 ## The catalogue
 
-The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 42 entries,
+The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 43 entries,
 plus `mc/bundle_data`, which is regenerated on demand (see below). Those are the names `<...>`
 accepts.
 
@@ -46,7 +46,8 @@ accepts.
 | `<sys>` | `lib/sys.mc` | `open creat read write close exit` as libSystem `extern`s, plus `mmap`/`munmap`, `posix_spawnp`/`waitpid`/`_NSGetEnviron`, plus `<io>` |
 | `<sys_svc>` | `lib/sys_svc.mc` | the same five calls through `#opcode svc #0x80`, with **no libSystem at all**, plus `<io>` |
 | `<sys_linux>` | `lib/sys_linux.mc` | the Linux syscall layer (`svc #0`, number in `x8`) and a `_start`, for `-nostdlib` |
-| `<sys_windows>` | `lib/sys_windows.mc` | the Windows layer: the same five calls over seven kernel32 `extern`s, plus the entry point `mc_start`, for `/nodefaultlib`. It is the one layer that does **not** pull in `<io>` — add `#include <io>` after it (see [../build.md](../build.md) § Windows targets) |
+| `<sys_windows>` | `lib/sys_windows.mc` | the Windows layer: the same five calls over seven kernel32 `extern`s, plus `win_setup`/`win_argv`, for `/nodefaultlib`. It is the one layer that does **not** pull in `<io>` — add `#include <io>` after it (see [../build.md](../build.md) § Windows targets) |
+| `<sys_windows_start>` | `lib/sys_windows_start.mc` | the Windows entry point, `mc_start`, on its own: it is compiled alone into `winstart.obj` and linked next to every Windows program, never included. It is where `main` is named as an `extern`, which is why it cannot live in the layer a program includes |
 | `<io>` | `lib/io.mc` | `strlen`, `puts`, `putnum` — written in the language, on top of whatever `write` the includer declared. **Never include it alone** |
 
 `O_RDONLY`/`O_WRONLY`/`O_CREAT`/`O_TRUNC` live in each system layer, not in `<io>`, because they

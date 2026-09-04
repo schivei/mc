@@ -1,7 +1,7 @@
 # Cross-compiling
 
-`mc` runs on macOS arm64 and produces binaries for macOS arm64, **Linux arm64**, **Linux x86-64**
-and **Windows on ARM**. Each path is a backend, a system layer and four lines of `mc.toml`;
+`mc` runs on macOS arm64 and produces binaries for macOS arm64, **Linux arm64**, **Linux x86-64**,
+**Windows on ARM** and **Windows x64**. Each path is a backend, a system layer and four lines of `mc.toml`;
 x86-64 adds one more file, a *machine* — the instruction selection behind a target-independent
 walker ([../reference/machine.md](../reference/machine.md)). Nothing in the compiler's C seed
 knows about any of it.
@@ -12,7 +12,7 @@ knows about any of it.
 | Linux arm64 (ELF64) | **works**: `[target] os = "linux"` |
 | Linux x86-64 (ELF64) | **works**: `[target] os = "linux"`, `arch = "x86_64"` |
 | Windows arm64 (COFF) | **works**: `[target] os = "windows"` |
-| Windows x64 (COFF) | planned: the writer takes an `arch`, the machine is already there |
+| Windows x64 (COFF) | **works**: `[target] os = "windows"`, `arch = "x86_64"` |
 | WebAssembly | planned |
 | `mc` *hosted* on Linux or Windows | not yet: the project driver uses `posix_spawnp` and `_NSGetEnviron` |
 
@@ -173,11 +173,11 @@ args = ["-nostdlib", "-e", "_start", "-o", "{out}", "{obj}"]
 The `O_RDONLY`/`O_WRONLY`/`O_CREAT`/`O_TRUNC` constants live in each system layer rather than in
 `<io>`, because they are per-system values: `O_CREAT` is `0x200` on macOS and `0x40` on Linux.
 
-## Windows on ARM
+## Windows
 
 Same two changes as Linux, in another format: the object is a COFF `.obj` and `[linker]` is
-required. The machine does not change — Windows on ARM is AArch64, and it is the *file* that is
-new.
+required. On `arch = "aarch64"` the machine does not change either — Windows on ARM is AArch64, and
+it is the *file* that is new.
 
 ```toml
 [project]
@@ -194,19 +194,63 @@ path = "build/sysroot/windows-aarch64"
 [linker]
 cmd  = "lld-link"
 args = ["/machine:arm64", "/subsystem:console", "/entry:mc_start", "/nodefaultlib",
-        "/out:{out}", "{obj}", "{sysroot}/kernel32.lib"]
+        "/out:{out}", "{obj}", "build/winstart.obj", "{sysroot}/kernel32.lib"]
 ```
+
+### x64: the same file, another calling convention
+
+`arch = "x86_64"` writes the same COFF with `IMAGE_FILE_MACHINE_AMD64` and the AMD64 relocation
+numbers, over `x86_64-win` — the **Win64** half of the x86-64 machine. It is the same instruction
+selection `linux/x86_64` uses, with one task replaced: arguments in `rcx rdx r8 r9`, the fifth and
+later at `[rbp+48]` and up, and 32 bytes of shadow space reserved by the caller below every call
+([../reference/objects.md](../reference/objects.md) § 4c). Change three lines:
+
+```toml
+[target]
+os   = "windows"
+arch = "x86_64"
+
+[sysroot]
+path = "build/sysroot/windows-x86_64"
+
+[linker]
+cmd  = "lld-link"
+args = ["-machine:x64", "-subsystem:console", "-entry:mc_start", "-nodefaultlib",
+        "-out:{out}", "{obj}", "build/winstart.obj", "{sysroot}/kernel32.lib"]
+```
+
+`lld-link` takes its options with either prefix. Under Git Bash on a Windows runner MSYS rewrites a
+leading `/out:` into a path before the linker sees it, so the scripts here use the dash form.
+
+`build/winstart.obj` in both link lines is the entry point, and you build it the same way you build
+anything else — a second `mc build` with `entry = "<the bundled file>"` and `kind = "obj"`:
+
+```toml
+[project]
+entry = "start.mc"          # one line: #include <sys_windows_start>
+out   = "build/winstart.obj"
+kind  = "obj"
+```
+
+`scripts/test-windows.sh` does exactly that, once per architecture, before it builds any test.
+
+### The sysroot and the layer
 
 The sysroot is one file and there is nothing to download: a Windows program links against an
 **import library**, an archive of thunks generated from a list of exported names, so
 `scripts/sysroot-windows.sh` writes `kernel32.def` and builds `kernel32.lib` from it with
-`llvm-dlltool -m arm64`. `make sysroot-windows` runs it, and it is a cache like the musl one.
+`llvm-dlltool -m arm64` (or `-m i386:x86-64`; the seven exports are undecorated on both). Its
+`--arch` picks which. `make sysroot-windows` and `make sysroot-windows-x86_64` run it, and it is a
+cache like the musl one.
 
 `<sys_windows>` is the system layer, and it is the one with no syscall instruction anywhere:
 Windows has no stable system-call numbers, so the layer is ordinary mc code over seven kernel32
-`extern`s. It supplies the entry point too — `mc_start`, which splits `GetCommandLineA()` into
-`argc`/`argv` and calls `main` — which is why the link says `/entry:mc_start /nodefaultlib` and
-carries no C runtime at all.
+`extern`s — the same file for both architectures. The entry point is next to it rather than in it:
+`<sys_windows_start>` is `mc_start`, which calls `win_setup()` (the `GetCommandLineA()` split) and
+then `main`, and it is a file of its own because it is the one place `main` is named as an
+`extern`, which a layer a program *includes* cannot do. Compile it alone into `winstart.obj` and
+put it in every link line; that is what `-entry:mc_start -nodefaultlib` points at, and there is no
+C runtime in the link at all.
 
 It is also the one layer that does **not** pull in `<io>`: on Windows it is linked as an object
 *next to* the program rather than taken out of an archive, so a second copy of
@@ -221,9 +265,10 @@ It is also the one layer that does **not** pull in `<io>`: on Windows it is link
 the way it links against musl on Linux — the compiled `lib/sys_windows.mc` is one more object on
 the command line.
 
-`scripts/test-windows.sh` cross-compiles the suite here and the `windows-11-arm` CI job links and
-runs it; `make test-windows` does the local half (objects, `llvm-readobj` on each, three real
-`lld-link` links) and skips itself without `lld-link` or `llvm-dlltool`. `docs/build.md`
+`scripts/test-windows.sh [--arch aarch64|x86_64]` cross-compiles the suite here and the
+`windows-11-arm` and `windows-latest` CI jobs link and run it; `make test-windows` and
+`make test-windows-x86_64` do the local half (objects, `llvm-readobj` on each, three real
+`lld-link` links) and skip themselves without `lld-link` or `llvm-dlltool`. `docs/build.md`
 § Windows targets has the full field-by-field mapping.
 
 ## What the ELF writer does

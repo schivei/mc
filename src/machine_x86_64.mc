@@ -1,7 +1,13 @@
-// machine_x86_64.mc — the x86-64 machine (System V ABI), M17 step B.
+// machine_x86_64.mc — the x86-64 machine, M17 step B (System V) and M20 (Win64).
 // The task list, the register table and the verification are all in
 // docs/reference/machine.md § The x86-64 implementation; what is here is the
 // code, with only the reasons that are not obvious from it.
+//
+// It registers TWO machines, `x86_64` and `x86_64-win`, out of one set of
+// functions: the calling convention lives in five places (the argument table,
+// x86_param, x86_push_args, x86_reg_args and how much x86_call gives back) and
+// nowhere else, so the Win64 table is the SysV table with MTASK_PROLOGUE
+// replaced by the one that names the other ABI.
 //
 // It fills the same thirty-one slots src/machine_arm64.mc fills, so
 // src/gen_walk.mc never learns a second instruction set. Four things differ
@@ -167,17 +173,29 @@ uptr x86_name[] = { "", "nop", "push", "push", "leave", "ret", "mov", "mov32",
     "mov32", "mov", "mov8", "mov16", "mov32", "mov", "add", "sub", ".word" };
 
 uptr m_x86_64[MTASK_COUNT];           // the task table the walker drives
+uptr m_x86_64_win[MTASK_COUNT];       // the same thirty-one entries, Win64 prologue
 u8   x86_tmp[BUF_SIZE];               // scratch the size task encodes into
 i64  xdslot[MAXDEPTH];                // frame slot of a depth: 0 = not asked for yet
 i64  x86_isub = 0;                    // the prologue's `sub rsp, N`, patched last
 
+// M20: the two calling conventions, and the three things that tell them apart.
+// The REGISTER PARTITION does not move -- rax, rcx, rdx and r8..r11 are volatile
+// in both ABIs, so the depths stay in r8..r11 and the scratch stays rax/rcx/rdx.
+// rdi and rsi are callee-saved on Win64 and this machine simply stops naming
+// them: they appear only as SysV argument registers 0 and 1.
 i64 x86_argreg[] = { XR_RDI, XR_RSI, XR_RDX, XR_RCX, 8, 9 };
+i64 x86_argreg_win[] = { XR_RCX, XR_RDX, 8, 9 };
+
+uptr x86_args    = 0;                 // the table in force: set by MTASK_PROLOGUE
+i64  x86_nargreg = 0;                 // how many arguments travel in registers
+i64  x86_shadow  = 0;                 // bytes the caller reserves below the args
+
 i64 x86_cond[] = { 4, 5, 12, 14, 15, 13 };       // MCOND_EQ NE LT LE GT GE, signed
 i64 x86_binop[] = { X_ADD, X_SUB, X_IMUL, 0, 0, 0, 0,   // MOP_*; the four divisions
                     X_AND, X_OR, X_XOR, X_SHL, X_SHR, X_SAR };   // go to x86_divmod
 i64 x86_memop[] = { X_LD64, X_ST64, X_LD32, X_ST32, X_LD16, X_ST16, X_LD8, X_ST8 };
 
-i64  x86_argreg_at(i64 i) { return ld64(x86_argreg + i * 8); }
+i64  x86_argreg_at(i64 i) { return ld64(x86_args + i * 8); }
 i64  x86_cond_at(i64 i)   { return ld64(x86_cond + i * 8); }
 i64  x86_binop_at(i64 i)  { return ld64(x86_binop + i * 8); }
 i64  x86_memop_at(i64 i)  { return ld64(x86_memop + i * 8); }
@@ -244,7 +262,7 @@ void x86_mov(i64 rd, i64 rn) { if (rd != rn) e2(X_MOV, rd, rn); }
 // ---- the tasks ----
 // The frame record is unconditional (a stack walk depends on it); the reserve is
 // a placeholder until x86_frame_fix knows the size.
-void x86_prologue() {
+void x86_prologue_body() {
     i64 d = 0;
     loop {
         if (d >= MAXDEPTH) break;
@@ -257,11 +275,32 @@ void x86_prologue() {
     ei(X_SPSUB, 0, 0, 0);                        // the frame size only at the end
 }
 
+// The ABI is named by the prologue, which src/gen_walk.mc's gen_func always runs
+// before the first MTASK_PARAM and before any MTASK_CALL, so the three globals
+// can never be stale. That is also why the two conventions are two MACHINES and
+// not a runtime flag: `--machine=x86_64-win` has to be able to dump the Win64
+// sequence, and a flag the backend sets could not.
+void x86_prologue() {
+    x86_args = x86_argreg;
+    x86_nargreg = 6;
+    x86_shadow = 0;
+    x86_prologue_body();
+}
+
+void x86_prologue_win() {
+    x86_args = x86_argreg_win;
+    x86_nargreg = 4;
+    x86_shadow = 32;
+    x86_prologue_body();
+}
+
 // parameter i goes to its slot without the prologue writing an argument
-// register; the seventh and eighth were pushed by the caller, above rbp
+// register; the ones past the register table were pushed by the caller, above
+// rbp -- past the saved rbp and the return address, and on Win64 past the
+// 32 bytes of shadow space the caller reserved as well ([rbp+48] for the fifth).
 void x86_param(i64 ty, i64 i, i64 off) {
-    if (i < 6) { em(x86_mem_op(ty, 1), x86_argreg_at(i), XR_RBP, 0 - off); return; }
-    em(X_LD64, XR_RAX, XR_RBP, 16 + (i - 6) * 8);
+    if (i < x86_nargreg) { em(x86_mem_op(ty, 1), x86_argreg_at(i), XR_RBP, 0 - off); return; }
+    em(X_LD64, XR_RAX, XR_RBP, 16 + x86_shadow + (i - x86_nargreg) * 8);
     em(x86_mem_op(ty, 1), XR_RAX, XR_RBP, 0 - off);
 }
 
@@ -406,32 +445,46 @@ void x86_arg_to(i64 r, i64 d) {
     em(X_LD64, r, XR_RBP, 0 - x86_slot_depth(d));
 }
 
-// Arguments seven and eight go on the stack, at [rsp] and [rsp + 8] when the
-// call happens. `push` takes its operand straight from memory, so no scratch
-// register is spent; one extra 8 is reserved when the count is odd, because rsp
-// has to be 16-byte aligned at the call. Returns how much to give back after.
+// The arguments past the register table go on the stack, at [rsp], [rsp + 8]...
+// when the call happens. `push` takes its operand straight from memory, so no
+// scratch register is spent; one extra 8 is reserved when the count is odd,
+// because rsp has to be 16-byte aligned at the call. Returns how much to give
+// back after.
+//
+// M20: the Win64 shadow space is the last thing subtracted, so it ends up
+// BELOW the pushed arguments and the fifth argument lands at [rsp+32], which is
+// where the callee's x86_param reads it from. The alignment rule is unchanged:
+// 8*np + 32 is 0 mod 16 exactly when np is even. This is why the function has to
+// return non-zero for a Win64 call with no stack arguments at all -- back is 32.
 i64 x86_push_args(i64 dbase, i64 na) {
-    if (na <= 6) return 0;
-    i64 np = na - 6;
+    i64 nr = x86_nargreg;
+    i64 np = 0;
+    if (na > nr) np = na - nr;
     i64 bytes = 8 * np;
     if (np % 2) { ei(X_SPSUB, 0, 0, 8); bytes = bytes + 8; }
     i64 i = na - 1;
     loop {
-        if (i < 6) break;
+        if (i < nr) break;
         i64 d = dbase + i;
         if (x86_in_reg(d)) e2(X_PUSH, XREG_BASE + d, 0);
         else               em(X_PUSHM, 0, XR_RBP, 0 - x86_slot_depth(d));
         i = i - 1;
     }
+    if (x86_shadow) { ei(X_SPSUB, 0, 0, x86_shadow); bytes = bytes + x86_shadow; }
     return bytes;
 }
 
-// The first six in ABI order. Writing r8 (argument 5) or r9 (argument 6) cannot
-// clobber a source still to be read: those sources are depths dbase + 5 and
-// above, which are past XREG_MAX and therefore in the frame.
+// The first ones in ABI order. Writing an argument register that is also a depth
+// register cannot clobber a source still to be read, because the table is
+// written in ASCENDING index and a depth register's own argument index is
+// smaller than its position in the table. SysV: argreg[4] is r8 (depth 0), whose
+// index is -dbase <= 0 < 4, and argreg[5] is r9 (depth 1), index 1 - dbase <= 1
+// < 5. Win64: argreg[2] is r8, index -dbase <= 0 < 2, and argreg[3] is r9,
+// index 1 - dbase <= 1 < 3. tests/windows/071-nested-args.mc is the executable
+// proof of the Win64 half, where the margin is smallest.
 void x86_reg_args(i64 dbase, i64 na) {
     i64 n = na;
-    if (n > 6) n = 6;
+    if (n > x86_nargreg) n = x86_nargreg;
     i64 i = 0;
     loop {
         if (i >= n) break;
@@ -772,4 +825,17 @@ void machine_x86_64_init() {
     x86_task(MTASK_RELOC_KIND,   &x86_reloc_kind);
     x86_task(MTASK_RELOC_OFF,    &x86_reloc_off);
     machine("x86_64", m_x86_64);
+
+    // M20: the Win64 machine is the SAME machine with one slot replaced. Every
+    // encoder, the size task, the dump and the two relocation tasks are pure
+    // functions of the Ins record and are ABI-blind, so copying the table and
+    // swapping the prologue is the whole of it.
+    i64 t = 0;
+    loop {
+        if (t >= MTASK_COUNT) break;
+        st64(m_x86_64_win + t * 8, ld64(m_x86_64 + t * 8));
+        t = t + 1;
+    }
+    st64(m_x86_64_win + MTASK_PROLOGUE * 8, &x86_prologue_win);
+    machine("x86_64-win", m_x86_64_win);
 }
