@@ -825,9 +825,127 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   previous compiler is the 10 new functions, the `T_*` renumbering (`T_ONJUMP` inserted after
   `T_ONSTMT`), the four functions that gained the counter or the hook call, and `l_strN` index
   shifts — no other body changed.
-- Next: M17 (`docs/specs/M17.md` — machine-interface split and x86-64); M13 stays in
-  the backlog (`docs/specs/M13.md`: sizing a program's memory at compile time — the fixed 4 MiB
-  arena in `examples/api/lib/rt.mc` is one more motivating case).
+- M17 step A ✔ (`docs/specs/M17.md` § step A, plus the two core mechanisms decided in
+  `docs/specs/M33.md` § 1): **the code generator split into a resolver, a target-independent
+  walker and a machine**, with the frozen C seed as the oracle — it is still one monolithic
+  generator and its objects and `--dump-asm` had to come out identical.
+  1. **`src/gen_resolve.mc`** (536 lines): `gen_resolve(unit)` binds every name and types every
+     expression into a **side table indexed by node** (`RES_SIZE 32`: type, kind, decl, flag),
+     allocated once from `nnodes` and zeroed. `ND_SIZE` stays 104, no node field was added and
+     `--dump-ast` does not move — the 18 `set_nd_type` calls that used to happen as a side effect
+     of AArch64 instruction selection are gone. Readers: `res_type`, `res_kind`, `res_decl`,
+     `res_local_slot`, `res_bind` (M33's encoding), `res_intrin`, `res_addr_taken` (keyed by the
+     DECLARING node, because a local's index is reused across sibling blocks) and
+     `res_fn_addr_taken`. It also took over the signature table (`func_add`/`func_find`/`fs_*`)
+     and the global table (`global_add`/`global_find`/`glb_*`), with `GLB_SYM` still filled by
+     `gen_globals` at placement time — so the symbol creation order, which fixes the symbol table
+     and therefore the bytes, did not move. Every name diagnostic moved with it, in the order
+     `gen_lower` raised them (signatures, prototypes, globals, then each body).
+  2. **`src/gen_walk.mc`** (1031) + **`src/machine_arm64.mc`** (675), from the old
+     `src/gen_arm64.mc` (1623). The walker owns the `Ins` buffer, the frame in bytes
+     (`slot_new`), the label counter, the loop stack, block scoping, sections, globals, strings,
+     symbols and `I_LABEL` (opcode 0, reserved) — and mentions no register. It drives a
+     **machine table**: `uptr m_arm64[MTASK_COUNT]`, 30 slots of `&fn` registered with
+     `machine("arm64", tab)` in `src/hooks.mc` and called through `callp` (`mach(MTASK_X)`).
+     The machine owns the register partition, the spill (`dslot`, `val_reg`/`dst_reg`/`dst_done`,
+     `save_live`/`restore_live`), `REG_FRAME`/`fix_frame`, the encoders and the dump.
+     `MAXDEPTH`, the register assignment and the spill semantics are unchanged; `frame too large`
+     stays in the walker on purpose (M17 § step B asks for diagnostic parity).
+     Vocabulary: `MTASK_*` (30), `MOP_*` (13), `MUN_*` (3), `MCOND_*` (6) — named `MTASK_` and not
+     `MT_` because `examples/lang/lang_tab.mc` already has `MT_RET`.
+     Three deliberate deviations from the spec's sketch, all documented: `m_global_addr`/
+     `m_str_addr` are one task (`MTASK_SYM_ADDR`), `m_arg_move` is folded into `MTASK_CALL`/
+     `MTASK_CALLP` (which is what lets `callp` put its pointer in `x16` without the walker
+     knowing), and `m_prologue(frame, nparams)` is `MTASK_PROLOGUE` + `MTASK_PARAM` +
+     `MTASK_FRAME_FIX` because the frame size is only known after the body.
+     `gen_lower`, `gen_encode_all`, `gen_dump_asm` and every `gen_*` accessor kept their names and
+     their behaviour: `lib/backend_arm64.mc`, `src/backend_exe.mc` and `src/backend_elf.mc` were
+     not touched.
+  3. **`target(os, arch, obj_backend, exe_backend)`** in `src/hooks.mc`, registered in
+     `src/main.mc` (`macos/aarch64 -> macho + macho-exe`, `linux/aarch64 -> elf-obj + none`).
+     `src/driver.mc` lost `i64 drv_linux` and both hardcoded lists; the two messages are now built
+     FROM the registry (`target_os_list`, `target_arch_list`) and come out byte for byte as
+     before — `only macos and linux (see docs/build.md)`, `only aarch64 (see docs/build.md)`,
+     `linux requires [linker]: there is no direct executable`. Fixed ceilings (`MAXTARGETS 16`,
+     `MAXMACHINES 8`) on purpose: neither table scales with the program, so M23's rule does not
+     apply.
+  Docs: `docs/reference/machine.md` rewritten as the versioned contract (version 1, the 30 slots
+  with signatures, what each side owns, the deviations), `docs/reference/objects.md` § 1b
+  (`gen_resolve` and the readers) and its file references, `docs/reference/hooks.md`
+  (`machine`/`machine_find`/`machine_use`/`machine_task`/`machine_arm64_init`, `target`),
+  `docs/surface.md` § Tier 2 ("the third seam"), `docs/reference/bundle.md` and `docs/build.md`
+  (the three new bundle names).
+  — `stage0/` untouched, 2846/3000. `make bundle` re-run (35 files, raw 455370 B -> LZ 207275 B,
+  blob 207644 B). `make check` green end to end (RC 0): `test` 32/32, `check-lex` 73/73,
+  `check-ast` 73/73, `check-bundle` (lz round trip 59 cases), `check-asm` 73/73, `check-obj`
+  32/32 against the frozen seed, `bootstrap` at a fixed point (`mc2.o == mc3.o`, 578696 bytes;
+  the `--dump-asm` diff between `mc1` and `mc2` empty), `check-surface` 32/32 plus the nine ABI
+  assertions (920 functions of `src/mc.mc`, 0 mentions of `x18..x28` in 62 323 lines),
+  `test-exe` 32/32, `check-mc` 6/6, `check-standalone`, `check-toml` 10/10, `check-build` 11/11,
+  `check-limits` 16/16 under 90%, `check-minimal`, `test-linux` 32/32 on linux/arm64,
+  `check-examples`, `check-lang` 14, `check-conc` 21, `check-desktop`, `check-docs`
+  (127 symbols, 14 flags, 16 TOML keys, 10 directives, 45 samples, 123 links), `site` +
+  `check-site`. Golden rewritten to
+  `b2cbbde41f36843c3ef7970a4bd66b631828736771bac0d5df047ded9516375e`, only after the empty
+  `--dump-asm` diff and `cmp build/mc2.o build/mc3.o`. Independent proof that nothing moved: a
+  copy of `build/mc1` taken BEFORE the refactor and the one after produce byte-identical objects
+  for all 32 `tests/*.mc`, for `src/mc.mc` itself, and — through the taught compilers each of them
+  builds — for `examples/api/main.mc`, `examples/lang/main.lx`, `examples/conc/main.lx`,
+  `examples/desktop/main.mc` and `examples/desktop/main.ui`.
+- M17 step B ✔ (`docs/specs/M17.md` § step B): **the x86-64 machine and `linux/x86_64`**.
+  `src/machine_x86_64.mc` (775 lines) fills the same task table `machine_arm64.mc` fills, and not
+  one line of `src/gen_walk.mc` became architecture-specific: depths 0..3 in `r8..r11` (what is
+  left once the callee-saved half and the argument registers are off the table), scratch
+  `rax`/`rcx`/`rdx` (`idiv` writes `rdx`, `div` needs it zeroed, every shift counts in `cl`),
+  locals at `[rbp - off]` — no frame fixup — arguments in `rdi rsi rdx rcx r8 r9` with the seventh
+  and eighth pushed with `push r/m64` (no scratch spent; one extra `sub rsp, 8` when the count is
+  odd, for the 16-byte alignment at the `call`), result in `rax`, `callp` with the pointer in
+  `rax`, moved BEFORE any argument register because it may itself live in `r8..r11`.
+  A descriptor table (`x86_desc`, six columns per opcode) drives **the same** `x86_put` that
+  encodes and the dump that prints `--dump-asm`; `MTASK_INS_SIZE` runs `x86_put` over a scratch
+  buffer and returns the length, so size and encoding cannot disagree by construction.
+  **Machine contract: version 2** (`docs/reference/machine.md`) — one new slot,
+  `MTASK_RELOC_OFF(e) -> bytes`. Version 1 assumed a relocation patches the instruction from its
+  first byte, which is true of every fixed-width encoding and false of x86 (`call rel32` +1,
+  `lea r,[rip+d32]` +3). AArch64 answers 0 and its objects did not move a byte.
+  ELF x86-64 inside the same `src/backend_elf.mc` (`elf_em`, `R_X86_64_64/PC32/PLT32`, addend −4 on
+  both pc-relative kinds because a `rel32` counts from the END of its field); backend
+  `elf-obj-x86_64`; `target("linux", "x86_64", "elf-obj-x86_64", 0)` in `main.mc`. **The object
+  backend is what picks the machine** (`machine_use` as its first statement), not a fifth column on
+  `target()`: the format already records the architecture, and an AST-consuming backend (wasm)
+  needs no machine at all. `--machine=NAME` covers the `--dump-*` modes, which never reach a
+  backend. `// skip-x86_64:` on `031-opcode`, `033-reloc` and `tests/linux/070-nolibc.mc` — the
+  three that write instructions by hand. `scripts/sysroot-linux.sh --arch x86_64` (alpine
+  linux/amd64), `scripts/test-linux.sh --arch x86_64`, the `make test-linux-x86_64` target inside
+  `make check` (self-skipping without Docker/ld.lld) and the `linux-x86_64` CI leg on
+  `ubuntu-latest` (docs/plan.md § Rule for every new target).
+  **The seed needed more arena**: `build/mc0 src/mc.mc` was dying with `arena exhausted` with every
+  `MAX*` under 57% — what was full is `HEAP_SIZE` in `stage0/arena.c` (32 MiB, chosen in `517685f`
+  when self-compiling touched 14.5 MiB; `nodes_grow` doubles and never frees, ~18.9 MB of dead
+  arrays alone). Raised to 64 MiB — capacity, not behaviour: no generated byte changes.
+  `scripts/check-limits.sh` gained the seventeenth row, the heap, measured as the max RSS of a real
+  `build/mc0` run (`docs/build.md` § The seventeenth row).
+  — `make check` green end to end (RC 0, zero FAIL): `test` 32/32, `check-lex` 74/74, `check-ast`
+  74/74, `check-bundle` (lz 60 cases), `check-asm` 74/74, `check-obj` **32/32 identical to the
+  frozen seed**, `bootstrap` at a fixed point (`mc2.o == mc3.o`, 622792 bytes; the `--dump-asm`
+  diff between `mc1` and `mc2` empty), `check-surface` 32/32 plus the nine ABI assertions
+  (996 functions, 0 mentions of `x18..x28` in 67 051 lines), `test-exe` 32/32, `check-mc` 6/6,
+  `check-standalone`, `check-toml` 10/10, `check-build` 11/11, `check-limits` **17/17** (heap
+  29 Mi/64 Mi = 46%), `check-minimal`, `test-linux` 32/32 on linux/aarch64,
+  **`test-linux-x86_64` 29/29 on linux/x86_64** (4 skipped), `check-examples`, `check-lang`,
+  `check-conc`, `check-desktop`, `check-docs` (129 symbols, 15 flags, 16 TOML keys, 10 directives,
+  45 samples, 131 links), `site` + `check-site`. Golden rewritten once to
+  `9c34d8d63af895a7d382c9d24e4f7e56298f133ef6f8b15c3a3940c00774a09c`, only after the empty asm diff
+  and `cmp build/mc2.o build/mc3.o`. Bundle regenerated (36 files, raw 489036 -> LZ 221119, blob
+  221506 B); `tools/bundle.list` gained `mc/machine_x86_64`.
+  Encoder cross-check: the **948 distinct instructions** the machine emits while compiling
+  `src/mc.mc` for x86-64 re-assemble byte-identically under `llvm-mc -triple=x86_64-linux-musl`,
+  and the relocations match `clang --target=x86_64-linux-musl -c` of equivalent C
+  (`R_X86_64_PC32` at instruction+3, `R_X86_64_PLT32` at instruction+1, both with addend −4),
+  inspected with `llvm-objdump -dr` and `llvm-readobj`.
+- Next: M18/M19/M20 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
+  sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is
+  one more motivating case).
   Update this section when each milestone closes.
 - i18n done (2026-09-03): the repository is fully in English — diagnostics, program/script
   output, identifiers, comments, and docs (`docs/*.md`, `docs/specs/*.md`, `CLAUDE.md`,

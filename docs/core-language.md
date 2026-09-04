@@ -78,6 +78,29 @@ i64 neg = 0 - 8;
 if (neg / 2 != 0 - 4) return 5;                                    // i64 stays signed (sdiv)
 ```
 
+### Division by zero, and `INT64_MIN / -1`
+
+Neither case has an answer in the language: the machine emits its target's divide instruction and
+the instruction set decides. Constants never get that far — `fold()` refuses `x / 0` and `x % 0`
+with `division by zero` at compile time — so only a divisor that is zero at *run time* reaches the
+hardware, and there the two shipped machines disagree:
+
+| at run time | AArch64 (`sdiv`/`udiv`) | x86-64 (`idiv`/`div`) |
+|---|---|---|
+| `7 / 0` | `0` | `SIGFPE`, the process is killed |
+| `7 % 0` | `7` | `SIGFPE`, the process is killed |
+| `INT64_MIN / -1` | `INT64_MIN` | `SIGFPE`, the process is killed |
+
+Measured, one source per row (`INT64_MIN` is written `0 - 9223372036854775807 - 1`): built with
+`mc --exe` on macOS/arm64, and through `[target] os = "linux"` on linux/arm64, the three exit 0, 7
+and 0; cross-compiled with `arch = "x86_64"` and run under `docker run --platform linux/amd64`, all
+three print `Arithmetic exception` and exit 136 — the shell's way of saying `SIGFPE` (128 + 8).
+
+AArch64's three answers are what its ISA does, not a semantic mc chose, so no guard is emitted on
+a target whose divide traps: every division on x86-64 would pay for a check the language never
+promised. `docs/specs/M33.md` § 8 decides the same for wasm, whose `div_s`/`div_u`/`rem_s`/`rem_u`
+also trap. Test the divisor yourself when it can be zero.
+
 ## Memory intrinsics
 
 `ld8 ld16 ld32 ld64` (read, zero-extend) and `st8 st16 st32 st64(p, v)` (write). There's no `*p`

@@ -8,6 +8,13 @@
 # stage0/mc.h and stage0/*.c, and FAILS when the self-hosted compiler uses more
 # than 90% of any of them.
 #
+# M17 added the seventeenth row, the one whose absence cost a milestone: the
+# ARENA. Every MAX* table was under 57% when `build/mc0 src/mc.mc` started
+# dying with `arena exhausted`, because the thing that was full is not a table
+# -- it is `HEAP_SIZE` in stage0/arena.c, and the seed's growable arrays double
+# and never free (`nodes_grow` in stage0/ast.c leaves every earlier copy behind,
+# which is most of what is resident). See docs/build.md § limits.
+#
 # The verdict `mc limits` itself returns (0 / 3) is NOT what decides here: this
 # check is about the seed's headroom, not about how good the estimate was.
 mc="${1:-build/mc1}"
@@ -40,6 +47,27 @@ used() {
 seed() {
     grep -h "^#define $1[[:space:]]" stage0/mc.h stage0/*.c 2>/dev/null |
         head -1 | awk '{ print $3 }'
+}
+
+# HEAP_SIZE is written `(64u << 20)`, so it needs its own reader
+heap_bytes() {
+    grep -h '^#define HEAP_SIZE' stage0/arena.c 2>/dev/null |
+        sed -E 's/.*\(([0-9]+)u? *<< *([0-9]+)\).*/\1 \2/' |
+        awk '{ printf "%d", $1 * (2 ^ $2) }'
+}
+
+# The seed cannot report its own high-water mark, and instrumenting it would be
+# a change to the frozen seed. The proxy is the maximum resident set size of one
+# real run: the arena is a bss array, so only the pages the bump allocator
+# actually touched are resident, plus a megabyte or two of the binary itself. It
+# over-reports a little, which is the safe direction for a guard.
+seed_rss() {
+    out=$(/usr/bin/time -l build/mc0 src/mc.mc -o "$tmp/seed.o" 2>&1 >/dev/null)
+    v=$(printf '%s\n' "$out" | awk '/maximum resident set size/ { print $1 }')
+    if [ -z "$v" ]; then                          # GNU time, in kilobytes
+        v=$(printf '%s\n' "$out" | awk -F': *' '/Maximum resident set size/ { print $2 * 1024 }')
+    fi
+    printf '%s' "$v"
 }
 
 fails=0
@@ -79,6 +107,32 @@ check strings  MAXSTRS
 check locals   MAXLOCALS
 check loops    MAXLOOPS
 check prel     MAXPREL
+
+# the arena, in bytes rather than elements
+check_heap() {
+    total=$((total + 1))
+    c=$(heap_bytes)
+    if [ ! -x build/mc0 ] || [ -z "$c" ]; then
+        echo "FAIL heap: build/mc0 is missing, or HEAP_SIZE is not in stage0/arena.c"
+        fails=$((fails + 1)); return
+    fi
+    u=$(seed_rss)
+    if [ -z "$u" ]; then
+        echo "ok   heap      SKIPPED (no /usr/bin/time -l on this system)"
+        return
+    fi
+    pct=$((u * 100 / c))
+    if [ "$pct" -gt 90 ]; then
+        echo "FAIL heap: $u/$c = $pct% of the seed's HEAP_SIZE (over 90%)"
+        echo "     the C seed can no longer compile src/mc.mc for much longer;"
+        echo "     raise HEAP_SIZE in stage0/arena.c (see docs/build.md § limits)"
+        fails=$((fails + 1)); return
+    fi
+    printf 'ok   %-9s %6s / %-6s %3s%%  (%s)\n' heap \
+        "$((u / 1048576))Mi" "$((c / 1048576))Mi" "$pct" "HEAP_SIZE, max RSS of build/mc0"
+}
+
+check_heap
 
 rm -rf "$tmp"
 echo "$((total - fails))/$total seed limits under 90%"

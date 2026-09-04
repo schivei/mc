@@ -66,18 +66,24 @@ A missing `entry` or `out` is `<file>: missing key: project.entry`. A `kind` tha
 | key | type | default | accepted |
 |---|---|---|---|
 | `target.os` | string | `"macos"` | `macos`, `linux` |
-| `target.arch` | string | `"aarch64"` | `aarch64` |
+| `target.arch` | string | `"aarch64"` | `aarch64`; `x86_64` when `os = "linux"` |
 
-Anything else is refused at the value's position:
+The accepted set is the `(os, arch)` pairs the `target()` registry holds
+([hooks.md](hooks.md)) — `macos/aarch64`, `linux/aarch64`, `linux/x86_64` — and a module may
+register more. Anything else is refused at the value's position, with a message built from the
+registry:
 
 ```
 $ mc build tests/proj --config /tmp/windows.toml
 /tmp/windows.toml:6:6: only macos and linux (see docs/build.md): target.os
+$ mc build tests/proj --config /tmp/riscv.toml
+/tmp/riscv.toml:7:8: only aarch64 and x86_64 (see docs/build.md): target.arch
 ```
 
 `os = "linux"` changes exactly two things: the object comes out as an ELF64 `ET_REL` (the
-`elf-obj` backend) instead of a Mach-O, and `[linker]` becomes **required** — there is no
-direct-executable backend for Linux (`linux requires [linker]: there is no direct executable`).
+`elf-obj` / `elf-obj-x86_64` backends) instead of a Mach-O, and `[linker]` becomes **required** —
+there is no direct-executable backend for Linux (`linux requires [linker]: there is no direct
+executable`). `arch` then decides the instruction set inside that object.
 See [../guide/50-cross-compile.md](../guide/50-cross-compile.md).
 
 ## `[compiler]` — build the compiler that will compile the entry

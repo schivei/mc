@@ -26,7 +26,8 @@ Arguments are read left to right. The first non-flag argument is the source; a s
 |---|---|
 | `-o OUT` | output path. Default `out.o`. `-o` with nothing after it is `mc: -o requires an argument`. |
 | `--exe` | alias for `--backend=macho-exe`: write a signed Mach-O executable directly, no `ld`. |
-| `--backend=NAME` | pick a registered backend. Built in: `macho` (default), `macho-exe`, `elf-obj`. A taught compiler adds its own with `backend("name", &f)`. An unknown name lists what exists and exits 1. |
+| `--backend=NAME` | pick a registered backend. Built in: `macho` (default), `macho-exe`, `elf-obj`, `elf-obj-x86_64`. A taught compiler adds its own with `backend("name", &f)`. An unknown name lists what exists and exits 1. |
+| `--machine=NAME` | pick the instruction set the `--dump-*` modes lower with: `arm64` (default) or `x86_64`. A compile does **not** need it — an object backend names its own machine, because the file records the architecture — so this flag exists for looking at what a machine selects (`--dump-asm --machine=x86_64`). An unknown name is `mc: unknown machine: NAME`. |
 
 Backends are documented in [objects.md](objects.md) and in [../guide/40-backends.md](../guide/40-backends.md).
 

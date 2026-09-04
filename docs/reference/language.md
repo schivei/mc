@@ -136,6 +136,14 @@ same signedness rule as the runtime. A `#define` is folded at *definition* time 
 a constant, never a textual macro. Folding `x / 0` where both sides are constants is
 `division by zero` at compile time.
 
+### Division by zero at run time is the target's answer, not the language's
+
+A divisor that is only zero at run time, and `INT64_MIN / -1`, reach the hardware unguarded:
+AArch64's `sdiv`/`udiv` never trap and give `0`, `x` and `INT64_MIN`; x86-64's `idiv`/`div` raise
+`SIGFPE` and the process dies; wasm will trap (`docs/specs/M33.md` § 8). The same source therefore
+behaves differently on the two shipped targets, deliberately — see
+[../core-language.md](../core-language.md) § "Division by zero, and `INT64_MIN / -1`".
+
 ---
 
 ## 4. Statements

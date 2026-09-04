@@ -1,6 +1,6 @@
-// backend_elf.mc — backend `elf-obj`: writes an ELF64 `ET_REL` for
-// `EM_AARCH64`, the relocatable object a Linux linker (`ld.lld`) takes (M16,
-// docs/specs/M16.md, docs/build.md § Linux targets).
+// backend_elf.mc — backends `elf-obj` and `elf-obj-x86_64`: an ELF64 `ET_REL`,
+// the relocatable object a Linux linker (`ld.lld`) takes (M16,
+// docs/specs/M16.md; the x86-64 half is M17 step B, docs/specs/M17.md).
 //
 // Everything before this file is format-neutral: `gen_lower` lowers the AST into
 // sections, symbols and relocations, `gen_encode_all` encodes the words. This
@@ -20,13 +20,21 @@
 //                out of the instruction the same way), sorted by ascending
 //                offset, which is the ELF convention.
 //
+// M17 step B: the SAME writer serves both architectures. Only three things are
+// architecture-dependent — `e_machine`, the relocation numbers and the addend —
+// and each backend entry point picks its machine (`machine_use`) and sets
+// `elf_em` before lowering a single node. Everything else (the section table,
+// the symbol partition, the layout) is shared, which is the whole point of
+// having a machine interface: a second instruction set is not a second writer.
+//
 // The object is NOT an executable: `os = "linux"` in mc.toml always goes through
 // `[linker]` (src/driver.mc). The direct-executable backend is macOS only
 // (`macho-exe`, M11).
 //
 // Depends on arena.mc (buf_*, xalloc, die, write_file), on macho.mc (sections,
-// symbols, relocations, sym_order and the R_* / S_* constants), on gen_arm64.mc
-// (gen_lower/gen_encode_all, ivec_at/set_ivec_at) and on toml.mc (tm_cat). It
+// symbols, relocations, sym_order and the R_* / S_* constants), on gen_walk.mc
+// (gen_lower/gen_encode_all, ivec_at/set_ivec_at), on machine_x86_64.mc
+// (R_X86_PC32/R_X86_PLT32) and on toml.mc (tm_cat). It
 // borrows two pure helpers from backend_exe.mc — `exe_up` (round up) and
 // `exe_segname` (16 fixed bytes as a string); neither has anything Mach-O in it.
 
@@ -38,6 +46,7 @@
 #define EV_CURRENT  1
 #define ET_REL      1
 #define EM_AARCH64  183
+#define EM_X86_64   62
 #define EHDR_SIZE   64
 #define SHDR_SIZE   64
 
@@ -74,6 +83,11 @@
 #define R_AARCH64_LDST32_ABS_LO12_NC 285
 #define R_AARCH64_LDST64_ABS_LO12_NC 286
 
+// ---- relocations (x86-64 psABI) ----
+#define R_X86_64_64    1
+#define R_X86_64_PC32  2
+#define R_X86_64_PLT32 4
+
 #define EK_NULL     0
 #define EK_CONTENT  1
 #define EK_RELA     2
@@ -108,6 +122,7 @@ u8 el_sym[BUF_SIZE];                   // .symtab
 i64 el_isymtab = 0;                    // index of .symtab, cited by every .rela
 i64 el_istrtab = 0;
 i64 el_ishstr  = 0;
+i64 elf_em = EM_AARCH64;               // which architecture this object is for
 
 // ---- names ----
 // A Mach-O 16-byte name lowercased with its leading underscores dropped:
@@ -344,8 +359,30 @@ i64 elf_pageoff12(i64 w) {
     return R_AARCH64_LDST64_ABS_LO12_NC;
 }
 
+// x86-64 has one relocation per shape and no instruction to inspect: the four
+// bytes are always the tail of the instruction, so the addend is -4 for both
+// pc-relative kinds and 0 for the 64-bit absolute one in data.
+i64 elf_rel_type_x86(uptr r) {
+    i64 t = rel_type(r);
+    if (t == R_X86_PC32)  return R_X86_64_PC32;
+    if (t == R_X86_PLT32) return R_X86_64_PLT32;
+    if (t == R_UNSIGNED) {
+        if (rel_len(r) != 3) die("UNSIGNED that does not occupy 8 bytes");
+        return R_X86_64_64;
+    }
+    die("relocation not supported in the x86-64 ELF object");
+    return 0;
+}
+
+i64 elf_rel_addend(uptr r) {
+    i64 t = rel_type(r);
+    if (t == R_X86_PC32 || t == R_X86_PLT32) return 0 - 4;
+    return 0;
+}
+
 i64 elf_rel_type(uptr sec, uptr r) {
     i64 t = rel_type(r);
+    if (elf_em == EM_X86_64) return elf_rel_type_x86(r);
     if (t == R_BRANCH26) return R_AARCH64_CALL26;
     if (t == R_PAGE21)   return R_AARCH64_ADR_PREL_PG_HI21;
     if (t == R_UNSIGNED) {
@@ -356,9 +393,11 @@ i64 elf_rel_type(uptr sec, uptr r) {
     return elf_pageoff12(ld32(buf_p(sec_data(sec)) + rel_off(r)));
 }
 
-// r_offset, r_info = (symbol << 32) | type, r_addend. The addend is always 0:
-// the encoder leaves the immediate field of the relocated instruction zeroed and
-// writes 8 zero bytes for an UNSIGNED, so there is nothing implicit to carry.
+// r_offset, r_info = (symbol << 32) | type, r_addend. On aarch64 the addend is
+// always 0: the encoder leaves the immediate field of the relocated instruction
+// zeroed and writes 8 zero bytes for an UNSIGNED, so there is nothing implicit
+// to carry. On x86-64 a rel32 counts from the END of the field, which is four
+// bytes past r_offset, so its addend is -4.
 void elf_put_relas(uptr o, i64 i, uptr pos) {
     uptr s = sec_at(i);
     uptr ord = elf_rel_order(s);
@@ -368,7 +407,7 @@ void elf_put_relas(uptr o, i64 i, uptr pos) {
         buf_u64(o, rel_off(r));
         buf_u32(o, elf_rel_type(s, r));
         buf_u32(o, ivec_at(pos, rel_sym(r)) + 1);
-        buf_u64(o, 0);
+        buf_u64(o, elf_rel_addend(r));
         j = j + 1;
     }
 }
@@ -416,7 +455,7 @@ void elf_put_ehdr(uptr o, i64 shoff) {
         i = i + 1;
     }
     buf_u16(o, ET_REL);
-    buf_u16(o, EM_AARCH64);
+    buf_u16(o, elf_em);
     buf_u32(o, EV_CURRENT);
     buf_u64(o, 0);                               // e_entry
     buf_u64(o, 0);                               // e_phoff
@@ -475,9 +514,19 @@ void elf_write(uptr path) {
     write_file(path, o);
 }
 
-// the backend itself: the same lowering and the same encoder as `macho`, only
-// the writing differs
+// the backends themselves: the same lowering and the same two-pass encoder as
+// `macho`, driven by the machine each one names, and only the writing differs
 void backend_elf(i64 root, uptr out) {
+    machine_use("arm64");
+    elf_em = EM_AARCH64;
+    gen_lower(root);
+    gen_encode_all();
+    elf_write(out);
+}
+
+void backend_elf_x86(i64 root, uptr out) {
+    machine_use("x86_64");
+    elf_em = EM_X86_64;
     gen_lower(root);
     gen_encode_all();
     elf_write(out);

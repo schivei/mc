@@ -1,13 +1,19 @@
 # The object model and the codegen API
 
 Between the AST and the file on disk there is one format-neutral layer: sections, symbols and
-relocations in `src/macho.mc`, and a per-function buffer of `Ins` records in `src/gen_arm64.mc`.
-Three backends are built on nothing but this — `macho`, `macho-exe` and `elf-obj` — and so is
-`lib/backend_arm64.mc`, which reimplements the whole AArch64 encoder from outside and produces
-byte-identical objects.
+relocations in `src/macho.mc`, and a per-function buffer of `Ins` records in `src/gen_walk.mc`.
+Four backends are built on nothing but this — `macho`, `macho-exe`, `elf-obj` and
+`elf-obj-x86_64` — and so is `lib/backend_arm64.mc`, which reimplements the whole AArch64 encoder
+from outside and produces byte-identical objects.
 
 Everything here is an ordinary function. There is no plugin ABI: a backend is a `.mc` module
 compiled into the compiler, registered with `backend("name", &f)` ([hooks.md](hooks.md)).
+
+Since M17 the generator is four files, not one. `src/gen_resolve.mc` binds names and types
+expressions; `src/gen_walk.mc` walks the AST and knows nothing about registers;
+`src/machine_arm64.mc` and `src/machine_x86_64.mc` are the two machines behind the walker's task
+table ([machine.md](machine.md)). None of that moved a public name: `gen_lower`, `gen_encode_all`
+and every `gen_*` accessor below mean exactly what they meant before.
 
 ---
 
@@ -26,7 +32,8 @@ void backend_macho(i64 unit, uptr out) {
 Walks the AST and produces, for every function, a linear buffer of `Ins` records — the same one
 `--dump-asm` prints. It also creates the sections, allocates the globals, emits the string
 literals into `__TEXT,__cstring`, and creates every symbol. It **encodes nothing**: `__text` is
-still empty when it returns.
+still empty when it returns. It calls `gen_resolve(unit)` first, which is idempotent, so a backend
+that only knows these two halves needs no change.
 
 The order in which it creates symbols is deliberate and load-bearing — it fixes the symbol table
 layout, which is what lets the objects stay byte-identical across refactors.
@@ -34,7 +41,9 @@ layout, which is what lets the objects stay byte-identical across refactors.
 ### `void gen_encode_all()`
 
 Walks the lowered functions, aligns each one to 4, fixes its symbol's value, resolves the labels,
-and writes the 32-bit words together with their relocations.
+and writes the words together with their relocations. How wide an instruction is and how it is
+encoded are the machine's answers (`MTASK_INS_SIZE`, `MTASK_ENCODE`, `MTASK_RELOC_KIND`); the
+label pass, the section placement and `reloc_add` are not.
 
 A backend that wants a different encoder calls `gen_lower` and replaces this half — that is
 exactly what `lib/backend_arm64.mc` does.
@@ -42,6 +51,53 @@ exactly what `lib/backend_arm64.mc` does.
 ### `void gen_dump_asm()`
 
 Prints the lowered buffer, one function per label. `--dump-asm` is `gen_lower` + this.
+
+---
+
+## 1b. `gen_resolve` — names and types, before any instruction
+
+```c
+void gen_resolve(i64 unit);
+```
+
+Runs before `gen_lower` (which calls it) and answers, for every node, what a name resolved to and
+what type an expression has. Until M17 both were side effects of AArch64 instruction selection —
+18 `set_nd_type` calls scattered through the walk — which meant a backend that did not want that
+walk could not get the answers. A backend that consumes the AST directly calls `gen_resolve(unit)`
+and never calls `gen_lower` at all.
+
+The answers go into a **side table indexed by node**, never into a node field: `ND_SIZE` stays 104
+and `--dump-ast` does not move. Out-of-range nodes — one a module built itself, or one a `#opcode`
+template folded after the table was sized — answer neutrally rather than faulting.
+
+| function | returns |
+|---|---|
+| `i64 res_type(i64 n)` | the resolved type of an expression node (`TY_*`), `TY_VOID` when it has none |
+| `i64 res_kind(i64 n)` | what the name bound to: `RK_NONE`, `RK_LOCAL`, `RK_GLOBAL`, `RK_FUNC`, `RK_INTRIN`, `RK_OPCODE` |
+| `i64 res_decl(i64 n)` | the index in the table `res_kind` names — a local, a global, a signature, an `IN_*` id or a `#opcode` |
+| `i64 res_local_slot(i64 n)` | `res_decl` when the node binds a local, else `-1` |
+| `i64 res_bind(i64 n)` | the same binding as one number: local `i`, `-(global + 1)`, or `RES_FN + function` |
+| `i64 res_intrin(i64 n)` | the `IN_*` id of an `N_CALL`, or `IN_NONE` |
+| `i64 res_addr_taken(i64 n)` | 1 when the DECLARING node — an `N_PARAM`, `N_VAR`, `N_FUNC` or `N_EXTERN` — is the operand of some `&` |
+| `i64 res_fn_addr_taken(i64 fi)` | the same question about function `fi`, by signature index |
+
+An `N_VAR` binds itself: `res_local_slot` of the declaration is the index the local is about to
+take, which is how a consumer goes from a declaration to its slot without walking the body again.
+
+A local's index is its position in the function's flat local stack **at that point in the walk**.
+Two sibling blocks reuse the same index for different locals — the names disappear at a closing
+brace, the frame slots do not — which is why `res_addr_taken` is keyed by the declaring node and
+not by that index. `gen_walk.mc` builds its own local table in exactly the same order, so the index
+is a direct subscript into it and nothing searches by name during lowering.
+
+`gen_resolve` also owns the two module-wide name tables: the signatures (`func_find`, `func_add`,
+`fs_*`) and the globals (`global_find`, `global_add`, `glb_*`), with `GLB_SYM` filled in later by
+`gen_globals` when it places the data. Every diagnostic that is about a name rather than about an
+instruction is raised here — `unknown name`, `call to unknown function`, `wrong number of
+arguments`, `wrong arity in intrinsic`, `callp expects 1 to 8 arguments`, `assignment to array`,
+`at most 8 parameters`, `function declared twice`, `declaration does not match prototype`,
+`prototype with no definition`, `global name declared twice` — in the order `gen_lower` raised
+them: signatures, then globals, then each body.
 
 ---
 
@@ -68,8 +124,12 @@ Prints the lowered buffer, one function per label. `--dump-asm` is `gen_lower` +
 An `Ins` record is read with the accessors `ins_op`, `ins_rd`, `ins_rn`, `ins_rm`, `ins_imm`,
 `ins_label`, `ins_sym` (and written with the matching `set_ins_*`). `ins_op` is one of the `I_*`
 constants — `I_LABEL`, `I_MOVZ`, `I_ADD`, `I_BL`, `I_ADRP`, `I_ADDLO`, `I_LDR`, `I_EMIT`,
-`I_BLR`, … The whole list is at the top of `src/gen_arm64.mc`; `I_LABEL` marks a label position
-and `I_NOP` is erased during the frame fixup and generates no word.
+`I_BLR`, … The whole list is at the top of `src/machine_arm64.mc`; `I_LABEL` is opcode 0, belongs
+to `src/gen_walk.mc` and marks a label position, and `I_NOP` is erased during the frame fixup and
+generates no word. The `Ins` record itself is machine-neutral — the x86-64 machine fills the same
+seven fields with its own `X_*` opcodes, which start at 1 for the same reason (`I_LABEL` is the
+walker's) and are read with the same accessors. Which vocabulary an `Ins` holds is whichever
+machine was in effect when `gen_lower` ran.
 
 ```c
 // walking everything a backend has to encode
@@ -92,6 +152,9 @@ while (f < gen_func_count()) {
 `gen_lower` is a plain recursive walk, and every step of it is a named function. A module rarely
 calls these directly — they are listed because they *are* the public surface of the file, and
 because a backend that wants to lower one construct differently needs to know where the seam is.
+Everything down to `gen_encode_one` lives in `src/gen_walk.mc` and emits nothing itself: it calls
+machine tasks ([machine.md](machine.md)). The last three — `gen_imm`, `gen_gaddr` and `gen_cast` —
+are AArch64 and live in `src/machine_arm64.mc`.
 
 | function | lowers |
 |---|---|
@@ -100,15 +163,15 @@ because a backend that wants to lower one construct differently needs to know wh
 | `gen_binary(n, depth)` | `+ - * / % & \| ^ << >>` and the comparisons |
 | `gen_logic(n, depth)` | `&&` and `\|\|`, with their short-circuit branches |
 | `gen_unary(n, depth)` | `- ~ !` |
-| `gen_cast(rd, ty)` | the mask for a narrowing cast |
-| `gen_ident(n, depth)` | a name: local, global, or the address of a function |
+| `gen_cast(rd, ty)` | the mask for a narrowing cast (arm64) |
+| `gen_ident(n, depth)` | a name: local or global, read through `res_kind`/`res_decl` |
 | `gen_addr(n, depth)` | `&x` |
 | `gen_str(n, depth)` | a string literal's address |
 | `gen_intrin(n, depth, in)` | `ld8..ld64` / `st8..st64` |
 | `gen_call(n, depth)` | a direct call (`bl`), including the spill of live depths |
 | `gen_callp(n, depth)` | `callp(p, …)` (`blr x16`) |
-| `gen_imm(rd, v)` | a 64-bit immediate as `movz`/`movk`/`movn` |
-| `gen_gaddr(rd, sym)` | `adrp` + `add` for a symbol's address |
+| `gen_imm(rd, v)` | a 64-bit immediate as `movz`/`movk`/`movn` (arm64) |
+| `gen_gaddr(rd, sym)` | `adrp` + `add` for a symbol's address (arm64) |
 | `gen_word(n, w)` | one raw 32-bit word, with the pending `reloc()` if any |
 | `gen_emit(n)` | the `emit()` intrinsic |
 | `gen_opcode(n, oi)` | a `#opcode` call: folds the template and emits the word |
@@ -119,12 +182,14 @@ because a backend that wants to lower one construct differently needs to know wh
 | `gen_if(n, lepi)` | `if` / `else` |
 | `gen_loop(n, lepi)` | `loop`, `break N` and `continue` |
 | `gen_func(f, text)` | one function: prologue, body, epilogue, frame fixup |
-| `gen_globals(unit)` | allocates every global and writes its initializer |
+| `gen_globals(unit)` | places every global, writes its initializer and fills in its symbol |
 | `gen_sections(unit)` | creates the sections the `#section` directives asked for |
 | `gen_encode_one(f)` | encodes one lowered function into its section |
 
 Depth registers are `x9..x15` for depths 0..6; deeper values spill to the frame. `x16` carries
-the pointer for `callp`. Locals live at `[sp, #k]`.
+the pointer for `callp`. Locals live at `[sp, #k]`. All three sentences are the arm64 machine's
+policy, not the walker's — see [machine.md](machine.md) for what each side owns, and for the
+x86-64 machine's answers to the same three questions (`r8..r11`, `rax`, `[rbp - k]`).
 
 ---
 
@@ -226,6 +291,51 @@ where it stands, between the prologue's parameter stores and whatever follows, a
 instruction of its own in the middle. A sequence that must not be interrupted therefore has to fit
 in **one** function body — splitting an `ldxr`/`stxr` pair across two one-word `#opcode` functions
 puts a frame store and a `ret` between them.
+
+---
+
+## 4b. The same contract on x86-64
+
+§ 4 is the AArch64 machine's contract, and `scripts/check-surface.sh` asserts it against
+`--dump-asm` on the host. The x86-64 machine (M17 step B) makes the same four promises in its own
+register vocabulary; they are written here for the same reason — a taught runtime depends on them
+and nothing would diagnose a violation.
+
+- **Parameters arrive in `rdi rsi rdx rcx r8 r9`** (the seventh and eighth at `[rbp+16]` and
+  `[rbp+24]`, pushed by the caller) **and the prologue does not clobber them.** The prologue is
+  `push rbp; mov rbp, rsp; sub rsp, N`, then one store per parameter in declaration order.
+- **The epilogue leaves `rax` alone.** It is exactly `leave; ret`, so a body that ends without a
+  `return` hands back whatever `rax` holds.
+- **The frame record is unconditional.** `push rbp; mov rbp, rsp` is emitted even for a leaf; only
+  the `sub rsp, N` disappears when `N == 0`. `rsp` is 16-byte aligned at every `call`.
+- **The register partition.**
+
+| registers | role |
+|---|---|
+| `rdi rsi rdx rcx r8 r9` | arguments in, `rax` the result out |
+| `rax` | spill scratch (left/destination), the `callp` pointer, the quotient of `idiv`/`div` |
+| `rcx` | spill scratch (right), and the count of every shift |
+| `rdx` | the remainder of `idiv`/`div`; zeroed before an unsigned one |
+| `r8..r11` | expression depths 0..3 |
+| `rbx`, `r12..r15` | **never written, never read** — the callee-saved half |
+| `rbp` | the frame pointer; locals live at `[rbp - k]` |
+| `rsp` | moved only by the prologue, the epilogue and the two-slot argument area of a call |
+
+Depth 4 and beyond spills to the frame through `rax`/`rcx`. The `frame too large` limit (4095
+bytes) is AArch64's 12-bit immediate and x86 has no such bound, but the walker keeps it so the
+diagnostic is the same on every target.
+
+`callp(p, a1..a6)` puts the pointer in `rax` and the arguments in `rdi..r9`; a seventh goes on the
+stack. `#opcode` writes a raw 4-byte little-endian word wherever it stands, exactly as on AArch64 —
+but the words themselves are an instruction set, so a source that uses it is not portable between
+the two.
+
+One promise § 4 does **not** make on either machine: nothing is guaranteed about a division whose
+divisor is zero, or about `INT64_MIN / -1`. `x86_divmod` emits `cqo; idiv r` and
+`xor edx, edx; div r` with no check, so both cases raise `SIGFPE` and kill the process, where
+AArch64's `sdiv`/`udiv` answer `0`, `x` and `INT64_MIN` without trapping. That divergence is the
+ISA's and is documented rather than guarded —
+[../core-language.md](../core-language.md) § "Division by zero, and `INT64_MIN / -1`".
 
 ---
 

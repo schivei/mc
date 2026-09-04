@@ -32,6 +32,11 @@
 // the musl crt objects and libc.a come from. Everything else is unchanged,
 // including the taught compiler, which is always built for the host.
 //
+// M17: which backend that is stopped being written here. `[target]` is looked
+// up in the registry `target(os, arch, obj, exe)` fills (src/hooks.mc,
+// registered in src/main.mc), so a new operating system or architecture is a
+// registration and not an edit to this file.
+//
 // The spawn is not a detail: the compiler's tables (lexer, arena, AST, symbols)
 // are global and are built once per process, so two compilations never fit in
 // one run. `--entry-only` is the flag that says "you are the second half": it
@@ -40,8 +45,9 @@
 //
 // Depends on arena.mc, on toml.mc, on lex.mc (tok_init/lex_init/path_join/
 // path_norm/lex_add_include_path), on parse.mc (parse_unit/fold/dylib_add/
-// extern_lib_pattern_add), on hooks.mc (user_init/run_passes/backend_find) and
-// on main.mc (opt_val). Nothing here is reachable from the single-file CLI.
+// extern_lib_pattern_add), on hooks.mc (user_init/run_passes/backend_find and
+// the target registry) and on main.mc (opt_val). Nothing here is reachable from
+// the single-file CLI.
 
 #include "../lib/prelude.mc"
 
@@ -65,15 +71,17 @@ extern uptr _NSGetEnviron();
 
 uptr cfg_file = 0;                    // path of mc.toml, as it will appear in errors
 uptr drv_sdk_cache = 0;               // {sdk}, resolved at most once
-i64  drv_linux = 0;                   // [target].os == "linux" (M16)
+i64  drv_target = -1;                 // index in the target registry (hooks.mc)
+uptr drv_os = 0;                      // [target].os, as the file wrote it
 
-// the backend that writes the object for the target in effect. There is no
-// direct-executable backend for Linux: `os = "linux"` always goes through
-// [linker] (docs/build.md § Linux targets).
-uptr drv_obj_backend() {
-    if (drv_linux) return "elf-obj";
-    return "macho";
-}
+// the backends that write for the target in effect. M17 replaced the whitelist
+// this file used to carry -- an `i64 drv_linux` flag and two literal messages --
+// with the registry in src/hooks.mc: `target(os, arch, obj, exe)`, registered by
+// src/main.mc. `drv_exe_backend() == 0` says the target has no direct executable
+// and always goes through [linker], which is what Linux does
+// (docs/build.md § Linux targets).
+uptr drv_obj_backend() { return tgt_obj_at(drv_target); }
+uptr drv_exe_backend() { return tgt_exe_at(drv_target); }
 
 // M23: 0 = plain build, 1 = --limits (report + verdict), 2 = --fix-limits
 // (report + rewrite the [limits] section). `mc limits` is mode 1.
@@ -394,9 +402,11 @@ void drv_entry(uptr entry, uptr out, uptr kind) {
         return;
     }
     if (has_linker == 0) {
-        if (drv_linux) toml_err_key("target.os", "linux requires [linker]: there is no direct executable");
+        if (drv_exe_backend() == 0)
+            toml_err_key("target.os", tm_cat(drv_os,
+                         " requires [linker]: there is no direct executable"));
         drv_step("compile", entry, out);
-        drv_compile(src, drv_path(out), "macho-exe", 1, entry);
+        drv_compile(src, drv_path(out), drv_exe_backend(), 1, entry);
         return;
     }
     uptr obj = tm_cat(out, ".o");
@@ -468,14 +478,17 @@ i64 drv_run(uptr dir, uptr cfg, i64 entry_only, i64 compiler_only) {
     drv_tol = toml_bp("limits.tolerance", 2500, 0, 10000,
                       "tolerance must be between 0 and 1");
 
+    // M17/M33: the target comes out of the registry, never out of a list
+    // written here. The two messages are built from the same table, so they
+    // name what is actually registered -- including a target a module added.
     uptr os = toml_get("target.os");
-    drv_linux = 0;
-    if (os != 0 && str_eq(os, "linux")) drv_linux = 1;
-    else if (os != 0 && !str_eq(os, "macos"))
-        toml_err_key("target.os", "only macos and linux (see docs/build.md)");
+    if (os == 0) os = "macos";
     uptr arch = toml_get("target.arch");
-    if (arch != 0 && !str_eq(arch, "aarch64"))
-        toml_err_key("target.arch", "only aarch64 (see docs/build.md)");
+    if (arch == 0) arch = "aarch64";
+    if (!target_os_known(os)) toml_err_key("target.os", target_os_list());
+    drv_target = target_find(os, arch);
+    if (drv_target < 0) toml_err_key("target.arch", target_arch_list(os));
+    drv_os = os;
 
     uptr entry = toml_get("project.entry");
     if (entry == 0) toml_err_key("project.entry", "missing key");

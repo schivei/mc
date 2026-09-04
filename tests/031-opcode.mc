@@ -1,4 +1,5 @@
 // expect-exit: 42
+// skip-x86_64: the #opcode templates are AArch64 words (movz/add); the x86-64 machine emits its own instruction set
 // #opcode teaches an instruction: the constant arguments go into the
 // template, which is folded and becomes a raw word. The function has no
 // return — the epilogue does not touch x0, so the return value is whatever

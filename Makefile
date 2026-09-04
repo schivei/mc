@@ -104,6 +104,10 @@ check-build: build/mc1
 sysroot-linux:
 	scripts/sysroot-linux.sh
 
+# M17 step B: the same, out of a linux/amd64 alpine:3 (emulated on this host).
+sysroot-linux-x86_64:
+	scripts/sysroot-linux.sh --arch x86_64
+
 # M16: the whole suite cross-compiled to linux/aarch64 with the `elf-obj`
 # backend, linked by ld.lld against musl and run in Docker. Guarded: without
 # Docker or without ld.lld there is nothing to run, and `make check` says so
@@ -115,6 +119,18 @@ test-linux: build/mc1
 	    echo "test-linux: SKIPPED (docker is not running; see docs/build.md § Linux targets)"; \
 	else \
 	    scripts/test-linux.sh build/mc1; \
+	fi
+
+# M17 step B: the same suite for linux/x86_64 -- the `elf-obj-x86_64` backend
+# over the x86-64 machine, linked by ld.lld against an amd64 musl sysroot and
+# run in an emulated linux/amd64 container. Guarded exactly like test-linux.
+test-linux-x86_64: build/mc1
+	@if ! command -v ld.lld > /dev/null 2>&1; then \
+	    echo "test-linux-x86_64: SKIPPED (ld.lld not in PATH; brew install lld)"; \
+	elif ! docker info > /dev/null 2>&1; then \
+	    echo "test-linux-x86_64: SKIPPED (docker is not running; see docs/build.md § Linux targets)"; \
+	else \
+	    scripts/test-linux.sh --arch x86_64 build/mc1; \
 	fi
 
 # M23: the seed guard -- `mc limits src/mc.mc` against the fixed MAX* constants
@@ -166,7 +182,7 @@ site: build/mc1
 check-site: site
 	build/mcsite site --check
 
-check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-limits check-minimal test-linux check-examples check-lang check-conc check-desktop check-docs site check-site
+check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-limits check-minimal test-linux test-linux-x86_64 check-examples check-lang check-conc check-desktop check-docs site check-site
 
 budget:
 	scripts/loc-budget.sh $(BUDGET)
@@ -174,7 +190,7 @@ budget:
 clean:
 	rm -rf build
 
-.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-limits sysroot-linux test-linux check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal
+.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-limits sysroot-linux sysroot-linux-x86_64 test-linux test-linux-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal
 
 # M32: examples/desktop -- a GTK4 application written in mc, and the same
 # application with its widget tree written in a UI language taught by ui.mc.

@@ -195,6 +195,9 @@ notatype main() { return 0; }
 | `local array too large` | one local array exceeds 4095 bytes | make it a global |
 | `unary operator with no codegen` / `binary operator with no codegen` / `expression with no codegen` / `statement with no codegen` | a node kind the generator has no rule for | reachable when a module builds a node the core does not lower; check the node kind the handler produced |
 | `instruction with no encoder` / `instruction with no dump` | an `I_*` opcode the encoder or the dumper does not handle | the same, one layer down: a backend produced an instruction the core cannot encode |
+| `x86 instruction with no encoder` / `x86 instruction with no dump` | the same two, from the x86-64 machine and its `X_*` opcodes. There is no third: `MTASK_INS_SIZE` is the encoder over a scratch buffer, so an opcode with no encoder has no size either | see [machine.md](machine.md) |
+| `no machine registered` | the walker was asked to lower with no machine table in effect | `main()` registers both and calls `machine_use("arm64")`; a taught compiler that replaced the table has to register one |
+| `unknown machine` | `--machine=NAME`, or a backend's `machine_use`, named something not registered | `arm64` and `x86_64` are built in; the detail is the name |
 | `add/sub immediate out of 12 bits` / `cmp immediate out of 12 bits` | a folded immediate does not fit the instruction | materialise it into a variable first |
 | `immediate and mask not supported` | an `and` with an immediate the bitmask encoding cannot express | put the mask in a variable |
 | `memory offset out of range` | a frame offset outside the scaled `ldr`/`str` range | the frame is too large or too fragmented; reduce the locals |
@@ -226,7 +229,7 @@ notatype main() { return 0; }
 | `no _main: cannot generate an executable` | `--exe` on a unit with no `main` | add `i64 main()`, or produce an object instead |
 | `UNSIGNED that does not occupy 8 bytes` | an `UNSIGNED` relocation of the wrong length reached a backend | the same cause as the `reloc UNSIGNED` message, seen at write time |
 | `relocation not supported in the direct executable` | a relocation kind `macho-exe` cannot resolve itself | use the `.o` + `ld` path for that construct |
-| `relocation not supported in the ELF object` | a relocation kind the ELF writer has no mapping for | same, for Linux targets |
+| `relocation not supported in the ELF object` / `relocation not supported in the x86-64 ELF object` | a relocation kind the ELF writer has no mapping for on that architecture | same, for Linux targets. An AArch64 `reloc(BRANCH26, …)` compiled for `arch = "x86_64"` lands here |
 | `relocated pointer in __TEXT: the segment is r-x and dyld will not rebase it` | a global with a relocated pointer placed in a `__TEXT` section | put the data in `__DATA` |
 | `pageoff12 misaligned for the access width` | a `PAGEOFF12` target not aligned for the load/store width it patches | the address must be aligned to the access width |
 | `misaligned bl target` / `bl too far` | a call target not 4-byte aligned, or beyond ±128 MiB | the program is too large for one `__text`; split it |
@@ -277,7 +280,7 @@ does not:
 | `missing key` | `project.entry`, `project.out`, `compiler.modules`, `compiler.out`, `sysroot.path` | add it. `compiler.out` is only required when there is no `project.name` to default from; `sysroot.path` only when `{sysroot}` is actually used |
 | `must be exe or obj` | `project.kind` | those are the two values |
 | `only macos and linux (see docs/build.md)` | `target.os` | those are the two values |
-| `only aarch64 (see docs/build.md)` | `target.arch` | the only architecture today |
+| `only aarch64 and x86_64 (see docs/build.md)` | `target.arch` | the architectures that operating system was registered with (macOS has only `aarch64`) |
 | `linux requires [linker]: there is no direct executable` | `target.os` | add a `[linker]` section: there is no `--exe` equivalent for ELF |
 | `must be a relative path` | `compiler.out` | the generated compiler source lives next to it and includes by relative path |
 | `must not contain ..` | `compiler.out` | same reason; the `..` check runs on the string as written |

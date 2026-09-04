@@ -35,7 +35,7 @@ root in order.
 
 ## The catalogue
 
-The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 33 entries,
+The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 36 entries,
 plus `mc/bundle_data`, which is regenerated on demand (see below). Those are the names `<...>`
 accepts.
 
@@ -71,7 +71,10 @@ and supplying that function *is* a taught compiler ([hooks.md](hooks.md)).
 | `<mc/lex>` | `src/lex.mc` |
 | `<mc/parse>` | `src/parse.mc` |
 | `<mc/hooks>` | `src/hooks.mc` |
-| `<mc/gen_arm64>` | `src/gen_arm64.mc` |
+| `<mc/gen_resolve>` | `src/gen_resolve.mc` |
+| `<mc/gen_walk>` | `src/gen_walk.mc` |
+| `<mc/machine_arm64>` | `src/machine_arm64.mc` |
+| `<mc/machine_x86_64>` | `src/machine_x86_64.mc` |
 | `<mc/macho>` | `src/macho.mc` |
 | `<mc/backend_exe>` | `src/backend_exe.mc` |
 | `<mc/backend_elf>` | `src/backend_elf.mc` |

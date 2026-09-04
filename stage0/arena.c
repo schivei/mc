@@ -4,7 +4,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-#define HEAP_SIZE (32u << 20)
+/* Capacity, not behaviour: not observable in any output. 32 MiB was set when
+ * self-compiling touched 14.5 MiB; nodes_grow's bump-only doubling filled it. */
+#define HEAP_SIZE (64u << 20)
 static u8 heap[HEAP_SIZE];
 static size_t hp;
 

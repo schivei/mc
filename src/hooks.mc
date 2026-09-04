@@ -357,3 +357,163 @@ i64 word_is_taught(i64 id) {
     if (alias_find(id) >= 0) return 1;
     return 0;
 }
+
+// ---- M17: the machine table ----
+// The code generator is two halves since M17: src/gen_walk.mc walks the AST and
+// src/machine_arm64.mc selects instructions. The seam between them is a table of
+// `&fn`, one per task (docs/reference/machine.md), registered here. Same shape
+// as `backend()` -- a linear table in registration order, the last registration
+// of a name wins -- with one difference: registering a machine also MAKES IT THE
+// ONE IN EFFECT, because a machine is not chosen by a command-line flag but by
+// the target, and the compiler always has exactly one.
+//
+// The ceiling is fixed on purpose. A machine does not scale with the program
+// being compiled (M23's rule for the tables that do): the compiler is built with
+// the machines it has, and a taught compiler adds one or two.
+#define MAXMACHINES 8
+
+uptr mach_names[MAXMACHINES];
+uptr mach_tabs[MAXMACHINES];
+i64  nmachines = 0;
+uptr mach_tab = 0;                    // the table gen_walk.mc drives
+
+uptr mach_names_at(i64 i) { return ld64(mach_names + i * 8); }
+uptr mach_tabs_at(i64 i)  { return ld64(mach_tabs + i * 8); }
+
+// machine("arm64", tab): tab is MT_COUNT entries of `&fn`, in MT_* order
+void machine(uptr name, uptr tab) {
+    if (nmachines >= MAXMACHINES) die2("too many machines", name);
+    st64(mach_names + nmachines * 8, name);
+    st64(mach_tabs + nmachines * 8, tab);
+    nmachines = nmachines + 1;
+    mach_tab = tab;
+}
+
+i64 machine_find(uptr name) {
+    i64 i = nmachines - 1;
+    loop {
+        if (i < 0) break;
+        if (str_eq(mach_names_at(i), name)) return i;
+        i = i - 1;
+    }
+    return -1;
+}
+
+// picks the machine a target asked for; the walker reads mach_tab and nothing else
+void machine_use(uptr name) {
+    i64 i = machine_find(name);
+    if (i < 0) die2("unknown machine", name);
+    mach_tab = mach_tabs_at(i);
+}
+
+// ---- M17/M33: the target registry ----
+// `src/driver.mc` used to carry the whitelist itself -- an `i64 drv_linux` flag,
+// `if (drv_linux) return "elf-obj"; return "macho";` and two hardcoded
+// `toml_err_key` messages. A third operating system or a second architecture
+// could not be reached from `mc.toml` without editing the driver, which is
+// exactly what the non-negotiable of docs/specs/M33.md forbids.
+//
+// target(os, arch, obj, exe): compiling for that pair writes objects with the
+// `obj` backend and direct executables with the `exe` one; `exe = 0` says the
+// target has no direct executable and always goes through `[linker]`. Same
+// linear table, same "last registration wins" as the rest of this file. The
+// ceiling is fixed for the same reason the machines' is.
+#define MAXTARGETS 16
+
+uptr tgt_os[MAXTARGETS];
+uptr tgt_arch[MAXTARGETS];
+uptr tgt_obj[MAXTARGETS];
+uptr tgt_exe[MAXTARGETS];
+i64  ntargets = 0;
+
+uptr tgt_os_at(i64 i)   { return ld64(tgt_os + i * 8); }
+uptr tgt_arch_at(i64 i) { return ld64(tgt_arch + i * 8); }
+uptr tgt_obj_at(i64 i)  { return ld64(tgt_obj + i * 8); }
+uptr tgt_exe_at(i64 i)  { return ld64(tgt_exe + i * 8); }
+
+void target(uptr os, uptr arch, uptr obj, uptr exe) {
+    if (ntargets >= MAXTARGETS) die2("too many targets", os);
+    st64(tgt_os + ntargets * 8, os);
+    st64(tgt_arch + ntargets * 8, arch);
+    st64(tgt_obj + ntargets * 8, obj);
+    st64(tgt_exe + ntargets * 8, exe);
+    ntargets = ntargets + 1;
+}
+
+// index of the (os, arch) pair, -1 if none; searches back to front so that the
+// last registration applies
+i64 target_find(uptr os, uptr arch) {
+    i64 i = ntargets - 1;
+    loop {
+        if (i < 0) break;
+        if (str_eq(tgt_os_at(i), os) && str_eq(tgt_arch_at(i), arch)) return i;
+        i = i - 1;
+    }
+    return -1;
+}
+
+i64 target_os_known(uptr os) {
+    i64 i = 0;
+    loop {
+        if (i >= ntargets) break;
+        if (str_eq(tgt_os_at(i), os)) return 1;
+        i = i + 1;
+    }
+    return 0;
+}
+
+// the diagnostic for an unrecognised [target] value, built FROM the registry so
+// that a target a module registers appears in it. With macos and linux
+// registered this is exactly `only macos and linux (see docs/build.md)`, the
+// message the driver printed when the list was written out by hand.
+void tgt_word(uptr b, uptr w, i64 n) {
+    if (n) buf_put(b, " and ", 5);
+    buf_put(b, w, cstrlen(w));
+}
+
+uptr target_os_list() {
+    u8 b[BUF_SIZE];
+    buf_init(b);
+    buf_put(b, "only ", 5);
+    i64 n = 0;
+    i64 i = 0;
+    loop {
+        if (i >= ntargets) break;
+        i64 seen = 0;
+        i64 j = 0;
+        loop {                                   // first occurrence only
+            if (j >= i) break;
+            if (str_eq(tgt_os_at(j), tgt_os_at(i))) seen = 1;
+            j = j + 1;
+        }
+        if (!seen) { tgt_word(b, tgt_os_at(i), n); n = n + 1; }
+        i = i + 1;
+    }
+    buf_put(b, " (see docs/build.md)", 20);
+    buf_u8(b, 0);
+    return buf_p(b);
+}
+
+// the same, restricted to the architectures one os was registered with
+uptr target_arch_list(uptr os) {
+    u8 b[BUF_SIZE];
+    buf_init(b);
+    buf_put(b, "only ", 5);
+    i64 n = 0;
+    i64 i = 0;
+    loop {
+        if (i >= ntargets) break;
+        i64 seen = !str_eq(tgt_os_at(i), os);
+        i64 j = 0;
+        loop {
+            if (j >= i) break;
+            if (str_eq(tgt_os_at(j), os) && str_eq(tgt_arch_at(j), tgt_arch_at(i))) seen = 1;
+            j = j + 1;
+        }
+        if (!seen) { tgt_word(b, tgt_arch_at(i), n); n = n + 1; }
+        i = i + 1;
+    }
+    buf_put(b, " (see docs/build.md)", 20);
+    buf_u8(b, 0);
+    return buf_p(b);
+}

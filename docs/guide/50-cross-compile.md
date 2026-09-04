@@ -1,15 +1,18 @@
 # Cross-compiling
 
-`mc` runs on macOS arm64 and produces binaries for macOS arm64 and **Linux arm64**. The Linux
-path is a backend (`elf-obj`), a system layer (`<sys_linux>`) and four lines of `mc.toml`;
-nothing in the compiler's C seed knows about any of it.
+`mc` runs on macOS arm64 and produces binaries for macOS arm64, **Linux arm64** and **Linux
+x86-64**. The Linux path is a backend (`elf-obj`), a system layer (`<sys_linux>`) and four lines of
+`mc.toml`; x86-64 adds one more file, a *machine* — the instruction selection behind a
+target-independent walker ([../reference/machine.md](../reference/machine.md)). Nothing in the
+compiler's C seed knows about any of it.
 
 | target | status |
 |---|---|
 | macOS arm64 | the host, and the default |
 | Linux arm64 (ELF64) | **works**: `[target] os = "linux"` |
-| Linux x86-64 | planned — needs the machine-interface split ([../reference/machine.md](../reference/machine.md)) |
+| Linux x86-64 (ELF64) | **works**: `[target] os = "linux"`, `arch = "x86_64"` |
 | Windows arm64 / x64 (COFF) | planned |
+| WebAssembly | planned |
 | `mc` *hosted* on Linux or Windows | not yet: the project driver uses `posix_spawnp` and `_NSGetEnviron` |
 
 ## Linux arm64
@@ -69,14 +72,73 @@ $ mc --backend=elf-obj hello.mc -o hello.o
 $ llvm-readobj --file-headers hello.o | head -5
 ```
 
-## The sysroot
+## Linux x86-64
 
-A Linux link needs musl's `crt1.o`, `crti.o`, `crtn.o` and `libc.a`. `scripts/sysroot-linux.sh`
-fills `build/sysroot/linux-aarch64` by running `apk add musl-dev` inside a throwaway
-`linux/arm64` Alpine container and copying the four files out.
+One line changes:
+
+```toml
+[target]
+os   = "linux"
+arch = "x86_64"        # instead of aarch64
+```
+
+That swaps the object backend for `elf-obj-x86_64` and, behind it, the **machine**: the part of
+the code generator that chooses instructions. Everything above the machine — the parser, the
+resolver, the walk that turns the AST into frames, depths, labels and calls — is the same code
+that produces AArch64. What changes is a register partition (depths in `r8..r11`, four instead of
+seven, because x86-64 has fewer caller-saved registers to spare), an ABI (`rdi rsi rdx rcx r8 r9`,
+then the stack), and thirty-odd encoders. See [../reference/machine.md](../reference/machine.md).
+
+```
+$ mc build . --config linux-x64.toml
+compile hello.mc -> build/hello.o
+link build/hello.o -> build/hello
+$ docker run --rm --platform linux/amd64 -v "$PWD":/w -w /w alpine:3 /w/build/hello
+hello
+```
+
+The sysroot is a separate directory (`build/sysroot/linux-x86_64`), because the crt objects and
+`libc.a` are x86-64 code:
 
 ```sh
-make sysroot-linux        # populate the cache
+make sysroot-linux-x86_64
+```
+
+What does **not** port is anything that writes instructions by hand — `#opcode`, `emit()` and
+`reloc()`. Three of the suite's tests do, and they say so in a header:
+
+```
+29/29 tests passed on linux/x86_64
+skipped (not portable to this target):
+  031-opcode — the #opcode templates are AArch64 words (movz/add); the x86-64 machine emits its own instruction set
+  032-svc — lib/sys_svc.mc has the Darwin syscall numbers in x16 and svc #0x80; the Linux equivalent is lib/sys_linux.mc
+  033-reloc — the raw word is an AArch64 `bl` and BRANCH26 is a Mach-O/AArch64 relocation; x86-64 calls are R_X86_64_PLT32
+  070-nolibc — lib/sys_linux.mc encodes the syscalls and _start as AArch64 `svc #0` words; the x86-64 equivalent would be `syscall`
+```
+
+`<sys_linux>` is in that list: its syscalls are AArch64 `svc #0` words, so an x86-64 Linux program
+links against musl (`<sys>`) rather than going libc-free. To look at what the x86-64 machine
+selects without producing a file:
+
+```
+$ mc --dump-asm --machine=x86_64 hello.mc | head
+_main:
+  push rbp
+  mov rbp, rsp
+  ...
+```
+
+## The sysroot
+
+A Linux link needs musl's `crt1.o`, `crti.o`, `crtn.o` and `libc.a`.
+`scripts/sysroot-linux.sh [--arch aarch64|x86_64]` fills `build/sysroot/linux-<arch>` by running
+`apk add musl-dev` inside a throwaway Alpine container of the matching platform and copying the
+four files out. On an Apple Silicon host the `linux/amd64` container is emulated, which is slower
+but only happens once.
+
+```sh
+make sysroot-linux            # populate the aarch64 cache
+make sysroot-linux-x86_64     # and the x86-64 one
 ```
 
 It is a cache: with the four files already present it does nothing, so repeated runs pull no
@@ -130,6 +192,18 @@ that feed the Mach-O writer feed the ELF one. The translation:
 | `PAGEOFF12` on an ldr/str | `R_AARCH64_LDST{8,16,32,64}_ABS_LO12_NC` (278/284/285/286), by access width |
 | `UNSIGNED` | `R_AARCH64_ABS64` (257) |
 
+On x86-64 the same three columns are shorter, because the instruction set needs fewer kinds:
+
+| mc | ELF | addend |
+|---|---|---|
+| `call rel32` | `R_X86_64_PLT32` (4), at instruction + 1 | −4 |
+| `lea r, [rip + disp32]` | `R_X86_64_PC32` (2), at instruction + 3 | −4 |
+| `UNSIGNED` | `R_X86_64_64` (1) | 0 |
+
+The addend is −4 because a `rel32` counts from the end of its own field. Both halves — where the
+field starts inside the instruction, and what the addend is — match `clang
+--target=x86_64-linux-musl -c` of the same constructs.
+
 Symbols come out in the same stable partition Mach-O needs — locals, defined globals, undefined —
 because that is also what ELF requires for `sh_info`. Relocations are sorted by ascending offset,
 the ELF convention, and every `r_addend` is 0: the encoder leaves the relocated immediate zeroed,
@@ -168,7 +242,14 @@ not running, it prints `test-linux: SKIPPED (...)` and the build stays green.
   macOS; `<sys_linux>` is Linux. `<io>`'s `strlen`/`puts`/`putnum` are written in the language and
   work on both.
 - **`#opcode` is architecture-specific by nature.** A source full of hand-encoded AArch64 words is
-  portable to Linux arm64 and to nothing else.
+  portable to Linux arm64 and to nothing else. `emit()` and `reloc()` are the same story. This is
+  the one place the *language* stops being portable, and it is deliberate: it is the escape hatch.
+- **Divide by zero is the hardware's answer, not the language's.** `x / 0`, `x % 0` and
+  `INT64_MIN / -1` give `0`, `x` and `INT64_MIN` on AArch64, whose `sdiv`/`udiv` never trap, and
+  raise `SIGFPE` on x86-64, whose `idiv`/`div` do — one source, two behaviours, with no guard
+  emitted on either side. Constants are still caught at compile time (`division by zero`).
+  Test a divisor that can be zero yourself; see
+  [../core-language.md](../core-language.md) § "Division by zero, and `INT64_MIN / -1`".
 - **`#dylib` is a Mach-O mechanism.** On Linux, name libraries in `[linker].args` instead.
 - **Syscall numbers differ**, which is the entire reason `<sys_svc>` and `<sys_linux>` are two
   files rather than one with an `#ifdef` — there is no `#ifdef`, and there is not going to be one.
