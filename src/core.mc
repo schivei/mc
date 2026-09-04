@@ -3,7 +3,8 @@
 //
 //   arena.mc     xalloc/buf_*/out_*/die/err_at/read_file/write_file and the shared
 //                limits (MAXSECS, MAXPARAMS), the role of mc.h
-//   macho.mc     sections, symbols, relocations and writing the MH_OBJECT
+//   objmodel.mc  sections, symbols and relocations: the model every writer reads
+//   macho.mc     writing the arm64 MH_OBJECT, and the `macho` backend
 //   lex.mc       mutable token table and incremental lexer
 //   ast.mc       nodes in a flat array in the arena + dump
 //   parse.mc     recursive descent + table-driven Pratt + folding
@@ -25,9 +26,10 @@
 //   bundle_data.mc GENERATED (tools/bundle.mc): lib/ and the core, LZ-compressed
 //   bundle.mc    `#include <name>` served from that blob (M15)
 //   limits.mc    the estimate, the reserve and `mc limits` (M23)
-//   main.mc      CLI
+//   cli.mc       mc_main(): the CLI, the dump modes and the pipeline
+//   main.mc      main(): which parts this compiler is made of
 //
-// macho.mc comes before lex.mc because parse.mc uses sec_new (via sec_make) and the
+// objmodel.mc comes before lex.mc because parse.mc uses sec_new (via sec_make) and the
 // R_* constants that defs_init registers; it is the same order src/astdump.mc
 // already used in slice 3.
 //
@@ -45,6 +47,7 @@
 
 #include "arena.mc"
 #include "lz.mc"
+#include "objmodel.mc"
 #include "macho.mc"
 #include "lex.mc"
 #include "ast.mc"
@@ -66,4 +69,5 @@
 #include "bundle_data.mc"
 #include "bundle.mc"
 #include "limits.mc"
+#include "cli.mc"
 #include "main.mc"

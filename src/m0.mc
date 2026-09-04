@@ -17,6 +17,7 @@
 // corresponding line of `mc0 --dump-asm`.
 
 #include "arena.mc"
+#include "objmodel.mc"
 #include "macho.mc"
 
 void emit_word(i64 sec, i64 w)          { buf_u32(sec_data(sec_at(sec)), w); }
