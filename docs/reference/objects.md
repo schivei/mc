@@ -445,6 +445,26 @@ The other two backends are the same idea with a different envelope:
 | `elf-obj-x86_64` | the same file, `EM_X86_64` | `R_X86_64_64` / `PC32` / `PLT32`, addend −4 on both pc-relative kinds because a `rel32` counts from the end of its field |
 | `coff-obj-arm64` | COFF, `IMAGE_FILE_MACHINE_ARM64` | `src/backend_coff.mc` (M19): `.text`/`.rdata`/`.data`/`.bss`, alignment as three bits of `Characteristics`, no leading `_` on a symbol, `l_strN` → `$str.N`, and the four relocations mapped to `BRANCH26`/`PAGEBASE_REL21`/`PAGEOFFSET_12A`/`PAGEOFFSET_12L`/`ADDR64`. `TimeDateStamp` is 0 |
 
+### No `.pdata`/`.xdata` (accepted M19 gap)
+
+`coff-obj-arm64` writes no unwind data. Windows on ARM64 has no frame-pointer-walking fallback: the
+OS unwinder (`RtlLookupFunctionEntry` / `RtlVirtualUnwind`) finds a function's frame shape through
+the exception directory, a `.pdata` array of `RUNTIME_FUNCTION` records pointing at `.xdata` unwind
+codes. `clang --target=aarch64-windows-msvc -c` of a non-leaf function emits both sections; mc emits
+neither, for any function — verified with `llvm-readobj --sections` on the two objects for the same
+source.
+
+What that costs: a function of mc's has the standard `stp x29, x30, [sp, #-16]!` frame
+([§ 4](#4-the-abi-the-generated-code-guarantees)), and with no record for it the unwinder treats it as a leaf whose
+return address is still in `x30`. Nothing in the language raises or catches, `/nodefaultlib` links
+no C runtime, and a program that only returns an exit code never unwinds — which is why the whole
+`windows/aarch64` suite passes without it. It matters the moment something else unwinds *through* an
+mc frame: a hardware fault, a `RaiseException` from a Windows API called through `extern`, or a
+debugger's stack walk. Emitting it means one `RUNTIME_FUNCTION` per function plus an
+`IMAGE_REL_ARM64_ADDR32NB` relocation each, and either the packed form (which cannot describe mc's
+prologue when the frame is small enough that MSVC would fold the allocation into the `stp`) or the
+full unwind codes — a milestone of its own, not a field of this writer.
+
 Two things `--exe` does that `.o` + `ld` does not: `&name` for a dylib `extern` works (it points
 the `adrp`/`add` at the symbol's stub), and the binary comes out `0755` and signed, ready to run.
 One thing it refuses: a relocated pointer inside `__TEXT`, because that segment is `r-x` and

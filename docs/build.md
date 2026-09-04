@@ -933,11 +933,18 @@ Three things are worth naming because they are easy to get wrong:
   instruction, and the encoder already leaves it zeroed.
 
 `TimeDateStamp` is `0`, never the clock — the same determinism rule as everywhere else
-([determinism.md](determinism.md)). `NumberOfRelocations` is 16 bits, and a section with more than
-65535 relocations is refused with a message rather than written wrong.
+([determinism.md](determinism.md)). `NumberOfRelocations` is 16 bits, and `0xffff` in it is not a
+count but the sentinel for the overflow form (the real count in an extra leading relocation record,
+with `IMAGE_SCN_LNK_NRELOC_OVFL` in the section's `Characteristics`), which this writer does not
+emit — so a section with **65535 or more** relocations is refused with a message rather than written
+as a count a conformant reader would misread.
 
 Every field above was checked against `clang --target=aarch64-windows-msvc -c` of equivalent C
 with `llvm-readobj --file-headers --sections --symbols --relocs` and `llvm-objdump -dr`.
+
+One thing clang writes and this backend does not: `.pdata`/`.xdata`, the unwind data Windows on ARM64
+needs to walk a frame. It is an accepted gap, with the consequences spelled out in
+[reference/objects.md](reference/objects.md) § No `.pdata`/`.xdata`.
 
 ### No C runtime at all: `<sys_windows>`
 

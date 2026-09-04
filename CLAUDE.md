@@ -1048,7 +1048,8 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   it): `BRANCH26` 0x0003, `PAGEBASE_REL21` 0x0004, `PAGEOFFSET_12A` 0x0006 on an `add` /
   `PAGEOFFSET_12L` 0x0007 on an ldr/str (the same classifier `elf_pageoff12` and
   `exe_fix_pageoff12` use), `ADDR64` **0x000E**. `TimeDateStamp` is 0, never the clock, and a
-  section with more than 65535 relocations is refused with a message instead of written wrong.
+  section with 65535 relocations or more is refused with a message instead of written wrong
+  (65535 is the overflow SENTINEL, not a count — corrected in the post-M19 review batch below).
   Two long-name encodings, and they are NOT the same: a section name past 8 bytes is `/` plus the
   decimal offset as text, a symbol name past 8 bytes is four zero bytes plus that offset as a
   u32 — using the section form for a symbol makes `llvm-readobj` print `/17` where a name belongs
@@ -1124,6 +1125,41 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `site` + `check-site`. Golden rewritten once to
   `be65caca70bd805edd91ed366792591e869f3ff8d3b4def5c75ebf97ca80197e`, only after the empty asm diff
   and `cmp build/mc2.o build/mc3.o`.
+- Post-M19 batch (review): three confirmed findings, two fixed in code and one recorded as a scope gap.
+  1. **`win_split` handed out an out-of-bounds argv pointer once the command line filled `win_cmd`.**
+     `lib/sys_windows.mc` guarded the per-character copy (`o < WIN_CMDMAX - 1`) and the terminator
+     (`o < WIN_CMDMAX`) but not the pointer store, so once `o` reached `WIN_CMDMAX` (2048) every
+     later argument got the SAME pointer `win_cmd + 2048` — one byte past the array, never written
+     and never NUL-terminated, which is what `open(argv[1], ...)` in `tests/025-linecount.mc` would
+     read. Reproduced by lifting `win_split` verbatim into a harness compiled natively
+     (`3000 * 'x'` + `" y z"`): before, `nargs=3` with args 1 and 2 both at offset 2048 and both
+     flagged out of bounds; after, `nargs=1` and every pointer inside the array. The fix is one
+     line, `if (o >= WIN_CMDMAX) break;` next to the existing `if (n >= WIN_MAXARG) break;` — the
+     command line truncates at the byte ceiling instead of one past it. Clamping `o` instead would
+     leave every later argument aliased to the same trailing slot. Ordinary command lines are
+     byte-identical (`prog.exe a b`, quoted regions, runs of spaces).
+  2. **The `NumberOfRelocations` ceiling was off by one against the PE/COFF sentinel.**
+     `src/backend_coff.mc` refused `nr > 0xffff`, but 65535 is not a count: it is the sentinel that
+     says the real count is in the `VirtualAddress` of an extra leading `IMAGE_RELOCATION`, with
+     `IMAGE_SCN_LNK_NRELOC_OVFL` in `Characteristics` (LLVM's own WinCOFF writer flags overflow at
+     `>= 0xffff`). Reproduced with two generated programs of 65534 and 65535 `bl` calls: before,
+     both compiled and `llvm-readobj` reported `RelocationCount: 65535` with the OVFL bit clear —
+     the overflow form written as a plain count. Now `nr >= 0xffff` fails with `mc: 65535 or more
+     relocations in one section: .text` (exit 1) and the 65534-relocation object is byte-identical
+     to the one the old compiler produced.
+  3. **No `.pdata`/`.xdata`** — accepted M19 gap, not fixed. `clang --target=aarch64-windows-msvc -c`
+     of a non-leaf function emits both sections; `coff-obj-arm64` emits neither, for any function
+     (verified with `llvm-readobj --sections` on the two objects). Windows on ARM64 has no
+     frame-pointer fallback, so without a `RUNTIME_FUNCTION` record the OS unwinder treats an mc
+     frame as a leaf whose return address is still in `x30`. Nothing in the language raises or
+     catches and `/nodefaultlib` links no C runtime, so nothing in the suite unwinds and the
+     `windows-11-arm` leg cannot see it; it matters when something else unwinds THROUGH an mc frame
+     (a hardware fault, a `RaiseException` from an `extern`, a debugger's stack walk). The packed
+     unwind encoding cannot describe mc's prologue when the frame is small enough that MSVC would
+     fold the allocation into the `stp`, so doing it properly means the full unwind codes plus one
+     `IMAGE_REL_ARM64_ADDR32NB` per function — a milestone of its own. Written down in
+     `docs/reference/objects.md` § No `.pdata`/`.xdata`, `docs/build.md` § Windows targets and
+     `docs/specs/M19.md` § Out of scope.
 - Next: M18/M20 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
   sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is
   one more motivating case).
