@@ -144,6 +144,11 @@ registers it from `void machine_arm64_init()`; `src/machine_x86_64.mc` does the 
 any backend can lower, and then `machine_use("arm64")`, because each registration also makes its
 machine current and the host's is the default.
 
+`void machine_freeze()` is called once by `main()`, after the built-in machines are registered and
+before `user_init()` runs: it takes the snapshot `--dump-machine` ([cli.md](cli.md)) reads to tell
+a bundled slot from a taught one. A compiler that never calls it reports every slot as taught,
+which is the honest answer for a registry it cannot vouch for.
+
 Registering a name that is **already registered reuses that name's slot** (M24, decision D5)
 rather than appending, so stacking taught modules that each shadow `arm64` does not walk the table
 towards `too many machines`. `machine_find` already searched back to front, so nothing observable
@@ -244,7 +249,8 @@ vocabulary, and the parser says so plainly —
 In every case the parse is stopped **on the registered word**; consuming it is the handler's job.
 
 `on_stmt(&f)` (M21.5), `on_jump(&f)` (M31) and `syntax_lit(&f)` (M24) are the three registrations
-that claim no word, so none of the paragraph above applies to them — they observe or replace nodes
+that claim no word — and `intrinsic(name, …)` (M24) claims a *call name* rather than a lexeme, so
+none of the paragraph above applies to it either. They so none of the paragraph above applies to them — they observe or replace nodes
 at a position the grammar reaches on its own. Each has its own section below.
 
 ### `void syntax(uptr word, uptr fn)`
@@ -377,6 +383,41 @@ literals, the ABI and the instructions belong to the module: `syntax_lit` below,
 | `i64 type_kind(i64 t)` | its `TK_*`; every core type answers `TK_INT` |
 | `uptr type_name(i64 t)` | the name `--dump-ast` prints; `"?"` for an id that is not registered |
 | `i64 type_of_token(i64 id)` | the type a token names — core word, `type_alias` or `type_new` — or -1 |
+
+### `void intrinsic(uptr name, i64 nargs, i64 ty, uptr fn)` — a named hardware instruction (M24)
+
+Registers `void f(i64 d, i64 nargs)` under `name`. A call to `name(...)` in any source this
+compiler reads stops being a call: the arguments are lowered to depths `d .. d + nargs - 1`, with
+`walk_depth_type` filled in for each, and then the handler runs **instead of** the call sequence.
+The value it leaves at depth `d` has type `ty`.
+
+The lookup sits in one place in the dispatch `res_call` and `gen_call` already run in that order:
+**after `#opcode`, before a declared signature**. So
+
+- a core intrinsic (`ld64`, `st64`, `emit`, `reloc`, `callp`) can never be shadowed —
+  `intrinsic("ld64", …)` is `cannot shadow a core intrinsic: ld64`, refused where it is written;
+- an ordinary **function** of the same name *is* shadowed, silently, which is the price of a named
+  call and the reason to pick names a program would not otherwise use;
+- every existing diagnostic keeps its order, and `wrong number of arguments` is the one a bad
+  arity produces.
+
+No word is reserved: an intrinsic is a name resolved at the call site, not a lexer word, so
+`word_add` is not involved and the name stays an ordinary identifier everywhere else.
+`i64 intrinsic_find(uptr name)` is the lookup (-1 if none), with `intrinsic_name_at(i)`,
+`intrinsic_nargs_at(i)`, `intrinsic_type_at(i)` and `intrinsic_fn_at(i)` reading a row.
+
+The handler finds its operands through the machine in effect: `val_reg(d, scratch)`,
+`dst_reg(d)`, `dst_done(d, reg)` — the three names contract version 3 publishes
+([machine.md](machine.md) § 3). `lib/user_syntax_demo.mc`'s `rbit` is the smallest example: one
+`ei(I_EMIT, …)` between `val_reg` and `dst_done`, and it works on an arbitrary expression and at a
+spilled depth.
+
+**Why it has no zero-line alternative**, traced: `#opcode` refuses a non-constant argument, so a
+named instruction can only be applied to registers that *happen* to be pinned inside a whole leaf
+function (`examples/conc/lib/atomic.mc`'s own header records that ceiling, and that an
+`ldaxr`/`stlxr` retry loop cannot be expressed at all); `syntax_expr` can build any node the core
+already lowers, but `gen_expr` ends in `expression with no codegen`, so a module cannot introduce a
+node kind; and `gen_call` ends in `call to unknown function`, so it cannot introduce a call.
 
 ### `void syntax_lit(uptr fn)` — the numeric-literal position (M24)
 

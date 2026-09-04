@@ -201,6 +201,9 @@ notatype main() { return 0; }
 | `instruction with no encoder` / `instruction with no dump` | an `I_*` opcode the encoder or the dumper does not handle | the same, one layer down: a backend produced an instruction the core cannot encode |
 | `x86 instruction with no encoder` / `x86 instruction with no dump` | the same two, from the x86-64 machine and its `X_*` opcodes. There is no third: `MTASK_INS_SIZE` is the encoder over a scratch buffer, so an opcode with no encoder has no size either | see [machine.md](machine.md) |
 | `no machine registered` | the walker was asked to lower with no machine table in effect | `main()` registers both and calls `machine_use("arm64")`; a taught compiler that replaced the table has to register one |
+| `cannot shadow a core intrinsic` | M24: `intrinsic()` was given the name of a built-in one (`ld64`, `st64`, `emit`, `reloc`, `callp`, …), which the dispatch would never reach | pick another name; the detail is the one asked for |
+| `intrinsic with an impossible arity` | the arity is negative or above `MAXPARAMS` | |
+| `intrinsic with an unknown result type` | the result type is not a type id that exists | register the type first |
 | `machine_slot outside the task table` | M24: the task index handed to `machine_slot` is not in `0 .. MTASK_COUNT - 1` | the slot list is [machine.md](machine.md) § 2 |
 | `unknown machine` | `--machine=NAME`, or a backend's `machine_use`, named something not registered | `arm64` and `x86_64` are built in; the detail is the name |
 | `add/sub immediate out of 12 bits` / `cmp immediate out of 12 bits` | a folded immediate does not fit the instruction | materialise it into a variable first |

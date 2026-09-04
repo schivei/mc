@@ -441,6 +441,11 @@ i64 word_is_taught(i64 id) {
     return 0;
 }
 
+// M24 (M7)'s intrinsic registry lives in src/gen_resolve.mc, beside intrin_id
+// and the IN_* list it has to refuse to shadow: the call dispatch is the
+// resolver's, not the registry's -- the same reason machine_slot lives in
+// src/gen_walk.mc, beside the MTASK_* list it bounds-checks.
+
 // ---- M17: the machine table ----
 // The code generator is two halves since M17: src/gen_walk.mc walks the AST and
 // src/machine_arm64.mc selects instructions. The seam between them is a table of
@@ -459,6 +464,32 @@ uptr mach_names[MAXMACHINES];
 uptr mach_tabs[MAXMACHINES];
 i64  nmachines = 0;
 uptr mach_tab = 0;                    // the table gen_walk.mc drives
+// M24 (M9): a SNAPSHOT of the machines that were registered before user_init()
+// ran -- their names and their tables. It is what lets --dump-machine say
+// `bundled arm64` or `taught` for each slot with no runtime symbol table: a slot
+// is bundled when its pointer is the pointer a bundled table has for that task.
+//
+// A snapshot and not just a count, because a module that re-registers `arm64`
+// REUSES that name's registry slot (D5), so the registry no longer remembers
+// what was there. main() takes it; a compiler that never does reports every slot
+// as taught, which is the honest answer for a registry it cannot vouch for.
+uptr mach_bnames[MAXMACHINES];
+uptr mach_btabs[MAXMACHINES];
+i64  mach_builtin = 0;
+
+uptr mach_bnames_at(i64 i) { return ld64(mach_bnames + i * 8); }
+uptr mach_btabs_at(i64 i)  { return ld64(mach_btabs + i * 8); }
+
+void machine_freeze() {
+    mach_builtin = nmachines;
+    i64 i = 0;
+    loop {
+        if (i >= nmachines) break;
+        st64(mach_bnames + i * 8, mach_names_at(i));
+        st64(mach_btabs + i * 8, mach_tabs_at(i));
+        i = i + 1;
+    }
+}
 
 uptr mach_names_at(i64 i) { return ld64(mach_names + i * 8); }
 uptr mach_tabs_at(i64 i)  { return ld64(mach_tabs + i * 8); }

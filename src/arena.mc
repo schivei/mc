@@ -101,8 +101,11 @@ extern uptr mmap(uptr addr, i64 len, i64 prot, i64 flags, i64 fd, i64 off);
 // M24: the type registry (src/ast.mc). It scales with what a module teaches,
 // so it obeys the same rule as every other table here.
 #define T_TYPES    35
-#define T_HEAP     36
-#define T_COUNT    37
+// M24 (M7): the intrinsics a module registered. Same rule: it scales with what
+// a module teaches.
+#define T_INTRIN   36
+#define T_HEAP     37
+#define T_COUNT    38
 
 uptr lim_names[] = {
     "tokens", "includes", "opens", "incpath", "nodes", "defines", "infix",
@@ -110,7 +113,7 @@ uptr lim_names[] = {
     "funcs", "lowered", "globals", "strings", "locals", "loops", "prel",
     "ins", "symbols", "msecs", "xsecs", "xsegs", "undef", "passes",
     "on_stmt", "on_jump", "backends", "syntax", "alias", "tomlent", "tomlaot",
-    "types", "heap"
+    "types", "intrin", "heap"
 };
 
 // cold-start capacity: what a table gets when the pre-scan said nothing about
@@ -121,7 +124,7 @@ i64 lim_seeds[] = {
     64, 64, 32, 64, 128, 16, 64,
     256, 64, 16, 32, 8, 64, 8,
     8, 8, 8, 16, 16, 128, 8,
-    8, 0
+    8, 8, 0
 };
 
 i64 lim_est[T_COUNT];                 // estimate, in elements

@@ -54,6 +54,7 @@
 #define M_ASM     3
 #define M_SYMS    4
 #define M_RULES   5
+#define M_MACHINE 6
 
 // built-in backend: the two halves of gen plus writing the MH_OBJECT.
 // M37: `machine_use` first, like every other backend since M17 -- a Mach-O
@@ -100,8 +101,59 @@ void dump_host() {
     out_str(1, "\n");
 }
 
+// M24 (M9): `--dump-machine` — every registered machine, one line per task, with
+// the ORIGIN of the slot. There is no runtime symbol table, so the origin is
+// read from the registry itself: a slot whose pointer is the same pointer a
+// BUNDLED machine has for that task is `bundled <that machine>`, and anything
+// else is `taught`. That is exactly what makes a derived machine reviewable —
+// which slots a module actually replaced, and on top of what — and it is the
+// cheapest observable test that an override took effect.
+//
+// The machine `mach_tab` points at is marked `(current)`: with `machine()`
+// reusing the slot of a name it shadows (M24 D5), a module that re-registers
+// `arm64` is reported under that name, not as a fourth row.
+uptr mach_origin(i64 mi, i64 t) {
+    uptr fn = ld64(mach_tabs_at(mi) + t * 8);
+    i64 b = 0;
+    loop {
+        if (b >= mach_builtin) break;
+        if (ld64(mach_btabs_at(b) + t * 8) == fn) return mach_bnames_at(b);
+        b = b + 1;
+    }
+    return 0;
+}
+
+void dump_machine() {
+    i64 i = 0;
+    loop {
+        if (i >= nmachines) break;
+        out_str(1, "machine ");
+        out_str(1, mach_names_at(i));
+        if (mach_tabs_at(i) == mach_tab) out_str(1, " (current)");
+        out_str(1, "\n");
+        i64 t = 0;
+        loop {
+            if (t >= MTASK_COUNT) break;
+            out_str(1, "  ");
+            out_str(1, mtask_name(t));
+            i64 n = 18 - cstrlen(mtask_name(t));
+            loop {                               // one fixed column, no tabs
+                if (n <= 0) break;
+                out_str(1, " ");
+                n = n - 1;
+            }
+            uptr from = mach_origin(i, t);
+            if (from) { out_str(1, "bundled "); out_str(1, from); }
+            else        out_str(1, "taught");
+            out_str(1, "\n");
+            t = t + 1;
+        }
+        i = i + 1;
+    }
+}
+
 void usage() {
-    out_str(2, "usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] source.mc [-o out]\n");
+    out_str(2, "usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules|--dump-machine] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] source.mc [-o out]\n");
     out_str(2, "       mc --host\n");
     drv_usage();
 }
@@ -124,6 +176,9 @@ i64 main(i64 argc, uptr argv, uptr envp) {
     machine_arm64_init();
     machine_x86_64_init();
     machine_use(host_machine());                // the host's own, for the dumps
+    // M24: everything registered up to here is bundled; --dump-machine reads
+    // that snapshot to tell a taught slot from a built-in one
+    machine_freeze();
     backend("macho", &backend_macho);           // the built-ins, always registered
     backend("macho-exe", &backend_exe);
     backend("elf-obj", &backend_elf);
@@ -168,6 +223,7 @@ i64 main(i64 argc, uptr argv, uptr envp) {
         else if (str_eq(a, "--dump-asm"))   mode = M_ASM;
         else if (str_eq(a, "--dump-syms"))  mode = M_SYMS;
         else if (str_eq(a, "--dump-rules")) mode = M_RULES;
+        else if (str_eq(a, "--dump-machine")) mode = M_MACHINE;
         else if (str_eq(a, "--exe"))        bname = "macho-exe";
         else if (str_eq(a, "-o")) {
             if (i + 1 >= argc) die("-o requires an argument");
@@ -224,6 +280,10 @@ i64 main(i64 argc, uptr argv, uptr envp) {
     user_init();
     // after user_init, so a module can register the machine the flag names
     if (mname) machine_use(mname);
+    // M24: after user_init and after --machine=, because both are what a
+    // taught compiler changes; before the parse, because a machine table is
+    // not a function of the source
+    if (mode == M_MACHINE) { dump_machine(); return 0; }
     if (mode == M_TOKENS) { dump_tokens(); return 0; }
 
     i64 unit = parse_unit();

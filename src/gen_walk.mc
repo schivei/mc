@@ -94,6 +94,21 @@
 #define MTASK_RELOC_OFF    30            // (e) -> bytes          where inside it the field sits
 #define MTASK_COUNT        31
 
+// M24 (M9): the task names --dump-machine prints, in MTASK_* order. They live
+// here because the vocabulary is the walker's; the dump itself is in main.mc,
+// which is the one file that has both this list and the machine registry.
+uptr mtask_names[] = {
+    "prologue", "param", "epilogue", "frame_fix", "const", "bin", "cmp", "un",
+    "bool", "cast", "load", "store", "local_addr", "local_load", "local_store",
+    "sym_addr", "global_load", "global_store", "call", "callp", "ret", "jump",
+    "jz", "jnz", "label", "word", "ins_size", "encode", "dump", "reloc_kind",
+    "reloc_off" };
+
+uptr mtask_name(i64 t) {
+    if (t >= 0 && t < MTASK_COUNT) return ld64(mtask_names + t * 8);
+    return "?";
+}
+
 // ---- the operator vocabulary the tasks speak ----
 #define MOP_ADD   0
 #define MOP_SUB   1
@@ -678,6 +693,22 @@ void gen_reloc(i64 n) {
     pend_node = n;
 }
 
+// M24: the arguments of a taught intrinsic, then its handler. The handler is
+// the module's; what it may rely on is contract version 3 -- walk_depth_type on
+// every one of those depths, and val_reg/dst_reg/dst_done from the machine in
+// effect (docs/reference/machine.md § 3).
+void lower_uintrin(i64 n, i64 depth, i64 ui) {
+    i64 i = 0;
+    i64 a = nd_a(n);
+    loop {
+        if (a == 0) break;
+        gen_value(a, depth + i);
+        i = i + 1;
+        a = nd_next(a);
+    }
+    callp(intrinsic_fn_at(ui), depth, i);
+}
+
 // callp(p, a1..a11): the pointer is argument 0; the machine says where each one
 // goes and saves whatever it has live, exactly as it does for a direct call.
 void gen_callp(i64 n, i64 depth) {
@@ -703,6 +734,10 @@ void gen_call(i64 n, i64 depth) {
         return;
     }
     if (res_kind(n) == RK_OPCODE) { gen_opcode(n, res_decl(n)); return; }
+    // M24 (M7): a taught intrinsic. Its arguments are lowered exactly like a
+    // call's -- depths d .. d+nargs-1, with walk_depth_type filled in -- and
+    // then the module's handler runs INSTEAD of the call sequence.
+    if (res_kind(n) == RK_UINTRIN) { lower_uintrin(n, depth, res_decl(n)); return; }
     i64 fi = res_decl(n);
     i64 i = 0;
     i64 a = nd_a(n);

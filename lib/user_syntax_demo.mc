@@ -657,10 +657,27 @@ i64 sd_lit() {
     return n;
 }
 
+// ---- M24 (M7): a NAMED HARDWARE INSTRUCTION, on values the allocator placed ----
+// `rbit(x)` is AArch64's bit-reversal, which the core's operator set does not
+// have and `#opcode` cannot reach for an arbitrary expression: #opcode folds
+// constants and names fixed registers, so an operand would have to HAPPEN to
+// sit in one, inside a whole leaf function.
+//
+// The handler receives its argument already lowered to depth `d`, asks the
+// machine in effect where the allocator put it -- val_reg/dst_reg/dst_done, the
+// three names contract version 3 publishes -- and emits one word.
+void sd_rbit(i64 d, i64 nargs) {
+    i64 rn = val_reg(d, REG_S1);                 // loads a spilled depth first
+    i64 rd = dst_reg(d);
+    ei(I_EMIT, 0, 0, 0xDAC00000 | (rn << 5) | rd);   // rbit xd, xn
+    dst_done(d, rd);                             // ...and spills it back if it has to
+}
+
 void user_init() {
     sd_ty_fix  = type_new("fix",  8,  8,  TK_INT);    // M24: two taught primitives
     sd_ty_pair = type_new("pair", 16, 16, TK_WIDE);
     syntax_lit(&sd_lit);                         // M24: the literal position
+    intrinsic("rbit", 1, TY_I64, &sd_rbit);      // M24: one instruction, by name
     syntax("enum", &sd_enum);                    // M12: top-level position
     syntax_stmt("unless", &sd_unless);           // M12: statement position
     type_alias("bool", TY_U8);                   // M12: new type, no new syntax

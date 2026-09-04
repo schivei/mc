@@ -34,6 +34,7 @@ mc/stubs	src/stubs.mc
 mc/sysroot	src/sysroot.mc
 mc/sysroots	src/sysroots.mc
 mc/toml	src/toml.mc
+mc_badmach	lib/mc_badmach.mc
 mc_lit_nop	lib/mc_lit_nop.mc
 mc_probe	lib/mc_probe.mc
 mc_syntax_demo	lib/mc_syntax_demo.mc
@@ -46,8 +47,10 @@ sys_svc	lib/sys_svc.mc
 sys_windows	lib/sys_windows.mc
 sys_windows_host	lib/sys_windows_host.mc
 sys_windows_start	lib/sys_windows_start.mc
+user_badmach	lib/user_badmach.mc
 user_default	lib/user_default.mc
 user_demo	lib/user_demo.mc
+user_dupintrin	lib/user_dupintrin.mc
 user_dupop	lib/user_dupop.mc
 user_dupty	lib/user_dupty.mc
 user_lit_nop	lib/user_lit_nop.mc

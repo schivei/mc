@@ -16,7 +16,8 @@
 //
 //   res_type(n)        the resolved type of an expression node
 //   res_kind(n)        what a name resolved to: RK_LOCAL / RK_GLOBAL / RK_FUNC /
-//                      RK_INTRIN / RK_OPCODE (RK_NONE when the node binds nothing)
+//                      RK_INTRIN / RK_OPCODE / RK_UINTRIN (RK_NONE when the
+//                      node binds nothing)
 //   res_decl(n)        the index in the table res_kind names
 //   res_local_slot(n)  res_decl when the node binds a LOCAL, else -1
 //   res_bind(n)        the same binding in M33's encoding: local i,
@@ -95,6 +96,7 @@
 #define RK_FUNC   3
 #define RK_INTRIN 4
 #define RK_OPCODE 5
+#define RK_UINTRIN 6                  // M24: an intrinsic() a module registered
 
 // M33's res_bind encoding: local i, -(global + 1), RES_FN + function index
 #define RES_FN 1000000
@@ -360,6 +362,71 @@ void res_addr(i64 n) {
     set_res_flag(fs_node(fs_at(fi)), 1);
 }
 
+// ---- M24 (M7): intrinsics, a NAMED HARDWARE INSTRUCTION on values ----
+// intrinsic("sqrt_f64", 1, ty_f64, &f) registers `void f(i64 d, i64 nargs)`,
+// called with the arguments ALREADY LOWERED to depths d .. d+nargs-1 and with
+// walk_depth_type filled in for each of them. The handler asks the machine in
+// effect where the allocator put them -- val_reg/dst_reg/dst_done, the three
+// names contract version 3 publishes (docs/reference/machine.md § 3) -- and
+// emits whatever it likes.
+//
+// The lookup goes in ONE place in the dispatch both res_call and gen_call
+// already run in that order: after `opc_find`, before `func_find`. So a core
+// intrinsic (`ld64`, `emit`, `callp`) can never be shadowed and every existing
+// diagnostic keeps its order; a plain FUNCTION of the same name is shadowed,
+// which is the price of a named call and is written down in hooks.md.
+//
+// Why it has no zero-line alternative, traced: `#opcode` refuses a non-constant
+// argument, so a named instruction can only be applied to registers that HAPPEN
+// to be pinned inside a whole leaf function; `syntax_expr` can build any node
+// the core already lowers, but gen_expr ends in `expression with no codegen`, so
+// a module cannot introduce a node kind; and gen_call ends in `call to unknown
+// function`, so it cannot introduce a call either.
+//
+// No word is reserved: an intrinsic is a NAME resolved at the call site, not a
+// lexer word, so `word_add` is not involved and `sqrt_f64` stays an ordinary
+// identifier everywhere else.
+uptr intrin_name;
+uptr intrin_nargs;
+uptr intrin_ty;
+uptr intrin_fn;
+i64  intrincap = 0;
+i64  nintrin = 0;
+
+uptr intrinsic_name_at(i64 i)  { return ld64(intrin_name + i * 8); }
+i64  intrinsic_nargs_at(i64 i) { return ld64(intrin_nargs + i * 8); }
+i64  intrinsic_type_at(i64 i)  { return ld64(intrin_ty + i * 8); }
+uptr intrinsic_fn_at(i64 i)    { return ld64(intrin_fn + i * 8); }
+
+void intrinsic(uptr name, i64 nargs, i64 ty, uptr fn) {
+    if (nargs < 0 || nargs > MAXPARAMS) die2("intrinsic with an impossible arity", name);
+    if (ty < 0 || ty >= type_count()) die2("intrinsic with an unknown result type", name);
+    if (intrin_id(name)) die2("cannot shadow a core intrinsic", name);
+    i64 oc = intrincap;
+    intrin_name = grow(T_INTRIN, intrin_name, nintrin, &intrincap, 8);
+    if (intrincap != oc) {
+        intrin_nargs = grow_to(intrin_nargs, nintrin, intrincap, 8);
+        intrin_ty    = grow_to(intrin_ty, nintrin, intrincap, 8);
+        intrin_fn    = grow_to(intrin_fn, nintrin, intrincap, 8);
+    }
+    st64(intrin_name + nintrin * 8, name);
+    st64(intrin_nargs + nintrin * 8, nargs);
+    st64(intrin_ty + nintrin * 8, ty);
+    st64(intrin_fn + nintrin * 8, fn);
+    nintrin = nintrin + 1;
+}
+
+// index of the registration, -1 if none; back to front, so the last wins
+i64 intrinsic_find(uptr name) {
+    i64 i = nintrin - 1;
+    loop {
+        if (i < 0) break;
+        if (str_eq(intrinsic_name_at(i), name)) return i;
+        i = i - 1;
+    }
+    return -1;
+}
+
 // the same dispatch gen_call does, in the same order: intrinsic, then #opcode,
 // then a declared signature. emit(), reloc() and a #opcode call take CONSTANTS,
 // never lowered expressions, so their arguments are not resolved here either.
@@ -385,6 +452,16 @@ void res_call(i64 n) {
     }
     i64 oi = opc_find(nd_name(n));
     if (oi >= 0) { set_res_bind(n, RK_OPCODE, oi); set_res_type(n, TY_VOID); return; }
+    // M24 (M7): between #opcode and a declared signature, so a core intrinsic is
+    // never shadowed and a taught one shadows a function of the same name
+    i64 ui = intrinsic_find(nd_name(n));
+    if (ui >= 0) {
+        if (arg_count(n) != intrinsic_nargs_at(ui)) err_node(n, "wrong number of arguments");
+        set_res_bind(n, RK_UINTRIN, ui);
+        res_args(n);
+        set_res_type(n, intrinsic_type_at(ui));
+        return;
+    }
     i64 fi = func_find(nd_name(n));
     if (fi < 0) err_node(n, "call to unknown function");
     if (arg_count(n) != fs_nparams(fs_at(fi))) err_node(n, "wrong number of arguments");

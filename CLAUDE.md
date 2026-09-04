@@ -1619,6 +1619,49 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   derivation recipe corrected), `docs/reference/language.md` § 2 and § 11,
   `docs/reference/diagnostics.md`, `docs/reference/bundle.md`, `docs/build.md`, and the new
   `docs/guide/96-a-new-primitive.md`.
+- M24 step B ✔ (`docs/specs/M24.md` § M7, M9 and decisions D1-D3): **`intrinsic` and
+  `--dump-machine`.** Still all in `src/`; `stage0/` untouched (2846/3000), and still inert -- no
+  test in the corpus registers anything, so `check-obj` stays 32/32 against the frozen seed and the
+  pre/post compilers produce byte-identical objects everywhere.
+  * **M7, `intrinsic(name, nargs, ty, &f)`** (`src/gen_resolve.mc` +74/45 code, `src/gen_walk.mc`
+    +32/22, `src/arena.mc` +7): a NAMED HARDWARE INSTRUCTION applied to values the allocator
+    placed. One row inserted between `opc_find` and `func_find` in the dispatch `res_call` and
+    `gen_call` already run in that order, so a core intrinsic can never be shadowed
+    (`cannot shadow a core intrinsic: ld64`, refused at registration) and every existing
+    diagnostic keeps its order; an ordinary function of the same name IS shadowed, which is
+    written down. The handler gets `(d, nargs)` with the arguments already lowered to depths
+    `d..d+nargs-1` and `walk_depth_type` filled in. The registry lives in `src/gen_resolve.mc`
+    beside `intrin_id` and the `IN_*` list it must refuse to shadow -- the same reason
+    `machine_slot` lives in `gen_walk.mc`, and because `src/astdump.mc` includes `hooks.mc`
+    without either.
+    **D2**: `val_reg(d, scratch)`, `dst_reg(d)` and `dst_done(d, reg)` are published as contract
+    **version 3** and are the only three names of a machine's internals that are; delegation to a
+    built-in task goes through the copied table pointer, so no `a64_*` name is frozen.
+  * **M9, `--dump-machine`** (`src/main.mc` +59/43, `src/hooks.mc` +28/15): per registered
+    machine, one line per task with the ORIGIN of the slot -- `bundled <machine>` or `taught`, and
+    `(current)` on the one the walker would drive. There is no runtime symbol table, so the origin
+    is read from a SNAPSHOT (`machine_freeze()`, taken by `main()` before `user_init`) and not
+    from a symbol name; a snapshot and not just a count, because a module that re-registers
+    `arm64` reuses that name's registry slot (D5) and the registry no longer remembers what was
+    there. It stops right after `user_init()`: a machine table is not a function of the source.
+  * **D3/`#machine` stays dropped**, with the three reasons in `docs/reference/machine.md` § 4.
+  Proofs (`scripts/check-surface.sh`): `rbit(x)` -- AArch64 bit reversal registered as an
+  intrinsic in `lib/user_syntax_demo.mc` -- on an arbitrary expression AND at a spilled depth
+  (two programs, exit 42 each); `intrinsic("ld64", ...)` refused (`lib/user_dupintrin.mc`); and the
+  observable-override proof the old § 4 asked of `#machine`, delivered without the directive:
+  `lib/user_badmach.mc` replaces ONE slot so that `+` lowers as a subtraction, `v(50) + v(8)`
+  answers **42 instead of 58**, and `--dump-machine` reports exactly one `taught` slot, on the
+  `arm64` row, across three machines -- while the stock compiler reports none.
+  — core cost: **200 added lines, 130 of code** (`gen_resolve.mc` +74/45, `main.mc` +59/43,
+  `gen_walk.mc` +32/22, `hooks.mc` +28/15, `arena.mc` +7/5), against the spec's 55 + 40 = 95.
+  The excess is the `--dump-machine` snapshot (D5 made a counter insufficient), the four
+  registration guards, and the `mtask_names[]` table the dump prints from.
+  `make check` green end to end (RC 0), same numbers as step A plus `check-docs` at 162 symbols
+  and 18 CLI flags; `scripts/check-inert.sh` identical everywhere; all five goldens rewritten once.
+  Docs: `docs/reference/hooks.md` (`intrinsic` and the lookup family, `machine_freeze`),
+  `docs/reference/cli.md` (§ "the six dumps", with the `--dump-machine` example),
+  `docs/reference/machine.md` § 3 and § 4, `docs/reference/diagnostics.md`,
+  `docs/reference/bundle.md`, `docs/guide/96-a-new-primitive.md`.
 - Next: M18 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
   sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is
   one more motivating case).

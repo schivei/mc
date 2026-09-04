@@ -411,8 +411,9 @@ that the assertion never fires *and* the object stays byte for byte the bundled 
 ### The allocator functions a task handler may call
 
 A machine's register partition and spill policy are private — `dslot`, `in_reg`, `save_live`,
-`REG_BASE` are nobody's business. Exactly three names are published, because a task handler written
-outside `src/` has to be able to find where the allocator put its operands:
+`REG_BASE` are nobody's business. Exactly three names are published, because a task handler and an
+`intrinsic` handler ([hooks.md](hooks.md) § 3) written outside `src/` have to be able to find where
+the allocator put their operands:
 
 | function | answers |
 |---|---|
@@ -450,8 +451,12 @@ The directive that would have made the table teachable from a source file —
 - it would be a directive the frozen `stage0/lex.c`'s `dir_names[]` cannot parse, so it could never
   appear in `src/*.mc` anyway.
 
-`machine_slot` plus `#opcode` reach the same place with no new syntax: a module writes an ordinary
-`.mc` function and puts it in a copied table.
+`machine_slot` + `#opcode` + `intrinsic` + `--dump-machine` reach the same place with no new
+syntax: a module writes an ordinary `.mc` function, puts it in a copied table, and
+`--dump-machine` ([cli.md](cli.md)) prints every task of every machine with the origin of its
+slot, so an override is auditable and a wrong one is visible. `lib/user_badmach.mc` is exactly
+that test: one replaced slot lowers `+` as a subtraction, a program that adds 50 and 8 answers 42,
+and the dump reports `bin  taught` on the `arm64` row with every other task still bundled.
 
 ---
 

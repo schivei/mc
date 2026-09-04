@@ -826,6 +826,85 @@ else
     fi
 fi
 
+# ---- M24 step B: intrinsic() and --dump-machine ----
+# `rbit` is AArch64's bit-reversal applied to an ARBITRARY expression -- the
+# case #opcode cannot reach, because it folds constants and names fixed
+# registers. The handler finds its operand through val_reg/dst_reg/dst_done,
+# the three names contract version 3 publishes.
+hook_case intrinsic-rbit 42 'i64 v(i64 x) { return x; }
+i64 main() { return (i64) rbit(v(0x8000000000000000)) + 41; }'
+
+# ...and at a depth the allocator SPILLED: eight live values put the operand
+# past the register file, so val_reg has to load it and dst_done has to store it
+hook_case intrinsic-rbit-spilled 42 'i64 v(i64 x) { return x; }
+i64 main() { return v(1) + v(2) + v(3) + v(4) + v(5) + v(6) + v(7)
+                  + (i64) rbit(v(0x8000000000000000)) + 13; }'
+
+# a core intrinsic can never be shadowed: the dispatch puts them first, so the
+# registration is refused where it is made rather than failing silently later
+sed 's|user_default\.mc|user_dupintrin.mc|' "$save" > "$user"
+if ! grep -q 'user_dupintrin\.mc' "$user"; then
+    echo "FAIL: could not wire lib/user_dupintrin.mc into $user"
+    exit 1
+fi
+if ! msg=$("$mc0" src/mc.mc -o build/mc1i.o 2>&1); then
+    echo "FAIL: compiling src/mc.mc with user_dupintrin: $msg"
+    fails=$((fails + 1))
+elif ! msg=$(scripts/link.sh build/mc1i build/mc1i.o 2>&1); then
+    echo "FAIL: linking build/mc1i: $msg"
+    fails=$((fails + 1))
+elif msg=$(build/mc1i tests/001-return42.mc -o "$tmp/i.o" 2>&1); then
+    echo "FAIL: intrinsic(\"ld64\", ...) was accepted"
+    fails=$((fails + 1))
+elif [ "$msg" != "mc: cannot shadow a core intrinsic: ld64" ]; then
+    echo "FAIL: shadowing ld64 said '$msg'"
+    fails=$((fails + 1))
+else
+    echo "ok intrinsic cannot shadow a core intrinsic ($msg)"
+fi
+cp "$save" "$user"
+
+# the observable-override proof the old spec asked of `#machine`, delivered
+# without the directive: ONE slot of a derived table lowers `+` as a subtraction,
+# the program's answer changes, and --dump-machine names the slot that moved.
+badmach="build/mc-badmach"
+rm -f "$badmach"
+printf 'i64 v(i64 x) { return x; }\ni64 main() { return v(50) + v(8); }\n' > "$tmp/m24-bad.mc"
+if ! msg=$("$mc1" --exe lib/mc_badmach.mc -o "$badmach" 2>&1); then
+    echo "FAIL: compiling lib/mc_badmach.mc: $msg"
+    fails=$((fails + 1))
+else
+    "$mc1"     --exe "$tmp/m24-bad.mc" -o "$tmp/m24-good" 2>/dev/null; "$tmp/m24-good"; good=$?
+    "$badmach" --exe "$tmp/m24-bad.mc" -o "$tmp/m24-badx" 2>/dev/null; "$tmp/m24-badx"; bad=$?
+    if [ "$good" != 58 ] || [ "$bad" != 42 ]; then
+        echo "FAIL machine_slot override: default=$good overridden=$bad (want 58 and 42)"
+        fails=$((fails + 1))
+    else
+        echo "ok machine_slot: one replaced task changes the program's answer (58 -> 42)"
+    fi
+    # ...and the dump says which slot, on the arm64 row, with everything else
+    # still bundled. The re-registration REUSED arm64's slot (D5), so there are
+    # three machines and not four.
+    "$badmach" --dump-machine "$tmp/m24-bad.mc" > "$tmp/m24-dm" 2>&1
+    n=$(grep -c '^machine ' "$tmp/m24-dm")
+    if grep -q '^machine arm64 (current)$' "$tmp/m24-dm" \
+       && grep -q '^  bin  *taught$' "$tmp/m24-dm" \
+       && [ "$(grep -c 'taught' "$tmp/m24-dm")" = 1 ] && [ "$n" = 3 ]; then
+        echo "ok --dump-machine: exactly one taught slot, on the re-registered arm64 row"
+    else
+        echo "FAIL --dump-machine did not report the override"
+        grep -E '^machine |taught' "$tmp/m24-dm" | sed -n 1,6p
+        fails=$((fails + 1))
+    fi
+fi
+# and with nothing taught, every slot of every machine is bundled
+if [ "$("$mc1" --dump-machine "$tmp/m24-bad.mc" 2>&1 | grep -c taught)" = 0 ]; then
+    echo "ok --dump-machine: the stock compiler reports no taught slot"
+else
+    echo "FAIL --dump-machine reports a taught slot in the stock compiler"
+    fails=$((fails + 1))
+fi
+
 # decision 7.3: teaching the same operator twice is refused at user_init time,
 # before the first token of any source is read
 sed 's|user_default\.mc|user_dupop.mc|' "$save" > "$user"

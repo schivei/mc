@@ -14,6 +14,7 @@ is it aligned, what is it called — and hands over the rest.
 | you want | you use | it lives in |
 |---|---|---|
 | the type to exist, and its name to work as a type word | `type_new(name, width, align, kind)` | your module |
+| `sqrt_f64(x)` to be one instruction, not a call | `intrinsic(name, nargs, ty, &f)` | your module |
 | `1.5` to be writable | `syntax_lit(&f)` | your module |
 | `x + y` on it to select the right instruction | a **derived machine**, `machine_tab` + `machine_slot` | your module |
 | a `f64` argument to reach `v0` and not `x0` | `walk_depth_type(d)` in your machine's `MTASK_CALL` | your module |
@@ -112,6 +113,13 @@ separately.
 The trap, and it is the only one: delegate through the **pristine** copy. A wrapper that reads the
 table it patched calls itself.
 
+For an operation the hardware has but the core's operator set does not — `sqrt`, a bit reversal,
+one AVX instruction — `intrinsic(name, nargs, ty, &f)` gives you a *named call* whose arguments
+arrive already lowered to depths, with `walk_depth_type` filled in, and whose handler emits
+whatever it likes over `val_reg`/`dst_reg`/`dst_done`. `#opcode` is the zero-line alternative and
+its ceiling is real: it folds constants only, so an operand has to *happen* to sit in a fixed
+register, and a retry loop cannot be expressed at all.
+
 Register the copy under a name and use it:
 
 ```
@@ -134,5 +142,7 @@ that lives in a register **pair** rather than in a 16-byte slot.
 
 - `lib/machine_probe.mc` — the smallest complete derived machine: it changes no instruction and
   asserts the depth-type contract on every task.
+- `lib/user_badmach.mc` — the same, with one slot deliberately wrong, so the override is visible
+  in the program's answer and in `--dump-machine`.
 - `lib/user_syntax_demo.mc` — a fixed-point type and its literal, in about sixty lines, next to the
   Tier 3 toys.
