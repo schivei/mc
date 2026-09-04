@@ -614,9 +614,18 @@ void avr_put_sp(uptr o) {
 // way and the field would silently wrap anything further. Only the ENCODE pass
 // can check it -- MTASK_INS_SIZE runs with no label vector, and both jump forms
 // are fixed width, so the size does not depend on the answer.
+//
+// There is no `jmp` fallback and there cannot be one here: `jmp` takes an
+// ABSOLUTE word address, and at encode time a label is a byte offset inside the
+// function -- where the section will sit in flash is examples/avr/image_avr.mc's
+// decision, and a relocation names a symbol, not a local label. So +/-4 KiB of
+// code per function is this machine's stated reach, and a function past it is a
+// diagnostic rather than a wrapped displacement that boots and lands mid-word
+// (docs/reference/machine.md § 6, and the M39 review that put the rule there).
 i64 avr_rjmp_off(i64 target, i64 here, i64 real) {
     i64 d = (target - (here + 2)) / 2;
-    if (real && (d > 2047 || d < 0 - 2048)) die("avr rjmp out of range");
+    if (real && (d > 2047 || d < 0 - 2048))
+        die("avr rjmp out of range: one function's jumps reach +/-4 KiB of code");
     return d;
 }
 

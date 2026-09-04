@@ -44,6 +44,7 @@
 #define AVR_STUB     16               // the reset stub's fixed size, in bytes
 #define AVR_SRAM  0x0100              // the first byte of SRAM on this part
 #define AVR_RAMEND 0x08ff             // the last one: SP starts here
+#define AVR_FLASH  0x8000             // 32 KiB, the whole program memory
 #define AVR_DATA_SEG 0x800000         // the AVR ELF convention for data space
 #define AVR_FREQ  16000000
 
@@ -446,6 +447,10 @@ void avr_image_write(uptr path) {
     }
     i64 datasz = img_data_end - img_data;
     i64 flashsz = buf_len(flash);
+    // The other half of the part's size, and the one a linker script would
+    // have carried: 32 KiB of program memory, vector table, code, .mmcu and the
+    // load image of the data all together.
+    if (flashsz > AVR_FLASH) die("avr: the image does not fit in 32 KiB of flash");
 
     i64 nlocal = img_build_symtab();
     img_shstr = xalloc(BUF_SIZE);
