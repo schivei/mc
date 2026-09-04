@@ -771,11 +771,14 @@ make mcrt-windows-x86_64      # build/sysroot/windows-x86_64:  the same three
 
 `winstart.obj` is `mc_start`, what `-entry:` names; `mcrt.obj` is the fifteen POSIX names the
 compiler declares `extern`, over kernel32 (`lib/sys_windows_host.mc`); `kernel32.lib` is the import
-library `llvm-dlltool` generates from a list of names. None of the three can be made on the Windows
-runner, because two of them need `mc` — the compiler that is being built. The macOS job verifies
-each file is non-empty and, when `llvm-readobj` is available, that the machine of each object is
-the right one: a wrong machine would otherwise only surface on the Windows runner, far from its
-cause.
+library `llvm-dlltool` generates from a list of names. The two objects cannot be made on the Windows
+runner, because they need `mc` — the compiler that is being built — so the macOS job verifies each
+of them is non-empty and, when `llvm-readobj` is available, that the machine of each object is the
+right one: a wrong machine would otherwise only surface on the Windows runner, far from its cause.
+`kernel32.lib` is the exception: GitHub's macOS runners have no `llvm-dlltool`, so it is usually
+absent from the artifact (the step prints a notice, not an error) and `scripts/link-windows.sh`
+regenerates it on the Windows runner, whose LLVM install carries the tool — the same arrangement
+the suite legs have had since M19.
 
 ### Three things the Windows runners need that the Linux ones do not
 
