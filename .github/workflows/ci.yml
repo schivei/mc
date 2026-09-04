@@ -17,9 +17,9 @@ permissions:
 # on `main` -- "make check (macOS arm64)", "Link and run the suite
 # (linux/arm64)", "Link and run the suite (linux/x86_64)", "Link and run the
 # suite (windows/arm64)", "mc on linux/arm64 host", "mc on linux/x86_64 host"
-# and, since M38, "mc on windows/arm64 host" and "mc on windows/x86_64 host" --
-# so they must not be renamed without updating the branch protection
-# (docs/ci.md § Branch protection).
+# and, since M38, "mc on windows/arm64 host" and "mc on windows/x86_64 host",
+# and since M39 "Boot the kernel (bare-metal riscv64)" -- so they must not be
+# renamed without updating the branch protection (docs/ci.md § Branch protection).
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -52,6 +52,14 @@ jobs:
             echo "docker: running"
           else
             echo "docker: absent -- make check's test-linux target self-skips"
+          fi
+          # M39: examples/kernel's oracle. GitHub's macOS runners have no QEMU,
+          # so `make check`'s check-kernel target builds the image and skips the
+          # two runs; the baremetal-riscv64 job below is where it boots.
+          if command -v qemu-system-riscv64 >/dev/null 2>&1; then
+            qemu-system-riscv64 --version | head -1
+          else
+            echo "qemu-system-riscv64: absent -- check-kernel self-skips the two runs"
           fi
 
       # budget, test, check-lex, check-ast, check-bundle, check-asm, check-obj,
@@ -191,6 +199,29 @@ jobs:
         with:
           name: musl-sysroot-x86_64
           path: build/sysroot/linux-x86_64
+
+      # M39: examples/kernel -- the bare-metal RISC-V 64 image, built by the
+      # taught compiler `make check` has already assembled. Two images: the one
+      # that halts with 0 and the one that halts with 42, because the exit code
+      # is half of what the oracle asserts (docs/specs/M39.md § Acceptance 2).
+      - name: Build the bare-metal RISC-V images
+        run: |
+          set -eu
+          build/mc1 build examples/kernel --compiler-only
+          cd examples/kernel
+          ./build/mc-kernel --backend=rv-image --include=lib main.mc -o build/kernel.bin
+          sed 's/halt(0);/halt(42);/' main.mc > build/main42.mc
+          ./build/mc-kernel --backend=rv-image --include=lib build/main42.mc -o build/kernel42.bin
+          rm -f build/main42.mc
+          ls -l build/kernel.bin build/kernel42.bin
+
+      - name: Upload the bare-metal RISC-V images
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-riscv64
+          path: |
+            examples/kernel/build/kernel.bin
+            examples/kernel/build/kernel42.bin
           if-no-files-found: error
           retention-days: 7
 
@@ -1018,6 +1049,55 @@ jobs:
           build/mc2w.exe --backend=macho src/mc.mc -o build/x-cross.o
           cmp build/x-cross.o build/mc2.o
           echo "ok: the Mach-O object written on windows/x86_64 is the one macOS writes"
+
+  # M39: the runtime oracle for examples/kernel. GitHub has no bare-metal
+  # RISC-V runner and there is no need for one -- QEMU's `virt` board IS the
+  # contract this milestone was written against, and `ubuntu-latest` carries it
+  # in `qemu-system-misc`. Nothing is compiled here: the image travels as an
+  # artifact from the macOS job, exactly like the Linux and Windows objects.
+  baremetal-riscv64:
+    name: Boot the kernel (bare-metal riscv64)
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 15
+    steps:
+      - name: Download the images
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-riscv64
+          path: kernel
+
+      - name: Install qemu-system-misc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-misc
+          qemu-system-riscv64 --version | head -1
+
+      # Both halves, on a QEMU that is not the owner's: the exact transcript and
+      # the exit code the SiFive test device passes through. `timeout` exists
+      # here (it does not on macOS, which is why examples/kernel/test.sh has its
+      # own watchdog); 124 is its own failure, distinct from a wrong transcript.
+      - name: Boot it, and assert the transcript and the exit code
+        run: |
+          set -u
+          run() {
+            timeout 60 qemu-system-riscv64 -machine virt -bios none -nographic \
+                -kernel "$1" < /dev/null > out.txt 2> err.txt
+            echo $?
+          }
+          st=$(run kernel/kernel.bin)
+          echo "--- transcript ---"
+          cat out.txt
+          echo "--- exit $st ---"
+          if [ "$st" = "124" ]; then echo "::error::the kernel hung"; exit 1; fi
+          expected=$(printf 'boot\ntrap\nt0 t1 t0 t1 t0 t1 t0 t1 t0 t1 \nok')
+          if [ "$(cat out.txt)" != "$expected" ]; then
+            echo "::error::wrong transcript"; exit 1
+          fi
+          if [ "$st" != "0" ]; then echo "::error::exit $st, expected 0"; exit 1; fi
+          st=$(run kernel/kernel42.bin)
+          if [ "$st" != "42" ]; then echo "::error::exit $st, expected 42"; exit 1; fi
+          echo "ok: transcript, exit 0, and halt(42) -> exit 42"
 
   docs-updated:
     name: Docs updated

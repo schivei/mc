@@ -269,6 +269,15 @@ check-lang: build/mc1
 check-conc: build/mc1
 	sh examples/conc/test.sh
 
+# M39: examples/kernel -- a bare-metal RISC-V 64 micro-kernel built by a taught
+# compiler that registers a machine, a flat-image backend and four words of
+# syntax, with zero lines in src/. The oracle is QEMU: the exact transcript AND
+# the exit code the SiFive test device passes through. Self-skipping -- without
+# qemu-system-riscv64 the image is still built and everything but the two runs
+# is still checked, and without llvm-mc the encoder sweep is skipped.
+check-kernel: build/mc1
+	sh examples/kernel/test.sh
+
 # M26: docs/guide + docs/reference against the real compiler -- no undocumented
 # public symbol, CLI flag, TOML key or directive; every fenced ```mc sample
 # compiled (and run when it declares an expectation); every relative link
@@ -433,7 +442,7 @@ else ifneq (,$(WINHOST))
 # Docker or python3 -- and `check-skipped` prints the reason for each one.
 check: budget bootstrap-windows check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-sysroots check-limits check-skipped
 else
-check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-sysroots check-stubs check-limits check-minimal test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-desktop check-docs site check-site
+check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-toml check-build check-sysroots check-stubs check-limits check-minimal test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-desktop check-kernel check-docs site check-site
 endif
 
 budget:
@@ -446,6 +455,8 @@ clean:
 .PHONY: check-linux-host check-skipped
 .PHONY: bootstrap-windows mc-windows mc-windows-x86_64 mc-windows-obj mc-windows-x86_64-obj
 .PHONY: mcrt-windows mcrt-windows-x86_64
+
+.PHONY: check-kernel
 .PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-toml check-build check-sysroots check-stubs check-limits sysroot-linux sysroot-linux-x86_64 sysroot-windows sysroot-windows-x86_64 test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal
 
 # M32: examples/desktop -- a GTK4 application written in mc, and the same
