@@ -178,9 +178,13 @@ reach a backend.
 ### `void target(uptr os, uptr arch, uptr obj, uptr exe)`
 
 Registers an `(os, arch)` pair `mc build` accepts, with the backend it writes objects with and the
-one it writes direct executables with. `exe = 0` says the target has no direct executable and
-always goes through `[linker]` — which is what `os = "linux"` and `os = "windows"` do. **Five** are
-registered before `user_init()` runs (`src/main.mc`):
+one it writes direct executables with. **A 0 in either slot is a registration too**, and says that
+role does not exist for this target: `exe = 0` says there is no direct executable and the build
+always goes through `[linker]` — which is what `os = "linux"` and `os = "windows"` do — and
+`obj = 0` says there is no separable object step, which is what a bare board registers when the
+image it writes *is* the artefact. Asking the driver for the role that is 0 is a diagnostic at the
+`[target]` value's own position ([diagnostics.md](diagnostics.md) § 10), never a null handed to
+`backend_find()`. **Five** are registered before `user_init()` runs (`src/main.mc`):
 
 ```c
 target("macos", "aarch64", "macho", "macho-exe");
@@ -190,11 +194,12 @@ target("windows", "aarch64", "coff-obj-arm64", 0);
 target("windows", "x86_64", "coff-obj-x86_64", 0);
 ```
 
-A module can add a sixth, but `mc build` will not reach it yet: `drv_run` resolves `[target]`
-**before** `user_init()` has run, so the parent process refuses a pair only the taught compiler
-knows. That is gap G1 of `docs/specs/M39.md`, deferred to M39.5; until then a module-defined
-target is reached through the single-file CLI, where `--backend=` and `--machine=` are resolved
-after `user_init()` (`examples/kernel`).
+A module can add a sixth, and since **M39.5** `mc build` reaches it: `drv_run` keeps
+`[target].os`/`.arch` as strings and the registry is consulted inside `drv_parse`, after
+`user_init()` and before `parse_unit()` (gap G1 of `docs/specs/M39.md`). `examples/kernel` is the
+worked case — `target("none", "riscv64", "rv-image", "rv-image")` in its `user_init`, `[target] os
+= "none" / arch = "riscv64"` in its `mc.toml`, and `mc build examples/kernel` writes the image.
+`mc sysroot stub` runs the same resolution ([sysroot.md](sysroot.md) § 7).
 
 `src/driver.mc` reads nothing but this table: `target_find(os, arch)` gives the row,
 `tgt_obj_at(i)` / `tgt_exe_at(i)` the two backends, `target_os_known(os)` whether the operating

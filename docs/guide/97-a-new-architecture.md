@@ -11,19 +11,27 @@ nothing. Read it alongside this page.
 
 ## What you actually have to write
 
-Three registrations, and they are the whole seam:
+Four registrations, and they are the whole seam:
 
 ```c
 void user_init() {
     machine_riscv64_init();                  // 1. the instruction set
     backend("rv-image", &backend_rv_image);  // 2. how the bytes leave
-    kernel_syntax_init();                    // 3. optional: words your target wants
+    target("none", "riscv64", "rv-image", "rv-image");   // 3. what [target] means
+    kernel_syntax_init();                    // 4. optional: words your target wants
 }
 ```
 
-That file is your compiler. `mc build DIR --compiler-only` assembles it out of the bundle inside
-the `mc` you already have (`#include <mc/core>`) plus your modules, and prints the path of the
-binary; that binary compiles your program.
+That file is your compiler. `mc build DIR` assembles it out of the bundle inside the `mc` you
+already have (`#include <mc/core>`) plus your modules, then spawns it to compile your program —
+one command for both halves. (`--compiler-only` stops after the first and prints the compiler's
+path, which is what you want when a `test.sh` drives it over a suite of its own.)
+
+The third line is what makes `[target] os = "none" / arch = "riscv64"` in your `mc.toml` mean
+something. `target(os, arch, obj, exe)` fills two roles; on a bare board they are the same
+backend, because the image *is* the artefact — putting it in the **exe** slot is what lets
+`kind = "exe"` write it with no `[linker]`. Since M39.5 the pair is looked up after `user_init()`
+has run, so a target only your module knows is a target `mc build` can drive.
 
 ### 1. The machine — instruction selection
 
@@ -140,10 +148,10 @@ through from the guest. An oracle that only looks at stdout is half an oracle.
 
 ## What this does not buy yet
 
-**`mc build` cannot drive a bare target.** `[target].os`/`.arch` are resolved before `user_init()`
-has run, so the parent process refuses a pair only your taught compiler knows. Until that
-deferral lands, step 2 is the single-file CLI — `mc-mine --backend=mine prog.mc -o prog.bin` —
-where `--backend=` and `--machine=` are resolved *after* `user_init()`.
+*(`mc build` driving a bare target used to be on this list. M39.5 took it: the resolution moved
+to just after `user_init()`, so the pair your module registers counts. The one thing to know is
+that an unknown `[target]` is now reported after your entry source has been opened, so the
+`compile x -> y` step line comes out first.)*
 
 **A source cannot name your relocation kinds.** `reloc(TYPE, "sym")` accepts four hard-coded
 values. If your entry shim needs to name a call the way `lib/sys_linux.mc` names `BRANCH26`, you

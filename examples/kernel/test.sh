@@ -7,10 +7,15 @@
 #
 # Eight steps:
 #
-#   1. `mc build --compiler-only` reads mc.toml and assembles the taught
+#   1. `mc build` reads mc.toml and does both halves: it assembles the taught
 #      compiler (build/mc-kernel) out of `<mc/core>` + machine_riscv64.mc +
-#      image.mc + kernel_syntax.mc, printing its path; then that binary
-#      compiles main.mc into a flat image with `--backend=rv-image`.
+#      image.mc + kernel_syntax.mc, then SPAWNS it as
+#      `mc-kernel build DIR --config FILE --entry-only`, and that child compiles
+#      main.mc into build/kernel.bin through `[target] os = "none" / arch =
+#      "riscv64"` -- a pair only the taught compiler knows, which is what M39.5
+#      made possible (docs/specs/M39.md § Gaps, G1). The single-file CLI
+#      (`--backend=rv-image`) still builds every source that is not
+#      [project].entry, in steps 2, 6b and 7.
 #   2. QEMU runs the image and BOTH halves are asserted: the exact transcript
 #      and the exit code the SiFive test device passes through. A second image
 #      that halts with 42 must exit 42, which is what proves the code is
@@ -18,9 +23,10 @@
 #      `hung`, which is a different failure from `ran and misbehaved`.
 #   3. determinism: two consecutive builds are byte-identical, and the image
 #      contains no path, no date and no host string.
-#   4. the default compiler refuses BOTH halves -- `--backend=rv-image` is an
-#      unknown backend, and the source is `type expected at top level` at the
-#      first `mmio`. The architecture is the module's, not the language's.
+#   4. the default compiler refuses all three halves -- `--backend=rv-image` is
+#      an unknown backend, the source is `type expected at top level` at the
+#      first `mmio`, and `[target] none/riscv64` is not a pair it knows. The
+#      architecture is the module's, not the language's.
 #   5. the ABI the machine states is asserted against `--dump-asm
 #      --machine=riscv64` over the whole kernel, the way scripts/check-surface.sh
 #      asserts AArch64's nine claims.
@@ -105,21 +111,28 @@ qemu_run() {
     return 0
 }
 
-# ---- 1. the taught compiler, and the image ----
-echo "== the taught compiler (mc build --compiler-only) =="
+# ---- 1. the taught compiler, and the image, in one `mc build` ----
+echo "== mc build examples/kernel (the taught compiler, then the image) =="
 if [ ! -x "$mc" ]; then
     make -C "$root" mc1 || { echo "FAIL: make mc1"; exit 1; }
 fi
-"$mc" build "$dir" --compiler-only || { echo "FAIL: mc build --compiler-only"; exit 1; }
+rm -f "$img"
+"$mc" build "$dir" || { echo "FAIL: mc build"; exit 1; }
 [ -x "$mck" ] || { echo "FAIL: mc build did not produce $mck"; exit 1; }
 ok "$mck ($(wc -c < "$mck" | tr -d ' ') bytes)"
+[ -f "$img" ] || { echo "FAIL: mc build did not produce $img"; exit 1; }
+ok "$img ($(wc -c < "$img" | tr -d ' ') bytes), written for [target] none/riscv64"
 
-echo "== the kernel image (--backend=rv-image) =="
-rm -f "$img"
-( cd "$dir" && ./build/mc-kernel --backend=rv-image --include=lib main.mc -o build/kernel.bin ) \
-    || { echo "FAIL: mc-kernel --backend=rv-image"; exit 1; }
-[ -f "$img" ] || { echo "FAIL: no $img"; exit 1; }
-ok "$img ($(wc -c < "$img" | tr -d ' ') bytes)"
+# the same image from the single-file CLI: the two roads have to agree byte for
+# byte, which is what says `mc build` added a road and changed no output.
+( cd "$dir" && ./build/mc-kernel --backend=rv-image --include=lib main.mc -o build/kernel-cli.bin ) \
+    || fail "mc-kernel --backend=rv-image"
+if cmp -s "$img" "$dir/build/kernel-cli.bin"; then
+    ok "mc build and --backend=rv-image write the same bytes"
+else
+    fail "mc build and the single-file CLI disagree"
+fi
+rm -f "$dir/build/kernel-cli.bin"
 
 # ---- 2. it runs, and the exit code carries the verdict ----
 # The third line ends with a space: each task prints "tN " and the kernel adds
@@ -160,8 +173,7 @@ fi
 
 # ---- 3. determinism ----
 cp "$img" "$tmp/first.bin"
-( cd "$dir" && ./build/mc-kernel --backend=rv-image --include=lib main.mc -o build/kernel.bin ) \
-    || fail "the second build failed"
+"$mc" build "$dir" > /dev/null || fail "the second build failed"
 if cmp -s "$tmp/first.bin" "$img"; then ok "two builds are byte-identical"
 else fail "the image is not deterministic"
 fi
@@ -180,6 +192,17 @@ fi
 "$mc" --include="$dir/lib" "$dir/main.mc" -o "$tmp/x.o" > /dev/null 2> "$tmp/e2"
 if grep -q "type expected at top level" "$tmp/e2"; then ok "mc1: type expected at top level (mmio)"
 else fail "mc1 accepted the kernel source" "$(cat "$tmp/e2")"
+fi
+
+# M39.5: and it refuses the [target] too. `--entry-only` is the second half of
+# `mc build` done by THIS binary instead of the taught one, so the pair reaches
+# the registry of a compiler that never registered it -- and the message is
+# built from that registry, which is why `none` is not in the list it prints.
+"$mc" build "$dir" --entry-only > /dev/null 2> "$tmp/e3"
+if grep -q "only macos, linux and windows (see docs/build.md): target.os" "$tmp/e3"; then
+    ok "mc1 --entry-only: none/riscv64 is not a target it knows"
+else
+    fail "mc1 accepted [target] none/riscv64" "$(cat "$tmp/e3")"
 fi
 
 # ---- 5. the ABI the machine states ----

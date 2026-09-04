@@ -1450,32 +1450,68 @@ $ scripts/test-linux.sh --arch x86_64 build/mc1
 
 ---
 
-## M39 — a target `mc build` cannot drive yet
+## M39 / M39.5 — a target a module registers, driven by `mc build`
 
 `examples/kernel` is a bare-metal RISC-V 64 board: no operating system, no linker, no object
 format. Its compiler is taught the same way every other example's is —
-`[compiler] modules` in `mc.toml`, assembled by `mc build DIR --compiler-only` — but the **second**
-step is not `mc build`:
+`[compiler] modules` in `mc.toml` — and since **M39.5** the whole build is one command:
 
 ```sh
-../../build/mc1 build examples/kernel --compiler-only     # -> build/mc-kernel
-cd examples/kernel
-./build/mc-kernel --backend=rv-image --include=lib main.mc -o build/kernel.bin
+../../build/mc1 build examples/kernel            # -> build/mc-kernel, then build/kernel.bin
 ```
 
-The reason is worth writing down, because it is the one place `mc build` is less capable than the
-single-file CLI. `drv_run` validates and resolves `[target].os`/`.arch` against the registry
-**before** `drv_compile` calls `user_init()`, so the parent process refuses a pair that only the
-taught compiler it is about to build knows about. A second entry point (`user_targets()`) is not
-the fix — `mc` has no weak definitions, so every existing taught compiler would have to grow an
-empty body. The fix is a **deferral**: keep the two values as strings in `drv_run`, have
-`drv_entry` pass a role (object or executable) instead of a backend name, and resolve once
-immediately after `user_init()`. That is gap G1 of `docs/specs/M39.md`, deferred to M39.5.
+That is the two-process shape `mc build` has had since M14: the parent assembles
+`build/mc-kernel` and spawns it as `mc-kernel build DIR --config FILE --entry-only`, and the child
+writes the image. What is new is that the child's `mc.toml` names a target the parent has never
+heard of:
 
-Until then, `examples/kernel/mc.toml` carries **no `[target]` section**, so `mc build` uses the
-host pair (M37) and its `[project].entry`/`.out` describe a host object of the same source — good
-for type-checking it and nothing else. `--backend=` and `--machine=` on the single-file CLI are
-resolved *after* `user_init()` (`src/main.mc`), which is why step 2 above works.
+```toml
+[target]
+os   = "none"
+arch = "riscv64"
+```
+
+`none/riscv64` reaches the registry from `examples/kernel/mc-kernel.mc`, whose `user_init` calls
+`target("none", "riscv64", "rv-image", "rv-image")`. Both roles are the same backend deliberately:
+a bare board has no separable object step, so the flat image fills the **exe** slot and
+`kind = "exe"` writes `build/kernel.bin` with no `[linker]` at all, the way `macho-exe` writes a
+signed binary on macOS.
+
+**How M39.5 made that possible.** M39 shipped with `drv_run` validating and resolving
+`[target].os`/`.arch` against the registry *before* `drv_compile` called `user_init()`, so the
+parent refused a pair only the taught compiler it was about to build knew about — gap G1 of
+`docs/specs/M39.md`. A second entry point (`user_targets()`) was not the fix: `mc` has no weak
+definitions, so every existing taught compiler would have had to grow an empty body. The fix is a
+**deferral**. `drv_run` keeps the two values as strings (`drv_os`, `drv_arch`); `drv_entry` passes
+a *role* — `DRV_ROLE_OBJ` or `DRV_ROLE_EXE` — instead of a backend name; and `drv_backend_for`
+turns the role into a name inside `drv_parse`, immediately after `user_init()` and before
+`parse_unit()`. The two diagnostics and the `requires [linker]: there is no direct executable`
+check moved with it and are unchanged, and `drv_teach`'s independent lookup of the **host** pair
+was not touched — a taught compiler is still always built for the machine it has to run on.
+
+The one visible consequence: an unknown `[target]` is now reported after the entry source has been
+opened and lexed, so the `compile x -> y` step line comes first. The message, its file, line and
+column are the same, and `scripts/check-build.sh` asserts the last line of output for exactly that
+reason.
+
+Two things came out of the review of that change, and both are about a slot a module can leave
+empty. **A 0 in the object slot is now a diagnostic, not a crash**: `target(os, arch, 0, exe)` is
+a legitimate registration — it is what `none/riscv64` would be if the image writer were not also
+the object writer — and asking such a target for `kind = "obj"` used to hand the 0 to
+`backend_find()`, whose `str_eq` dereferenced it (the child died of `SIGSEGV`, and `mc build`
+reported nothing but exit 1). It now says `<os>/<arch> has no object backend: use kind = "exe"` at
+the value's own position, the mirror of the `requires [linker]` message the empty exe slot has
+always had. **And `mc sysroot stub` resolves `[target]` where a build does**: it reaches
+`drv_parse` without going through `drv_compile`, so it used to skip the resolution entirely and a
+foreign `[target].os` surfaced as `no stub writer for: haiku: ...` instead of the positioned
+message. It asks for the role `DRV_ROLE_NONE` — the two checks, no backend — because writing a
+`.tbd` or a `.def` needs the operating system and the architecture and nothing else.
+`tests/proj/noobj.mc` + `noobj.toml` + `toy.toml` and two `sysroot stub` diagnostics in
+`scripts/check-build.sh` are the five checks that hold all of it.
+
+The single-file CLI still does the second half on its own — `--backend=` and `--machine=` are
+resolved after `user_init()` in `src/main.mc` — and `examples/kernel/test.sh` uses it for every
+source that is not `[project].entry`, then checks that the two roads write the same bytes.
 
 Everything else about the project is ordinary: `[compiler].modules`, `[limits].tolerance = 1.0`
 and `[include].paths = ["lib"]` mean exactly what they mean everywhere else, and
@@ -1498,7 +1534,8 @@ half or on anything but exit 0 remembered.
   explicitly; a config that omits it is portable, and one that pins `macos` means it.
 - **Two architectures, and for Linux only through an external linker.** `[target].arch` other than
   `aarch64` (macOS, Linux) or `x86_64` (Linux) is a clear error, and so is `[target].os` other than
-  `macos`/`linux`; COFF and wasm are later milestones. A Linux `exe` without `[linker]` is refused —
+  `macos`/`linux`/`windows` — *unless a module registers the pair*, which since M39.5 is resolved
+  late enough to count (`examples/kernel`, above); wasm is a later milestone. A Linux `exe` without `[linker]` is refused —
   there is no ELF equivalent
   of `macho-exe`, so `ld.lld` (or any linker named in the config) does the layout.
 - **The taught compiler is always built for the host, never for `[target]`.** It is a tool that

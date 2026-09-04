@@ -7,10 +7,19 @@ image: a RISC-V 64 instruction set, a flat-image writer and four words of bare-m
 `.mc` under `examples/`, with **zero lines added to `src/`, `stage0/`, `lib/` or `tests/`**.
 
 ```
+../../build/mc1 build examples/kernel                     # -> build/mc-kernel, build/kernel.bin
+qemu-system-riscv64 -machine virt -bios none -nographic -kernel examples/kernel/build/kernel.bin
+```
+
+One command, two processes: `mc build` assembles the taught compiler out of `<mc/core>` plus this
+directory's modules, then spawns it for `[target] os = "none" / arch = "riscv64"` — a pair the
+running `mc` has never heard of and `mc-kernel.mc` registers. The single-file CLI is still there
+and still equivalent, and is what `test.sh` uses for the sources that are not `[project].entry`:
+
+```
 ../../build/mc1 build examples/kernel --compiler-only     # -> build/mc-kernel
 cd examples/kernel
 ./build/mc-kernel --backend=rv-image --include=lib main.mc -o build/kernel.bin
-qemu-system-riscv64 -machine virt -bios none -nographic -kernel build/kernel.bin
 ```
 
 ```
@@ -187,12 +196,16 @@ that jumps into the middle of an instruction.
 
 ## Limits, on the record
 
-* **`mc build` cannot drive a bare target.** `[target]` is resolved before `user_init()` has run,
-  so the parent process would refuse a pair only the taught compiler knows. That is gap G1 of
-  `docs/specs/M39.md`, deferred to M39.5. Until then step 2 is the single-file CLI, where
-  `--backend=` is resolved after `user_init()`. `mc.toml` has no `[target]`, and its
-  `[project].entry`/`.out` describe a **host object** of the same source — useful for nothing but
-  type-checking it, and there because the two keys are required.
+* ~~**`mc build` cannot drive a bare target.**~~ — gap G1 of `docs/specs/M39.md`, **taken in
+  M39.5**. `[target]` is no longer resolved when the TOML is read: `drv_run` keeps `os`/`arch` as
+  strings, `drv_entry` asks for a role (object or executable), and `drv_backend_for` consults the
+  registry inside `drv_parse`, right after `user_init()`. So `mc.toml` names
+  `os = "none" / arch = "riscv64"`, `mc-kernel.mc` registers it with
+  `target("none", "riscv64", "rv-image", "rv-image")`, and `mc build examples/kernel` writes
+  `build/kernel.bin` end to end. `rv-image` fills the **exe** slot because a bare board has no
+  separable object step — which is what lets `kind = "exe"` work with no `[linker]`. The one
+  visible consequence is that an unknown pair is now reported after the entry has been opened and
+  lexed, so the `compile x -> y` step line comes first; the message itself is unchanged.
 * **No `linux/riscv64` ELF.** That needs a second relocation against a local label
   (`%pcrel_lo` naming the `auipc`) and a third branch in the ELF writer's relocation map — gaps G3
   and G8, ~52 core lines and contract version 3.

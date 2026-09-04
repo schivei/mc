@@ -65,13 +65,18 @@ A missing `entry` or `out` is `<file>: missing key: project.entry`. A `kind` tha
 
 | key | type | default | accepted |
 |---|---|---|---|
-| `target.os` | string | `"macos"` | `macos`, `linux`, `windows` |
-| `target.arch` | string | `"aarch64"` | `aarch64`; `x86_64` when `os = "linux"` |
+| `target.os` | string | the host's | a pair the compiler or one of its modules registered |
+| `target.arch` | string | the host's | likewise |
 
 The accepted set is the `(os, arch)` pairs the `target()` registry holds
 ([hooks.md](hooks.md)) — `macos/aarch64`, `linux/aarch64`, `linux/x86_64`,
-`windows/aarch64` — and a module may register more. Anything else is refused at the value's position, with a message built from the
-registry:
+`windows/aarch64` and `windows/x86_64` out of the box — **and a pair a module registered counts**.
+The registry is consulted after `user_init()` has run (M39.5), so a taught compiler that calls
+`target("none", "riscv64", "rv-image", "rv-image")` can be driven by `mc build` through its own
+`mc.toml`; `examples/kernel` is the worked example. The consequence to know is that the entry
+source is opened and lexed before an unknown pair is reported, so the diagnostic comes after the
+`compile x -> y` step line. Anything the registry does not hold is refused at the value's
+position, with a message built from the registry:
 
 ```
 $ mc build tests/proj --config /tmp/haiku.toml
@@ -89,6 +94,12 @@ executable`). `arch` then decides the instruction set inside that object.
 `IMAGE_FILE_MACHINE_ARM64` `.obj` (`coff-obj-arm64`) and `[linker]` is required
 (`windows requires [linker]: there is no direct executable`).
 See [../guide/50-cross-compile.md](../guide/50-cross-compile.md).
+
+A registered pair may be missing the *other* half instead: `target(os, arch, 0, exe)` is a target
+with no separable object step, which is what a board writing a flat image registers. Then
+`kind = "obj"` — and `kind = "exe"` with a `[linker]`, which goes through the object first — is
+`<os>/<arch> has no object backend: use kind = "exe"`, at the same position and with the same
+exit 1. `kind = "exe"` and no `[linker]` is the shape such a target is for.
 
 ## `[compiler]` — build the compiler that will compile the entry
 
