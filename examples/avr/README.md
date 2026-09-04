@@ -20,16 +20,19 @@ too, and that a compiler can be smaller than `mc` by what it omits.
 
 | file | lines | what |
 |---|---|---|
-| `machine_avr.mc` | ~700 | the ATmega328P machine: the same 31 task slots `src/machine_arm64.mc` fills |
-| `image_avr.mc` | ~470 | `backend("avr-image", ...)`: ELF32 `EM_AVR`, the vector table, the reset stub, `.mmcu` |
-| `avr_syntax.mc` | ~140 | `sfr`, `sbi`, `cbi`, `bit` — one `syntax`, two `syntax_stmt`, one `syntax_expr` |
-| `mc-avr.mc` | ~70 | the recreated compiler: the parts it is made of, and the four registrations |
-| `lib/sys_avr.mc` | ~150 | the UART, `halt`, `_start` and the flash-to-SRAM copy |
-| `lib/rt_avr.mc` | ~110 | multiply, divide and remainder, written in the language |
-| `lib/isr.mc` | ~100 | the interrupt frame: `#opcode` only, ending in `reti` |
-| `main.mc` | ~85 | the firmware |
-| `tests/sweep_a.mc`, `tests/sweep_b.mc` | ~230 | every task of the machine, checked by the program itself |
-| `test.sh` | ~540 | the gate: two oracles, two toolchains, ten steps |
+| `machine_avr.mc` | 995 | the ATmega328P machine: the same 31 task slots `src/machine_arm64.mc` fills |
+| `image_avr.mc` | 537 | `backend("avr-image", ...)`: ELF32 `EM_AVR`, the vector table, the reset stub, `.mmcu` |
+| `avr_syntax.mc` | 132 | `sfr`, `sbi`, `cbi`, `bit` — one `syntax`, two `syntax_stmt`, one `syntax_expr` |
+| `mc-avr.mc` | 70 | the recreated compiler: the parts it is made of, and the five registrations |
+| `lib/sys_avr.mc` | 150 | the UART, `halt`, `_start` and the flash-to-SRAM copy |
+| `lib/rt_avr.mc` | 104 | multiply, divide and remainder, written in the language |
+| `lib/isr.mc` | 103 | the interrupt frame: `#opcode` only, ending in `reti` |
+| `main.mc` | 80 | the firmware |
+| `tests/sweep_a.mc`, `tests/sweep_b.mc` | 230 | every task of the machine, checked by the program itself |
+| `test.sh` | 561 | the gate: two oracles, two toolchains, ten steps |
+
+(About half of the `.mc` lines are comment: this directory is also the worked
+example `docs/guide/97-a-new-architecture.md` sends people to.)
 
 ## The compiler this example builds
 
@@ -57,9 +60,9 @@ void user_init() {
 }
 ```
 
-339 KB against `mc`'s 663 KB, and the difference is not compression: it is four
-object writers, two machines and a 350 KB bundle that this compiler does not
-contain. `docs/guide/98-recreating-the-compiler.md` is the walkthrough.
+**339 171 bytes against `mc`'s 759 875** (`build/mc1 --exe src/mc.mc`, the same
+backend building both), and the difference is not compression: it is four object
+writers, two machines and a 350 KB bundle that this compiler does not contain. `docs/guide/98-recreating-the-compiler.md` is the walkthrough.
 
 **`type_set_width(TY_UPTR, 2)` is the milestone's headline.** M41 built that
 registration for exactly this caller (M24 D8 had refused it for having none).
