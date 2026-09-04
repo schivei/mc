@@ -567,7 +567,7 @@ compiler being taught is the one written in the language itself. What C needed t
 only what the language needs to express a hook: `&function`, `callp`, and splitting the gen into
 two halves.
 
-## Tier 3 — syntax taught by code (`syntax` / `syntax_stmt` / `syntax_expr` / `syntax_infix` / `type_alias` / `on_stmt` / `#dylib`) — implemented (M12, completed in M21, extended in M21.5)
+## Tier 3 — syntax taught by code (`syntax` / `syntax_stmt` / `syntax_expr` / `syntax_infix` / `type_alias` / `on_stmt` / `on_jump` / `#dylib`) — implemented (M12, completed in M21, extended in M21.5 and M31)
 
 Tier 1's `#rule stmt:` is a hygienic macro: it matches a **fixed** token sequence in **statement**
 position and returns an already-parsed template. That's enough for `while`, `for`, `+=`. It's not
@@ -577,7 +577,7 @@ things a template can't express. Tier 3 is the answer, and it's the same idea as
 user writes a `.mc` module that runs inside the compiler**, this time during *parsing*, using the
 parser's public API.
 
-### The six registrations
+### The seven registrations
 
 | registration | what you write | when it runs |
 |---|---|---|
@@ -587,9 +587,11 @@ parser's public API.
 | `syntax_infix(".+", 9, &f)` | `i64 f(i64 left)` — returns the expression node's index | `parse_expr`'s Pratt loop, at the entry's precedence (M21) |
 | `type_alias("bool", TY_U8)` | — | `type_of_token`, after the core's own words |
 | `on_stmt(&f)` | `i64 f(i64 n)` — returns the node, a replacement, or 0 | `parse_stmt`, after **every** statement node exists (M21.5) |
+| `on_jump(&f)` | `i64 f(i64 n, i64 kind, i64 depth)` — same three answers | `parse_stmt_core`, as it builds a `return`/`break`/`continue` (M31) |
 
 The first five register the word in the lexer (`tok_add`), the same as `#rule` does with its
-dispatch literal, and all five **refuse a core keyword** (`K_U8`..`K_EXTERN`):
+dispatch literal, and all five **refuse a core keyword** (`K_U8`..`K_EXTERN`); the last two claim
+no word at all — they observe nodes the parser has just built:
 
 ```
 $ build/mc1 --exe my_compiler.mc -o my-mc && ./my-mc x.mc -o x.o
@@ -1215,6 +1217,104 @@ registration, the demo test compiled twice byte for byte, and the inertness chec
 
 **A module side table keyed by node index must never live in `nd_c`/`nd_d`.** `dump_node` walks
 those as node indices, and `node_copy_subst` does not carry them; keep such a table in the module.
+
+---
+
+## M31 — the three things a taught *runtime* was missing
+
+M21 finished the grammar positions. What M31's design panel found missing was not a position: three
+independent teams built `spawn`/`intent`/`await` compilers against an unmodified `build/mc1`
+(`docs/specs/M31.md`), and the core hosted the whole feature — but two of them got there only by
+reaching into a parser internal, one reproduced the same deadlock twice, and all three rested on
+register conventions that were true and unwritten. The three gaps are generic, small, and have
+nothing to do with threads.
+
+### `decl_find` and the three readers — ask the core about a declaration it already parsed
+
+```c
+i64 decl_find(uptr name);            // index of the N_FUNC/N_PROTO/N_EXTERN, -1 if none
+i64 decl_ret(i64 d);                 // declared return type (TY_*)
+i64 decl_nparams(i64 d);             // arity
+i64 decl_param_type(i64 d, i64 i);   // the i-th parameter's type
+```
+
+A module that lowers a call needs the **callee's** signature: the declared return type decides what
+the result may be bound to (`await r = f()` on a `void f()` has nothing to bind, and a naive version
+dies with the core's `value of type void` far from the cause), and the parameter types decide what
+has to be marshalled. That answer sits in the unit the parser is building, and until M31 the only
+route to it was to walk `unit_head` — declared in `src/parse.mc` and *not* inside the public API
+block. These five (`decl_valid` is the fifth: 1 for one of the three kinds) are the sanctioned way.
+
+The walk is linear, in declaration order, and the first declaration of a name answers — a prototype
+ahead of its definition carries the same signature. **Only what has been parsed so far is visible**,
+which is the honest limit of asking during the parse: a module that needs a callee declared further
+down asks again from a `pass()`, when the whole unit exists. Beyond concurrency: FFI glue for an
+`extern`, doc extraction, an LSP hover — all of them want the signature the core already read.
+
+`lib/user_syntax_demo.mc` teaches `widen x = f(a);`, where the local's type is `f`'s declared return
+type and every argument is cast to the declared parameter type, neither written at the use site:
+
+```
+$ ./my-mc --dump-ast prog.mc
+    VAR type=u8 name=a          <- u8 because `low` returns u8
+      CALL type=i64 name=low
+        CAST type=i64
+          INT val=300 type=i64
+    VAR type=i64 name=b
+      CALL type=i64 name=keep
+        CAST type=u8            <- u8 because `keep`'s parameter is u8
+          INT val=300 type=i64
+```
+
+### `on_jump(&f)` — a hook on the exit edges of a scope
+
+```c
+i64 f(i64 n, i64 kind, i64 depth)
+```
+
+Called where the core creates an `N_RETURN` / `N_BREAK` / `N_CONTINUE`, **before** any `on_stmt`
+hook and before another module can wrap it; `kind` is the node kind, `depth` how many blocks are
+open in the current function (`p_blockdepth()` reads the same counter, and `parse_function` rebases
+it per function). Handlers run in registration order and may return a replacement, or 0 to drop the
+jump.
+
+Why `on_stmt` is not a substitute: two teams independently built the same `lock (m) { ... }` by
+appending the unlock after the body, and both reproduced the same defect — a `return` inside the
+body jumps over the unlock and the next call hangs forever. And the host module already rewrites
+`N_RETURN` into a block for its own reference counting before a later-registered `on_stmt` hook sees
+it, so a second module can neither recognise the jump nor place code on that edge. Beyond
+concurrency: `defer` / scope guards, which Go, Swift, Zig and D all put at language level precisely
+because they must cover every exit edge, and any coverage or tracing module that needs a probe on
+early returns rather than at the closing brace.
+
+The demo's `guard EXPR { ... }` runs one statement on every edge out of the block — the fall-through
+and each jump inside it:
+
+```c
+i64 h(i64 x) { guard bump() { if (x) { return 1; } } return 2; }
+// becomes
+i64 h(i64 x) { { if (x) { { bump(); return 1; } } bump(); } return 2; }
+```
+
+`scripts/check-surface.sh` proves the ordering with a number: `retcount`, the module's count of
+statements that still *looked* like an `N_RETURN` when `on_stmt` ran, does not move for a guarded
+jump, because `on_jump` had already replaced it with an `N_BLOCK`.
+
+### A written and tested ABI contract
+
+No new mechanism — documentation plus tests. Four invariants carry every taught runtime and
+violating one fails at run time with no diagnostic: parameters arrive in `x0..x7` and the prologue
+does not clobber them; the epilogue leaves `x0` alone; a zero-parameter, zero-local function has
+`frame == 0` and an epilogue of exactly `ldp x29, x30, [sp], #16` + `ret`; and generated code never
+writes `x18..x28`. The last two were true and unwritten, so an allocator that spilled depths into
+`x19..x28`, or a leaf-function optimisation that dropped the `stp`, would have silently corrupted
+every taught runtime.
+
+They are now [objects.md § 4](reference/objects.md), and `make check-surface` asserts each of them
+against `--dump-asm`: six functions compared instruction by instruction, `lib/sys_svc.mc`'s `write`
+(the real user of the `#opcode` fixed-register rule) compared the same way, and over the whole of
+`src/mc.mc` — 837 functions — every prologue, every `ret` preceded by that exact `ldp`, and zero
+mentions of `x18..x28` in 58 914 lines.
 
 ---
 

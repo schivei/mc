@@ -26,6 +26,12 @@
 # p_subst_* + p_resplit_punct). One case per hook, the four tests/err/ cases with
 # their exact message, the duplicate registration refused at user_init time, the
 # demo test compiled twice byte for byte, and the inertness check of 6(5).
+#
+# M31 (docs/specs/M31.md § 2): `widen` (decl_find + decl_ret + decl_nparams +
+# decl_param_type), `guard` (on_jump), four more tests/err/ cases, and the ABI
+# contract of docs/reference/objects.md § 4 -- every claim on that page asserted
+# instruction by instruction against `--dump-asm`, so that a change to the code
+# generator is a change to a documented, tested contract.
 mc0="${1:-build/mc0}"
 mc1="${2:-build/mc1}"
 
@@ -227,6 +233,57 @@ hook_case on_stmt-blockdepth 42 '#include <prelude>
 i64 main() { i64 i = 0; while (i < 3) { while (i < 2) { i = i + 1; } i = i + 1; }
              return blockdepth + i + 36; }'
 
+# ---- M31 (2.1): `widen` reads the callee's declaration ----
+# `low` returns u8, so `a` is a u8 local and 300 comes back 44; `keep` takes a
+# u8, so the ARGUMENT is cast to u8 and 300 arrives as 44 as well. Neither type
+# is written at the use site: both come from decl_ret / decl_param_type.
+hook_case decl_find-widen 42 'u8  low(i64 x) { return x; }
+i64 keep(u8 v)  { return v; }
+i64 main() { widen a = low(300); widen b = keep(300); return a + b - 46; }'
+
+# ...and the argument cast is in the tree, with the DECLARED parameter type on
+# it. This is the half an FFI-marshalling module needs: a C callee does not
+# narrow its own arguments the way an mc prologue does.
+if "$demo" --dump-ast "$tmp/decl_find-widen.mc" 2>&1 | grep -q '^ *CAST type=u8$'; then
+    echo "ok decl_param_type: the argument carries the declared parameter type"
+else
+    echo "FAIL decl_param_type: no CAST type=u8 in the tree"
+    fails=$((fails + 1))
+fi
+if "$demo" --dump-ast "$tmp/decl_find-widen.mc" 2>&1 | grep -q '^ *VAR type=u8 name=a$'; then
+    echo "ok decl_ret: the local carries the callee's declared return type"
+else
+    echo "FAIL decl_ret: the local is not u8"
+    fails=$((fails + 1))
+fi
+
+# ---- M31 (2.2): on_jump, a statement on every exit edge ----
+# h(1) leaves through the `return` INSIDE the guard body -- the edge an appended
+# statement misses -- and h(0) falls off the end of it. bump() has to run once
+# each: g_n == 2.
+hook_case on_jump-guard 42 'i64 g_n = 0;
+i64 bump() { g_n = g_n + 1; return 0; }
+i64 h(i64 x) { guard bump() { if (x) { return 1; } } return 2; }
+i64 main() { i64 a = h(1); i64 b = h(0); return a + b + g_n * 20 - 1; }'
+
+# ordering, proved by a number: `retcount` counts the statements that still
+# LOOKED like an N_RETURN when on_stmt ran. Between the two reads there are
+# three returns in the source -- r0'"'"'s own, plain'"'"'s, and wrapped'"'"'s -- and only two
+# reach on_stmt, because on_jump replaced the guarded one with an N_BLOCK first.
+hook_case on_jump-before-on_stmt 42 'i64 g_n = 0;
+i64 bump() { g_n = g_n + 1; return 0; }
+i64 r0() { return retcount; }
+i64 plain(i64 x)   { return x; }
+i64 wrapped(i64 x) { guard bump() { return x; } }
+i64 r1() { return retcount; }
+i64 main() { return r1() - r0() + 40; }'
+
+# `depth`: the deepest jump the hook saw. The `return 1` sits under the function
+# body, two bare blocks and the `if` arm -- four open blocks; the `return 2` under
+# one. Without the per-function rebase of parse_function the number would drift.
+hook_case on_jump-depth 42 'i64 f(i64 x) { { { if (x) { return 1; } } } return 2; }
+i64 main() { return jumpdepth + 38; }'
+
 # ...and it rewrites NOTHING: the module's runtime is one leading declaration,
 # so from `main` on the taught compiler's --dump-ast has to be what the default
 # compiler prints for the same file. This covers on_stmt returning its node
@@ -283,6 +340,252 @@ err_case tests/err/065-expr-nonode.mc \
     "tests/err/065-expr-nonode.mc:6: syntax_expr handler produced no expression: nil"
 err_case tests/err/066-infix-drops-handler.mc \
     "tests/err/066-infix-drops-handler.mc:12: unknown name"
+
+# ---- M31: the four cases the two new hooks own ----
+err_case tests/err/067-widen-unknown.mc \
+    "tests/err/067-widen-unknown.mc:8: widen: unknown function: nosuch"
+err_case tests/err/068-widen-void.mc \
+    "tests/err/068-widen-void.mc:11: widen: cannot bind the result of a void function: nothing"
+err_case tests/err/069-widen-arity.mc \
+    "tests/err/069-widen-arity.mc:8: widen: wrong number of arguments: two"
+err_case tests/err/070-guard-break-level.mc \
+    "tests/err/070-guard-break-level.mc:12: guard: break N leaves more than the guard body"
+
+# ---- M31 (2.3): the ABI contract, asserted instruction by instruction ----
+# docs/reference/objects.md § 4 writes down what a TAUGHT RUNTIME relies on -- a
+# `#opcode` syscall wrapper, an atomic, a thread entry handed out as `&f`, a
+# stack walker. Every claim on that page is checked here against `--dump-asm` of
+# the DEFAULT compiler, never against a memory of the code generator: a change
+# to gen_arm64.mc that breaks one of them fails with the function that changed.
+abi_src="$tmp/abi.mc"
+cat > "$abi_src" <<'ABIEOF'
+i64 abi8(i64 a, i64 b, i64 c, i64 d, i64 e, i64 f, i64 g, i64 h) { return h; }
+i64 abileaf() { return 7; }
+i64 abidepth(i64 a, i64 b, i64 c, i64 d, i64 e, i64 f, i64 g) {
+    return a + (b + (c + (d + (e + (f + g)))));
+}
+i64 abispill(i64 a, i64 b, i64 c, i64 d, i64 e, i64 f, i64 g, i64 h) {
+    return a + (b + (c + (d + (e + (f + (g + h))))));
+}
+i64 abimod(i64 a, i64 b) { return a % b; }
+i64 abicallp(uptr p, i64 a) { return callp(p, a); }
+ABIEOF
+"$mc1" --dump-asm "$abi_src" > "$tmp/abi.asm" 2>&1
+
+# the lowered body of one function, its label excluded
+abi_fn() { awk -v f="_$1:" '$0 == f { on = 1; next } on && /^_/ { exit } on { print }' "$tmp/abi.asm"; }
+
+abi_case() {                        # abi_case CLAIM FUNCTION EXPECTED
+    got=$(abi_fn "$2")
+    if [ "$got" = "$3" ]; then
+        echo "ok abi: $1"
+    else
+        echo "FAIL abi: $1"
+        printf '  expected:\n%s\n  got:\n%s\n' "$3" "$got"
+        fails=$((fails + 1))
+    fi
+}
+
+abi_case "parameters arrive in x0..x7 and the prologue does not clobber them" abi8 "$(cat <<'EOF'
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  sub sp, sp, #64
+  str x0, [sp, #56]
+  str x1, [sp, #48]
+  str x2, [sp, #40]
+  str x3, [sp, #32]
+  str x4, [sp, #24]
+  str x5, [sp, #16]
+  str x6, [sp, #8]
+  str x7, [sp]
+  ldr x9, [sp]
+  mov x0, x9
+  b L1
+L1:
+  add sp, sp, #64
+  ldp x29, x30, [sp], #16
+  ret
+EOF
+)"
+
+abi_case "a zero-parameter, zero-local function has frame == 0, and the epilogue leaves x0 alone" abileaf "$(cat <<'EOF'
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  movz x9, #7
+  mov x0, x9
+  b L1
+L1:
+  ldp x29, x30, [sp], #16
+  ret
+EOF
+)"
+
+abi_case "expression depths 0..6 live in x9..x15" abidepth "$(cat <<'EOF'
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  sub sp, sp, #64
+  str x0, [sp, #56]
+  str x1, [sp, #48]
+  str x2, [sp, #40]
+  str x3, [sp, #32]
+  str x4, [sp, #24]
+  str x5, [sp, #16]
+  str x6, [sp, #8]
+  ldr x9, [sp, #56]
+  ldr x10, [sp, #48]
+  ldr x11, [sp, #40]
+  ldr x12, [sp, #32]
+  ldr x13, [sp, #24]
+  ldr x14, [sp, #16]
+  ldr x15, [sp, #8]
+  add x14, x14, x15
+  add x13, x13, x14
+  add x12, x12, x13
+  add x11, x11, x12
+  add x10, x10, x11
+  add x9, x9, x10
+  mov x0, x9
+  b L1
+L1:
+  add sp, sp, #64
+  ldp x29, x30, [sp], #16
+  ret
+EOF
+)"
+
+abi_case "depth 7 and beyond spills through x16/x17" abispill "$(cat <<'EOF'
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  sub sp, sp, #80
+  str x0, [sp, #72]
+  str x1, [sp, #64]
+  str x2, [sp, #56]
+  str x3, [sp, #48]
+  str x4, [sp, #40]
+  str x5, [sp, #32]
+  str x6, [sp, #24]
+  str x7, [sp, #16]
+  ldr x9, [sp, #72]
+  ldr x10, [sp, #64]
+  ldr x11, [sp, #56]
+  ldr x12, [sp, #48]
+  ldr x13, [sp, #40]
+  ldr x14, [sp, #32]
+  ldr x15, [sp, #24]
+  ldr x16, [sp, #16]
+  str x16, [sp, #8]
+  ldr x17, [sp, #8]
+  add x15, x15, x17
+  add x14, x14, x15
+  add x13, x13, x14
+  add x12, x12, x13
+  add x11, x11, x12
+  add x10, x10, x11
+  add x9, x9, x10
+  mov x0, x9
+  b L1
+L1:
+  add sp, sp, #80
+  ldp x29, x30, [sp], #16
+  ret
+EOF
+)"
+
+abi_case "x8 is the only scratch the remainder uses" abimod "$(cat <<'EOF'
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  sub sp, sp, #16
+  str x0, [sp, #8]
+  str x1, [sp]
+  ldr x9, [sp, #8]
+  ldr x10, [sp]
+  sdiv x8, x9, x10
+  msub x9, x8, x10, x9
+  mov x0, x9
+  b L1
+L1:
+  add sp, sp, #16
+  ldp x29, x30, [sp], #16
+  ret
+EOF
+)"
+
+abi_case "callp puts the pointer in x16, the arguments in x0.., and reads the result from x0" abicallp "$(cat <<'EOF'
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  sub sp, sp, #16
+  str x0, [sp, #8]
+  str x1, [sp]
+  ldr x9, [sp, #8]
+  ldr x10, [sp]
+  mov x16, x9
+  mov x0, x10
+  blr x16
+  mov x9, x0
+  mov x0, x9
+  b L1
+L1:
+  add sp, sp, #16
+  ldp x29, x30, [sp], #16
+  ret
+EOF
+)"
+
+# the `#opcode` fixed-register rule, on the real user of it: lib/sys_svc.mc's
+# `write` is a whole syscall in two words, and it works only because x0..x2 still
+# hold the arguments when the first `.word` executes and the epilogue does not
+# touch the x0 the kernel left.
+"$mc1" --dump-asm tests/032-svc.mc > "$tmp/svc.asm" 2>&1
+abi_fn2() { awk -v f="_$1:" '$0 == f { on = 1; next } on && /^_/ { exit } on { print }' "$tmp/svc.asm"; }
+got=$(abi_fn2 write)
+want=$(cat <<'EOF'
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  sub sp, sp, #32
+  str x0, [sp, #24]
+  str x1, [sp, #16]
+  str x2, [sp, #8]
+  .word 0xd2800090
+  .word 0xd4001001
+L1:
+  add sp, sp, #32
+  ldp x29, x30, [sp], #16
+  ret
+EOF
+)
+if [ "$got" = "$want" ]; then
+    echo "ok abi: #opcode names its own registers and nothing is inserted around it"
+else
+    echo "FAIL abi: the #opcode word of lib/sys_svc.mc write() moved"
+    printf '  expected:\n%s\n  got:\n%s\n' "$want" "$got"
+    fails=$((fails + 1))
+fi
+
+# ...and the same three claims over the biggest program there is, src/mc.mc:
+# every function opens with the same two words, every `ret` is preceded by
+# exactly that `ldp`, and x18..x28 are never mentioned at all.
+"$mc1" --dump-asm src/mc.mc > "$tmp/mc.asm" 2>&1
+nfn=$(grep -c '^_' "$tmp/mc.asm")
+nline=$(grep -c '' "$tmp/mc.asm")
+badpro=$(awk '/^_/ { getline a; getline b;
+                     if (a != "  stp x29, x30, [sp, #-16]!" || b != "  mov x29, sp") n++ }
+              END { print n + 0 }' "$tmp/mc.asm")
+nret=$(grep -c '^  ret$' "$tmp/mc.asm")
+okret=$(awk 'p == "  ldp x29, x30, [sp], #16" && $0 == "  ret" { n++ } { p = $0 } END { print n + 0 }' "$tmp/mc.asm")
+nhigh=$(grep -cE 'x(1[89]|2[0-8])\b' "$tmp/mc.asm")
+if [ "$badpro" = "0" ] && [ "$nret" = "$okret" ] && [ "$nret" = "$nfn" ]; then
+    echo "ok abi: $nfn functions of src/mc.mc, all with the same frame record and epilogue"
+else
+    echo "FAIL abi: src/mc.mc has $nfn functions, $badpro bad prologues, $okret/$nret guarded returns"
+    fails=$((fails + 1))
+fi
+if [ "$nhigh" = "0" ]; then
+    echo "ok abi: x18..x28 never appear in $nline lines of lowered src/mc.mc"
+else
+    echo "FAIL abi: x18..x28 appear $nhigh times in the lowering of src/mc.mc"
+    grep -nE 'x(1[89]|2[0-8])\b' "$tmp/mc.asm" | sed -n '1,5p'
+    fails=$((fails + 1))
+fi
 
 # determinism: the same source compiled twice by the same compiler is the same object
 "$demo" lib/syntax_demo_test.mc -o "$tmp/sdt1.o" 2>/dev/null

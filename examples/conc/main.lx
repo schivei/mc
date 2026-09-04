@@ -1,0 +1,83 @@
+// main.lx — the demo: a producer and a consumer of `lx` objects over a
+// channel, a parallel sum over four intents in flight, and an await chain.
+//
+//   ../../build/mc1 build examples/conc       # the taught compiler, then this
+//   examples/conc/build/conc-demo
+//
+// Everything below that is not `lx` -- `spawn`, `intent`, `await`, `chan`,
+// `chan_recv`, `lock` -- comes from conc.mc, a module stacked on top of
+// examples/lang's. The core compiler knows none of it.
+
+#include "lib/prelude.lx"
+
+class Item {
+    i64 v;
+    fn init(self, i64 v) { self.v = v; }
+}
+
+// runs on a worker. It sends N objects and drops its own reference to each one
+// immediately -- the `Item it` local dies at the end of every iteration -- so
+// what keeps the object alive is the reference the CHANNEL took on send.
+fn produce(chan c, i64 n) {
+    for (i64 i = 1; i <= n; i += 1) {
+        Item it = new Item(i);
+        chan_send(c, it);
+    }
+    chan_close(c);
+}
+
+// runs on the main thread. chan_recv hands over the channel's own reference,
+// which is why the binding does not take a second one.
+fn consume(chan c) -> i64 {
+    i64 s = 0;
+    while (1) {
+        Item it = chan_recv(c);
+        if (it == 0) { break; }
+        s += it.v;
+    }
+    return s;
+}
+
+fn part(i64 lo, i64 hi) -> i64 {
+    i64 s = 0;
+    for (i64 i = lo; i < hi; i += 1) { s += i; }
+    return s;
+}
+
+fn twice(i64 x) -> i64  { return x * 2; }
+fn plus(i64 x, i64 y) -> i64 { return x + y; }
+
+fn main() -> i64 {
+    chan c = chan_new(8);
+    spawn produce(c, 100);
+    prints("channel");
+    print(consume(c));
+
+    // four intents left IN FLIGHT: this is where the parallelism is, and it is
+    // exactly what a lazy `await` would have thrown away
+    prints("parallel sum");
+    {
+        intent a = part(0, 2000000);
+        intent b = part(2000000, 4000000);
+        intent d = part(4000000, 6000000);
+        intent e = part(6000000, 8000000);
+        await ra = a;
+        await rb = b;
+        await rd = d;
+        await re = e;
+        print(ra + rb + rd + re);
+    }
+
+    prints("await chain");
+    {
+        intent t = twice(21);
+        await x = t;                     // 42
+        await y = plus(x, 8);            // fused: the intent is a temporary
+        print(y);
+    }
+
+    quiesce();
+    prints("live");
+    print(live());
+    return 0;
+}

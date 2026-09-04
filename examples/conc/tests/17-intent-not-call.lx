@@ -1,0 +1,5 @@
+// An intent is a submitted call and nothing else: there is no value to widen.
+// expect-error: tests/17-intent-not-call.lx:5: an intent must be initialized by a call: x
+#include "../lib/prelude.lx"
+
+fn main() -> i64 { intent x = 5; return 0; }

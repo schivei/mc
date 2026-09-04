@@ -1,0 +1,17 @@
+// A channel carries OBJECTS, never scalars. `chan` is an alias of uptr, so
+// neither the surface nor the host's type checker can tell `chan_send(c, 1)`
+// from `chan_send(c, it)`: the send takes a reference of its own, and a plain
+// number sends rc_inc to address 1 + 8, an atomic read-modify-write on an
+// unmapped page. That was a SIGBUS (exit 138) with nothing to read; the runtime
+// now bounds-checks the payload against the object arena, which every object
+// comes from and no scalar is inside.
+// expect-exit: 70
+// expect-panic: lx: chan_send: the payload must be a reference counted object, not a scalar
+#include "../lib/prelude.lx"
+
+fn main() -> i64 {
+    chan c = chan_new(1);
+    chan_send(c, 1);
+    print(chan_len(c));
+    return 0;
+}

@@ -1,0 +1,32 @@
+// `intent is never awaited in this scope` is a TEXTUAL check: it asks whether
+// the word `await` was written in the block, not what happened to the intent's
+// value. Copying that value into an untyped `uptr` -- which takes no reference,
+// because only the `$Intent` local is class-tracked -- smuggles the pointer out
+// of the scope that owns it, and the block is freed at the scope's close like
+// any other object.
+//
+// The escape itself is the host language's (an untyped alias skips reference
+// counting in `lx` too, with plain objects and no module on top). What the
+// runtime adds is that the released block does not go back silently: it_release
+// poisons the state word, so the first intent operation on the stale pointer
+// says so instead of reading a block that now belongs to a different, live
+// intent. Before the poison this program printed 99 and exited 0.
+// expect-exit: 70
+// expect-panic: lx: await of a released intent
+#include "../lib/prelude.lx"
+
+fn leaf() -> i64 { return 1; }
+
+fn smuggle() -> uptr {
+    uptr saved = 0;
+    { intent x = leaf(); saved = x; await x; }  // the check passes: `await` IS here
+    return saved;                               // ... and x was freed at the brace
+}
+
+fn main() -> i64 {
+    uptr p = smuggle();
+    quiesce();                                  // the queue lets go: the block is freed
+    it_wait(p);                                 // a use of the dangling intent
+    print(99);
+    return 0;
+}

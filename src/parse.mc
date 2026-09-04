@@ -132,6 +132,14 @@ u8 cur[TOK_SIZE];                     // 1-token lookahead
 i64 unit_head = 0;
 i64 unit_tail = 0;
 
+// M31 (2.2): how many blocks are open right now. parse_function rebases it to 0
+// for each body, so it reads as "blocks open in the current function"; every
+// block is counted exactly once, whether the core's own parse_block reads it or
+// a module's syntax_stmt("{") handler does. It is the `depth` an on_jump handler
+// receives, and it is what a scope guard compares against the depth it recorded
+// when it opened its own body.
+i64 blk_depth = 0;
+
 // ---- table accessors ----
 uptr ie_at(i64 i)     { return infixes + i * INF_SIZE; }
 i64  ie_tok(uptr e)   { return ld64(e + INF_TOK); }
@@ -1060,7 +1068,14 @@ i64 stmt_syntax(i64 si) {
     uptr fl = tok_file(cur);
     uptr cp0 = cp;                               // lexer cursor before the handler
     uptr t0 = tok_start(cur);                    // ... and the token it received
+    // M31: a handler that owns `{` opens a block the core never sees, so the
+    // depth counter has to move here. This is the ONLY place it moves for such a
+    // handler -- parse_block returns straight through stmt_syntax -- so no block
+    // is ever counted twice.
+    i64 brace = syns_tok_at(si) == K_LBRACE;
+    if (brace) blk_depth = blk_depth + 1;
     i64 sn = callp(syntax_stmt_fn_at(si));       // the handler eats the word too
+    if (brace) blk_depth = blk_depth - 1;
     // a handler that did not advance would return the parser to the same token and
     // would be called again, forever; here that dies with a name and position
     // instead of hanging (top level) or exhausting the arena (statement). The two
@@ -1072,6 +1087,19 @@ i64 stmt_syntax(i64 si) {
     // without breaking the sibling list of whoever called it
     if (sn == 0) sn = node_new(N_BLOCK, line, fl);
     return sn;
+}
+
+// M31 (2.2): every exit edge the core builds -- `return`, `break`, `continue` --
+// passes here the moment its node exists, BEFORE parse_stmt hands the statement
+// to the on_stmt hooks and before any module has had the chance to rewrite it.
+// A handler that returns 0 drops the jump and an empty N_BLOCK takes its place,
+// the same convention a syntax_stmt handler that returns 0 already had. With
+// nothing registered (`nonjump == 0`) not even a call happens.
+i64 jump_hook(i64 n, i64 kind, i64 line, uptr fl) {
+    if (nonjump == 0) return n;
+    n = run_on_jump(n, kind, blk_depth);
+    if (n == 0) n = node_new(N_BLOCK, line, fl);
+    return n;
 }
 
 // M21.5: parse_stmt is now the wrapper that runs the on_stmt hooks over what
@@ -1136,12 +1164,13 @@ i64 parse_stmt_core() {
         expect(K_SEMI, "expected ; after break");
         i64 n = node_new(N_BREAK, line, fl);
         set_nd_val(n, lv);
-        return n;
+        return jump_hook(n, N_BREAK, line, fl);
     }
     if (tok_id(cur) == K_CONTINUE) {
         next();
         expect(K_SEMI, "expected ; after continue");
-        return node_new(N_CONTINUE, line, fl);
+        i64 n = node_new(N_CONTINUE, line, fl);
+        return jump_hook(n, N_CONTINUE, line, fl);
     }
     if (tok_id(cur) == K_RETURN) {
         next();
@@ -1150,7 +1179,7 @@ i64 parse_stmt_core() {
         expect(K_SEMI, "expected ; after return");
         i64 n = node_new(N_RETURN, line, fl);
         set_nd_a(n, e);
-        return n;
+        return jump_hook(n, N_RETURN, line, fl);
     }
     i64 ex = parse_expr(0);
     if (tok_id(cur) == K_ASSIGN) {           // name = expr; (= is not in the infix table)
@@ -1184,10 +1213,11 @@ i64 parse_block() {
     // `block` hole come through here. Such a handler must consume the `{`
     // itself and must NOT call parse_block, or it would call itself forever.
     i64 sb = syntax_stmt_find(K_LBRACE);
-    if (sb >= 0) return stmt_syntax(sb);
+    if (sb >= 0) return stmt_syntax(sb);         // M31: counted there, not here
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
     expect(K_LBRACE, "expected {");
+    blk_depth = blk_depth + 1;                   // M31: one more block open
     i64 head = 0;
     i64 tail = 0;
     loop {
@@ -1198,6 +1228,7 @@ i64 parse_block() {
         tail = s;
     }
     next();
+    blk_depth = blk_depth - 1;
     i64 b = node_new(N_BLOCK, line, fl);
     set_nd_a(b, head);
     return b;
@@ -1706,6 +1737,13 @@ void top_add(i64 n) {
 uptr p_start() { return tok_start(cur); }
 i64  p_depth() { return nopen; }
 
+// M31 (2.2): how many blocks are open in the function being parsed -- exactly
+// the number an on_jump handler receives as `depth`. A scope guard records it
+// when it opens its own body and compares: a jump reported at a GREATER depth is
+// inside that body, and one at the same depth or less is not (a declaration the
+// module generated mid-body starts its own function back at 0).
+i64 p_blockdepth() { return blk_depth; }
+
 // M21 (2.3): records a delimited region WITHOUT parsing it. Enter with `cur` on
 // the opening token; returns the source bytes of the whole span, delimiters
 // included, with its size in *plen, and leaves the parser just past the closing
@@ -1773,6 +1811,81 @@ void p_resplit_punct(i64 n) {
     set_tok_len(cur, n);
 }
 
+// ---- M31 (2.1): asking the core about a declaration it already parsed ----
+// A module that lowers `await r = f(a)` -- or that generates FFI glue, or an
+// LSP hover, or a doc entry -- needs the CALLEE's declared signature, and the
+// only place that knows it is the unit the parser is building. Reading
+// `unit_head` for that is reaching into a parser internal; these five are the
+// sanctioned way, and they are here, inside the public API block, on purpose.
+//
+// The walk is linear over the unit in declaration order, so the answer is a
+// function of the source and of nothing else (docs/determinism.md, rule 1).
+// Only what has been parsed SO FAR is visible: the core's own answer to a
+// forward reference is that it resolves names at lowering time, and a module
+// that needs a callee declared later asks again from a `pass()`.
+//
+// The three readers answer -1 for anything that is not one of the three
+// declaration kinds, so an unchecked decl_ret(decl_find(f)) after a -1 gives
+// -1 as well, never a read into the node table at random.
+
+// 1 when `d` is a declaration this API answers about, 0 otherwise
+i64 decl_valid(i64 d) {
+    if (d <= 0 || d >= nnodes) return 0;
+    i64 k = nd_kind(d);
+    if (k == N_FUNC)   return 1;
+    if (k == N_PROTO)  return 1;
+    if (k == N_EXTERN) return 1;
+    return 0;
+}
+
+// node index of the declaration of `name` -- an N_FUNC, an N_PROTO or an
+// N_EXTERN -- or -1. The FIRST one in declaration order answers: a prototype
+// ahead of its definition carries the same signature, and two definitions of one
+// name are refused later, at lowering.
+i64 decl_find(uptr name) {
+    i64 n = unit_head;
+    loop {
+        if (n == 0) break;
+        if (decl_valid(n) && str_eq(nd_name(n), name)) return n;
+        n = nd_next(n);
+    }
+    return -1;
+}
+
+// the declared return type of `d` as a TY_*, or -1. TY_VOID is the answer that
+// makes a module refuse to bind the call's result.
+i64 decl_ret(i64 d) {
+    if (!decl_valid(d)) return -1;
+    return nd_type(d);
+}
+
+// how many parameters `d` declares, or -1
+i64 decl_nparams(i64 d) {
+    if (!decl_valid(d)) return -1;
+    i64 n = 0;
+    i64 p = nd_a(d);
+    loop {
+        if (p == 0) break;
+        n = n + 1;
+        p = nd_next(p);
+    }
+    return n;
+}
+
+// the declared type of `d`'s i-th parameter, 0-based, or -1 when there is none
+i64 decl_param_type(i64 d, i64 i) {
+    if (!decl_valid(d)) return -1;
+    if (i < 0) return -1;
+    i64 p = nd_a(d);
+    loop {
+        if (p == 0) return -1;
+        if (i == 0) return nd_type(p);
+        i = i - 1;
+        p = nd_next(p);
+    }
+    return -1;
+}
+
 // ---- top level ----
 // reads the block of a function whose type, name and parameters the caller has
 // already assembled (a handler may have prepended `self` to the list) and returns the
@@ -1780,7 +1893,13 @@ void p_resplit_punct(i64 n) {
 i64 parse_function(i64 ty, uptr name, i64 params) {
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
+    // M31: `depth` is per function. A module that generates a declaration from
+    // inside a body (p_push_source + top_add) gets 1 for the generated body, not
+    // the depth of wherever it was standing.
+    i64 d0 = blk_depth;
+    blk_depth = 0;
     i64 body = parse_block();
+    blk_depth = d0;
     i64 f = node_new(N_FUNC, line, fl);
     set_nd_name(f, name);
     set_nd_type(f, ty);

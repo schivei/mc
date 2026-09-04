@@ -1,0 +1,7 @@
+// decl_find (M31 section 2.1) answers about declarations the parser has ALREADY
+// seen, which is what makes the arity check and the widening possible at all.
+// A name it does not know is refused here rather than at the link.
+// expect-error: tests/18-unknown-callee.lx:7: unknown function: nosuch
+#include "../lib/prelude.lx"
+
+fn main() -> i64 { intent x = nosuch(1); await x; return 0; }

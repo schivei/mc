@@ -279,7 +279,8 @@ so nothing is mapped and the numbers above are what `mc limits` prints.
 
 | file | lines | what it is |
 |---|---|---|
-| `lang.mc` | 77 | the module: the includes and `user_init`, where every hook is registered |
+| `lang.mc` | 88 | the module: the includes and `user_init`, where every hook is registered |
+| `lang_solo.mc` | 9 | the empty default of `lg_more()`, the chain point `user_init` ends with: a compiler holds one `user_init`, so a module STACKED on this one (`examples/conc`) registers from there and supplies its own `lg_more` instead of this file |
 | `lang_tab.mc` | 297 | every table, as flat records with named getters |
 | `lang_util.mc` | 374 | names, node builders, the linear lookups |
 | `lang_type.mc` | 318 | reading a type, resolving a name, record/replay of a generic, `where` |

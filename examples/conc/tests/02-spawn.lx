@@ -1,0 +1,26 @@
+// `spawn f(a);` -- fire and forget over the same pool. A spawned task is never
+// awaited and so is never stolen: the pool grows a worker when there is no
+// parked one to take the new item, capped at MAXTHREADS - 1.
+//
+// quiesce() is the quiescence point every assertion here needs: a total read
+// while tasks are still running is a race, not a number.
+// expect-exit: 0
+// expect-stdout: 400000
+// expect-stdout: 1
+// expect-stdout: 0
+#include "../lib/prelude.lx"
+
+i64 total = 0;
+
+fn bump(i64 n) {
+    for (i64 i = 0; i < n; i += 1) { atomic_add(&total, 1); }
+}
+
+fn main() -> i64 {
+    for (i64 k = 0; k < 4; k += 1) { spawn bump(100000); }
+    quiesce();
+    print(total);
+    if (workers() > 0) { print(1); } else { print(0); }
+    print(live());
+    return 0;
+}

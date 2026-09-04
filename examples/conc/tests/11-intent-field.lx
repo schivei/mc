@@ -1,0 +1,7 @@
+// The same word as a class field.
+// expect-error: tests/11-intent-field.lx:5: type expected
+#include "../lib/prelude.lx"
+
+class C { intent x; }
+
+fn main() -> i64 { return 0; }

@@ -1,0 +1,92 @@
+// docs/specs/M31.md section 6.2: the same partitioned sum over 8 M elements at
+// 1, 2, 4 and 8 intents, once under a mutex and once with a_add, identical
+// totals at every width -- plus the racy version demonstrating the wrong answer.
+//
+// The racy run is repeated until it loses a count: four threads x 200 000
+// non-atomic increments lost about 70 % of them when this was measured, so one
+// attempt is already overwhelming and five make the test a gate rather than a
+// coin flip.
+// expect-exit: 0
+// expect-stdout: 31999996000000
+// expect-stdout: 31999996000000
+// expect-stdout: 31999996000000
+// expect-stdout: 31999996000000
+// expect-stdout: 31999996000000
+// expect-stdout: 31999996000000
+// expect-stdout: 31999996000000
+// expect-stdout: 31999996000000
+// expect-stdout: 1
+// expect-stdout: 0
+#include "../lib/prelude.lx"
+
+#define N 8000000
+
+uptr gm = 0;
+i64 total = 0;
+i64 racy = 0;
+
+fn part_mutex(i64 lo, i64 hi) -> i64 {
+    i64 s = 0;
+    for (i64 i = lo; i < hi; i += 1) { s += i; }
+    lock (gm) { total = total + s; }
+    return s;
+}
+
+fn part_atomic(i64 lo, i64 hi) -> i64 {
+    i64 s = 0;
+    for (i64 i = lo; i < hi; i += 1) { s += i; }
+    atomic_add(&total, s);
+    return s;
+}
+
+fn bump_racy(i64 n) {
+    for (i64 i = 0; i < n; i += 1) { racy = racy + 1; }
+}
+
+// one width, one lowering: `w` intents left in flight, then awaited in order
+fn run(i64 w, i64 atomic) -> i64 {
+    total = 0;
+    i64 step = N / w;
+    i64 k = 0;
+    while (k < w) {
+        i64 lo = k * step;
+        i64 hi = lo + step;
+        if (atomic) {
+            spawn part_atomic(lo, hi);
+        } else {
+            spawn part_mutex(lo, hi);
+        }
+        k += 1;
+    }
+    quiesce();
+    return total;
+}
+
+fn racy_loses() -> i64 {
+    i64 tries = 0;
+    while (tries < 5) {
+        racy = 0;
+        for (i64 i = 0; i < 4; i += 1) { spawn bump_racy(200000); }
+        quiesce();
+        if (racy != 800000) { return 1; }
+        tries += 1;
+    }
+    return 0;
+}
+
+fn main() -> i64 {
+    gm = mutex_new();
+    reserve(8);
+    print(run(1, 0));
+    print(run(2, 0));
+    print(run(4, 0));
+    print(run(8, 0));
+    print(run(1, 1));
+    print(run(2, 1));
+    print(run(4, 1));
+    print(run(8, 1));
+    print(racy_loses());
+    quiesce();
+    print(live());
+    return 0;
+}

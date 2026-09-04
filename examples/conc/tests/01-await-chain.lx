@@ -1,0 +1,51 @@
+// The await chain of docs/specs/M31.md section 6.3: two intents declared and
+// left in flight, then awaited; a fused `await w = h(z)` whose intent is a
+// temporary; and an Intent over a void callee, which has no value to bind and
+// is discarded with `await w;`.
+//
+// `await` needs no `async` anywhere -- it is an ordinary call to a blocking
+// runtime function, so any function may contain one, with no colouring and no
+// CPS transform.
+// expect-exit: 0
+// expect-stdout: 499500
+// expect-stdout: 1499500
+// expect-stdout: 1999000
+// expect-stdout: 2499500
+// expect-stdout: 7
+// expect-stdout: 0
+#include "../lib/prelude.lx"
+
+i64 side = 0;
+
+fn part(i64 lo, i64 hi) -> i64 {
+    i64 s = 0;
+    for (i64 i = lo; i < hi; i += 1) { s += i; }
+    return s;
+}
+
+fn touch(i64 v) { atomic_add(&side, v); }
+
+fn main() -> i64 {
+    {
+        intent a = part(0, 1000);
+        intent b = part(1000, 2000);
+        // both are submitted already: the parallelism lives in this gap, which
+        // is exactly what a lazy `await` would have thrown away
+        await ra = a;
+        await rb = b;
+        print(ra);
+        print(rb);
+        print(ra + rb);
+
+        await w = part(2000, 3000);            // fused: new, submit, take, drop
+        print(w);
+    }
+    {
+        intent v = touch(7);                   // a void callee: a bare Intent
+        await v;                               // discarded, never bound
+    }
+    quiesce();
+    print(side);
+    print(live());
+    return 0;
+}

@@ -1,0 +1,51 @@
+// prelude.lx — what every `.lx` program in this directory includes: the
+// concurrent runtime and the handful of statement sugars the modules do not
+// need to own.
+//
+// `while` and `for` are NOT here: lang.mc teaches them as syntax_stmt handlers,
+// because a `#rule`'s `block` hole is parsed by the core's parse_block and
+// would skip the module's own block handler — and with it every scope-exit
+// release. What is left over is the compound assignment on a plain name, which
+// involves no block at all.
+//
+// `spawn`, `intent`, `await`, `lock`, `chan` and `chan_recv` are not here
+// either: they are conc.mc's registrations, and they exist in this compiler
+// whether a program includes this file or not.
+
+#include "conc_rt.mc"
+
+#token "+="
+#token "-="
+#token "++"
+#token "--"
+
+#rule stmt: ident $x += expr $e ;   => $x = $x + $e;
+#rule stmt: ident $x -= expr $e ;   => $x = $x - $e;
+#rule stmt: ident $x ++ ;           => $x = $x + 1;
+#rule stmt: ident $x -- ;           => $x = $x - 1;
+
+fn print(i64 v)   { rt_print_i64(v); }
+fn prints(str s)  { rt_print_str(s); }
+fn out(str s)     { rt_write_str(s); }
+
+// what the tests use to prove the memory really goes back. live() is racy the
+// moment threads exist, so every assertion on it needs quiesce() first.
+fn live() -> i64  { return rt_live(); }
+fn used() -> i64  { return rt_used(); }
+fn peak() -> i64  { return rt_peak(); }
+
+// returns when the intent queue is empty and nothing is running: the
+// quiescence point docs/specs/M31.md section 6 requires of every test that
+// asserts on live(), and the only honest place to read a shared total
+fn quiesce()        { conc_quiesce(); }
+fn workers() -> i64 { return conc_workers(); }
+
+// starts workers up front. Growth on submit is demand driven and therefore
+// timed; a test that needs N tasks running AT THE SAME TIME reserves instead.
+fn reserve(i64 n)   { conc_reserve(n); }
+
+// the atomics, as ordinary functions. `p` is an address — `&counter` for a
+// global, which is core syntax and works inside an `.lx` file like any other.
+fn atomic_add(uptr p, i64 v) -> i64        { return a_add(p, v); }
+fn atomic_cas(i64 e, i64 n, uptr p) -> i64 { return a_cas(e, n, p); }
+fn atomic_fence()                          { a_fence(); }

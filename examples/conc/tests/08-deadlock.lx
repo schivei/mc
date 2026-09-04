@@ -1,0 +1,35 @@
+// Two intents that wait on each other. Stealing cannot break such a cycle --
+// each is already RUNNING on the other's thread -- so the wait-for graph is
+// not redundant: every thread has a slot, a blocked thread records the intent
+// it waits on, a running intent records its runner, and each thread walks the
+// chain before it sleeps.
+//
+// This is a program that MUST fail, and fail fast. test.sh gives it a timeout.
+// expect-exit: 70
+// expect-panic: lx: deadlock: await cycle
+#include "../lib/prelude.lx"
+
+uptr ga = 0;
+uptr gb = 0;
+i64 up_a = 0;
+i64 up_b = 0;
+
+// the surface has no way to spell this on purpose -- an intent is a local, and
+// `await` refuses anything that is not one -- so the cycle is built with the
+// runtime's own it_wait over two published intent pointers
+fn fa() -> i64 { up_a = 1; while (gb == 0) { } it_wait(gb); return 1; }
+fn fb() -> i64 { up_b = 1; while (ga == 0) { } it_wait(ga); return 2; }
+
+fn main() -> i64 {
+    reserve(2);                                // both must be running at once
+    intent a = fa();
+    intent b = fb();
+    while (up_a == 0) { }
+    while (up_b == 0) { }
+    ga = a;
+    gb = b;
+    await ra = a;
+    await rb = b;
+    print(ra + rb);
+    return 0;
+}

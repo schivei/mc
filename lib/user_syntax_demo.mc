@@ -22,6 +22,16 @@
 //                                argument tuple                   + p_subst_*)
 //   make slot<i64, sum<1, 2>>;   `>>` split into two `>`         (p_resplit_punct)
 //
+// M31 adds the two gaps the concurrency panel found (docs/specs/M31.md § 2):
+//
+//   widen x = f(a);              the local's type and the argument  (decl_find
+//                                casts come from f's DECLARATION     + decl_ret
+//                                                                    + decl_nparams
+//                                                                    + decl_param_type)
+//   guard tick() { ... }         one statement on EVERY exit edge  (on_jump)
+//   jumpdepth / retcount         the depth of the deepest jump, and the returns
+//                                that still LOOKED like returns to on_stmt
+//
 // Two more registrations, `nop` and `nil`, exist only to prove the two guards
 // the core puts around a syntax_expr handler; they are broken on purpose and
 // tests/err/064 and tests/err/065 are their whole reason to be here.
@@ -146,10 +156,15 @@ i64 sd_nil() { p_next(); return 0; }
 // parsed, which is what makes them observable from a test program.
 i64 sd_nstmt = 0;
 i64 sd_nif   = 0;
+// M31: how many statements still LOOKED like a return by the time on_stmt ran.
+// A guarded jump does not: on_jump replaced it with an N_BLOCK first, and that
+// ordering is the whole reason on_stmt is not a substitute for on_jump.
+i64 sd_nret  = 0;
 
 i64 sd_count(i64 n) {
     sd_nstmt = sd_nstmt + 1;
     if (nd_kind(n) == N_IF) sd_nif = sd_nif + 1;
+    if (nd_kind(n) == N_RETURN) sd_nret = sd_nret + 1;
     return n;                                    // rewrites nothing
 }
 
@@ -443,6 +458,147 @@ void sd_make() {
     sd_emit(ti, mang, ty, nval, line, fl);
 }
 
+// ---- M31 (2.1): `widen`, a statement that reads the callee's declaration ----
+// `widen x = f(a, b);` declares a local whose type is f's DECLARED RETURN TYPE
+// and narrows every argument to the DECLARED PARAMETER TYPE. Neither is written
+// at the use site: the module asks the core, through decl_find + decl_ret +
+// decl_nparams + decl_param_type, about a declaration the parser already read.
+// Before M31 the only way to that answer was to walk `unit_head`, a parser
+// internal that is not part of the public API.
+//
+// Only what has been parsed SO FAR is visible, which is the honest limit of
+// asking during the parse: `widen` sees a callee declared above it, and an
+// `extern` too. The argument cast is what an FFI-marshalling module has to emit
+// -- a C callee does not narrow its own arguments the way an mc prologue does --
+// and `--dump-ast` shows it as a CAST node (scripts/check-surface.sh asserts it).
+i64 sd_widen() {
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_next();                                    // the `widen` word
+    uptr name = p_ident();                       // the local it declares
+    p_expect(K_ASSIGN, "expected = after the widen name");
+    uptr callee = p_ident();
+    i64 d = decl_find(callee);
+    if (d < 0) err_at2(fl, line, "widen: unknown function", callee);
+    i64 ty = decl_ret(d);
+    if (ty == TY_VOID)
+        err_at2(fl, line, "widen: cannot bind the result of a void function", callee);
+    p_expect(K_LPAR, "expected ( after the widen callee");
+    i64 head = 0;
+    i64 tail = 0;
+    i64 na = 0;
+    loop {
+        if (p_id() == K_RPAR) break;
+        i64 e = parse_expr(0);
+        i64 pt = decl_param_type(d, na);         // -1 = more arguments than parameters
+        if (pt < 0) err_at2(fl, line, "widen: wrong number of arguments", callee);
+        i64 c = node_new(N_CAST, line, fl);
+        set_nd_type(c, pt);
+        set_nd_a(c, e);
+        if (tail) set_nd_next(tail, c); else head = c;
+        tail = c;
+        na = na + 1;
+        if (!p_accept(K_COMMA)) break;
+    }
+    p_expect(K_RPAR, "expected ) after the widen arguments");
+    p_expect(K_SEMI, "expected ; after widen");
+    if (na != decl_nparams(d)) err_at2(fl, line, "widen: wrong number of arguments", callee);
+    i64 n = node_new(N_VAR, line, fl);
+    set_nd_name(n, name);
+    set_nd_type(n, ty);                          // the callee's return type, not a written one
+    set_nd_a(n, sd_call(callee, head, line, fl));
+    return n;
+}
+
+// ---- M31 (2.2): `guard EXPR { ... }`, one statement on every exit edge ----
+// The action runs when control falls off the end of the block AND on every
+// `return`/`break`/`continue` the core parses inside it. Appending it after the
+// body -- the obvious version, and the one two design teams wrote -- misses the
+// jumps, which for a `lock` is a deadlock. on_jump is the edge the appended copy
+// cannot reach.
+//
+// The demo's limit, stated rather than hidden: it treats every jump inside the
+// body as leaving it, which is exactly right while the body opens no loop of its
+// own. A real scope guard tracks the loops it contains; `break N` with N > 1
+// provably leaves more than the body and is refused here.
+#define SD_MAXGUARD 8
+
+i64 sd_gact[SD_MAXGUARD];                        // the action expression per open guard
+i64 sd_gdep[SD_MAXGUARD];                        // the block depth where each one opened
+i64 sd_ngd = 0;
+
+i64 sd_gact_at(i64 g) { return ld64(sd_gact + g * 8); }
+i64 sd_gdep_at(i64 g) { return ld64(sd_gdep + g * 8); }
+
+// a fresh `EXPR;` statement per edge: node_copy, because two edges must never
+// share one subtree
+i64 sd_act_stmt(i64 act, i64 line, uptr fl) {
+    i64 st = node_new(N_EXPRSTMT, line, fl);
+    set_nd_a(st, node_copy(act));
+    return st;
+}
+
+i64 sd_guard() {
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_next();                                    // the `guard` word
+    i64 act = parse_expr(0);                     // the action, one expression
+    if (sd_ngd == SD_MAXGUARD) err_at(fl, line, "too many nested guards");
+    st64(sd_gact + sd_ngd * 8, act);
+    st64(sd_gdep + sd_ngd * 8, p_blockdepth());  // what a jump's depth is compared against
+    sd_ngd = sd_ngd + 1;
+    i64 b = parse_block();                       // on_jump fires from inside here
+    sd_ngd = sd_ngd - 1;
+    // the fall-through edge: the same action once more, at the end of the block
+    set_nd_a(b, list_append(nd_a(b), sd_act_stmt(act, line, fl)));
+    return b;
+}
+
+// ---- M31 (2.2): the on_jump handler ----
+// Runs at the moment the core builds the N_RETURN/N_BREAK/N_CONTINUE, ahead of
+// every on_stmt hook: what on_stmt sees for a guarded jump is the N_BLOCK below,
+// which is why `retcount` stops counting it (the ordering, proved by a number).
+// `depth` is what separates a jump in the guard body from one in a function the
+// module generated while standing inside it -- parse_function rebases the count,
+// so the generated body starts at 1 again.
+i64 sd_jdepth = 0;                               // deepest jump depth seen
+
+i64 sd_on_jump(i64 n, i64 kind, i64 depth) {
+    if (depth > sd_jdepth) sd_jdepth = depth;
+    i64 head = n;
+    i64 g = 0;
+    loop {                                       // outermost first: the innermost
+        if (g >= sd_ngd) break;                  // action ends up nearest the jump
+        if (depth > sd_gdep_at(g)) {
+            if (kind == N_BREAK && nd_val(n) > 1)
+                err_at(nd_file(n), nd_line(n),
+                       "guard: break N leaves more than the guard body");
+            i64 st = sd_act_stmt(sd_gact_at(g), nd_line(n), nd_file(n));
+            set_nd_next(st, head);
+            head = st;
+        }
+        g = g + 1;
+    }
+    if (head == n) return n;                     // no guard open: rewrites nothing
+    i64 b = node_new(N_BLOCK, nd_line(n), nd_file(n));
+    set_nd_a(b, head);
+    return b;
+}
+
+i64 sd_jumpdepth() {
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_next();                                    // the `jumpdepth` word
+    return sd_int(sd_jdepth, line, fl);
+}
+
+i64 sd_retcount() {
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_next();                                    // the `retcount` word
+    return sd_int(sd_nret, line, fl);
+}
+
 void user_init() {
     syntax("enum", &sd_enum);                    // M12: top-level position
     syntax_stmt("unless", &sd_unless);           // M12: statement position
@@ -460,6 +616,11 @@ void user_init() {
     syntax_expr("stmtcount",  &sd_stmtcount);    // the two counters, readable
     syntax_expr("ifcount",    &sd_ifcount);
     syntax_expr("blockdepth", &sd_blockdepth);
+    syntax_stmt("widen", &sd_widen);             // M31: decl_find + the three readers
+    syntax_stmt("guard", &sd_guard);             // M31: a statement on every exit edge
+    on_jump(&sd_on_jump);                        // M31: return / break / continue
+    syntax_expr("jumpdepth", &sd_jumpdepth);     // the two M31 counters, readable
+    syntax_expr("retcount",  &sd_retcount);
     // the operator's runtime, as a second source: the same mechanism an
     // instantiation uses, at the simplest point there is — before the first
     // token of the real file has been read, so no lookahead is at stake

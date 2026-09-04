@@ -128,7 +128,108 @@ the pointer for `callp`. Locals live at `[sp, #k]`.
 
 ---
 
-## 4. Sections
+## 4. The ABI the generated code guarantees
+
+`gen_lower` is not only an implementation: a **taught runtime** — a syscall wrapper written with
+`#opcode`, an atomic, a thread entry point handed out as `&f`, a debugger walking frames — depends
+on the register and frame conventions below, and violating one of them fails at run time with no
+diagnostic at all. They are written down here so that a change to the code generator is a change to
+a documented contract, and `scripts/check-surface.sh` asserts every claim on this page against
+`--dump-asm`, one function at a time.
+
+### Parameters arrive in `x0..x7` and the prologue does not clobber them
+
+At most eight parameters, never one on the stack (`MAXPARAMS`, `at most 8 parameters`). The
+prologue is three instructions, then one store per parameter, in declaration order, and it **reads**
+the argument registers without writing any of them:
+
+```
+_abi8:
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  sub sp, sp, #64
+  str x0, [sp, #56]
+  ...
+  str x7, [sp]
+```
+
+That is what lets `lib/sys_svc.mc` write a whole syscall as two `#opcode` words: when
+`write(i64 fd, uptr buf, i64 n)` reaches its first body instruction, `x0`, `x1` and `x2` still hold
+the caller's arguments, and only `x16` has to be set.
+
+### The epilogue leaves `x0` alone
+
+The epilogue is `add sp, sp, #F` (absent when `F == 0`), then exactly `ldp x29, x30, [sp], #16` and
+`ret`. None of the three touches `x0`, so a function whose body ends without a `return` hands back
+whatever `x0` holds — how `svc` returns the kernel's value, and how an `#opcode` sequence returns a
+result the compiler never materialised.
+
+### A zero-parameter, zero-local function has `frame == 0`
+
+The frame is `(frame_off + 15) & ~15`; when it comes out 0 the `sub`/`add sp` pair becomes `I_NOP`
+and no word is emitted for it. The `stp`/`ldp` pair is **always** emitted, even for a leaf: the frame
+record is unconditional, which is what makes a stack walk possible.
+
+```
+_abileaf:
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  movz x9, #7
+  mov x0, x9
+  b L1
+L1:
+  ldp x29, x30, [sp], #16
+  ret
+```
+
+`sp` is 16-byte aligned at every instruction, and a frame over 4095 bytes is `frame too large`.
+
+### The register partition
+
+| registers | role |
+|---|---|
+| `x0..x7` | arguments in, `x0` the result out |
+| `x8` | scratch, used only for the quotient of `%` (`REG_TMP`) |
+| `x9..x15` | expression depths 0..6 (`REG_BASE 9`, `REG_MAX 6`) |
+| `x16`, `x17` | spill scratch (`REG_S1`/`REG_S2`), and `x16` carries the pointer of `callp` |
+| `x18..x28` | **never written, never read** |
+| `x29`, `x30` | frame pointer and link register, saved and restored by every function |
+| `sp` | the frame; locals live at `[sp, #k]` |
+
+Depth 7 and beyond spills to the frame through `x16`/`x17`. `x18..x28` are the callee-saved half of
+the ABI that generated code never uses: `--dump-asm src/mc.mc` is 58 355 lines and mentions none of
+them. A taught runtime may therefore keep state in `x19..x28` across generated code — a coroutine
+switch, a thread pointer — and a future register allocator that spent them would silently break
+every such runtime, which is exactly why the claim is written down and tested.
+
+### `callp(p, a1..a7)`
+
+The pointer goes to `x16`, the arguments to `x0..x6` — one fewer than a direct call, because `x16`
+is taken — and the call is `blr x16`; the result is read from `x0` as `i64`. Live depths are spilled
+around it exactly as they are around a `bl`.
+
+```
+  mov x16, x9          // the pointer
+  mov x0, x10          // the first argument
+  blr x16
+  mov x9, x0           // the result
+```
+
+An mc `uptr f(uptr)` is therefore a C `void *(*)(void *)`: one integer in, one out, no shim.
+
+### `#opcode` names registers, the compiler allocates none
+
+An `#opcode` word folds to one raw 32-bit instruction whose operands are **constants**
+(`#opcode argument not constant`); the register numbers in it are written by the author, not chosen
+by the compiler. The rule that makes such a word usable is the one above: the compiler emits it
+where it stands, between the prologue's parameter stores and whatever follows, and never inserts an
+instruction of its own in the middle. A sequence that must not be interrupted therefore has to fit
+in **one** function body — splitting an `ldxr`/`stxr` pair across two one-word `#opcode` functions
+puts a frame store and a `ret` between them.
+
+---
+
+## 5. Sections
 
 A `Section` is a flat record: two inline 16-byte names, flags, alignment (log2), an inline
 buffer, a zerofill size, and the relocation array.
@@ -161,7 +262,7 @@ The four sections the core itself uses are `__TEXT,__text` (flags `0x80000400`),
 
 ---
 
-## 5. Symbols
+## 6. Symbols
 
 A `Symbol` is `(name, sect, value, global)`, where `sect` is 1-based and `0` means undefined.
 
@@ -189,7 +290,7 @@ is what `--dump-syms` is.
 
 ---
 
-## 6. Relocations
+## 7. Relocations
 
 ```c
 void reloc_add(i64 sec, i64 off, i64 sym, i64 type, i64 pcrel, i64 len);
@@ -217,7 +318,7 @@ restricted to the three 4-byte kinds.
 
 ---
 
-## 7. Writing the file
+## 8. Writing the file
 
 `void macho_write(uptr path)` writes the `MH_OBJECT`. Every field goes out byte by byte in
 little-endian through `buf_u8/u16/u32/u64` — never a struct write — which is what makes the
@@ -239,7 +340,7 @@ One thing it refuses: a relocated pointer inside `__TEXT`, because that segment 
 
 ---
 
-## 8. Writing a backend
+## 9. Writing a backend
 
 ```c
 // my_backend.mc

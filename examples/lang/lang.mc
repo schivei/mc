@@ -74,4 +74,15 @@ void user_init() {
 
     syntax_infix(".", 12, &lg_dot);
     syntax_infix("[", 13, &lg_index);
+
+    // M31: the chain point for a module STACKED on this one. A compiler holds
+    // exactly one `user_init` and this is it, so a second module -- for
+    // instance examples/conc, whose taught compiler is `["../lang/lang.mc",
+    // "conc.mc"]` -- has nowhere else to register from. The default definition
+    // is one empty function in lang_solo.mc, the last entry of this project's
+    // [compiler].modules; a project that stacks a module supplies its own
+    // instead. Everything above has already run, so the stacked module sees a
+    // complete `lx` and can chain over any of it (syntax_stmt_find /
+    // syntax_stmt_fn_at is how conc.mc wraps lg_block).
+    lg_more();
 }

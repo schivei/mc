@@ -1,0 +1,41 @@
+// The ownership convention, and the one thing atomic counts do NOT give you.
+//
+// A direct call BORROWS, because the caller outlives the callee. An intent's
+// callee may run after the caller's scope is gone, so it_arg CAPTURES: `own = 1`
+// increments a borrowed value and `own = 2` moves an already-owned temporary in
+// with no increment. The intent's release drops whatever it holds.
+//
+// Here the object is created in an inner scope, handed to a spawned task, and
+// the scope ENDS before the task can possibly have run. Without the capture the
+// task reads freed memory; with it, the count is 2 at the spawn, 1 after the
+// scope, and 0 when the intent is released.
+// expect-exit: 0
+// expect-stdout: 7
+// expect-stdout: 1
+// expect-stdout: 0
+// expect-stdout: 0
+#include "../lib/prelude.lx"
+
+i64 seen = 0;
+i64 disposed = 0;
+
+class Item {
+    i64 v;
+    fn init(self, i64 v) { self.v = v; }
+    fn dispose(self) { atomic_add(&disposed, 1); }
+}
+
+fn use_later(Item it) { atomic_add(&seen, it.v); }
+
+fn main() -> i64 {
+    {
+        Item x = new Item(7);
+        spawn use_later(x);
+    }                                          // x is released HERE
+    quiesce();
+    print(seen);
+    print(disposed);
+    print(live());
+    print(used() - peak());                    // the arena never grew past peak
+    return 0;
+}

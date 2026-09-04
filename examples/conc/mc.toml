@@ -1,0 +1,44 @@
+# mc.toml — the whole directory built by `mc build`, with no make and no ld:
+#
+#   ../../build/mc1 build examples/conc       # from the repository root
+#   ../../build/mc1 build                     # from inside examples/conc
+#
+# Two steps come out of it: the taught compiler (`build/mc-conc`, the `mc` core
+# plus the `lx` module plus the concurrency module) and then `main.lx` compiled
+# BY that binary into a signed executable. Nothing in src/ changes.
+
+[project]
+name  = "conc"
+entry = "main.lx"
+out   = "build/conc-demo"
+kind  = "exe"
+
+[target]
+os   = "macos"
+arch = "aarch64"
+
+# The taught compiler is TWO modules stacked, in this order: `lx` first
+# (classes, interfaces, generics, namespaces, reference counting), then the
+# concurrency module on top of it (`spawn`, `intent`, `await`, `lock`, `chan`).
+#
+# examples/lang is unchanged except for the chain point its `user_init` ends
+# with, `lg_more()`: a compiler holds exactly one `user_init` and lang.mc's is
+# it. examples/lang's own mc.toml lists `lang_solo.mc`, an empty `lg_more`;
+# here that file is left out and conc.mc defines `lg_more` instead.
+#
+# There is no `core` key: the core comes from the binary's own bundle,
+# `#include <mc/core>`, so this directory contains no path into src/ at all.
+[compiler]
+modules = ["../lang/lang.mc", "conc.mc"]
+out     = "build/mc-conc"
+
+# Two modules is more source than one, and the static estimate is a function of
+# source BYTES. At the default 0.25 the `nodes` and `ins` tables double mid
+# build; at 1.0 nothing grows. `mc limits examples/conc` prints what it costs.
+[limits]
+tolerance = 1.0
+
+# `#include "lib/prelude.lx"` already resolves against main.lx's own directory;
+# this root is what lets a file be moved into lib/ and included by bare name.
+[include]
+paths = ["lib"]

@@ -769,6 +769,62 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   Golden rewritten ONCE, from `06157cbe…7731d5` to
   `8c848b105b838d049290643a320348c14988404fe058014c8ec09851e8ee2b06`, only after the empty
   `--dump-asm` diff and `cmp build/mc2.o build/mc3.o`.
+- M31 core ✔ (`docs/specs/M31.md` § 2, the three gaps the concurrency panel found; the example
+  `examples/conc` is a separate step). All three are generic and inert for an untaught program.
+  1. **`decl_find` and the readers** (`src/parse.mc`, a 75-line block inside the public API section; the file grows +119 in total, the rest being the `on_jump` half):
+     `decl_find(name)` walks `unit_head` linearly, in declaration order, and returns the node index
+     of the `N_FUNC`/`N_PROTO`/`N_EXTERN`, -1 if none; `decl_ret`, `decl_nparams`,
+     `decl_param_type` read it; `decl_valid` is the guard, so an unchecked
+     `decl_ret(decl_find(f))` after a -1 gives -1 instead of reading the node table at random.
+     Only what has been parsed so far is visible, which is written down rather than hidden.
+     No module reads `unit_head` any more.
+  2. **`on_jump(&f)`** — `i64 f(i64 n, i64 kind, i64 depth)`, table in `src/hooks.mc` (+44, shaped
+     like `on_stmt`'s, arena tag `T_ONJUMP`), three call sites in `parse_stmt_core` through
+     `jump_hook`, so the hook runs at node creation, **before** any `on_stmt` hook and before
+     another module can rewrite the jump. `blk_depth` counts open blocks: `+1` in `parse_block`,
+     and in `stmt_syntax` when the dispatch token is `K_LBRACE` (a module that owns `{` opens a
+     block the core never sees) — each block exactly once; `parse_function` rebases it to 0, so
+     `depth` is per function. `p_blockdepth()` reads the same counter, which is what makes the
+     `depth` argument comparable to something (added beyond the spec's four lines for exactly
+     that reason). 0 from a handler drops the jump and an empty `N_BLOCK` takes its place.
+     What it does **not** see: a jump another module fabricates never goes through
+     `parse_stmt_core`.
+  3. **The ABI contract** (`docs/reference/objects.md` § 4, new; cross-referenced from
+     `machine.md`): parameters in `x0..x7` untouched by the prologue, `x0` untouched by the
+     epilogue, `frame == 0` for a zero-parameter zero-local function with the `stp`/`ldp` pair
+     still unconditional, depths `x9..x15`, scratch `x8`/`x16`/`x17`, `x18..x28` never written,
+     `callp` (pointer in `x16`, args `x0..x6`, `blr x16`, result `x0`), and the `#opcode`
+     fixed-register rule. `scripts/check-surface.sh` asserts each claim against `--dump-asm`:
+     six probe functions compared instruction by instruction, `lib/sys_svc.mc`'s `write` the same
+     way, and over `src/mc.mc` — **837 functions**, every prologue, `ret` preceded by exactly
+     `ldp x29, x30, [sp], #16`, and **0** mentions of `x18..x28` in 58 914 lines.
+  Demos in `lib/user_syntax_demo.mc` (468 -> 629 lines): `widen x = f(a);` takes the local's type
+  from `decl_ret` and casts each argument to `decl_param_type` (the FFI half: a C callee does not
+  narrow its own arguments), and `guard EXPR { ... }` runs one statement on every exit edge —
+  the fall-through and each jump inside the body. Ordering is proved by a number: `retcount`, the
+  module's count of statements that still looked like an `N_RETURN` when `on_stmt` ran, does not
+  move for a guarded jump. Negative cases `tests/err/067`–`070` (unknown callee, void result,
+  wrong arity, `break N` out of a guard), each asserted with its exact message.
+  Docs: `docs/surface.md` § Tier 3 (seven registrations now) + a new § M31,
+  `docs/reference/hooks.md` (`on_jump`, the `decl_*` family, `p_blockdepth`, and `decl_name`,
+  which the widened `decl_` prefix in `scripts/check-docs.sh` newly requires),
+  `docs/reference/objects.md` § 4, `docs/reference/machine.md`.
+  — `stage0/` untouched, 2846/3000. `make bundle` re-run: 33 files, raw 424421 B -> LZ 191969 B,
+  blob 192307 B. `make check` green end to end (RC 0): `test` 32/32, `check-lex` 71/71,
+  `check-ast` 71/71, `check-bundle` (lz round trip 57 cases), `check-asm` 71/71, `check-obj`
+  32/32 (inert), `bootstrap` at a fixed point (`mc2.o == mc3.o`, 543128 bytes; the `--dump-asm`
+  diff between `mc1` and `mc2` empty), `check-surface` 32/32 plus the new `decl_find`/`on_jump`
+  cases and the nine ABI assertions, `test-exe` 32/32, `check-mc` 6/6, `check-standalone`,
+  `check-toml` 10/10, `check-build` 11/11, `check-limits` 16/16 under 90%, `test-linux` 32/32 on
+  linux/arm64, `check-examples`, `check-lang` (14 lx tests), `check-desktop`, `check-docs`
+  (121 symbols, 14 flags, 16 TOML keys, 10 directives, 44 samples, 112 links), `site` + `check-site`
+  (50 contrast pairs, 0 below the minimum). Golden rewritten ONCE, from
+  `8c848b105b838d049290643a320348c14988404fe058014c8ec09851e8ee2b06` to
+  `b7d47491036452c19d72faba7358b17bbefb20c7f6b4f61ae339c4a14c3c7583`, only after the empty
+  `--dump-asm` diff and `cmp build/mc2.o build/mc3.o`. The whole `--dump-asm` delta against the
+  previous compiler is the 10 new functions, the `T_*` renumbering (`T_ONJUMP` inserted after
+  `T_ONSTMT`), the four functions that gained the counter or the hook call, and `l_strN` index
+  shifts — no other body changed.
 - Next: M17 (`docs/specs/M17.md` — machine-interface split and x86-64); M13 stays in
   the backlog (`docs/specs/M13.md`: sizing a program's memory at compile time — the fixed 4 MiB
   arena in `examples/api/lib/rt.mc` is one more motivating case).

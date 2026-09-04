@@ -21,6 +21,11 @@
 // taught. `syntax_stmt("{", &f)` now also catches the blocks parse_function and
 // a `#rule` block hole parse, so a module that tracks scopes sees all of them.
 //
+// M31: `on_jump(&f)` is the second registration keyed by nothing. It fires on
+// the EXIT EDGES -- return, break, continue -- at the moment the core builds the
+// node, ahead of every on_stmt hook, which is the only place a scope guard can
+// put code that must run on every edge out of a block.
+//
 // M21: two more grammar positions, same shape. `syntax_expr(word, &f)` says the
 // word opens an EXPRESSION (`parse_primary` consults it first) and
 // `syntax_infix(word, prec, &f)` teaches a binary operator — that one keeps no
@@ -128,6 +133,45 @@ i64 run_on_stmt(i64 n) {
         if (i >= nonstmt) break;
         if (n == 0) break;
         n = callp(onstmt_fn_at(i), n);
+        i = i + 1;
+    }
+    return n;
+}
+
+// ---- M31 (2.2): on_jump, the exit edges of a scope ----
+// `on_jump(&f)` registers `i64 f(i64 n, i64 kind, i64 depth)`, called by
+// parse_stmt_core at the moment it builds an N_RETURN, an N_BREAK or an
+// N_CONTINUE -- BEFORE any on_stmt hook and before any other module can wrap
+// the node. `kind` is that node kind and `depth` how many blocks are open in
+// the current function (docs/reference/hooks.md). The handler returns the same
+// node, a replacement, or 0 to drop the jump.
+//
+// Why on_stmt is not a substitute: the first module to see a `return` normally
+// rewrites it -- examples/lang turns it into an N_BLOCK of releases -- so a
+// module registered behind it can no longer recognise the jump, let alone place
+// code on that edge. A scope guard (`lock (m) { ... }`, `defer`) has to cover
+// EVERY exit edge or it is a deadlock waiting to happen, which is why Go, Swift,
+// Zig and D all put this at language level.
+uptr onjump_fn;
+i64  onjumpcap = 0;
+i64  nonjump = 0;
+
+uptr onjump_fn_at(i64 i) { return ld64(onjump_fn + i * 8); }
+
+void on_jump(uptr fn) {
+    onjump_fn = grow(T_ONJUMP, onjump_fn, nonjump, &onjumpcap, 8);
+    st64(onjump_fn + nonjump * 8, fn);
+    nonjump = nonjump + 1;
+}
+
+// the jump through every hook, in registration order; 0 short-circuits, exactly
+// as run_on_stmt's does
+i64 run_on_jump(i64 n, i64 kind, i64 depth) {
+    i64 i = 0;
+    loop {
+        if (i >= nonjump) break;
+        if (n == 0) break;
+        n = callp(onjump_fn_at(i), n, kind, depth);
         i = i + 1;
     }
     return n;

@@ -71,20 +71,22 @@ extern uptr mmap(uptr addr, i64 len, i64 prot, i64 flags, i64 fd, i64 off);
 #define T_UNDEF    26
 #define T_PASSES   27
 #define T_ONSTMT   28
-#define T_BACKENDS 29
-#define T_SYNTAX   30
-#define T_ALIAS    31
-#define T_TOMLENT  32
-#define T_TOMLAOT  33
-#define T_HEAP     34
-#define T_COUNT    35
+#define T_ONJUMP   29
+#define T_BACKENDS 30
+#define T_SYNTAX   31
+#define T_ALIAS    32
+#define T_TOMLENT  33
+#define T_TOMLAOT  34
+#define T_HEAP     35
+#define T_COUNT    36
 
 uptr lim_names[] = {
     "tokens", "includes", "opens", "incpath", "nodes", "defines", "infix",
     "prefix", "opcodes", "sections", "dylibs", "extlib", "extpat", "rules",
     "funcs", "lowered", "globals", "strings", "locals", "loops", "prel",
     "ins", "symbols", "msecs", "xsecs", "xsegs", "undef", "passes",
-    "on_stmt", "backends", "syntax", "alias", "tomlent", "tomlaot", "heap"
+    "on_stmt", "on_jump", "backends", "syntax", "alias", "tomlent", "tomlaot",
+    "heap"
 };
 
 // cold-start capacity: what a table gets when the pre-scan said nothing about
@@ -94,7 +96,8 @@ i64 lim_seeds[] = {
     32, 32, 16, 8, 32, 16, 32,
     64, 64, 32, 64, 128, 16, 64,
     256, 64, 16, 32, 8, 64, 8,
-    8, 8, 16, 16, 128, 8, 0
+    8, 8, 8, 16, 16, 128, 8,
+    0
 };
 
 i64 lim_est[T_COUNT];                 // estimate, in elements

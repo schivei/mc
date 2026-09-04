@@ -1,0 +1,110 @@
+// `lock (m) { ... }` and the exit edges. Appending the unlock after the body --
+// the obvious version, and the one two design teams wrote -- misses exactly the
+// jumps: a `return` inside the body leaps over the unlock and the NEXT call
+// hangs forever. on_jump fires where the core builds the N_RETURN, before the
+// host module rewrites it into its block of releases, so the unlock lands on
+// every edge.
+//
+// Every function here is called twice on the SAME mutex. A missed unlock is a
+// hang, not a wrong number, which is why this file is worth its own timeout in
+// test.sh.
+// expect-exit: 0
+// expect-stdout: 50
+// expect-stdout: 2
+// expect-stdout: 50
+// expect-stdout: 3
+// expect-stdout: 3
+// expect-stdout: 3
+// expect-stdout: 3
+// expect-stdout: 12
+// expect-stdout: 12
+// expect-stdout: 60
+// expect-stdout: 60
+// expect-stdout: 0
+#include "../lib/prelude.lx"
+
+uptr gm = 0;
+
+// two returns out of the body, one of them conditional
+fn early(i64 x) -> i64 {
+    lock (gm) {
+        if (x > 3) { return x * 10; }
+        return x;
+    }
+    return 0;
+}
+
+// a `break` that stays INSIDE the lock: the loop it leaves was opened by the
+// body itself, so no unlock belongs on that edge
+fn inner_break(i64 n) -> i64 {
+    i64 s = 0;
+    lock (gm) {
+        for (i64 i = 0; i < n; i += 1) {
+            if (i == 3) { break; }
+            s += i;
+        }
+    }
+    return s;
+}
+
+// a `break` that LEAVES the lock: the loop is outside it, so the edge carries
+// an unlock
+fn outer_break(i64 n) -> i64 {
+    i64 s = 0;
+    for (i64 i = 0; i < n; i += 1) {
+        lock (gm) {
+            if (i == 3) { break; }
+            s += i;
+        }
+    }
+    return s;
+}
+
+// the same for `continue`. The loop is a `while` and the counter moves BEFORE
+// the lock: `continue` inside an `lx` `for` jumps over the step, which is the
+// host language's own trap and has nothing to do with the lock.
+fn outer_continue(i64 n) -> i64 {
+    i64 s = 0;
+    i64 i = 0;
+    while (i < n) {
+        i += 1;
+        lock (gm) {
+            if (i == 3) { continue; }
+            s += i;
+        }
+    }
+    return s;
+}
+
+class Counter {
+    i64 v;
+    fn add(self, i64 d) -> i64 {
+        lock (gm) {
+            self.v = self.v + d;
+            return self.v;
+        }
+        return 0;
+    }
+}
+
+fn main() -> i64 {
+    gm = mutex_new();
+    print(early(5));
+    print(early(2));
+    print(early(5));
+    print(inner_break(10));
+    print(inner_break(10));
+    print(outer_break(5));
+    print(outer_break(5));
+    print(outer_continue(5));
+    print(outer_continue(5));
+    {
+        Counter c = new Counter();
+        print(c.add(20) + c.add(20));
+        Counter d = new Counter();
+        print(d.add(30) + d.add(30) - 30);
+    }
+    quiesce();
+    print(live());
+    return 0;
+}

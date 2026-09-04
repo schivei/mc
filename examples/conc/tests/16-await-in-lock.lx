@@ -1,0 +1,14 @@
+// Waiting while holding a lock is how two intents deadlock without the wait-for
+// graph ever seeing it: the second one is blocked on a mutex, not on an intent.
+// The module owns both words, so it keeps the depth itself and refuses.
+// expect-error: tests/16-await-in-lock.lx:12: await while holding a lock: release it first
+#include "../lib/prelude.lx"
+
+fn g() -> i64 { return 1; }
+
+fn main() -> i64 {
+    uptr m = mutex_new();
+    intent x = g();
+    lock (m) { await a = x; }
+    return 0;
+}

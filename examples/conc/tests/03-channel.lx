@@ -1,0 +1,51 @@
+// docs/specs/M31.md section 6.1: a producer on another thread sends N class
+// objects and drops its own reference to each ONE AT A TIME, immediately; the
+// consumer on this thread receives, uses and releases.
+//
+// This is the case atomic counts alone do not fix. What closes it is the
+// TRANSFER: the channel takes a reference of its own on send, so the sender's
+// scope exit cannot free an object the consumer has not looked at yet.
+// expect-exit: 0
+// expect-stdout: 5050
+// expect-stdout: 100
+// expect-stdout: 0
+// expect-stdout: 0
+#include "../lib/prelude.lx"
+
+i64 disposed = 0;
+
+class Item {
+    i64 v;
+    fn init(self, i64 v) { self.v = v; }
+    fn dispose(self) { atomic_add(&disposed, 1); }
+}
+
+fn produce(chan c, i64 n) {
+    for (i64 i = 1; i <= n; i += 1) {
+        Item it = new Item(i);
+        chan_send(c, it);
+    }                                          // `it` is released right here
+    chan_close(c);
+}
+
+fn consume(chan c) -> i64 {
+    i64 s = 0;
+    while (1) {
+        Item it = chan_recv(c);                // the channel's reference moves in
+        if (it == 0) { break; }                // closed and drained
+        s += it.v;
+    }
+    return s;
+}
+
+fn main() -> i64 {
+    chan c = chan_new(4);                      // deliberately smaller than n
+    spawn produce(c, 100);
+    i64 s = consume(c);
+    quiesce();
+    print(s);
+    print(disposed);
+    print(chan_len(c));
+    print(live());
+    return 0;
+}

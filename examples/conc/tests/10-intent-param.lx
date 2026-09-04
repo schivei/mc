@@ -1,0 +1,7 @@
+// The same word in a parameter, refused the same way and for the same reason.
+// expect-error: tests/10-intent-param.lx:5: type expected
+#include "../lib/prelude.lx"
+
+fn h(intent x) { }
+
+fn main() -> i64 { return 0; }

@@ -99,3 +99,10 @@ Until the split lands, the seam that exists is the one in [objects.md](objects.m
 `gen_prel_*`. `lib/backend_arm64.mc` does exactly that and proves the seam is real by producing
 byte-identical objects. That is a *whole-encoder* replacement rather than a per-task one, which
 is precisely the gap M17 closes.
+
+What a *runtime* — rather than a backend — may rely on today is the register and frame contract in
+[objects.md](objects.md) § 4: parameters in `x0..x7` untouched by the prologue, `x0` untouched by
+the epilogue, depths in `x9..x15`, scratch in `x8`/`x16`/`x17`, `x18..x28` never written, and the
+unconditional `stp x29, x30` frame record. Every machine added here has to keep those or say
+plainly that it does not — they are what a `#opcode` syscall wrapper, an atomic and a stack walker
+are built on, and `scripts/check-surface.sh` asserts them against `--dump-asm`.

@@ -1,0 +1,10 @@
+// An intent that leaves its scope without being awaited. Dropping one is safe
+// -- it_release waits, and the queue holds a reference until the callee is done
+// -- but it is almost always a mistake, so the module refuses the straight-line
+// case from its chained `{` handler, at the position of the DECLARATION.
+// expect-error: tests/14-never-awaited.lx:10: intent is never awaited in this scope: x
+#include "../lib/prelude.lx"
+
+fn g() -> i64 { return 1; }
+
+fn main() -> i64 { intent x = g(); return 0; }

@@ -1,0 +1,9 @@
+// The result moves out of the intent on the first await, so a second one has
+// nothing to hand over. Refused at parse time; it_take also panics at run time
+// for the path the module cannot see.
+// expect-error: tests/15-awaited-twice.lx:9: this intent was already awaited: x
+#include "../lib/prelude.lx"
+
+fn g() -> i64 { return 1; }
+
+fn main() -> i64 { intent x = g(); await a = x; await b = x; return 0; }

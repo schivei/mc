@@ -1,0 +1,48 @@
+// docs/specs/M31.md section 6.5: `spawn` of a generic function -- the callee is
+// a method of an instantiation the HOST generated, so the mangled name has to
+// resolve and the arity switch has to carry `self`.
+//
+// decl_find answers about it because the instantiation was top_add'ed the
+// moment `Box<Circle, 4>` was first used, and cc_ret_class finds its record in
+// the host's method table rather than its function table.
+// expect-exit: 0
+// expect-stdout: 90
+// expect-stdout: 4
+// expect-stdout: 0
+#include "../lib/prelude.lx"
+
+class Shape { virtual i64 area(self) { return 0; } }
+
+class Circle : Shape {
+    i64 r;
+    fn init(self, i64 r) { self.r = r; }
+    override i64 area(self) { return 3 * self.r * self.r; }
+}
+
+class Box<T, const N: i64> where T : Shape {
+    T items[N];
+    i64 count;
+    fn push(self, T s) { self.items[self.count] = s; self.count += 1; }
+    fn total(self) -> i64 {
+        i64 t = 0;
+        for (i64 i = 0; i < self.count; i += 1) { t += self.items[i].area(); }
+        return t;
+    }
+}
+
+fn main() -> i64 {
+    {
+        Box<Circle, 4> b = new Box<Circle, 4>();
+        for (i64 i = 1; i <= 4; i += 1) {
+            Circle c = new Circle(i);
+            // the mangled callee, with `self` as argument 0
+            spawn Box__Circle__4_push(b, c);
+            quiesce();                         // push is not itself thread safe
+        }
+        print(b.total());                      // 3 * (1 + 4 + 9 + 16) = 90
+        print(b.count);
+    }
+    quiesce();
+    print(live());
+    return 0;
+}

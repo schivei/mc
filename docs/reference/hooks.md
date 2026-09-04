@@ -40,6 +40,7 @@ main()
   ├── user_init()                     <-- every registration below happens here
   ├── parse_unit()                    <-- syntax / syntax_stmt / syntax_expr /
   │                                       syntax_infix / type_alias / #rule,
+  │                                       on_jump on every return/break/continue
   │                                       and on_stmt on every statement node
   ├── run_passes()                    <-- pass(&f), in registration order
   ├── fold()
@@ -125,7 +126,7 @@ signature); `backend_elf` writes an ELF64 `ET_REL` for `EM_AARCH64`.
 
 ---
 
-## 3. Tier 3 — the five word registrations, and `on_stmt`
+## 3. Tier 3 — the five word registrations, and the two node hooks
 
 Each one claims a **word** in the lexer and a **grammar position**. All five refuse a core
 keyword (`cannot redefine core keyword`), and all five reserve the word for the *whole program*,
@@ -143,9 +144,9 @@ vocabulary, and the parser says so plainly —
 
 In every case the parse is stopped **on the registered word**; consuming it is the handler's job.
 
-`on_stmt(&f)` (M21.5) is the sixth registration and the odd one out: it claims no word, so none of
-the paragraph above applies to it — it observes every statement node after the fact. It has its own
-section below.
+`on_stmt(&f)` (M21.5) and `on_jump(&f)` (M31) are the two registrations that claim no word, so none
+of the paragraph above applies to them — they observe nodes the parser has just built. Each has its
+own section below.
 
 ### `void syntax(uptr word, uptr fn)`
 
@@ -289,6 +290,55 @@ that (`on_stmt + syntax_stmt("{") leave the AST byte for byte unchanged`).
 
 `uptr onstmt_fn_at(i64 i)` is the lookup side: the handler pointer of row `i`.
 
+### `void on_jump(uptr fn)` — the exit edges of a scope
+
+```c
+i64 f(i64 n, i64 kind, i64 depth)
+```
+
+Called by `parse_stmt_core` at the moment it builds an `N_RETURN`, an `N_BREAK` or an `N_CONTINUE`:
+**before** any `on_stmt` hook and before any other module has had the chance to rewrite the node.
+`n` is the node, `kind` is its node kind, and `depth` is how many blocks are open in the function
+being parsed. Handlers run in registration order, each receiving what the previous returned; a
+handler returns the same node, a replacement, or 0 to drop the jump — in which case an empty
+`N_BLOCK` takes its place, the same convention `syntax_stmt` and `on_stmt` already had. A 0
+short-circuits the hooks behind it.
+
+Why `on_stmt` is not a substitute: the first module to see a `return` normally *rewrites* it —
+`examples/lang` turns it into an `N_BLOCK` of reference releases — so a module registered behind it
+can no longer recognise the jump, let alone place code on that edge. A scope guard (`lock (m) { … }`,
+`defer`) has to cover **every** exit edge or it is a deadlock waiting to happen; appending the
+release after the body, which is the obvious version, misses exactly the jumps.
+
+```c
+// guard tick() { … } — the action on every edge out of the block
+i64 my_jump(i64 n, i64 kind, i64 depth) {
+    if (depth <= guard_depth) return n;           // not inside the guard body
+    if (kind == N_BREAK && nd_val(n) > 1)
+        err_node(n, "guard: break N leaves more than the guard body");
+    i64 st = act_stmt();                          // a fresh copy of the action
+    set_nd_next(st, n);                           // action, then the jump
+    i64 b = node_new(N_BLOCK, nd_line(n), nd_file(n));
+    set_nd_a(b, st);
+    return b;
+}
+void user_init() { on_jump(&my_jump); }
+```
+
+`depth` is what tells a jump inside the guard's own body from one the module reached by driving the
+parser somewhere else: `parse_function` rebases the counter, so a declaration the module generates
+mid-body starts its own function back at 1. Read the current value with `p_blockdepth()` — the guard
+records it when it opens its body and compares.
+
+**What it does not see.** `on_jump` fires where the *core* parses a jump. A node another module
+fabricates — `examples/lang`'s `for`, which builds an `N_BREAK` by hand — never goes through
+`parse_stmt_core` and is that module's own business.
+
+With nothing registered the parser does not even make the call (`nonjump == 0`); the objects an
+untaught compiler produces are byte for byte what they were.
+`uptr onjump_fn_at(i64 i)` is the lookup side, and `i64 run_on_jump(i64 n, i64 kind, i64 depth)` is
+what the parser calls.
+
 ---
 
 ## 4. The parser's public API
@@ -308,6 +358,7 @@ nothing else.
 | `uptr p_file()` | the file it came from, as `err_at` would print it |
 | `uptr p_start()` | where it starts in the source buffer being lexed |
 | `i64 p_depth()` | how many sources the lexer has pushed — used to notice that a pushed source has been exhausted |
+| `i64 p_blockdepth()` | how many blocks are open in the function being parsed — the same number an `on_jump` handler receives as `depth`, rebased to 0 by `parse_function` |
 
 ### Advancing
 
@@ -318,6 +369,7 @@ nothing else.
 | `void p_expect(i64 id, uptr msg)` | require the token; otherwise `err_at` with `msg` at its position |
 | `uptr p_ident()` | require a `T_IDENT` that is not a `#define` name, return it and advance (`name expected`) |
 | `i64 p_type()` | require a type word — core or alias — return the `TY_*` and advance (`type expected`) |
+| `uptr decl_name(uptr msg)` | the name in a *declaration*: a `T_IDENT`, or, inside a `#rule` template, an `ident $x` hole or a `$$t` gensym. `msg` is the error. `p_ident()` is the plain version; this is the one to use when the handler may be expanded from a `#rule` |
 
 ### Descending into the grammar
 
@@ -340,6 +392,38 @@ These four are the parser's own entry points, under stable names:
 | `i64 param_new(i64 ty, uptr name)` | a standalone `N_PARAM`, to prepend to a list |
 | `i64 list_append(i64 head, i64 n)` | append `n` to the end of the `nd_next` list and return the head |
 | `uptr p_cat(uptr name, uptr sfx, i64 off, i64 len)` | `name` followed by `len` bytes of `sfx` starting at `off`, fresh in the arena. Two suffixes out of one literal — how the compiler builds `NAME_size` and `NAME_raw` from a single `"_size_raw"` |
+
+### Asking about a declaration the core already parsed
+
+A module that lowers a call needs the **callee's** declared signature: the return type decides what
+the result may be bound to, and the parameter types decide what has to be marshalled. That answer
+lives in the unit the parser is building, and these five are the sanctioned way to it — before M31
+the only route was to walk `unit_head`, a parser internal.
+
+| function | returns |
+|---|---|
+| `i64 decl_find(uptr name)` | the node index of `name`'s `N_FUNC`, `N_PROTO` or `N_EXTERN`, or -1 |
+| `i64 decl_ret(i64 d)` | its declared return type as a `TY_*`, or -1 |
+| `i64 decl_nparams(i64 d)` | how many parameters it declares, or -1 |
+| `i64 decl_param_type(i64 d, i64 i)` | the declared type of parameter `i`, 0-based, or -1 |
+| `i64 decl_valid(i64 d)` | 1 when `d` is one of those three declaration kinds |
+
+The walk is linear over the unit in declaration order — `docs/determinism.md`, rule 1 — and the
+first declaration of a name answers, a prototype ahead of its definition carrying the same
+signature. The three readers answer -1 for anything that is not a declaration, so an unchecked
+`decl_ret(decl_find(f))` after a -1 gives -1 rather than reading the node table at random.
+
+**Only what has been parsed so far is visible.** The core resolves names at lowering time, which is
+how a call to a function declared further down works; a module that needs a callee declared *after*
+the use site asks again from a `pass()`, when the whole unit exists.
+
+```c
+// widen x = f(a);  ->  T x = f((P0) a);   with T and P0 from f's declaration
+i64 d = decl_find(callee);
+if (d < 0)                  err_at2(fl, line, "widen: unknown function", callee);
+if (decl_ret(d) == TY_VOID) err_at2(fl, line, "widen: cannot bind a void result", callee);
+i64 pt = decl_param_type(d, i);          // -1: more arguments than parameters
+```
 
 ### Record and replay
 
@@ -393,9 +477,9 @@ Too many entries for one frame is `too many substitutions`.
 
 ## 5. A worked example
 
-`lib/user_syntax_demo.mc` is the reference module: it teaches nine things with all five
-registrations and every record/replay function, and it is deliberately *not* a class system, so
-that the generality of the mechanism is demonstrated rather than asserted.
+`lib/user_syntax_demo.mc` is the reference module: it teaches eleven things with all five
+registrations, both node hooks and every record/replay function, and it is deliberately *not* a
+class system, so that the generality of the mechanism is demonstrated rather than asserted.
 
 | taught | mechanism |
 |---|---|
@@ -408,6 +492,8 @@ that the generality of the mechanism is demonstrated rather than asserted.
 | `p ~> len`, `p ~> len = 3`, `p ~> at(i)` | `syntax_infix` reading a name, an `=`, or a call |
 | `tmpl slot<T, N> { … }` | `p_skip_balanced` + `p_start` |
 | `make slot<i64, 3>;` | `p_push_source` + `p_subst_name`/`p_subst_int` + `p_depth` |
+| `widen x = f(a);` | `decl_find` + `decl_ret` + `decl_nparams` + `decl_param_type` |
+| `guard tick() { … }` | `on_jump` + `p_blockdepth` |
 
 `lib/mc_syntax_demo.mc` is the compiler that wires it in — two `#include`s and nothing else. The
 program below is compiled by *that* compiler; the default `mc` rejects its very first line with

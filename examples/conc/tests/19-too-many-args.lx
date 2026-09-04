@@ -1,0 +1,13 @@
+// Eight arguments at a spawn. The limit is `callp`'s -- the function pointer
+// plus seven words -- and the module owns this message because it is the CALL
+// SITE that is too wide, which is not what the host's own MAXPARAMS refuses: a
+// callee DECLARED with eight parameters never gets this far ("too many
+// parameters", from examples/lang's parameter list), so without a call like the
+// one below the module's own check and its fixed-size argument buffers would
+// never be exercised at all.
+// expect-error: tests/19-too-many-args.lx:13: an intent takes at most 7 arguments: seven
+#include "../lib/prelude.lx"
+
+fn seven(i64 a, i64 b, i64 c, i64 d, i64 e, i64 f, i64 g) -> i64 { return a + g; }
+
+fn main() -> i64 { spawn seven(1, 2, 3, 4, 5, 6, 7, 8); return 0; }

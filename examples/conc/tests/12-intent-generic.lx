@@ -1,0 +1,8 @@
+// The same word as a generic argument. Here the host gets far enough to name
+// it, because a type argument is read as a lexeme before it is resolved.
+// expect-error: tests/12-intent-generic.lx:8: unknown type: intent
+#include "../lib/prelude.lx"
+
+class Box<T> { T a; }
+
+fn main() -> i64 { Box<intent> b = new Box<intent>(); return 0; }

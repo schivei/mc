@@ -1,0 +1,10 @@
+// `intent` is a statement word and NEVER a type_alias, so it is not a type in
+// any grammar position. The refusal is STRUCTURAL: there is no check to forget.
+// The message is the host's own type reader speaking, because examples/lang is
+// unmodified -- README.md records that trade.
+// expect-error: tests/09-intent-return-type.lx:8: type expected
+#include "../lib/prelude.lx"
+
+fn h() -> intent { return 0; }
+
+fn main() -> i64 { return 0; }

@@ -28,8 +28,14 @@ arch = "aarch64"
 # a 22 000-element array initializer -- one AST node per element -- and the
 # module did not fit next to it. M21.5 carries the blob as `#embed` bytes: one
 # node. The two copies are gone and this project needs no path into `src/`.
+#
+# M31: `lang_solo.mc` is the empty default of `lg_more()`, the chain point
+# lang.mc's `user_init` ends with. A compiler holds exactly one `user_init`, so
+# a module stacked on top of `lx` -- examples/conc, whose modules are
+# `["../lang/lang.mc", "conc.mc"]` -- has nowhere else to register from. Stacking
+# a module means dropping this file and defining `lg_more` in the new one.
 [compiler]
-modules = ["lang.mc"]
+modules = ["lang.mc", "lang_solo.mc"]
 out     = "build/mc-lang"
 
 # The reserve `mc build` takes from the estimate, before any table exists. The

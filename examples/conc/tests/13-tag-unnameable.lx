@@ -1,0 +1,16 @@
+// The tag class the `intent` word widens to has to be unnameable, or
+// `fn h() -> Intent` smuggles an intent out of a function and past every
+// restriction above.
+//
+// docs/specs/M31.md proposed `$Intent`, on the ground that the lexer never
+// forms an identifier containing `$`. True -- but it does form `$Intent` as ONE
+// hole token whose LEXEME is exactly "$Intent", and the host resolves a type by
+// lexeme, so `-> $Intent` was accepted and handed back the tag. The class is
+// therefore called `$Intent$`: a hole is `$` followed by identifier characters
+// and `$` is not one, so no single token can ever spell it.
+// expect-error: tests/13-tag-unnameable.lx:14: type expected
+#include "../lib/prelude.lx"
+
+fn h() -> $Intent { return 0; }
+
+fn main() -> i64 { return 0; }
