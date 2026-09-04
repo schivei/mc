@@ -740,8 +740,19 @@ i64 parse_primary() {
         // always did. nonlit == 0 short-circuits, so an untaught compiler does
         // not even make the callp.
         if (nonlit) {
+            uptr cp0 = cp;                   // lexer cursor before the handlers
+            uptr t0 = tok_start(cur);        // ... and the token they received
+            i64 l0 = tok_len(cur);           // ... and its length, for the message
             i64 t = run_syntax_lit();
             if (t) return t;
+            // the same rule the parameter position needs: a handler that scanned
+            // the literal, moved the cursor with p_take_lit and then declined
+            // would leave the core building an N_INT out of a token that no
+            // longer describes the source it covers, and the bytes it swallowed
+            // would vanish with no diagnostic at all
+            if (cp != cp0 || tok_start(cur) != t0)
+                err_at2(fl, line, "syntax_lit handler consumed tokens and returned 0",
+                        xstrdup(t0, l0));
         }
         i64 n = node_new(N_INT, line, fl);
         set_nd_val(n, tok_val(cur));
@@ -1811,6 +1822,17 @@ i64 p_blockdepth() { return blk_depth; }
 // identity to notice that a new parameter list has started.
 uptr p_decl_name() { return cur_decl; }
 
+// M41.5 (review): and the write side, which a handler that owns a declaration
+// needs. parse_top and parse_extern set cur_decl the moment they read the name,
+// but a `syntax` handler that parses a container and calls the PUBLIC
+// parse_params()/parse_function() per member reads those names itself -- the
+// core never sees them, so p_decl_name() would answer the enclosing
+// declaration's name, or 0. A handler in that position announces the member
+// BEFORE calling parse_params(), and every syntax_param handler that keys
+// anything by p_decl_name() then works inside the container exactly as it does
+// at the top level. Cleared by top_add, like the core's own.
+void p_set_decl_name(uptr name) { cur_decl = name; }
+
 // M21 (2.3): records a delimited region WITHOUT parsing it. Enter with `cur` on
 // the opening token; returns the source bytes of the whole span, delimiters
 // included, with its size in *plen, and leaves the parser just past the closing
@@ -1986,7 +2008,15 @@ i64 parse_function(i64 ty, uptr name, i64 params) {
     // the depth of wherever it was standing.
     i64 d0 = blk_depth;
     blk_depth = 0;
+    // M41.5 (review): the body is part of the declaration, so p_decl_name()
+    // answers `name` while it is being read -- which is what a handler that
+    // owns a container and calls this per member needs. The previous value is
+    // restored rather than cleared: a module may generate a declaration from
+    // inside a body (p_push_source + top_add), and the outer one is not over.
+    uptr n0 = cur_decl;
+    cur_decl = name;
     i64 body = parse_block();
+    cur_decl = n0;
     blk_depth = d0;
     i64 f = node_new(N_FUNC, line, fl);
     set_nd_name(f, name);
@@ -2011,9 +2041,22 @@ i64 param_syntax() {
     uptr fl = tok_file(cur);
     uptr cp0 = cp;                               // lexer cursor before the handler
     uptr t0 = tok_start(cur);                    // ... and the token it received
+    i64 l0 = tok_len(cur);                       // ... and its length, for the message
     i64 p = run_syntax_param();
-    if (p == 0) return 0;                        // nobody claimed it: the core reads it
-    if (cp == cp0 && tok_start(cur) == t0)
+    // Both answers are checked, and the 0 half is the one that bites. A handler
+    // that read tokens and then declined leaves parse_params in the MIDDLE of a
+    // parameter, and the core then reads whatever is left as a whole parameter:
+    // a handler that ate `i64 x ,` turns f(i64 x, i64 y, i64 z) into f(y, z),
+    // which compiles clean and runs with the wrong arity. Declining is only
+    // sound from the position the handler was called at.
+    i64 moved = cp != cp0 || tok_start(cur) != t0;
+    if (p == 0) {
+        if (moved)
+            err_at2(fl, line, "syntax_param handler consumed tokens and returned 0",
+                    xstrdup(t0, l0));
+        return 0;                                // nobody claimed it: the core reads it
+    }
+    if (!moved)
         err_at2(fl, line, "syntax_param handler consumed no tokens", cur_name());
     if (p < 0 || p >= nnodes || nd_kind(p) != N_PARAM)
         err_at(fl, line, "syntax_param handler did not return a parameter");

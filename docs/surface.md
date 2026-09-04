@@ -1447,16 +1447,29 @@ after the `)` test and **before `type_of_token`**. The handler returns the `N_PA
 **0**, "the core handles this one". Handlers run in registration order, the first non-zero answer
 wins, and with none registered the branch is not taken.
 
-Two guards, the same shape the other handler positions have: a handler that returns a node without
-consuming a token is refused (`syntax_param handler consumed no tokens: <word>`), and so is a node
-that is not an `N_PARAM` (`syntax_param handler did not return a parameter`) — that node goes
-straight into a list `gen_lower` walks by `nd_type`/`nd_name`, so anything else is a wrong frame
-layout later rather than a diagnostic here.
+Three guards, the same shape the other handler positions have: a handler that returns a node
+without consuming a token is refused (`syntax_param handler consumed no tokens: <word>`), and so is
+a node that is not an `N_PARAM` (`syntax_param handler did not return a parameter`) — that node
+goes straight into a list `gen_lower` walks by `nd_type`/`nd_name`, so anything else is a wrong
+frame layout later rather than a diagnostic here.
 
-`p_decl_name()` comes with it: the name of the top-level declaration being parsed, 0 between
-declarations. A handler needs it to know *whose* parameter it is reading — in
-`lib/user_syntax_demo.mc`, `i64 f(i64 x, i64 y = 10)` and `i64 g(i64 x, i64 y = 30)` differ only
-in a default at the same parameter index, and the module keys its table by that name.
+The third came out of the review, and it is the one with teeth: **0 means the handler read
+nothing.** A handler that consumed tokens and *then* declined leaves `parse_params` in the middle
+of a parameter, and the core reads whatever is left as a whole one — a handler that ate `i64 x ,`
+turns `i64 f(i64 x, i64 y, i64 z)` into a two-parameter `f(y, z)` that compiles clean and runs with
+the wrong arity. That is now `syntax_param handler consumed tokens and returned 0: <word>`, and
+M24's literal position, which had the same latent shape, answers `syntax_lit handler consumed
+tokens and returned 0: <literal>`.
+
+`p_decl_name()` comes with it: the name of the declaration being parsed, 0 between declarations. A
+handler needs it to know *whose* parameter it is reading — in `lib/user_syntax_demo.mc`,
+`i64 f(i64 x, i64 y = 10)` and `i64 g(i64 x, i64 y = 30)` differ only in a default at the same
+parameter index, and the module keys its table by that name. The core sets it where the core reads
+the name: `parse_top`, `parse_extern`, and `parse_function` for the duration of the body. A handler
+that owns a container and declares its members itself reads those names itself, so it announces
+each one with **`p_set_decl_name(name)`** before calling `parse_params()` — the demo's
+`capsule Name { … }` is that shape, and without the announcement its two members cannot be told
+apart.
 
 **The core does nothing with what the handler recorded.** Filling `f(1)` in is the module's own
 half, done from a `pass()` with `decl_find` + `decl_nparams`, where the whole unit exists. That

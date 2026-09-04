@@ -487,6 +487,12 @@ A module that registers `syntax_lit` and answers 0 for every literal must produc
 trees and objects to a compiler without the hook; `lib/user_lit_nop.mc` is that module, and
 `scripts/check-surface.sh` runs it over the whole `tests/` corpus.
 
+Declining has the same rule the parameter position has: **0 means the handler read nothing.** A
+handler that moved the cursor with `p_take_lit` and then answered 0 would leave the core building
+its `N_INT` out of a token whose span no longer covers what was read, and the bytes it swallowed
+would be gone with no diagnostic; that is `syntax_lit handler consumed tokens and returned 0:
+<literal>` (M41.5, from the review).
+
 ### `void syntax_param(uptr fn)` — the parameter position (M41.5)
 
 Registers `i64 f()`, consulted by `parse_params` at the head of its loop — **right after the `)`
@@ -523,11 +529,28 @@ The core does nothing with what the handler recorded: **completing the call is t
 half**. `lib/user_syntax_demo.mc` does it from a `pass()`, where the whole unit exists, with
 `decl_find` + `decl_nparams` (§ 4).
 
-Two guards, both raised at the parameter's own position:
+`p_decl_name()` is what makes that record belong to something. It is set by the core on the
+`parse_top` / `parse_extern` / `parse_function` path — the paths where the core reads the name
+itself. A `syntax` handler that owns a *container* and declares its members with the public
+`parse_params()` and `parse_function()` reads those names itself, so it has to announce each one
+with **`p_set_decl_name(name)` before calling `parse_params()`**; without it every member answers
+the enclosing declaration's name, or 0, and two members with a default at the same parameter index
+are indistinguishable. `lib/user_syntax_demo.mc`'s `capsule Name { … }` is that shape, and
+`scripts/check-surface.sh` compiles two members that differ only in the value of the default at
+the same index.
+
+**Declining is only sound from the position the handler was called at.** 0 means "I read nothing
+and the core reads this parameter", so a handler that consumed tokens and *then* answered 0 would
+leave `parse_params` in the middle of a parameter and the core would read whatever is left as a
+whole one — a handler that ate `i64 x ,` turns `i64 f(i64 x, i64 y, i64 z)` into a two-parameter
+`f(y, z)` that compiles clean and runs with the wrong arity. The core checks it.
+
+Three guards, all raised at the parameter's own position:
 
 | message | when |
 |---|---|
 | `syntax_param handler consumed no tokens: <word>` | the handler returned a node without advancing — `parse_params` would offer it the same token forever |
+| `syntax_param handler consumed tokens and returned 0: <word>` | the handler read part of the parameter and then declined (M41.5, from the review) |
 | `syntax_param handler did not return a parameter` | what came back is not an `N_PARAM`. That node goes straight into a list `gen_lower` walks by `nd_type`/`nd_name`, so anything else is a wrong frame layout later, not a diagnostic here |
 
 The `MAXPARAMS` count and the `at most 12 parameters` diagnostic apply to what the handler returns,
@@ -655,7 +678,8 @@ nothing else.
 | `uptr p_start()` | where it starts in the source buffer being lexed |
 | `i64 p_depth()` | how many sources the lexer has pushed — used to notice that a pushed source has been exhausted |
 | `i64 p_blockdepth()` | how many blocks are open in the function being parsed — the same number an `on_jump` handler receives as `depth`, rebased to 0 by `parse_function` |
-| `uptr p_decl_name()` | the name of the top-level declaration being parsed, or 0 between declarations. Set the moment `parse_top`/`parse_extern` read the name — so it is already there in `parse_params` — and cleared by `top_add`. The pointer does not move while the declaration is read, so a handler may compare it by identity to notice that a new parameter list has started (M41.5) |
+| `uptr p_decl_name()` | the name of the top-level declaration being parsed, or 0 between declarations. Set the moment `parse_top`/`parse_extern` read the name — so it is already there in `parse_params` — by `parse_function` for the duration of the body, and cleared by `top_add`. The pointer does not move while the declaration is read, so a handler may compare it by identity to notice that a new parameter list has started (M41.5) |
+| `void p_set_decl_name(uptr name)` | say whose declaration is being read. **Required** of a handler that owns a declaration and calls `parse_params()` itself: `p_decl_name()` is trustworthy on the `parse_top`/`parse_extern`/`parse_function` path, and only there — the core never sees a member name a `syntax` handler read, so without this call `p_decl_name()` answers the enclosing declaration's name, or 0, for every member (M41.5) |
 
 ### Advancing
 
@@ -683,7 +707,7 @@ These four are the parser's own entry points, under stable names:
 
 | function | effect |
 |---|---|
-| `i64 parse_function(i64 ty, uptr name, i64 params)` | reads the body block and returns the assembled `N_FUNC`. The parameter list is passed in **already built**, which is how a `class` handler prepends `self` to every method |
+| `i64 parse_function(i64 ty, uptr name, i64 params)` | reads the body block and returns the assembled `N_FUNC`. The parameter list is passed in **already built**, which is how a `class` handler prepends `self` to every method. `p_decl_name()` answers `name` while the body is being read, and the previous value is restored on return (M41.5) |
 | `void top_add(i64 n)` | append an `N_FUNC`/`N_GLOBAL`/`N_EXTERN`/`N_PROTO` — or a list of them — to the unit, in order, tagged with the `#section` in effect. The only way out for a `syntax` handler |
 | `void def_add(uptr name, i64 val, i64 line, uptr fl)` | register a `#define`; refuses a repeated name |
 | `i64 param_new(i64 ty, uptr name)` | a standalone `N_PARAM`, to prepend to a list |

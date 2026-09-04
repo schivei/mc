@@ -42,8 +42,14 @@
 //   i64 g(params i64 xs)         a parameter that opens with a TAUGHT
 //                                word, lowered to `uptr xs`
 //
-// Two more, `pnop` and `pbad`, are broken on purpose the way `nop`/`nil` are:
-// tests/err/071 and tests/err/072 are their whole reason to be here.
+//   capsule Name { ... }         a container whose members the MODULE     (syntax
+//                                declares, with the public parse_params()  + p_set_decl_name
+//                                and parse_function(), announcing each      + parse_function)
+//                                member's name before its parameters
+//
+// Three more, `pnop`, `pbad` and `peat`, are broken on purpose the way
+// `nop`/`nil` are, and so is the syntax_lit handler `sd_leat` (a literal ending
+// in `q`): tests/err/071 to 074 are their whole reason to be here.
 //
 // Two more registrations, `nop` and `nil`, exist only to prove the two guards
 // the core puts around a syntax_expr handler; they are broken on purpose and
@@ -670,6 +676,26 @@ i64 sd_lit() {
     return n;
 }
 
+// broken on purpose, and the reason tests/err/074 exists: it scans a literal
+// that ends in `q`, moves the cursor past the whole thing with p_take_lit --
+// and then declines. Nothing downstream could recover: the core would build its
+// N_INT out of tok_val, a token whose span no longer covers what was read, and
+// the bytes the handler swallowed would be gone with no diagnostic. Registered
+// LAST, so that no later handler can claim the position it left in the middle.
+i64 sd_leat() {
+    uptr s = p_start();
+    uptr e = p_src_end();
+    if (s >= e || !sd_dig(ld8(s))) return 0;
+    uptr q = s;
+    loop {
+        if (q >= e || !sd_dig(ld8(q))) break;
+        q = q + 1;
+    }
+    if (q >= e || ld8(q) != 'q') return 0;       // only `123q` is ours
+    p_take_lit(q + 1);                           // consumed...
+    return 0;                                    // ...and then declined
+}
+
 // ---- M24 (M7): a NAMED HARDWARE INSTRUCTION, on values the allocator placed ----
 // `rbit(x)` is AArch64's bit-reversal, which the core's operator set does not
 // have and `#opcode` cannot reach for an arbitrary expression: #opcode folds
@@ -713,6 +739,7 @@ i64  sd_ndef = 0;
 i64 sd_tok_params = 0;                           // the taught word `params`
 i64 sd_tok_pnop   = 0;                           // broken on purpose: tests/err/071
 i64 sd_tok_pbad   = 0;                           // broken on purpose: tests/err/072
+i64 sd_tok_peat   = 0;                           // broken on purpose: tests/err/073
 
 // the parameter counter, and what makes p_decl_name() load-bearing: it is reset
 // whenever the declaration under the cursor changes. The pointer p_decl_name()
@@ -774,6 +801,52 @@ i64 sd_pbad() {
     if (p_id() != sd_tok_pbad) return 0;
     p_next();
     return sd_int(0, p_line(), p_file());        // consumed, but it is not an N_PARAM
+}
+
+// the third broken one, and the reason tests/err/073 exists: it reads a WHOLE
+// parameter, comma included, and then declines. Before the review's fix the
+// core took `0` to mean "nothing happened here" and read the next parameter as
+// if it were this one, so `i64 f(peat i64 x, i64 y, i64 z)` became a
+// two-parameter f(y, z) that compiled clean and ran with the wrong arity.
+// Registered LAST, so nothing after it can claim the position it abandoned.
+i64 sd_peat() {
+    if (p_id() != sd_tok_peat) return 0;
+    p_next();                                    // the `peat` word
+    p_type();                                    // ... the type ...
+    p_ident();                                   // ... the name ...
+    p_accept(K_COMMA);                           // ... and the separator
+    return 0;                                    // consumed, and then declined
+}
+
+// ---- M41.5 (review): a container whose members the MODULE declares ----
+// capsule Name { i64 m(i64 x, i64 y = 10) { ... } }  ->  one ordinary top-level
+// function per member, read with the PUBLIC parse_params() and
+// parse_function(). It is here for exactly one reason: parse_top and
+// parse_extern set the declaration's name because they read it, and a handler
+// in this shape reads the member's name itself -- the core never sees it, so
+// p_decl_name() would answer the previous top-level name, or 0. The handler
+// announces the member with p_set_decl_name() BEFORE calling parse_params(),
+// and sd_param's per-declaration bookkeeping then works inside the container
+// exactly as it works at the top level: two members with a default at the SAME
+// parameter index keep their own.
+void sd_capsule() {
+    p_next();                                    // the `capsule` word
+    p_ident();                                   // the container's name
+    p_expect(K_LBRACE, "expected { after the capsule name");
+    loop {
+        if (p_id() == K_RBRACE) break;
+        i64 line = p_line();
+        uptr fl = p_file();
+        i64 ty = p_type();
+        uptr mname = p_ident();
+        p_set_decl_name(mname);                  // whose parameters these are
+        i64 params = parse_params();
+        i64 f = parse_function(ty, mname, params);
+        set_nd_line(f, line);                    // the member starts at its type
+        set_nd_file(f, fl);
+        top_add(f);                              // ... and top_add clears the name
+    }
+    p_expect(K_RBRACE, "expected } to close the capsule");
 }
 
 // which recorded default, if any, belongs to parameter `idx` of `fname`
@@ -851,9 +924,13 @@ void user_init() {
     sd_tok_params = word_add("params");          // M41.5: the parameter position
     sd_tok_pnop   = word_add("pnop");            // broken on purpose: tests/err/071
     sd_tok_pbad   = word_add("pbad");            // broken on purpose: tests/err/072
+    sd_tok_peat   = word_add("peat");            // broken on purpose: tests/err/073
     syntax_param(&sd_pnop);
     syntax_param(&sd_pbad);
     syntax_param(&sd_param);                     // the one that claims real parameters
+    syntax_param(&sd_peat);                      // LAST: it consumes and declines
+    syntax_lit(&sd_leat);                        // LAST, for the same reason
+    syntax("capsule", &sd_capsule);              // p_set_decl_name, per member
     pass(&sd_defaults);                          // ...and completes the calls it enabled
     // the operator's runtime, as a second source: the same mechanism an
     // instantiation uses, at the simplest point there is — before the first

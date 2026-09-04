@@ -359,8 +359,31 @@ else
     fails=$((fails + 1))
 fi
 
-# and the default compiler refuses both, at the parameter list
-for f in syntax_param-default syntax_param-params; do
+# (d) M41.5 review: p_decl_name() inside a handler that owns the declaration.
+# `capsule` parses its members itself with the PUBLIC parse_params()/parse_function(),
+# so the core never reads their names -- p_set_decl_name() is what tells the
+# parameter position whose parameters these are. The two members carry a default
+# at the SAME index and differ only in its value: without the announcement the
+# module cannot tell them apart, and the demo's own guard says so
+# (`a default parameter needs a named declaration`).
+hook_case syntax_param-capsule 42 'capsule Counter {
+    i64 inc(i64 x, i64 y = 10) { return x + y; }
+    i64 dec(i64 x, i64 y = 30) { return x + y; }
+}
+i64 main() { return inc(1) + dec(1); }'
+
+if "$demo" --dump-ast "$tmp/syntax_param-capsule.mc" 2>&1 \
+     | sed -n '/^FUNC type=i64 name=main/,$p' | grep -q 'INT val=10' \
+   && "$demo" --dump-ast "$tmp/syntax_param-capsule.mc" 2>&1 \
+     | sed -n '/^FUNC type=i64 name=main/,$p' | grep -q 'INT val=30'; then
+    echo "ok p_set_decl_name: each member of the capsule kept its OWN default"
+else
+    echo "FAIL p_set_decl_name: the two members did not get different defaults"
+    fails=$((fails + 1))
+fi
+
+# and the default compiler refuses all three, at the parameter list
+for f in syntax_param-default syntax_param-params syntax_param-capsule; do
     if msg=$("$mc1" "$tmp/$f.mc" -o "$tmp/$f.o" 2>&1); then
         echo "FAIL: the default compiler accepted $f"
         fails=$((fails + 1))
@@ -403,11 +426,21 @@ err_case tests/err/069-widen-arity.mc \
 err_case tests/err/070-guard-break-level.mc \
     "tests/err/070-guard-break-level.mc:12: guard: break N leaves more than the guard body"
 
-# ---- M41.5: the two guards the parameter position needs ----
+# ---- M41.5: the three guards the parameter position needs ----
 err_case tests/err/071-param-noadvance.mc \
     "tests/err/071-param-noadvance.mc:13: syntax_param handler consumed no tokens: pnop"
 err_case tests/err/072-param-nonparam.mc \
     "tests/err/072-param-nonparam.mc:12: syntax_param handler did not return a parameter"
+# the review's finding: consuming and THEN declining. `sd_peat` reads
+# `peat i64 x` and the comma after it and answers 0, so before the fix this
+# source compiled clean as a two-parameter f(y, z) and ran with the wrong arity.
+err_case tests/err/073-param-consumed-zero.mc \
+    "tests/err/073-param-consumed-zero.mc:17: syntax_param handler consumed tokens and returned 0: peat"
+# ...and the same latent shape at M24's literal position: `sd_leat` claims a
+# literal ending in `q`, consumes it with p_take_lit and declines. Before the
+# fix this compiled to `return 7;` with the `q` swallowed.
+err_case tests/err/074-lit-consumed-zero.mc \
+    "tests/err/074-lit-consumed-zero.mc:14: syntax_lit handler consumed tokens and returned 0: 7"
 
 # ---- M31 (2.3): the ABI contract, asserted instruction by instruction ----
 # docs/reference/objects.md § 4 writes down what a TAUGHT RUNTIME relies on -- a
