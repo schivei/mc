@@ -51,7 +51,13 @@ for arch in $arches; do
     echo "== linux/$arch host =============================================="
     echo "=================================================================="
     echo "-- cross-build: $mc build src --config src/mc.linux-$arch.toml --"
-    scripts/sysroot-linux.sh --arch "$arch" "build/sysroot/linux-$arch" >/dev/null
+    # M42: no sysroot is fetched here any more. src/mc.linux-<arch>.toml lost
+    # its [linker] and its [sysroot] -- `mc build` writes the dynamic ELF64
+    # executable itself -- so the cross-build needs nothing but `mc`. The
+    # container below still installs musl-dev, because scripts/bootstrap-linux.sh
+    # links mc1l and mc2l with ld.lld against MC_SYSROOT: the SEED may be a
+    # published release older than this milestone, so that chain does not assume
+    # a `--exe` that only a new enough compiler has.
     rm -f "$bin"
     "$mc" build src --config "src/mc.linux-$arch.toml"
     ls -l "$bin"

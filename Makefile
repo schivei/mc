@@ -134,9 +134,12 @@ check-parts: build/mc1
 	scripts/check-parts.sh build/mc1
 
 # M11: the whole suite via the direct executable (--exe), no ld. Only the
-# .mc compiler has this backend, so the target depends on build/mc1.
-test-exe: build/mc1
-	scripts/test-exe.sh build/mc1
+# .mc compiler has this backend, so the target depends on $(MC) -- which is
+# build/mc1 on macOS and, since M42, the bootstrapped build/mc2l on a Linux
+# host, where `--exe` writes a dynamic ELF64 executable and is equally the whole
+# toolchain. Naming build/mc1 here would ask a Linux container for clang.
+test-exe: $(MC)
+	scripts/test-exe.sh $(MC)
 
 bootstrap: stage0
 	scripts/bootstrap.sh
@@ -424,13 +427,15 @@ mcrt-windows-x86_64: build/mc1
 	build/mc1 --backend=coff-obj-x86_64 lib/sys_windows_host.mc  -o build/sysroot/windows-x86_64/mcrt.obj
 
 # M37: cross-building `mc` itself for a Linux host, from macOS. Two configs,
-# two ELF executables, both statically linked against musl by ld.lld. The
-# sysroot prerequisite is what needs Docker: scripts/sysroot-linux.sh copies the
-# four musl files out of alpine:3.
-mc-linux: build/mc1 sysroot-linux
+# two ELF executables.
+# M42: DYNAMIC executables, written by `mc build` itself -- the two configs lost
+# their [linker] and their [sysroot], so these targets no longer need Docker,
+# no longer need ld.lld and no longer depend on sysroot-linux. Cross-building
+# the compiler for Linux is now one command with nothing installed.
+mc-linux: build/mc1
 	build/mc1 build src --config src/mc.linux-aarch64.toml
 
-mc-linux-x86_64: build/mc1 sysroot-linux-x86_64
+mc-linux-x86_64: build/mc1
 	build/mc1 build src --config src/mc.linux-x86_64.toml
 
 # M37: the same cross-build stopped one step earlier -- `kind = "obj"`, so no
