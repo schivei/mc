@@ -1,0 +1,37 @@
+# mc.linux.toml — linux/aarch64, statically linked against musl.
+#
+#   ../../build/mc1 build examples/minimal --config examples/minimal/mc.linux.toml
+#
+# `os = "linux"` switches the backend to `elf-obj` (M16): mc writes an ELF64
+# relocatable and hands it to the linker named below. There is no direct-ELF
+# backend, so [linker] is required — `ld.lld` here (brew install lld).
+#
+# {sysroot} is [sysroot].path, {obj} the object mc just wrote, {out} the
+# artifact, {libs} the libraries from [libs]/[externs] (none here). The four
+# files come out of alpine:3 via scripts/sysroot-linux.sh; run it once, or
+# `make sysroot-linux`.
+#
+# This is the variant that carries a whole C runtime for a program that uses
+# none of it: crt1.o pulls musl's __libc_start_main, which pulls the TLS and
+# stack-guard setup, the auxv walk and the exit machinery. See
+# docs/guide/80-footprint.md for what that costs.
+
+[project]
+name  = "minimal"
+entry = "main.mc"
+out   = "build/musl/minimal"
+kind  = "exe"
+
+[target]
+os   = "linux"
+arch = "aarch64"
+
+[sysroot]
+path = "../../build/sysroot/linux-aarch64"
+
+[linker]
+cmd  = "ld.lld"
+args = ["-o", "{out}",
+        "{sysroot}/crt1.o", "{sysroot}/crti.o",
+        "{obj}", "{libs}",
+        "{sysroot}/libc.a", "{sysroot}/crtn.o"]
