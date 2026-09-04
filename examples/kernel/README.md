@@ -222,5 +222,5 @@ MIPS64 lands in this shape almost exactly: fixed 32-bit instructions, a flat reg
 AVR and PIC do not, and the blocker is **not** the instruction set — it is the data model.
 `type_width` returns 8 and `slot_new(8)` is unconditional, so a ten-local function costs an
 80-byte frame on a chip with 2048 bytes of SRAM. Changing what a word means is a milestone of its
-own. [`docs/guide/95-a-new-architecture.md`](../../docs/guide/95-a-new-architecture.md) says which
+own. [`docs/guide/97-a-new-architecture.md`](../../docs/guide/97-a-new-architecture.md) says which
 families that excludes today, and why.

@@ -1338,7 +1338,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   **What only the Windows runners can prove**: that the kernel32 shims BEHAVE — a spawn, a wait,
   an exit code, a `VirtualAlloc`ed arena — and therefore the fixed point, the suite and the cross
   proof on a real Windows machine. Nothing Windows executes on this Mac.
-- M39 done (`docs/specs/M39.md`, `docs/guide/95-a-new-architecture.md`): **an architecture taught
+- M39 done (`docs/specs/M39.md`, `docs/guide/97-a-new-architecture.md`): **an architecture taught
   from the surface** -- `examples/kernel`, a bare-metal RISC-V 64 micro-kernel compiled by a taught
   compiler and booted under QEMU. **`git diff --stat src/ stage0/ lib/ tests/` is empty**: that is
   the milestone. Everything is under `examples/kernel/` (2563 lines):
@@ -1411,7 +1411,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
      `examples/kernel/mc.toml`, `examples/kernel/README.md` § Limits and `docs/build.md` § M39 all
      say so now instead of "at 1.0 nothing grows".
   -- `stage0/` untouched, 2846/3000; goldens NOT rewritten (`src/` untouched, so nothing can
-  move); `make bundle` not needed (`lib/` untouched). Docs: `docs/guide/95-a-new-architecture.md`
+  move); `make bundle` not needed (`lib/` untouched). Docs: `docs/guide/97-a-new-architecture.md`
   (new), `docs/reference/machine.md` (the riscv64 column, the third division answer, the G7
   obligation, and -- from the review -- the jump-range row and the rule that a machine whose field
   is too small says so with a diagnostic), `docs/reference/hooks.md` (the two corrections),

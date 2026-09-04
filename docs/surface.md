@@ -546,7 +546,7 @@ QEMU, prints, takes a trap, switches between two stacks and exits with a code of
 `src/`, `stage0/`, `lib/` and `tests/` gained **zero lines**: `git diff --stat` over those four is
 the milestone's headline. Two ways in and out of the compiler — a machine and a backend — plus
 `syntax`/`syntax_stmt`/`syntax_expr` are enough for an architecture the language had never heard
-of. [`docs/guide/95-a-new-architecture.md`](guide/95-a-new-architecture.md) is the path for
+of. [`docs/guide/97-a-new-architecture.md`](guide/97-a-new-architecture.md) is the path for
 somebody doing it again.
 
 ### The five built-in backends: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64` and `coff-obj-arm64`
