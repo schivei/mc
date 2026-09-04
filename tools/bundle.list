@@ -52,6 +52,7 @@ mc_f16	lib/mc_f16.mc
 mc_float	lib/mc_float.mc
 mc_i128	lib/mc_i128.mc
 mc_lit_nop	lib/mc_lit_nop.mc
+mc_param_nop	lib/mc_param_nop.mc
 mc_probe	lib/mc_probe.mc
 mc_syntax_demo	lib/mc_syntax_demo.mc
 pass_demo	lib/pass_demo.mc
@@ -71,5 +72,6 @@ user_dupop	lib/user_dupop.mc
 user_dupty	lib/user_dupty.mc
 user_float	lib/user_float.mc
 user_lit_nop	lib/user_lit_nop.mc
+user_param_nop	lib/user_param_nop.mc
 user_syntax_demo	lib/user_syntax_demo.mc
 user_tokadd	lib/user_tokadd.mc

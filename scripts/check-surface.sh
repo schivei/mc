@@ -320,6 +320,49 @@ else
     fails=$((fails + 1))
 fi
 
+# ---- M41.5: syntax_param, the parameter position ----
+# (a) a DEFAULT parameter. `y = 10` is not mc: the handler reads the whole
+# parameter, keeps the constant for itself, and the module completes `f(1)` from
+# a pass() with decl_find + decl_nparams. f(1) = 11, g(1) = 31.
+#
+# (c) p_decl_name(), with teeth: f and g differ ONLY in the default of the same
+# parameter index. A module that ignored p_decl_name() would key the table by
+# the index alone and give both the same number.
+hook_case syntax_param-default 42 'i64 f(i64 x, i64 y = 10) { return x + y; }
+i64 g(i64 x, i64 y = 30) { return x + y; }
+i64 main() { return f(1) + g(1); }'
+
+if "$demo" --dump-ast "$tmp/syntax_param-default.mc" 2>&1    | sed -n '/^FUNC type=i64 name=main/,$p' | grep -q 'INT val=10'    && "$demo" --dump-ast "$tmp/syntax_param-default.mc" 2>&1    | sed -n '/^FUNC type=i64 name=main/,$p' | grep -q 'INT val=30'; then
+    echo "ok p_decl_name: f and g got their OWN default at the same parameter index"
+else
+    echo "FAIL p_decl_name: the two calls did not get different defaults"
+    fails=$((fails + 1))
+fi
+
+# (b) a parameter that opens with a word the module taught. `params` stands
+# where the core demands a type, which is the whole reason the hook is consulted
+# BEFORE type_of_token; it lowers to an ordinary `uptr xs`.
+hook_case syntax_param-params 42 'u64 vals[2] = { 40, 2 };
+i64 sum2(params i64 xs) { return ld64(xs) + ld64(xs + 8); }
+i64 main() { return sum2(vals); }'
+
+if "$demo" --dump-ast "$tmp/syntax_param-params.mc" 2>&1 | grep -q '^ *PARAM type=uptr name=xs$'; then
+    echo "ok syntax_param: the taught word lowered to an ordinary uptr parameter"
+else
+    echo 'FAIL syntax_param: params i64 xs did not become PARAM type=uptr'
+    fails=$((fails + 1))
+fi
+
+# and the default compiler refuses both, at the parameter list
+for f in syntax_param-default syntax_param-params; do
+    if msg=$("$mc1" "$tmp/$f.mc" -o "$tmp/$f.o" 2>&1); then
+        echo "FAIL: the default compiler accepted $f"
+        fails=$((fails + 1))
+    else
+        echo "ok the default compiler rejects $f (${msg##*/})"
+    fi
+done
+
 # ---- M21: the tests/err/ cases, with their exact message ----
 err_case() {                        # err_case FILE EXPECTED-MESSAGE
     f="$1"; want="$2"
@@ -353,6 +396,12 @@ err_case tests/err/069-widen-arity.mc \
     "tests/err/069-widen-arity.mc:8: widen: wrong number of arguments: two"
 err_case tests/err/070-guard-break-level.mc \
     "tests/err/070-guard-break-level.mc:12: guard: break N leaves more than the guard body"
+
+# ---- M41.5: the two guards the parameter position needs ----
+err_case tests/err/071-param-noadvance.mc \
+    "tests/err/071-param-noadvance.mc:13: syntax_param handler consumed no tokens: pnop"
+err_case tests/err/072-param-nonparam.mc \
+    "tests/err/072-param-nonparam.mc:12: syntax_param handler did not return a parameter"
 
 # ---- M31 (2.3): the ABI contract, asserted instruction by instruction ----
 # docs/reference/objects.md § 4 writes down what a TAUGHT RUNTIME relies on -- a
@@ -799,6 +848,36 @@ else
         echo "ok syntax_lit returning 0: --dump-ast and objects identical over tests/"
     else
         fails=$((fails + litfails))
+    fi
+fi
+
+# M41.5, the same inertness shape for syntax_param: a module whose ONLY
+# registration is syntax_param and whose handler answers 0 for every parameter
+# has to produce exactly the tree and exactly the object the compiler without
+# the hook produces. The callp happens at every parameter of every function --
+# 0 is the handler declining, not the absence of a handler.
+pnop="build/mc-param-nop"
+rm -f "$pnop"
+if ! msg=$("$mc1" --exe lib/mc_param_nop.mc -o "$pnop" 2>&1); then
+    echo "FAIL: compiling lib/mc_param_nop.mc: $msg"
+    fails=$((fails + 1))
+else
+    pnfails=0
+    for f in tests/*.mc; do
+        [ -f "$f" ] || continue
+        "$mc1"  --dump-ast "$f" > "$tmp/pn0.ast" 2>&1
+        "$pnop" --dump-ast "$f" > "$tmp/pn1.ast" 2>&1
+        cmp -s "$tmp/pn0.ast" "$tmp/pn1.ast" || {
+            echo "FAIL syntax_param inert: --dump-ast of $f"; pnfails=$((pnfails + 1)); }
+        "$mc1"  "$f" -o "$tmp/pn0.o" 2>/dev/null
+        "$pnop" "$f" -o "$tmp/pn1.o" 2>/dev/null
+        cmp -s "$tmp/pn0.o" "$tmp/pn1.o" || {
+            echo "FAIL syntax_param inert: object of $f"; pnfails=$((pnfails + 1)); }
+    done
+    if [ "$pnfails" = 0 ]; then
+        echo "ok syntax_param returning 0: --dump-ast and objects identical over tests/"
+    else
+        fails=$((fails + pnfails))
     fi
 fi
 

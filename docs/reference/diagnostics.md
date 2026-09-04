@@ -163,6 +163,8 @@ notatype main() { return 0; }
 | `syntax_stmt handler consumed no tokens` | the same at the statement position | same |
 | `syntax_expr handler consumed no tokens` | the same at the expression position | same |
 | `syntax_expr handler produced no expression` | the handler returned 0 | an expression position has no empty node to fall back on; return a node |
+| `syntax_param handler consumed no tokens` | M41.5: a `syntax_param` handler returned a node without advancing | a handler that claims the parameter has to read it; return 0 to leave it to the core |
+| `syntax_param handler did not return a parameter` | M41.5: what the handler returned is not an `N_PARAM` | build it with `param_new(ty, name)`; the node goes straight into a list `gen_lower` walks by `nd_type`/`nd_name` |
 | `syntax_infix handler produced no expression` | the same for an operator handler | return the resulting node |
 | `operator already taught` | a second `syntax_infix` on the same token | a second registration is a mistake, not an override. A later `#infix` on the token *is* allowed: it clears the handler and the template wins |
 | `cannot redefine core keyword` | `syntax`/`syntax_stmt`/`syntax_expr`/`syntax_infix`/`type_alias` on a core word | choose another word |
