@@ -14,6 +14,7 @@
 //   sha256.mc    pure SHA-256, for the ad-hoc signature and the executable UUID
 //   backend_exe.mc backend `macho-exe`: signed MH_EXECUTE, without `ld` (M11)
 //   backend_elf.mc backends `elf-obj` / `elf-obj-x86_64`: ELF64 ET_REL (M16/M17)
+//   backend_coff.mc backend `coff-obj-arm64`: a COFF object for Windows on ARM (M19)
 //   hooks.mc     Tier 2/3: passes (pass), backends (backend), syntax (syntax)
 //   lz.mc        LZ77 both ways, for the bundle and for `#embed ... lz` (M15)
 //   toml.mc      the TOML subset mc.toml is written in (M14)
@@ -52,6 +53,7 @@
 #include "sha256.mc"
 #include "backend_exe.mc"
 #include "backend_elf.mc"
+#include "backend_coff.mc"
 #include "hooks.mc"
 #include "toml.mc"
 #include "driver.mc"

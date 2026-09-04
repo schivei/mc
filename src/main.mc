@@ -9,7 +9,8 @@
 // lex_init, dump_tokens), on parse.mc (parse_unit, fold), on ast.mc (dump_ast),
 // on gen_walk.mc (gen_lower, gen_encode_all, gen_dump_asm), on machine_arm64.mc
 // (machine_arm64_init), on macho.mc (dump_syms, macho_write), on backend_exe.mc
-// (backend_exe), on backend_elf.mc (backend_elf), on hooks.mc (pass, backend,
+// (backend_exe), on backend_elf.mc (backend_elf), on backend_coff.mc
+// (backend_coff), on hooks.mc (pass, backend,
 // run_passes, backend_find, machine, target) and on user.mc (user_init).
 //
 // M10: the driver calls user_init() before any parse (that is where the user's
@@ -35,6 +36,11 @@
 // (`machine_use`), because the file format records the architecture too; the
 // dump modes never reach a backend, so `--machine=NAME` is what points them at
 // a machine other than the host's.
+//
+// M19: `coff-obj-arm64` (gen_lower + gen_encode_all + coff_write) writes a COFF
+// object for Windows on ARM, and `[target] os = "windows" arch = "aarch64"`
+// selects it. Like Linux it has no direct-executable backend: the link always
+// goes through `[linker]` (`lld-link`), so the registration passes 0 for it.
 
 // M37: the compiler is hosted on macOS AND on Linux. Everything that differs
 // between the two is in the host layer the entry point includes before the core
@@ -122,6 +128,7 @@ i64 main(i64 argc, uptr argv, uptr envp) {
     backend("macho-exe", &backend_exe);
     backend("elf-obj", &backend_elf);
     backend("elf-obj-x86_64", &backend_elf_x86);
+    backend("coff-obj-arm64", &backend_coff);
     // M17/M33: the (os, arch) pairs `mc build` accepts, with the backend each
     // one writes objects and direct executables with. `0` as the executable
     // backend says the target has none and always goes through [linker] --
@@ -129,6 +136,7 @@ i64 main(i64 argc, uptr argv, uptr envp) {
     target("macos", "aarch64", "macho", "macho-exe");
     target("linux", "aarch64", "elf-obj", 0);
     target("linux", "x86_64", "elf-obj-x86_64", 0);
+    target("windows", "aarch64", "coff-obj-arm64", 0);
     // M15: the lexer only reaches the bundle through this pointer, so
     // src/lexdump.mc and src/astdump.mc keep compiling without src/bundle.mc.
     // Registered here, before any lex_init -- including the one inside
