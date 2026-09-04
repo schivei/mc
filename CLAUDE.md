@@ -1417,7 +1417,67 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   is too small says so with a diagnostic), `docs/reference/hooks.md` (the two corrections),
   `docs/build.md` § M39, `docs/surface.md`, `docs/README.md`, `docs/ci.md`,
   `examples/kernel/README.md`.
-- Next: M18 or M24 (`docs/plan.md`); M39.5 (G1) and M40 (the word-size sweep AVR/PIC need) are
+- M39.5 done (`docs/specs/M39.md` § Gaps G1, decision D2): **`mc build` with a module-registered
+  `[target]`** -- the deferral form and nothing else. `drv_run` keeps `[target].os`/`.arch` as the
+  strings the file wrote (`drv_os`/`drv_arch`) and no longer consults the registry; `drv_entry`
+  passes a ROLE (`DRV_ROLE_OBJ` / `DRV_ROLE_EXE`) where it used to pass
+  `drv_obj_backend()`/`drv_exe_backend()`; and `drv_backend_for(role)` resolves the pair inside
+  `drv_parse`, **after `user_init()`** (so a target a module registered counts) and **before
+  `parse_unit()`** (so an unknown pair is still reported ahead of anything wrong in the source).
+  The two diagnostics stay built from the registry and the
+  `<os> requires [linker]: there is no direct executable` check moved with them, all three
+  byte-identical; `drv_teach`'s independent lookup of the HOST pair is untouched; there is no
+  second user entry point (`mc` has no weak definitions -- a `user_targets()` would break every
+  taught compiler until it grew an empty body).
+  Cost in `src/`: **18 added / 15 removed code lines** in `src/driver.mc` (41/15 with comments) --
+  the spec priced ~25.
+  One behavioural consequence, on record in `docs/reference/diagnostics.md`: an unknown `[target]`
+  is now reported after the entry has been opened and lexed, so the `compile x -> y` step line
+  comes first. `scripts/check-build.sh` already asserted the LAST line of output, so the three
+  `[target]` messages did not move; what had to change is where those three diag configs live
+  (`tests/proj/build/d.toml`, `entry = "../app.mc"`) so the entry exists -- with an unopenable
+  entry the first error would now be `cannot open`. 16/16 checks, messages unchanged.
+  `examples/kernel` is the consumer, and G1 was the only thing standing between it and `mc build`:
+  `mc.toml` gained `[target] os = "none" / arch = "riscv64"` with `entry = "main.mc"`,
+  `out = "build/kernel.bin"`, `kind = "exe"`; `mc-kernel.mc`'s `user_init` gained
+  `target("none", "riscv64", "rv-image", "rv-image")` -- `rv-image` in **both** roles because a
+  bare board has no separable object step, and in the EXE slot so `kind = "exe"` needs no
+  `[linker]`. `mc build examples/kernel` is now the whole build (compiler, then the spawned child
+  with `--entry-only`), and the image it writes is **byte for byte** the one the single-file CLI
+  wrote before the change (3304 bytes, `cmp` against a copy taken from the pre-M39.5 tree);
+  `test.sh` asserts that equality on every run and gained a fourth refusal case
+  (`mc1 build examples/kernel --entry-only` -> `only macos, linux and windows (see
+  docs/build.md): target.os`). `.github/workflows/ci.yml`'s "Build the bare-metal RISC-V images"
+  step is `build/mc1 build examples/kernel`; the halt(42) variant keeps the single-file CLI,
+  since it is not `[project].entry`.
+  Inertness (the M17-step-A protocol): a copy of `build/mc1` taken BEFORE the change writes
+  byte-identical objects for all 32 `tests/*.mc` **and for `src/mc.mc` itself**, and -- through
+  the taught compilers each of them builds -- byte-identical artefacts for `examples/api`
+  (55632 B), `examples/lang` (35350 B), `examples/conc` (54342 B) and `examples/desktop`
+  (37444 B). Nothing the compiler emits moved; the goldens moved only because `src/driver.mc` and
+  the bundle did.
+  -- `stage0/` untouched, 2848/3000; `make bundle` re-run before bootstrapping (`src/driver.mc` is
+  bundled as `mc/driver`). `make check` green end to end (RC 0): `test` 32/32, `check-lex`/
+  `check-ast`/`check-asm` (92/92, 91/91, 91/91 files), `check-obj` **32/32** against the frozen
+  seed, `check-bundle`, `bootstrap` at a fixed point (`mc2.o == mc3.o`, 749344 bytes; the
+  `--dump-asm` diff between `mc1` and `mc2` is **empty**), `check-surface` 32/32, `test-exe`
+  32/32, `check-mc` 7/7, `check-standalone`, `check-toml` 10/10, `check-build` **16/16**,
+  `check-stubs` 9/9, `check-limits` 17/17 under 90%, `test-linux` 33/33, `test-linux-x86_64`
+  30/30, `test-windows` 35/35 + 33/33 cross-compiled, `check-examples`, `check-lang`,
+  `check-conc`, `check-desktop`, **`check-kernel` OK (0 skipped)** -- QEMU 11.0.1 prints the exact
+  transcript and exit 0, `halt(42)` gives exit 42 -- `check-docs` (144 symbols, 18 flags, 17 TOML
+  keys, 10 directives, 47 samples, 220 links), `site` + `check-site`.
+  The five goldens rewritten **once**, in the same commit, only after the empty `--dump-asm` diff
+  and `cmp build/mc2.o build/mc3.o`: `mc2.sha256`
+  `92b04f72...82f903` -> `5836c1fd132a57fad34e9883b1749c47256ef01f33e75c5d4ffb4e66c61c0344`, the
+  Linux pair re-recorded by `make check-linux-host` (Docker, both arches, each after its own fixed
+  point) and the Windows pair cross-computed per `tests/golden/README.md`.
+  Docs: `docs/build.md` § M39 / M39.5 (rewritten), `docs/reference/toml.md` § `[target]`
+  ("a pair the compiler or one of its modules registered"), `docs/reference/diagnostics.md`,
+  `docs/guide/97-a-new-architecture.md` (four registrations now, and the gap removed from "what
+  this does not buy yet"), `examples/kernel/README.md` + `mc.toml`, `docs/specs/M39.md` (G1 marked
+  taken, with the real line count).
+- Next: M18 or M24 (`docs/plan.md`); M40 (the word-size sweep AVR/PIC need) is
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
   sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is
   one more motivating case).

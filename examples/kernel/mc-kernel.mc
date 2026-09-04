@@ -3,6 +3,7 @@
 // edit `src/`: it takes the whole compiler minus `user_init` from the BUNDLE
 // inside the binary (`<mc/core>`, M15) and supplies `user_init`.
 //
+//   ../../build/mc1 build examples/kernel                   -> build/kernel.bin
 //   ../../build/mc1 build examples/kernel --compiler-only   -> build/mc-kernel
 //   build/mc-kernel --backend=rv-image --include=lib main.mc -o build/kernel.bin
 //
@@ -19,12 +20,21 @@
 #include "image.mc"
 #include "kernel_syntax.mc"
 
-// The three registrations of docs/specs/M39.md § 1, and nothing else.
+// The registrations of docs/specs/M39.md § 1, and nothing else.
 // `machine()` also makes its table the one in effect (src/hooks.mc), so this
 // compiler dumps RISC-V by default and `--machine=arm64` flips back -- decided
 // in M39 D5.
+//
+// M39.5 adds the fourth line. `target(os, arch, obj, exe)` is what makes
+// `[target] os = "none" / arch = "riscv64"` in mc.toml mean something, and a
+// pair only this binary knows now works because `mc build` resolves [target]
+// after `user_init()` (docs/specs/M39.md § Gaps, G1). Both roles are the same
+// backend on purpose: a bare-metal board has no separable object step -- the
+// flat image IS the artefact -- so `rv-image` fills the EXE slot, which is what
+// lets `mc build examples/kernel` write build/kernel.bin with no [linker].
 void user_init() {
     machine_riscv64_init();                      // fills m_rv64, registers "riscv64"
     backend("rv-image", &backend_rv_image);      // --backend=rv-image
+    target("none", "riscv64", "rv-image", "rv-image");   // [target] in mc.toml
     kernel_syntax_init();                        // mmio / csrw / csrr / yield
 }

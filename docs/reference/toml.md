@@ -65,13 +65,18 @@ A missing `entry` or `out` is `<file>: missing key: project.entry`. A `kind` tha
 
 | key | type | default | accepted |
 |---|---|---|---|
-| `target.os` | string | `"macos"` | `macos`, `linux`, `windows` |
-| `target.arch` | string | `"aarch64"` | `aarch64`; `x86_64` when `os = "linux"` |
+| `target.os` | string | the host's | a pair the compiler or one of its modules registered |
+| `target.arch` | string | the host's | likewise |
 
 The accepted set is the `(os, arch)` pairs the `target()` registry holds
 ([hooks.md](hooks.md)) — `macos/aarch64`, `linux/aarch64`, `linux/x86_64`,
-`windows/aarch64` — and a module may register more. Anything else is refused at the value's position, with a message built from the
-registry:
+`windows/aarch64` and `windows/x86_64` out of the box — **and a pair a module registered counts**.
+The registry is consulted after `user_init()` has run (M39.5), so a taught compiler that calls
+`target("none", "riscv64", "rv-image", "rv-image")` can be driven by `mc build` through its own
+`mc.toml`; `examples/kernel` is the worked example. The consequence to know is that the entry
+source is opened and lexed before an unknown pair is reported, so the diagnostic comes after the
+`compile x -> y` step line. Anything the registry does not hold is refused at the value's
+position, with a message built from the registry:
 
 ```
 $ mc build tests/proj --config /tmp/haiku.toml

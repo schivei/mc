@@ -200,16 +200,18 @@ jobs:
           name: musl-sysroot-x86_64
           path: build/sysroot/linux-x86_64
 
-      # M39: examples/kernel -- the bare-metal RISC-V 64 image, built by the
-      # taught compiler `make check` has already assembled. Two images: the one
-      # that halts with 0 and the one that halts with 42, because the exit code
-      # is half of what the oracle asserts (docs/specs/M39.md § Acceptance 2).
+      # M39: examples/kernel -- the bare-metal RISC-V 64 image. Since M39.5 the
+      # first image is `mc build` end to end: the parent assembles the taught
+      # compiler and spawns it for `[target] os = "none" / arch = "riscv64"`, a
+      # pair only that compiler registers. The halt(42) variant is not
+      # [project].entry, so it keeps the single-file CLI -- and both images are
+      # needed, because the exit code is half of what the oracle asserts
+      # (docs/specs/M39.md § Acceptance 2).
       - name: Build the bare-metal RISC-V images
         run: |
           set -eu
-          build/mc1 build examples/kernel --compiler-only
+          build/mc1 build examples/kernel
           cd examples/kernel
-          ./build/mc-kernel --backend=rv-image --include=lib main.mc -o build/kernel.bin
           sed 's/halt(0);/halt(42);/' main.mc > build/main42.mc
           ./build/mc-kernel --backend=rv-image --include=lib build/main42.mc -o build/kernel42.bin
           rm -f build/main42.mc

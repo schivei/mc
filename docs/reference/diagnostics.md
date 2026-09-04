@@ -283,6 +283,14 @@ does not:
 | `only macos, linux and windows (see docs/build.md)` | `target.os` | the list is built from the `target()` registry, so a target a module registers appears in it |
 | `only aarch64 and x86_64 (see docs/build.md)` | `target.arch` | the architectures that operating system was registered with (macOS and Windows have only `aarch64`) |
 | `linux requires [linker]: there is no direct executable` | `target.os` | add a `[linker]` section: there is no `--exe` equivalent for ELF |
+
+Since M39.5 those three are raised **after** `user_init()` has run and after the entry source has
+been opened and lexed — that is what lets a taught compiler register its own `(os, arch)` pair and
+be driven by `mc build` (`docs/build.md` § M39 / M39.5). They therefore come out *after* the
+`compile x -> y` step line, and after nothing else: the resolution happens before the unit is
+parsed, so an unknown target is still reported ahead of any error in the program itself. The
+message, its file, its line and its column are what they always were.
+
 | `must be a relative path` | `compiler.out` | the generated compiler source lives next to it and includes by relative path |
 | `must not contain ..` | `compiler.out` | same reason; the `..` check runs on the string as written |
 | `library not declared in [libs]` | an `[externs]` value | the value must name a `[libs]` key |
