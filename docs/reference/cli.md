@@ -1,14 +1,16 @@
 # Every command, flag and dump
 
-`mc` has one binary and three entry points: the single-file compiler, `mc build` and `mc limits`.
-Everything below is read off `src/main.mc` (the single-file CLI) and `src/driver.mc` (the two
-subcommands). Running `mc` with no argument prints exactly this and exits 1:
+`mc` has one binary and four entry points: the single-file compiler, `mc build`, `mc limits` and
+`mc sysroot`. Everything below is read off `src/main.mc` (the single-file CLI), `src/driver.mc`
+(the first two subcommands) and `src/sysroot.mc` (the third). Running `mc` with no argument
+prints exactly this and exits 1:
 
 ```
 usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] source.mc [-o out]
        mc --host
 usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits] [--sysroot-dir DIR]
        mc limits [DIR|FILE.mc]
+       mc sysroot list|path <target>|fetch <target> [--yes] [--sysroot-dir DIR]
 ```
 
 ---
@@ -192,6 +194,30 @@ Columns: the static estimate, what was reserved (`estimate * (1 + tolerance)`, f
 start seed), the high-water usage, how many times the block had to double, and the row verdict.
 Row verdicts are `ok`, `tight` (used over 90 % of reserved) and `grew` (the block doubled at
 least once); the report's verdict is the worst row.
+
+## 3b. `mc sysroot` — where a cross link finds its files
+
+```
+mc sysroot list
+mc sysroot path <os>-<arch>
+mc sysroot fetch <os>-<arch> [--yes] [--sysroot-dir DIR]
+```
+
+| subcommand | what it does |
+|---|---|
+| `list` | one line per registered target and the source `fetch` would use. Walks the target registry and the pinned table and touches no file, so the output is the same on every host (`tests/golden/sysroot-list.txt`) |
+| `path <target>` | run the resolution chain for that target and print the directory on stdout; the `no sysroot` message and exit 2 when nothing answered |
+| `fetch <target>` | print the plan (url, size, sha256, destination). With `--yes`, download it, verify the sha256 with `mc`'s own SHA-256, extract it and write `manifest.toml` |
+
+| flag | meaning |
+|---|---|
+| `--yes` | actually download. Without it `fetch` prints the plan, says `nothing was downloaded: re-run with --yes` and exits 0. There is no prompt: `mc` has no `isatty` |
+| `--sysroot-dir DIR` | DIR is the destination (`fetch`) or the candidate (`path`), instead of `~/.mc/sysroots/<os>-<arch>` |
+
+`fetch` is the **only** thing in `mc` that reaches the network, and it does it by spawning
+`curl`/`wget`/`curl.exe` — there is no HTTP and no TLS in this language. `mc build` never
+downloads. Everything about the chain, the cache and the pinned rows is in
+[sysroot.md](sysroot.md).
 
 ### Exit codes
 

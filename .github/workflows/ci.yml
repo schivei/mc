@@ -154,6 +154,46 @@ jobs:
       - name: Cross-compile the suite for windows/x86_64
         run: scripts/test-windows.sh --arch x86_64 --build-only build/windows-objs-x86_64 build/mc1
 
+      # M25: the two musl sysroots the linux/* suite jobs link against, fetched
+      # by `mc` itself from the pinned rows of src/sysroots.mc -- checksum
+      # verified by the compiler's own SHA-256, no apt and no Docker. This is
+      # the job that HAS an `mc`; the two suite jobs are --run-only (ld.lld and
+      # a sysroot, no compiler at all), which is why the fetch happens here and
+      # travels as an artifact. The cache key is the table, so a moved pin
+      # invalidates it (docs/reference/sysroot.md § 8).
+      - name: Cache the fetched musl sysroots
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/sysroot/linux-aarch64
+            build/sysroot/linux-x86_64
+          key: musl-sysroot-${{ hashFiles('src/sysroots.mc') }}
+
+      - name: Fetch the musl sysroots with mc sysroot fetch
+        run: |
+          for a in aarch64 x86_64; do
+            if [ ! -f "build/sysroot/linux-$a/libc.a" ]; then
+              build/mc1 sysroot fetch "linux-$a" --yes --sysroot-dir "build/sysroot/linux-$a"
+            fi
+            build/mc1 sysroot path "linux-$a" --sysroot-dir "build/sysroot/linux-$a"
+          done
+
+      - name: Upload the fetched musl sysroot (aarch64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: musl-sysroot-aarch64
+          path: build/sysroot/linux-aarch64
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the fetched musl sysroot (x86_64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: musl-sysroot-x86_64
+          path: build/sysroot/linux-x86_64
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload the self-hosted compiler
         uses: actions/upload-artifact@v4
         with:
@@ -265,30 +305,17 @@ jobs:
           fi
           ld.lld --version
 
-      # The sysroot is four files (crt1.o crti.o crtn.o libc.a) copied out of an
-      # Alpine container. Cached, and the script is itself a cache: with the four
-      # files present it does nothing.
-      - name: Cache the musl sysroot
-        uses: actions/cache@v4
+      # M25: the sysroot is the four musl files `mc sysroot fetch` pulled from
+      # the pinned Alpine row in the `check` job and verified with mc's own
+      # SHA-256 (docs/reference/sysroot.md § 7). It used to be `apk add
+      # musl-dev` in a container here, with an apt fallback; neither Docker nor
+      # apt is involved any more, and what the suite links against is exactly
+      # what a user gets from one command.
+      - name: Download the fetched musl sysroot
+        uses: actions/download-artifact@v4
         with:
+          name: musl-sysroot-aarch64
           path: build/sysroot/linux-aarch64
-          key: musl-sysroot-aarch64-${{ hashFiles('scripts/sysroot-linux.sh') }}
-
-      - name: Populate the musl sysroot
-        run: |
-          if scripts/sysroot-linux.sh build/sysroot/linux-aarch64; then
-            exit 0
-          fi
-          # Fallback when Docker is unavailable on the runner: Debian's own
-          # aarch64 musl development files are the same four objects.
-          echo "sysroot: falling back to apt musl-dev"
-          sudo apt-get install -y --no-install-recommends musl-dev musl-tools
-          mkdir -p build/sysroot/linux-aarch64
-          cp /usr/lib/aarch64-linux-musl/crt1.o \
-             /usr/lib/aarch64-linux-musl/crti.o \
-             /usr/lib/aarch64-linux-musl/crtn.o \
-             /usr/lib/aarch64-linux-musl/libc.a \
-             build/sysroot/linux-aarch64/
 
       - name: Link with ld.lld and run natively
         run: scripts/test-linux.sh --run-only build/linux-objs
@@ -328,27 +355,13 @@ jobs:
           fi
           ld.lld --version
 
-      - name: Cache the musl sysroot
-        uses: actions/cache@v4
+      # M25: as in linux-arm64 -- fetched once by `mc sysroot fetch` in the
+      # `check` job, checksum verified there, and carried here as an artifact.
+      - name: Download the fetched musl sysroot
+        uses: actions/download-artifact@v4
         with:
+          name: musl-sysroot-x86_64
           path: build/sysroot/linux-x86_64
-          key: musl-sysroot-x86_64-${{ hashFiles('scripts/sysroot-linux.sh') }}
-
-      - name: Populate the musl sysroot
-        run: |
-          if scripts/sysroot-linux.sh --arch x86_64 build/sysroot/linux-x86_64; then
-            exit 0
-          fi
-          # Fallback when Docker is unavailable on the runner: Debian's own
-          # x86-64 musl development files are the same four objects.
-          echo "sysroot: falling back to apt musl-dev"
-          sudo apt-get install -y --no-install-recommends musl-dev musl-tools
-          mkdir -p build/sysroot/linux-x86_64
-          cp /usr/lib/x86_64-linux-musl/crt1.o \
-             /usr/lib/x86_64-linux-musl/crti.o \
-             /usr/lib/x86_64-linux-musl/crtn.o \
-             /usr/lib/x86_64-linux-musl/libc.a \
-             build/sysroot/linux-x86_64/
 
       - name: Link with ld.lld and run natively
         run: scripts/test-linux.sh --arch x86_64 --run-only build/linux-objs-x86_64

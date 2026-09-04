@@ -167,6 +167,34 @@ you have, or let the cache answer. `mc build` never downloads — the whole chai
 directories. [../reference/sysroot.md](../reference/sysroot.md) is the full story: the markers,
 the probes, the cache layout and every message.
 
+### `mc sysroot` — and you do not have to find the files either
+
+```sh
+mc sysroot list                          # every target and where its files come from
+mc sysroot path linux-aarch64            # where they are on THIS machine, or exit 2
+mc sysroot fetch linux-aarch64 --yes     # download them, checked, into the cache
+```
+
+`fetch` prints its plan first — url, size, sha256, destination — and does nothing without
+`--yes`. It downloads by spawning `curl` (or `wget`, or `curl.exe`), verifies the archive with
+`mc`'s own SHA-256, unpacks it with one `tar` and writes a `manifest.toml` beside the files. The
+sources are pinned by version *and* by hash in `src/sysroots.mc`, so two people who run it get
+the same bytes.
+
+```sh
+$ mc sysroot fetch linux-aarch64 --yes --sysroot-dir build/sysroot/linux-aarch64
+fetch  linux-aarch64
+url    https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/musl-dev-1.2.5-r12.apk
+size   2556920 bytes
+sha256 576f4aabcfa01d10d6baa2d5d87de436b76e58ae76eedf9db7627051365e1fe3
+into   build/sysroot/linux-aarch64
+sysroot linux-aarch64 -> build/sysroot/linux-aarch64
+```
+
+With no network, or with no `curl` and no `wget`, that same command prints the URL, the hash and
+the exact `curl`/`tar` lines to run by hand, and exits 2. `scripts/sysroot-linux.sh` (Docker,
+`apk add musl-dev`) is still there and still works — it is the road that needs no CDN.
+
 ## No libc at all
 
 `<sys_linux>` is `<sys_svc>`'s Linux sibling: `open`/`creat`/`read`/`write`/`close`/`fchmod`/

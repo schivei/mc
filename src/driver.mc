@@ -149,6 +149,22 @@ uptr drv_subst(uptr s, uptr pat, uptr rep) {
 // runs `file` with the argv in `av` (NULL-terminated) and returns its exit code;
 // 128+N when a signal killed it. stdin/stdout/stderr are inherited, which is how
 // the tool's own diagnostics reach the user unchanged.
+// M25: the same thing, but -1 instead of a diagnostic when the program is not
+// on PATH at all. `mc sysroot fetch` tries curl and then wget, and "not
+// installed" is a case it handles rather than a failure -- see
+// sysroot_download (src/sysroot.mc).
+i64 drv_spawn_ok(uptr file, uptr av, uptr fa) {
+    u8 pid[8];
+    st64(pid, 0);
+    if (posix_spawnp(pid, file, fa, 0, av, host_environ()) != 0) return -1;
+    u8 st[8];
+    st64(st, 0);
+    if (waitpid(ld64(pid), st, 0) < 0) die2("waitpid failed", file);
+    i64 s = ld32(st);
+    if ((s & 127) != 0) return 128 + (s & 127);
+    return (s >> 8) & 255;
+}
+
 i64 drv_spawn(uptr file, uptr av, uptr fa) {
     u8 pid[8];
     st64(pid, 0);
@@ -497,6 +513,7 @@ i64 drv_finish(uptr what) {
 void drv_usage() {
     out_str(2, "usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits] [--sysroot-dir DIR]\n");
     out_str(2, "       mc limits [DIR|FILE.mc]\n");
+    out_str(2, "       mc sysroot list|path <target>|fetch <target> [--yes] [--sysroot-dir DIR]\n");
 }
 
 // everything after the flags: one shape for `mc build` and for `mc limits`

@@ -1,0 +1,6 @@
+target           source
+macos-aarch64    stubs (synthesized)
+linux-aarch64    musl-dev (alpine v3.22)
+linux-x86_64     musl-dev (alpine v3.22)
+windows-aarch64  import libraries (llvm-mingw 20260826)
+windows-x86_64   import libraries (llvm-mingw 20260826)

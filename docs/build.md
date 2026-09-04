@@ -718,7 +718,9 @@ there it does nothing, so `make test-linux` does not pull an image on every run.
 itself when any of the four files is missing (the same check the script itself makes, so a
 half-populated sysroot is repaired instead of failing every test).
 
-That script is now the *local* road, not the only one. Since M25 the driver resolves `{sysroot}`
+That script is now the *local* road, not the only one: `mc sysroot fetch linux-<arch> --yes`
+downloads the same four files from a pinned, checksummed Alpine `musl-dev` package and needs no
+Docker at all (`docs/reference/sysroot.md` § 7). Since M25 the driver resolves `{sysroot}`
 through a chain instead of reading one key: an explicit `[sysroot].path` (checked against
 `crt1.o` and `libc.a`, so a wrong directory is `mc`'s diagnostic and not the linker's), then the
 running system when the host is the target (`/usr/lib/<arch>-linux-musl`, `/usr/lib/musl/lib`,

@@ -105,7 +105,7 @@ still have no Docker to run a Linux binary in; and the half of the Linux work th
 here — cross-compiling to ELF — needs no linker at all. The Linux suite runs for real on the job
 below.
 
-Five artifacts come out:
+Seven artifacts come out:
 
 - `mc-macos-arm64` — `build/mc-exe`, the self-hosted, `ld`-free compiler `make check` already
   builds for `check-standalone`. GitHub's artifact zip does not carry the executable bit, so a
@@ -121,6 +121,10 @@ Five artifacts come out:
 - `mc-linux-hosts` — `build/mc-linux-arm64.o` and `build/mc-linux-x86_64.o`, `mc` itself
   cross-compiled for each Linux host by `make mc-linux-obj` / `make mc-linux-x86_64-obj`. Objects,
   not executables, for the same reason: no linker and no sysroot here (§ M37).
+- `musl-sysroot-aarch64` and `musl-sysroot-x86_64` — the four musl files for each Linux
+  architecture, downloaded and checksum-verified here by `mc sysroot fetch` (M25). They exist as
+  artifacts because the two suite jobs below have no `mc` to fetch with. Cached on the hash of
+  `src/sysroots.mc`.
 - `mc2-macos-arm64` — `build/mc2.o`, the reference the Linux host jobs compare their own Mach-O
   output against.
 
@@ -173,20 +177,22 @@ modes that link.
 
 ### Job `linux-arm64` — `ubuntu-24.04-arm`
 
-Downloads `linux-arm64-objects`, installs `lld` from apt, obtains the musl sysroot, and runs
+Downloads `linux-arm64-objects` and `musl-sysroot-aarch64`, installs `lld` from apt, and runs
 `scripts/test-linux.sh --run-only`. `ubuntu-24.04-arm` runners are free for public repositories.
 
-The sysroot is the same four files the local flow uses (`crt1.o crti.o crtn.o libc.a`), fetched by
-`scripts/sysroot-linux.sh` out of an `alpine:3` container — Docker *is* available on the Ubuntu
-runners. It is cached on the hash of that script, and the script is itself a cache: with the four
-files present it does nothing. If Docker is ever unavailable there, the step falls back to
-Debian's `musl-dev` (`/usr/lib/aarch64-linux-musl/`), which ships the same four objects.
+**Since M25 the sysroot is fetched by `mc` itself.** It is still the same four files
+(`crt1.o crti.o crtn.o libc.a`), but they come from `mc sysroot fetch linux-aarch64 --yes`, run in
+the `check` job against the pinned Alpine row of `src/sysroots.mc` and verified there with the
+compiler's own SHA-256 ([reference/sysroot.md](reference/sysroot.md) § 7). Neither Docker nor apt
+is involved any more, and what the suite links against is exactly what a user gets from one
+command. The fetch runs in `check` and not here because these two jobs are `--run-only`: they have
+`ld.lld` and a sysroot and no `mc` at all. It is cached on the hash of `src/sysroots.mc`, so a
+moved pin invalidates the cache, and travels to this job as an artifact.
 
 ### Job `linux-x86_64` — `ubuntu-latest`
 
-The same job, one architecture over: it downloads `linux-x86_64-objects`, installs `lld`, obtains
-the amd64 musl sysroot (`build/sysroot/linux-x86_64`, cached on the same script hash, with the
-same `/usr/lib/x86_64-linux-musl/` fallback) and runs
+The same job, one architecture over: it downloads `linux-x86_64-objects` and
+`musl-sysroot-x86_64` (the amd64 musl sysroot, fetched the same way in `check`) and runs
 `scripts/test-linux.sh --arch x86_64 --run-only`. It runs the binaries **natively** — the runner
 is x86-64 — so nothing is emulated and nothing is skipped for being slow.
 
