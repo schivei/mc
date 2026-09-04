@@ -35,7 +35,7 @@ root in order.
 
 ## The catalogue
 
-The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 40 entries,
+The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 42 entries,
 plus `mc/bundle_data`, which is regenerated on demand (see below). Those are the names `<...>`
 accepts.
 
@@ -46,10 +46,12 @@ accepts.
 | `<sys>` | `lib/sys.mc` | `open creat read write close exit` as libSystem `extern`s, plus `mmap`/`munmap`, `posix_spawnp`/`waitpid`/`_NSGetEnviron`, plus `<io>` |
 | `<sys_svc>` | `lib/sys_svc.mc` | the same five calls through `#opcode svc #0x80`, with **no libSystem at all**, plus `<io>` |
 | `<sys_linux>` | `lib/sys_linux.mc` | the Linux syscall layer (`svc #0`, number in `x8`) and a `_start`, for `-nostdlib` |
+| `<sys_windows>` | `lib/sys_windows.mc` | the Windows layer: the same five calls over seven kernel32 `extern`s, plus the entry point `mc_start`, for `/nodefaultlib`. It is the one layer that does **not** pull in `<io>` — add `#include <io>` after it (see [../build.md](../build.md) § Windows targets) |
 | `<io>` | `lib/io.mc` | `strlen`, `puts`, `putnum` — written in the language, on top of whatever `write` the includer declared. **Never include it alone** |
 
 `O_RDONLY`/`O_WRONLY`/`O_CREAT`/`O_TRUNC` live in each system layer, not in `<io>`, because they
-are per-system values (`O_CREAT` is `0x200` on macOS and `0x40` on Linux).
+are per-system values (`O_CREAT` is `0x200` on macOS, `0x40` on Linux and `0x100` in the
+Windows layer, where the flags are not passed to the system at all).
 
 ### The language layer
 
@@ -82,6 +84,7 @@ and supplying that function *is* a taught compiler ([hooks.md](hooks.md)).
 | `<mc/machine_x86_64>` | `src/machine_x86_64.mc` |
 | `<mc/macho>` | `src/macho.mc` |
 | `<mc/backend_exe>` | `src/backend_exe.mc` |
+| `<mc/backend_coff>` | `src/backend_coff.mc` |
 | `<mc/backend_elf>` | `src/backend_elf.mc` |
 | `<mc/sha256>` | `src/sha256.mc` |
 | `<mc/toml>` | `src/toml.mc` |

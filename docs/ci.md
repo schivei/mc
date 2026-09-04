@@ -71,18 +71,19 @@ Triggers: `pull_request` against `main`, and `push` to `main`. The concurrency g
 `ci-${{ github.event.pull_request.number || github.ref }}` with `cancel-in-progress: true`, so a
 new push to a pull request cancels its previous run.
 
-**The two job names are the required status checks on `main`** — `make check (macOS arm64)` and
-`Link and run the suite (linux/arm64)`. Renaming a job means updating the branch protection in the
-same breath, or `main` starts requiring a check that no longer exists and nothing can merge.
+**The job names are the required status checks on `main`** — `make check (macOS arm64)`,
+`Link and run the suite (linux/arm64)`, `Link and run the suite (linux/x86_64)` and `Link and run
+the suite (windows/arm64)`. Renaming a job means updating the branch protection in the same
+breath, or `main` starts requiring a check that no longer exists and nothing can merge.
 
 ### Job `check` — `macos-15`
 
 Runs `make check` unchanged: `budget`, `test`, `check-lex`, `check-ast`, `check-bundle`,
 `check-asm`, `check-obj`, `bootstrap` (the fixed point plus the golden SHA-256), `check-surface`,
 `test-exe`, `check-mc`, `check-standalone`, `check-toml`, `check-build`, `check-limits`,
-`test-linux`, `test-linux-x86_64`, `check-examples`, `check-lang`, `check-docs`, `site` and
-`check-site`. No environment variable is passed and the `Makefile` is not touched: the two
-`test-linux*` targets already guard themselves, and `check-site` skips
+`test-linux`, `test-linux-x86_64`, `test-windows`, `check-examples`, `check-lang`, `check-docs`,
+`site` and `check-site`. No environment variable is passed and the `Makefile` is not touched: the
+three cross-target suites already guard themselves, and `check-site` skips
 `checkhtml.py`/`contrast.py` when `python3` is absent (the link check still runs).
 
 `site.yml` therefore duplicates only the last two: the deploy job needs the rendered tree as an
@@ -108,8 +109,12 @@ Five artifacts come out:
 - `mc-macos-arm64` — `build/mc-exe`, the self-hosted, `ld`-free compiler `make check` already
   builds for `check-standalone`. GitHub's artifact zip does not carry the executable bit, so a
   download needs `chmod +x mc-exe` (and, off a browser download, `xattr -d com.apple.quarantine`).
-- `linux-arm64-objects` and `linux-x86_64-objects` — the inputs to the two suite jobs below. The
-  cross-compilation runs twice, once per `--arch`, and neither run needs a linker or Docker.
+- `linux-arm64-objects`, `linux-x86_64-objects` and `windows-arm64-objects` — the inputs to the
+  three suite jobs below. The cross-compilation runs three times, once per target, and no run
+  needs a linker or Docker. The Windows artifact carries two extra files the other side cannot
+  make for itself: `winrt.obj` (the compiled `lib/sys_windows.mc`) and `kernel32.lib` (the
+  import library `scripts/sysroot-windows.sh` generates with `llvm-dlltool`). If this runner has
+  no `llvm-dlltool`, the import library is simply absent and the Windows job rebuilds it there.
 - `mc-linux-hosts` — `build/mc-linux-arm64.o` and `build/mc-linux-x86_64.o`, `mc` itself
   cross-compiled for each Linux host by `make mc-linux-obj` / `make mc-linux-x86_64-obj`. Objects,
   not executables, for the same reason: no linker and no sysroot here (§ M37).
@@ -186,6 +191,28 @@ This job is what `docs/plan.md` § "Rule for every new target" asks for: an arch
 supported until something links and runs its suite on real hardware of that kind, and that job is
 a required status check on `main`. `make test-linux-x86_64` is the same suite locally, in an
 emulated `linux/amd64` container.
+
+### Job `windows-arm64` — `windows-11-arm`
+
+The same shape once more, for M19. It downloads `windows-arm64-objects` and runs
+`scripts/test-windows.sh --run-only build/windows-objs` under `bash` (Git for Windows supplies
+it on every Windows runner). Nothing else is needed: the objects, the compiled system layer and
+the import library all travel in the artifact, so this job wants a linker and no toolchain.
+
+`lld-link` is obtained in two steps, because the runner image may already carry LLVM:
+
+1. a **Tool facts** step prints what is there (`where lld-link`, and `C:\Program Files\LLVM\bin`
+   as a second place to look) and sets an output saying whether it found one. It never fails — it
+   only reports;
+2. when it did not, the next step downloads the Windows-on-ARM release of LLVM and puts its `bin`
+   on `PATH`, cached on the version. Two asset shapes have shipped over the years — a
+   `clang+llvm-<ver>-aarch64-pc-windows-msvc.tar.xz` tarball and an `LLVM-<ver>-woa64.exe`
+   installer — so both are tried, and the step fails loudly rather than letting the suite skip
+   itself. This job is the only place a Windows binary is ever executed, so a silent skip here
+   would mean the target is untested and the build still green.
+
+The tests run from the repository root, like the Linux ones, because `025-linecount` opens its own
+source by a relative path.
 
 ---
 
@@ -442,8 +469,9 @@ No repository secret is needed. `scripts/release-assets.sh` writes into `dist/`,
 only way ordinary work reaches it — while leaving the owner able to push a documentation hotfix
 directly. Four decisions:
 
-- **required checks**: `make check (macOS arm64)`, `Link and run the suite (linux/arm64)` and,
-  since M37, `mc on linux/arm64 host` and `mc on linux/x86_64 host` — four of the job names in
+- **required checks**: `make check (macOS arm64)`, `Link and run the suite (linux/arm64)`,
+  `Link and run the suite (linux/x86_64)`, `Link and run the suite (windows/arm64)` and, since
+  M37, `mc on linux/arm64 host` and `mc on linux/x86_64 host` — six of the job names in
   `ci.yml`;
 - **strict (up to date before merging) is off**: `mc` builds are minutes long and the project is
   one person's; requiring every pull request to re-run against a moved `main` buys little and

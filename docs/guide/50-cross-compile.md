@@ -1,17 +1,18 @@
 # Cross-compiling
 
-`mc` runs on macOS arm64 and produces binaries for macOS arm64, **Linux arm64** and **Linux
-x86-64**. The Linux path is a backend (`elf-obj`), a system layer (`<sys_linux>`) and four lines of
-`mc.toml`; x86-64 adds one more file, a *machine* — the instruction selection behind a
-target-independent walker ([../reference/machine.md](../reference/machine.md)). Nothing in the
-compiler's C seed knows about any of it.
+`mc` runs on macOS arm64 and produces binaries for macOS arm64, **Linux arm64**, **Linux x86-64**
+and **Windows on ARM**. Each path is a backend, a system layer and four lines of `mc.toml`;
+x86-64 adds one more file, a *machine* — the instruction selection behind a target-independent
+walker ([../reference/machine.md](../reference/machine.md)). Nothing in the compiler's C seed
+knows about any of it.
 
 | target | status |
 |---|---|
 | macOS arm64 | the host, and the default |
 | Linux arm64 (ELF64) | **works**: `[target] os = "linux"` |
 | Linux x86-64 (ELF64) | **works**: `[target] os = "linux"`, `arch = "x86_64"` |
-| Windows arm64 / x64 (COFF) | planned |
+| Windows arm64 (COFF) | **works**: `[target] os = "windows"` |
+| Windows x64 (COFF) | planned: the writer takes an `arch`, the machine is already there |
 | WebAssembly | planned |
 | `mc` *hosted* on Linux or Windows | not yet: the project driver uses `posix_spawnp` and `_NSGetEnviron` |
 
@@ -172,6 +173,59 @@ args = ["-nostdlib", "-e", "_start", "-o", "{out}", "{obj}"]
 The `O_RDONLY`/`O_WRONLY`/`O_CREAT`/`O_TRUNC` constants live in each system layer rather than in
 `<io>`, because they are per-system values: `O_CREAT` is `0x200` on macOS and `0x40` on Linux.
 
+## Windows on ARM
+
+Same two changes as Linux, in another format: the object is a COFF `.obj` and `[linker]` is
+required. The machine does not change — Windows on ARM is AArch64, and it is the *file* that is
+new.
+
+```toml
+[project]
+entry = "hello.mc"
+out   = "build/hello.exe"
+
+[target]
+os   = "windows"
+arch = "aarch64"
+
+[sysroot]
+path = "build/sysroot/windows-aarch64"
+
+[linker]
+cmd  = "lld-link"
+args = ["/machine:arm64", "/subsystem:console", "/entry:mc_start", "/nodefaultlib",
+        "/out:{out}", "{obj}", "{sysroot}/kernel32.lib"]
+```
+
+The sysroot is one file and there is nothing to download: a Windows program links against an
+**import library**, an archive of thunks generated from a list of exported names, so
+`scripts/sysroot-windows.sh` writes `kernel32.def` and builds `kernel32.lib` from it with
+`llvm-dlltool -m arm64`. `make sysroot-windows` runs it, and it is a cache like the musl one.
+
+`<sys_windows>` is the system layer, and it is the one with no syscall instruction anywhere:
+Windows has no stable system-call numbers, so the layer is ordinary mc code over seven kernel32
+`extern`s. It supplies the entry point too — `mc_start`, which splits `GetCommandLineA()` into
+`argc`/`argv` and calls `main` — which is why the link says `/entry:mc_start /nodefaultlib` and
+carries no C runtime at all.
+
+It is also the one layer that does **not** pull in `<io>`: on Windows it is linked as an object
+*next to* the program rather than taken out of an archive, so a second copy of
+`strlen`/`puts`/`putnum` would be a duplicate symbol. Include them yourself:
+
+```mc-no-run
+#include <sys_windows>
+#include <io>
+```
+
+`tests/windows/070-kernel32.mc` is that case. Everything else in the suite links against the layer
+the way it links against musl on Linux — the compiled `lib/sys_windows.mc` is one more object on
+the command line.
+
+`scripts/test-windows.sh` cross-compiles the suite here and the `windows-11-arm` CI job links and
+runs it; `make test-windows` does the local half (objects, `llvm-readobj` on each, three real
+`lld-link` links) and skips itself without `lld-link` or `llvm-dlltool`. `docs/build.md`
+§ Windows targets has the full field-by-field mapping.
+
 ## What the ELF writer does
 
 `gen_lower` and `gen_encode_all` are format-neutral: the same sections, symbols and relocations
@@ -239,8 +293,9 @@ not running, it prints `test-linux: SKIPPED (...)` and the build stays green.
 ## Portability checklist for your own code
 
 - **Pick the system layer per target.** `<sys>` (libSystem) and `<sys_svc>` (Darwin syscalls) are
-  macOS; `<sys_linux>` is Linux. `<io>`'s `strlen`/`puts`/`putnum` are written in the language and
-  work on both.
+  macOS; `<sys_linux>` is Linux; `<sys_windows>` is Windows. `<io>`'s `strlen`/`puts`/`putnum` are
+  written in the language and work on all three — but `<sys_windows>` is the one that does not
+  include them for you.
 - **`#opcode` is architecture-specific by nature.** A source full of hand-encoded AArch64 words is
   portable to Linux arm64 and to nothing else. `emit()` and `reloc()` are the same story. This is
   the one place the *language* stops being portable, and it is deliberate: it is the escape hatch.
@@ -250,9 +305,11 @@ not running, it prints `test-linux: SKIPPED (...)` and the build stays green.
   emitted on either side. Constants are still caught at compile time (`division by zero`).
   Test a divisor that can be zero yourself; see
   [../core-language.md](../core-language.md) § "Division by zero, and `INT64_MIN / -1`".
-- **`#dylib` is a Mach-O mechanism.** On Linux, name libraries in `[linker].args` instead.
-- **Syscall numbers differ**, which is the entire reason `<sys_svc>` and `<sys_linux>` are two
-  files rather than one with an `#ifdef` — there is no `#ifdef`, and there is not going to be one.
+- **`#dylib` is a Mach-O mechanism.** On Linux and Windows, name libraries in `[linker].args`
+  instead.
+- **Syscall numbers differ**, which is the entire reason `<sys_svc>`, `<sys_linux>` and
+  `<sys_windows>` are three files rather than one with an `#ifdef` — there is no `#ifdef`, and
+  there is not going to be one. Windows does not even have numbers: its boundary is a DLL.
 
 ## Next
 

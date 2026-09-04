@@ -65,17 +65,17 @@ A missing `entry` or `out` is `<file>: missing key: project.entry`. A `kind` tha
 
 | key | type | default | accepted |
 |---|---|---|---|
-| `target.os` | string | `"macos"` | `macos`, `linux` |
+| `target.os` | string | `"macos"` | `macos`, `linux`, `windows` |
 | `target.arch` | string | `"aarch64"` | `aarch64`; `x86_64` when `os = "linux"` |
 
 The accepted set is the `(os, arch)` pairs the `target()` registry holds
-([hooks.md](hooks.md)) — `macos/aarch64`, `linux/aarch64`, `linux/x86_64` — and a module may
-register more. Anything else is refused at the value's position, with a message built from the
+([hooks.md](hooks.md)) — `macos/aarch64`, `linux/aarch64`, `linux/x86_64`,
+`windows/aarch64` — and a module may register more. Anything else is refused at the value's position, with a message built from the
 registry:
 
 ```
-$ mc build tests/proj --config /tmp/windows.toml
-/tmp/windows.toml:6:6: only macos and linux (see docs/build.md): target.os
+$ mc build tests/proj --config /tmp/haiku.toml
+/tmp/haiku.toml:6:6: only macos, linux and windows (see docs/build.md): target.os
 $ mc build tests/proj --config /tmp/riscv.toml
 /tmp/riscv.toml:7:8: only aarch64 and x86_64 (see docs/build.md): target.arch
 ```
@@ -84,6 +84,10 @@ $ mc build tests/proj --config /tmp/riscv.toml
 `elf-obj` / `elf-obj-x86_64` backends) instead of a Mach-O, and `[linker]` becomes **required** —
 there is no direct-executable backend for Linux (`linux requires [linker]: there is no direct
 executable`). `arch` then decides the instruction set inside that object.
+
+`os = "windows"` says the same two things in COFF: the object is an
+`IMAGE_FILE_MACHINE_ARM64` `.obj` (`coff-obj-arm64`) and `[linker]` is required
+(`windows requires [linker]: there is no direct executable`).
 See [../guide/50-cross-compile.md](../guide/50-cross-compile.md).
 
 ## `[compiler]` — build the compiler that will compile the entry

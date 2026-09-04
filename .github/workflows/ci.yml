@@ -15,9 +15,10 @@ permissions:
 # One run per pull request (or per branch, for the push to main); a new push
 # cancels the previous run. The job names below are the required status checks
 # on `main` -- "make check (macOS arm64)", "Link and run the suite
-# (linux/arm64)" and, since M37, "mc on linux/arm64 host" and "mc on
-# linux/x86_64 host" -- so they must not be renamed without updating the branch
-# protection (docs/ci.md § Branch protection).
+# (linux/arm64)", "Link and run the suite (linux/x86_64)", "Link and run the
+# suite (windows/arm64)" and, since M37, "mc on linux/arm64 host" and "mc on
+# linux/x86_64 host" -- so they must not be renamed without updating the
+# branch protection (docs/ci.md § Branch protection).
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -101,6 +102,14 @@ jobs:
             file build/mc-linux-x86_64.o | grep -q 'ELF 64-bit.*x86-64'
           fi
 
+      # M19: the same for windows/aarch64 -- the `coff-obj-arm64` backend over
+      # the same arm64 machine. This step also produces winrt.obj (the compiled
+      # lib/sys_windows.mc) and kernel32.lib, the two files the Windows half has
+      # no way to make for itself; without llvm-dlltool here the import library
+      # is simply missing from the artifact and the Windows job rebuilds it.
+      - name: Cross-compile the suite for windows/arm64
+        run: scripts/test-windows.sh --build-only build/windows-objs build/mc1
+
       - name: Upload the self-hosted compiler
         uses: actions/upload-artifact@v4
         with:
@@ -143,6 +152,14 @@ jobs:
         with:
           name: linux-x86_64-objects
           path: build/linux-objs-x86_64
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the cross-built windows/arm64 objects
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-arm64-objects
+          path: build/windows-objs
           if-no-files-found: error
           retention-days: 7
 
@@ -421,6 +438,82 @@ jobs:
           build/mc2l --backend=macho src/mc.mc -o build/x-cross.o
           cmp build/x-cross.o build/mc2.o
           echo "ok: the Mach-O object written on linux/x86_64 is the one macOS writes"
+
+  # M19: the Windows half. Nothing here compiles mc code either -- the objects,
+  # the compiled system layer (winrt.obj) and the kernel32 import library all
+  # travel in the artifact, so this job needs a linker and nothing else.
+  # docs/plan.md § Rule for every new target: a target is not supported until a
+  # job links and RUNS its suite on real hardware of that architecture.
+  windows-arm64:
+    name: Link and run the suite (windows/arm64)
+    runs-on: windows-11-arm
+    needs: check
+    timeout-minutes: 30
+    env:
+      LLVM_VERSION: "20.1.8"
+    steps:
+      - name: Check out
+        # The tests are run from the repository root: 025-linecount opens its
+        # own source by a relative path.
+        uses: actions/checkout@v4
+
+      - name: Download the cross-built objects
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-arm64-objects
+          path: build/windows-objs
+
+      # Facts first: the runner image may already carry LLVM, in which case
+      # nothing has to be downloaded at all. This step never fails -- it only
+      # reports, and sets `found` for the step below.
+      - name: Tool facts
+        id: tools
+        shell: bash
+        run: |
+          echo "runner: $RUNNER_OS $RUNNER_ARCH"
+          if where lld-link 2>/dev/null; then
+            echo "found=1" >> "$GITHUB_OUTPUT"
+          elif [ -x "/c/Program Files/LLVM/bin/lld-link.exe" ]; then
+            echo "/c/Program Files/LLVM/bin" >> "$GITHUB_PATH"
+            echo "found=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "lld-link: absent -- the next step downloads LLVM $LLVM_VERSION"
+            echo "found=0" >> "$GITHUB_OUTPUT"
+          fi
+          where clang 2>/dev/null || echo "clang: absent (not needed)"
+
+      - name: Cache the LLVM toolchain
+        if: steps.tools.outputs.found != '1'
+        uses: actions/cache@v4
+        with:
+          path: build/llvm
+          key: llvm-woa64-${{ env.LLVM_VERSION }}
+
+      # The Windows-on-ARM release of LLVM. Two shapes have shipped over the
+      # years -- a tarball and an NSIS installer -- so both are tried, and the
+      # step fails loudly rather than letting the suite skip itself: this job is
+      # the only place a Windows binary is ever executed.
+      - name: Obtain lld-link
+        if: steps.tools.outputs.found != '1'
+        shell: bash
+        run: |
+          set -e
+          if [ ! -x build/llvm/bin/lld-link.exe ]; then
+            mkdir -p build/llvm
+            base="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION"
+            if curl -fSL -o /tmp/llvm.tar.xz "$base/clang+llvm-$LLVM_VERSION-aarch64-pc-windows-msvc.tar.xz"; then
+              tar -xf /tmp/llvm.tar.xz -C build/llvm --strip-components=1
+            else
+              curl -fSL -o /tmp/llvm.exe "$base/LLVM-$LLVM_VERSION-woa64.exe"
+              7z x -obuild/llvm /tmp/llvm.exe > /dev/null
+            fi
+          fi
+          echo "$PWD/build/llvm/bin" >> "$GITHUB_PATH"
+          build/llvm/bin/lld-link.exe --version || true
+
+      - name: Link with lld-link and run natively
+        shell: bash
+        run: scripts/test-windows.sh --run-only build/windows-objs
 
   docs-updated:
     name: Docs updated
