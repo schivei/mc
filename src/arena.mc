@@ -20,16 +20,30 @@ extern i64 creat(uptr path, i64 mode);
 // prototype so a program can do it too (docs/build.md § limits).
 extern uptr mmap(uptr addr, i64 len, i64 prot, i64 flags, i64 fd, i64 off);
 
-// macOS values (sys/fcntl.h)
+// 0 and 1 on every system this compiler runs on or targets. O_CREAT and
+// O_TRUNC are NOT here: they differ between macOS (0x200/0x400) and Linux
+// (0x40/0x200), so they live in the host layer (src/host_macos.mc,
+// src/host_linux.mc) with everything else that does. Nothing in the arena
+// needs them -- write_file goes through `creat`, which is not variadic.
 #define O_RDONLY 0
 #define O_WRONLY 1
-#define O_CREAT 0x200
-#define O_TRUNC 0x400
 #define MODE_644 420                  // 0644 in decimal: no octal literal
 
-// mmap: PROT_READ|PROT_WRITE and MAP_PRIVATE|MAP_ANON (sys/mman.h)
+// mmap: PROT_READ|PROT_WRITE, and MAP_PRIVATE|MAP_ANON with one bit to spare.
+//
+// M37: this file has to stay host-neutral -- src/lexdump.mc, src/tomldump.mc,
+// tools/bundle.mc and site/gen/main.mc include it and are built for whichever
+// host they run on -- so the flag word is one value valid on BOTH kernels:
+//
+//   0x0002  MAP_PRIVATE      both
+//   0x0020  MAP_RENAME       macOS: defined, unused; Linux: MAP_ANONYMOUS
+//   0x1000  MAP_ANON         macOS; Linux: MAP_EXECUTABLE, ignored since 2.6
+//
+// so 0x1022 is MAP_PRIVATE|MAP_ANON on macOS and MAP_PRIVATE|MAP_ANONYMOUS on
+// Linux, each with one ignored bit. Measured on both: the mapping succeeds and
+// is writable (docs/guide/90-linux-host.md § The arena).
 #define PROT_RW   3
-#define MAP_ANONP 0x1002
+#define MAP_ANONP 0x1022
 
 // ---- limit shared by parse.mc and gen_arm64.mc (stage0's mc.h) ----
 // MAXPARAMS is not a table: it is the ABI. Every other MAX* of the seed became a

@@ -13,6 +13,10 @@ mc/driver	src/driver.mc
 mc/gen_resolve	src/gen_resolve.mc
 mc/gen_walk	src/gen_walk.mc
 mc/hooks	src/hooks.mc
+mc/host_linux	src/host_linux.mc
+mc/host_linux_aarch64	src/host_linux_aarch64.mc
+mc/host_linux_x86_64	src/host_linux_x86_64.mc
+mc/host_macos	src/host_macos.mc
 mc/lex	src/lex.mc
 mc/limits	src/limits.mc
 mc/machine_arm64	src/machine_arm64.mc

@@ -1,6 +1,6 @@
 // main.mc — transliteration of stage0/main.c: compiler driver.
 // usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules]
-//         [--backend=NAME|--exe] [--machine=NAME] input.mc [-o output]
+//         [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] input.mc [-o output]
 //        mc build [DIR] [--limits|--fix-limits]   ·   mc limits [DIR|FILE.mc]
 // The --dump-* modes write to stdout and do not generate the object.
 //
@@ -36,6 +36,12 @@
 // dump modes never reach a backend, so `--machine=NAME` is what points them at
 // a machine other than the host's.
 
+// M37: the compiler is hosted on macOS AND on Linux. Everything that differs
+// between the two is in the host layer the entry point includes before the core
+// (src/host_macos.mc, src/host_linux.mc); here that shows up in four places --
+// host_init(envp) at the top of main, `--host`, the machine the dump modes
+// start with, and `<mc/host>` in host_bundle_open below.
+
 #define M_COMPILE 0
 #define M_TOKENS  1
 #define M_AST     2
@@ -43,8 +49,12 @@
 #define M_SYMS    4
 #define M_RULES   5
 
-// built-in backend: the two halves of gen plus writing the MH_OBJECT
+// built-in backend: the two halves of gen plus writing the MH_OBJECT.
+// M37: `machine_use` first, like every other backend since M17 -- a Mach-O
+// object here is always arm64, and the machine that is current when the backend
+// is called is the HOST's, which on a linux/x86_64 host is not the same thing.
 void backend_macho(i64 unit, uptr out) {
+    machine_use("arm64");
     gen_lower(unit);
     gen_encode_all();
     macho_write(out);
@@ -61,15 +71,43 @@ uptr opt_val(uptr a, uptr pre) {
     return a + i;
 }
 
+// M15/M37: the lexer's one door into the bundle. `<mc/host>` is not an entry of
+// its own -- it is the name of THIS compiler's host file, which is what makes a
+// generated taught compiler (src/driver.mc, drv_gen_compiler) portable: the
+// same two lines produce a macOS compiler on a macOS host and a Linux one on a
+// Linux host. Every other name goes straight through.
+uptr host_bundle_open(uptr name, i64 base, uptr pcanon, uptr plen) {
+    if (str_eq(name, "mc/host")) name = host_include();
+    return bundle_open(name, base, pcanon, plen);
+}
+
+// `mc --host`: what this binary is, in the vocabulary mc.toml uses. The first
+// two lines are the [target] pair a config with no [target] gets; `sys` is the
+// bundled system layer a program on this host includes for its I/O.
+void dump_host() {
+    out_str(1, "os ");
+    out_str(1, host_os());
+    out_str(1, "\narch ");
+    out_str(1, host_arch());
+    out_str(1, "\nsys ");
+    out_str(1, host_sys());
+    out_str(1, "\n");
+}
+
 void usage() {
-    out_str(2, "usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NAME|--exe] [--machine=NAME] source.mc [-o out]\n");
+    out_str(2, "usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] source.mc [-o out]\n");
+    out_str(2, "       mc --host\n");
     drv_usage();
 }
 
-i64 main(i64 argc, uptr argv) {
+// envp is the third argument the C runtime passes (libSystem on macOS, musl's
+// crt1.o on Linux). The Linux host has no other way to reach the environment,
+// so it is handed over before anything else runs (src/host_linux.mc).
+i64 main(i64 argc, uptr argv, uptr envp) {
+    host_init(envp);
     uptr in = 0;
     uptr out = "out.o";
-    uptr bname = "macho";
+    uptr bname = 0;                             // 0 = the host's object backend
     uptr mname = 0;                             // --machine=, for the dump modes
     i64 mode = M_COMPILE;
 
@@ -79,7 +117,7 @@ i64 main(i64 argc, uptr argv) {
     // (src/backend_elf.mc) and `--machine=` overrides for the dump modes.
     machine_arm64_init();
     machine_x86_64_init();
-    machine_use("arm64");
+    machine_use(host_machine());                // the host's own, for the dumps
     backend("macho", &backend_macho);           // the built-ins, always registered
     backend("macho-exe", &backend_exe);
     backend("elf-obj", &backend_elf);
@@ -95,7 +133,7 @@ i64 main(i64 argc, uptr argv) {
     // src/lexdump.mc and src/astdump.mc keep compiling without src/bundle.mc.
     // Registered here, before any lex_init -- including the one inside
     // `mc build`, which goes through this same main().
-    lex_set_bundle(&bundle_open);
+    lex_set_bundle(&host_bundle_open);
 
     // M14: `mc build [DIR] [--config FILE]` is a subcommand, not a flag -- it
     // reads mc.toml and drives the whole build (src/driver.mc, docs/build.md).
@@ -108,7 +146,8 @@ i64 main(i64 argc, uptr argv) {
     loop {
         if (i >= argc) break;
         uptr a = ld64(argv + i * 8);
-        if (str_eq(a, "--dump-tokens"))     mode = M_TOKENS;
+        if (str_eq(a, "--host"))          { dump_host(); return 0; }
+        else if (str_eq(a, "--dump-tokens")) mode = M_TOKENS;
         else if (str_eq(a, "--dump-ast"))   mode = M_AST;
         else if (str_eq(a, "--dump-asm"))   mode = M_ASM;
         else if (str_eq(a, "--dump-syms"))  mode = M_SYMS;
@@ -121,8 +160,14 @@ i64 main(i64 argc, uptr argv) {
         } else if (ld8(a) == '-') {
             uptr mn = opt_val(a, "--machine=");
             uptr bn = opt_val(a, "--backend=");
+            // M37: the same extra `#include` root [include].paths gives a
+            // project, for the single-file CLI. It is what lets one source tree
+            // carry two platform layers in different directories and pick one
+            // without `mc build` (examples/conc/lib/macos, lib/linux).
+            uptr ip = opt_val(a, "--include=");
             if (mn)      mname = mn;
             else if (bn) bname = bn;
+            else if (ip) { }                    // applied after lex_init, below
             else         die2("unknown option", a);
         }
         else if (in == 0)          in = a;
@@ -131,12 +176,31 @@ i64 main(i64 argc, uptr argv) {
     }
     if (in == 0) { usage(); return 1; }
 
+    // M37: with no --backend and no --exe, `mc x.mc -o x.o` writes an object
+    // for the machine it is RUNNING on -- Mach-O on macOS, ELF on Linux, each
+    // with that host's architecture. It comes out of the same target registry
+    // `mc build` reads, so a host is supported exactly when it is registered.
+    if (bname == 0) {
+        i64 ht = target_find(host_os(), host_arch());
+        if (ht < 0) die2("the host is not a registered target", host_os());
+        bname = tgt_obj_at(ht);
+    }
+
     // M23: the pre-scan sizes every table before the first one exists. With no
     // mc.toml there is no tolerance to read, so the default 0.25 applies and the
     // arena stays the static heap[].
     lim_plan(in, lim_tol, 0, in);
     tok_init();
     lex_init(in);                                      // the lexer opens and pushes the file
+    // M37: the extra `#include` roots, applied here and not while the flags are
+    // being read -- the table lives in the arena, which lim_plan has only just
+    // sized, and no include is resolved before the first token anyway.
+    i = 1;
+    while (i < argc) {
+        uptr ip = opt_val(ld64(argv + i * 8), "--include=");
+        if (ip) lex_add_include_path(tm_cat(ip, "/"));
+        i = i + 1;
+    }
     // Tier 2 after tok_init(): the ids K_U8..K_EXTERN are fixed at 256..269, so
     // a user_init that calls tok_add before that would shift the table and break
     // the entire core. Before any token is read, because the lexer is
