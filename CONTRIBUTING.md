@@ -141,8 +141,8 @@ that fail a build if broken:
   padding zeroed. Two builds of the same source are the same bytes.
 - **The C is shaped like the `.mc` it becomes**: small functions, flat data in
   an arena, no struct-in-file, no clever textual macros.
-- **Comments and messages are in Portuguese, identifiers without accents.**
-  No emoji. (The documentation in `docs/` and the site are in English.)
+- **Comments, messages, and docs are in English; identifiers are ASCII.**
+  No emoji.
 - **Do not read or copy code from other projects.**
 
 ## Where things live

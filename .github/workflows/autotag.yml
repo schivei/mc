@@ -87,8 +87,8 @@ jobs:
                 rest="${subject#Merge pull request #}"
                 num="${rest%% *}"
                 ;;
-              *'(#'*')')
-                rest="${subject##*(#}"
+              *' (#'*')')
+                rest="${subject##* (#}"
                 num="${rest%)}"
                 ;;
             esac

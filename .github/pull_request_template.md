@@ -1,6 +1,7 @@
 <!--
-Merging this pull request cuts a release: a tag, a GitHub Release with the
-binary, and a Pages deploy. Read CONTRIBUTING.md once before the first one.
+Merging this pull request cuts a release: a tag and a GitHub Release with the
+binary. A Pages deploy runs only when docs/site changes trigger site.yml.
+Read CONTRIBUTING.md once before the first one.
 
 The OWNER merges, and the only merge method is SQUASH. The squash commit's
 subject is what autotag.yml reads, and the title of this pull request becomes
@@ -39,7 +40,7 @@ $ make check
 - [ ] `make budget` still fits: stage0 is under 3000 lines
 - [ ] `tests/golden/mc2.sha256` was rewritten only if the codegen really
       changed, and the reason is written above
-- [ ] `CLAUDE.md` § Estado carries this milestone's entry
+- [ ] `CLAUDE.md` § State carries this milestone's entry
 
 ## Release
 
