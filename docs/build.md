@@ -871,9 +871,11 @@ architecture (`docs/ci.md`), which is what `docs/plan.md` § Rule for every new 
 
 Docker's kernel is the VM's: Docker Desktop boots a LinuxKit kernel (6.12 here) that cannot be
 changed, so the project's Linux baseline -- the newest OS, kernel 7+, which CI reaches on the
-GitHub runners -- is reached locally with a second Docker daemon inside a Lima VM running Ubuntu
-26.04 (`linux-image-7.0.0-30-generic`). Nothing in the repository changes; only the Docker
-context the two targets talk to does. `brew install lima`, then `~/.lima/mc-k7.yaml`:
+GitHub runners -- is reached locally with a second Docker daemon inside a Lima VM running the
+newest Ubuntu release (26.04 at the time of writing, whose stock kernel is a 7.x build). Any
+7.x kernel satisfies the baseline; the exact build string below is what one machine measured,
+not a requirement. Nothing in the repository changes; only the Docker context the two targets
+talk to does. `brew install lima`, then `~/.lima/mc-k7.yaml`:
 
 ```yaml
 vmType: vz                        # Virtualization.framework
@@ -885,11 +887,9 @@ images:                           # Ubuntu 26.04 LTS cloud image, pinned by dige
   arch: "aarch64"
   digest: "sha256:00e2d9f09373125eb9040952ae3b8d5553fe3df8f5004c08838473a1f61b74bf"
 mountType: virtiofs               # the tests bind-mount the repo by its host path,
-mounts:                           # so the same path must exist inside the VM
-- location: "/Users/schivei/projects"
-  writable: true
-- location: "/private/tmp/claude-501"
-  writable: true
+mounts:                           # so the same path must exist inside the VM:
+- location: "/path/to/your/projects"   # the directory that contains your mc checkout
+  writable: true                       # (add any other tree you run the suite from)
 vmOpts:
   vz:
     rosetta: { enabled: true, binfmt: true }   # --platform linux/amd64 containers
@@ -908,7 +908,8 @@ DOCKER_CONTEXT=mc-k7 make test-linux-x86_64
 
 `DOCKER_CONTEXT=` is per command on purpose: the default context stays Docker Desktop. Measured
 on the same checkout: `ubuntu:latest`, `alpine:3` and `--platform linux/amd64 alpine:3` all answer
-`uname -r` = `7.0.0-30-generic` (the last one `uname -m` = `x86_64`, through Rosetta); the suites
+`uname -r` = a 7.x kernel (`7.0.0-30-generic` on that day; the last one `uname -m` = `x86_64`,
+through Rosetta); the suites
 are 33/33 and 30/30 under both daemons, 9.9 s / 10.4 s under Lima against 16.0 s / 17.2 s under
 Docker Desktop.
 
