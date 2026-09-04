@@ -1852,9 +1852,13 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `src/mc.mc`, so `build/mc2.o` moves in each of them -- recorded in `docs/specs/M41.md`
   § Implementation notes 9, each rewrite after an empty `--dump-asm` diff and a passing
   `cmp build/mc2.o build/mc3.o`.
-- Next: M18 or M24 (`docs/plan.md`); M13 stays in the backlog (`docs/specs/M13.md`:
-  sizing a program's memory at compile time — the fixed 4 MiB arena in `examples/api/lib/rt.mc` is
-  one more motivating case).
+- Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
+  `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
+  from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:
+  M24 gave it the depth type for narrow `u8`/`u16` arithmetic and M41 gave it
+  `type_set_width(TY_UPTR, w)` plus the five parts. M18 (Linux x86 32-bit) stays optional; M13
+  stays in the backlog (`docs/specs/M13.md`: sizing a program's memory at compile time -- the
+  fixed 4 MiB arena in `examples/api/lib/rt.mc` is one more motivating case).
   Update this section when each milestone closes.
 - i18n done (2026-09-03): the repository is fully in English — diagnostics, program/script
   output, identifiers, comments, and docs (`docs/*.md`, `docs/specs/*.md`, `CLAUDE.md`,
