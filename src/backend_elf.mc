@@ -8,7 +8,10 @@
 //
 //   sections     one ELF section per module section, in creation order, so the
 //                file comes out null, .text, .rodata, .data, .bss and then the
-//                `#section` ones. Zerofill becomes SHT_NOBITS.
+//                `#section` ones. Zerofill becomes SHT_NOBITS. One section is
+//                not a module section: `.note.GNU-stack`, empty and with no
+//                flags, appended after all of them (post-M41 review) so that
+//                the linker does not have to assume an executable stack.
 //   symbols      the compiler's leading `_` is dropped (`_main` -> `main`) and
 //                the string labels become assembler temporaries
 //                (`l_str0` -> `.Lstr0`). ELF requires every local before every
@@ -92,6 +95,7 @@
 #define EK_CONTENT  1
 #define EK_RELA     2
 #define EK_TABLE    3                  // symtab / strtab / shstrtab
+#define EK_NOTE     4                  // .note.GNU-stack: a header and no bytes
 
 // ---- the ELF section table, in the order the headers come out ----
 // M23: no ceiling. The count is known exactly before the first append -- the
@@ -210,11 +214,17 @@ void elf_add_sec(i64 kind, i64 src, uptr name, i64 type, i64 flags, i64 size,
 }
 
 // null, the content sections in creation order (so section header index i + 1
-// is exactly the module's 1-based sym_sect), then one .rela per section that
-// has relocations, then the three tables.
+// is exactly the module's 1-based sym_sect), then `.note.GNU-stack`, then one
+// .rela per section that has relocations, then the three tables.
+//
+// The note comes AFTER every content section on purpose: `st_shndx` is
+// `sym_sect` unchanged and a module section's ELF index is its own index plus
+// one (M16), so a section inserted anywhere before them would renumber every
+// symbol. Everything after them is indexed by a variable computed here
+// (el_isymtab, es_info of each .rela), so appending is free.
 void elf_plan() {
     nesec = 0;
-    i64 cap = nsections * 2 + 4;       // exact upper bound, see the table above
+    i64 cap = nsections * 2 + 5;       // exact upper bound, see the table above
     es_kind = xalloc(8 * cap);
     es_src = xalloc(8 * cap);
     es_name = xalloc(8 * cap);
@@ -234,6 +244,16 @@ void elf_plan() {
                     elf_sec_size(i), 1 << sec_align(sec_at(i)), 0);
         i = i + 1;
     }
+    // The stack marker. A toolchain reads the ABSENCE of `.note.GNU-stack` as
+    // "this object was built before the marker existed, assume it needs an
+    // executable stack": GNU ld drops PT_GNU_STACK from a link whose inputs all
+    // lack it, and then the kernel applies its own default. Present with
+    // sh_flags = 0 -- no SHF_EXECINSTR, and not even SHF_ALLOC -- it says the
+    // opposite, which is what `clang --target=aarch64-linux-musl -c` emits for
+    // any C file (SHT_PROGBITS, flags 0, size 0, align 1, verified with
+    // llvm-readobj). Nothing mc compiles ever needs an executable stack: the
+    // language has no nested function and no trampoline.
+    elf_add_sec(EK_NOTE, 0 - 1, ".note.GNU-stack", SHT_PROGBITS, 0, 0, 1, 0);
     i = 0;
     while (i < nsections) {
         if (sec_nrel(sec_at(i)) > 0) {
@@ -496,6 +516,7 @@ void elf_write(uptr path) {
             i64 k = ivec_at(es_kind, i);
             i64 src = ivec_at(es_src, i);
             if (k == EK_CONTENT)   buf_put(o, buf_p(sec_data(sec_at(src))), buf_len(sec_data(sec_at(src))));
+            else if (k == EK_NOTE) { }                          // a header, no bytes
             else if (k == EK_RELA) elf_put_relas(o, src, pos);
             else if (i == el_isymtab) buf_put(o, buf_p(el_sym), buf_len(el_sym));
             else if (i == el_istrtab) buf_put(o, buf_p(el_str), buf_len(el_str));

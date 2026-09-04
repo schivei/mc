@@ -767,9 +767,12 @@ that feed `macho_write` feed `elf_write`. The translation is:
 | `R_PAGEOFF12` on an ldr/str | `R_AARCH64_LDST{8,16,32,64}_ABS_LO12_NC` (278/284/285/286), by the access width in bits 31:30 |
 | `R_UNSIGNED` (8 bytes) | `R_AARCH64_ABS64` (257) |
 
-Section order in the file is null, the module's sections in creation order, one `.rela.X` per
-section that has relocations, `.symtab`, `.strtab`, `.shstrtab` — so a module section's index is
-its ELF section index minus one, which is what lets `st_shndx` be `sym_sect` unchanged. Symbols
+Section order in the file is null, the module's sections in creation order, `.note.GNU-stack`,
+one `.rela.X` per section that has relocations, `.symtab`, `.strtab`, `.shstrtab` — so a module
+section's index is its ELF section index minus one, which is what lets `st_shndx` be `sym_sect`
+unchanged. `.note.GNU-stack` is empty, `SHT_PROGBITS` with `sh_flags = 0`, and comes after every
+module section for exactly that reason; without it a linker assumes the object needs an executable
+stack (`docs/reference/objects.md` § `.note.GNU-stack` has the measurements). Symbols
 come out in `macho.mc`'s stable partition (locals, defined globals, undefined), which is also
 what ELF requires (`sh_info` = index of the first non-local). Relocation entries are sorted by
 ascending offset, the ELF convention. On aarch64 every `r_addend` is 0 — the encoder leaves the
@@ -1389,8 +1392,9 @@ deep`), `MAXBIND`/`MAXRDEPTH`/`MAXITEMS`/`MAXNAMES`, which bound **one** `#rule`
 inline fields of a rule's record, and `MAXSUBST` (16, M21), which bounds **one** lexer frame's
 substitutions and produces `too many substitutions`. The two tables M23 did not see, because they
 came in with M16 and M21, follow the same rule as the rest: the ELF section table
-(`src/backend_elf.mc`) is allocated at exactly `2 * nsections + 4` slots — the count is known
-before the first append — and M21's four substitution arrays are parallel to the `#include` stack,
+(`src/backend_elf.mc`) is allocated at exactly `2 * nsections + 5` slots — the count is known
+before the first append, the fifth constant being `.note.GNU-stack` — and M21's four substitution
+arrays are parallel to the `#include` stack,
 so `lex_push_mem` re-sizes them with it. `stage0/*.c` keeps every one of its ceilings: the C seed
 is a seed and only ever has to compile `src/mc.mc`. `make check-limits` is what watches that gap —
 `mc limits src/mc.mc` against the constants read straight out of `stage0/mc.h` and `stage0/*.c`,
