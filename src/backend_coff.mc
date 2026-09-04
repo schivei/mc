@@ -1,6 +1,13 @@
-// backend_coff.mc — backend `coff-obj-arm64`: a COFF object for Windows on ARM,
-// the relocatable `.obj` a Windows linker (`lld-link`, `link.exe`) takes
-// (M19, docs/specs/M19.md).
+// backend_coff.mc — backends `coff-obj-arm64` and `coff-obj-x86_64`: a COFF
+// object for Windows, the relocatable `.obj` a Windows linker (`lld-link`,
+// `link.exe`) takes (M19, docs/specs/M19.md; M20, docs/specs/M20.md).
+//
+// One writer, two architectures, parameterised the way src/backend_elf.mc is:
+// `coff_machine` is set by each entry point and decides the Machine field and
+// which relocation numbers the classifier answers with. Everything else --
+// sections, Characteristics, the string table, the 18-byte symbols, the layout,
+// coff_sym_name dropping the leading `_` -- is format-only and already correct
+// for both (neither Windows ABI decorates a symbol).
 //
 // It is the third writer over the same lowering. `gen_lower` turns the AST into
 // sections, symbols and relocations, `gen_encode_all` encodes the words, and
@@ -13,8 +20,8 @@
 //                `__DATA,__bss` -> `.bss`, and `#section SEG SECT` -> `.seg.sect`
 //                with the same lowercasing the ELF writer does. Alignment is not
 //                a field here: it is three bits inside Characteristics.
-//   symbols      18 bytes each, no auxiliary records. Windows on ARM has NO
-//                leading underscore, so the compiler's `_main` becomes `main`
+//   symbols      18 bytes each, no auxiliary records. Windows has NO leading
+//                underscore on either architecture, so `_main` becomes `main`
 //                exactly as it does in ELF, and the string labels become the
 //                Microsoft convention for a compiler temporary, `$str.N`.
 //                The stable partition macho.mc already computes (`sym_order`)
@@ -42,6 +49,7 @@
 
 // ---- IMAGE_FILE_HEADER ----
 #define IMAGE_FILE_MACHINE_ARM64 0xAA64
+#define IMAGE_FILE_MACHINE_AMD64 0x8664
 #define COFF_HDR_SIZE   20
 #define COFF_SHDR_SIZE  40
 #define COFF_SYM_SIZE   18
@@ -73,6 +81,15 @@
 #define IMAGE_REL_ARM64_PAGEOFFSET_12A 0x0006
 #define IMAGE_REL_ARM64_PAGEOFFSET_12L 0x0007
 #define IMAGE_REL_ARM64_ADDR64         0x000E
+
+// ---- relocations (IMAGE_REL_AMD64_*) ----
+// Two numbers are enough on x64, and note that ADDR64 is 0x0001 here where the
+// ARM64 one is 0x000E: the two tables are unrelated.
+#define IMAGE_REL_AMD64_ADDR64 0x0001
+#define IMAGE_REL_AMD64_REL32  0x0004
+
+// which architecture this object is for; the exact counterpart of elf_em
+i64 coff_machine = IMAGE_FILE_MACHINE_ARM64;
 
 // The COFF string table: names longer than 8 bytes, for sections and for
 // symbols alike, with a 4-byte length prefix that counts itself. An offset in
@@ -138,8 +155,9 @@ i64 coff_sec_char(i64 i) {
 }
 
 // ---- names ----
-// Mach-O name -> COFF name. Windows on ARM has no leading underscore, so the one
-// the compiler prefixes goes away — the same rule ELF follows — and a string
+// Mach-O name -> COFF name. Windows has no leading underscore on arm64 or on
+// x64, so the one the compiler prefixes goes away — the same rule ELF follows —
+// and a string
 // label becomes the Microsoft spelling of a compiler temporary.
 uptr coff_sym_name(uptr n) {
     if (ld8(n) == 'l' && ld8(n + 1) == '_') {
@@ -172,8 +190,30 @@ i64 coff_sym_type(uptr s) {
 // ones — the 12-bit immediate of an `add` is the offset itself (12A), that of an
 // ldr/str is scaled by the access width and the LINKER reads the scale off the
 // instruction (12L). Same classifier as elf_pageoff12 and exe_fix_pageoff12.
+// x86-64: both pc-relative kinds are one COFF relocation, and it carries NO
+// addend of its own. IMAGE_REL_AMD64_REL32 is defined as the 32-bit relative
+// address from the byte FOLLOWING the four-byte field, i.e. S + A - (P + 4),
+// where ELF's R_X86_64_PC32 computes S + A - P from the START of it -- which is
+// why src/backend_elf.mc has to write an addend of -4 and this file writes
+// nothing. The addend `A` is the in-place content of the field, and the encoder
+// already leaves both relocated instructions' disp32 zeroed (`call rel32` is E8
+// plus four bytes, `lea r, [rip+disp32]` is REX.W 8D modrm plus four, and both
+// put the field at the very end). IMAGE_REL_AMD64_REL32_1..5 exist for a field
+// followed by 1..5 further bytes of immediate; mc emits no such shape.
+i64 coff_rel_type_x86(uptr r) {
+    i64 t = rel_type(r);
+    if (t == R_X86_PLT32 || t == R_X86_PC32) return IMAGE_REL_AMD64_REL32;
+    if (t == R_UNSIGNED) {
+        if (rel_len(r) != 3) die("UNSIGNED that does not occupy 8 bytes");
+        return IMAGE_REL_AMD64_ADDR64;
+    }
+    die("relocation not supported in the x86-64 COFF object");
+    return 0;
+}
+
 i64 coff_rel_type(uptr sec, uptr r) {
     i64 t = rel_type(r);
+    if (coff_machine == IMAGE_FILE_MACHINE_AMD64) return coff_rel_type_x86(r);
     if (t == R_BRANCH26) return IMAGE_REL_ARM64_BRANCH26;
     if (t == R_PAGE21)   return IMAGE_REL_ARM64_PAGEBASE_REL21;
     if (t == R_UNSIGNED) {
@@ -336,7 +376,7 @@ void coff_write(uptr path) {
 
     u8 o[BUF_SIZE];
     buf_init(o);
-    buf_u16(o, IMAGE_FILE_MACHINE_ARM64);
+    buf_u16(o, coff_machine);
     buf_u16(o, nsections);
     buf_u32(o, 0);                              // TimeDateStamp: 0, determinism
     buf_u32(o, symoff);
@@ -370,10 +410,22 @@ void coff_write(uptr path) {
     write_file(path, o);
 }
 
-// the backend itself: the same lowering and the same two-pass encoder the other
-// writers use, over the arm64 machine, and only the writing differs
+// the backends themselves: the same lowering and the same two-pass encoder the
+// other writers use, over the machine each one names, and only the writing
+// differs. The object backend is what picks the machine (M17 step B), which is
+// how `coff-obj-x86_64` reaches the Win64 ABI without the target registry
+// growing a fifth column.
 void backend_coff(i64 root, uptr out) {
     machine_use("arm64");
+    coff_machine = IMAGE_FILE_MACHINE_ARM64;
+    gen_lower(root);
+    gen_encode_all();
+    coff_write(out);
+}
+
+void backend_coff_x86(i64 root, uptr out) {
+    machine_use("x86_64-win");
+    coff_machine = IMAGE_FILE_MACHINE_AMD64;
     gen_lower(root);
     gen_encode_all();
     coff_write(out);
