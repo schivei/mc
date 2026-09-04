@@ -1030,8 +1030,8 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   compiler against itself rather than against the frozen C oracle.
 - M19 done (`docs/specs/M19.md`, `docs/build.md` § Windows targets,
   `docs/guide/50-cross-compile.md` § Windows on ARM): **Windows on ARM — COFF objects, a kernel32
-  system layer, `lld-link`**. `stage0/` untouched (2846/3000): the COFF writer is a backend in
-  `.mc`, and the machine is the same `arm64` macOS uses — this is a new file FORMAT, not a new
+  system layer, `lld-link`**. `stage0/` untouched (2848/3000, unchanged since M17 step B raised its
+  `HEAP_SIZE`): the COFF writer is a backend in `.mc`, and the machine is the same `arm64` macOS uses — this is a new file FORMAT, not a new
   instruction set.
   New: `src/backend_coff.mc` (375 lines, backend `coff-obj-arm64`) — the third writer over
   `gen_lower` + `gen_encode_all`. One COFF section per module section in creation order, so the
@@ -1110,7 +1110,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `IMAGE_FILE_MACHINE_ARM64` PE with `Subsystem: IMAGE_SUBSYSTEM_WINDOWS_CUI` and the seven
   kernel32 imports; a full `mc build` with `[linker] cmd = "lld-link"` produces the same thing
   through the driver.
-  — `stage0/` untouched, 2846/3000; `src/*.mc` 17511 lines. `make bundle` re-run (38 files, raw
+  — `stage0/` untouched, 2848/3000; `src/*.mc` 17511 lines. `make bundle` re-run (38 files, raw
   511899 -> LZ 232981, blob 233396 B; `tools/bundle.list` gained `mc/backend_coff` and
   `sys_windows`). `make check` green end to end (RC 0): `test` 32/32, `check-lex` 76/76,
   `check-ast` 76/76, `check-bundle` (lz round trip 62 cases), `check-asm` 76/76, **`check-obj`
