@@ -286,7 +286,7 @@ re-walk. `tests/08-deadlock.lx` builds a real two-task cycle.
 |---|---|---|
 | `lib/atomic.mc` | 60 | `a_add`, `a_cas`, `a_fence` — three `#opcode` words |
 | `lib/thread.mc` | 62 | the platform layer: `pthread_*`, `dispatch_semaphore_*`, `sysctlbyname` |
-| `lib/rt.mc` | 253 | the `lx` runtime, made thread safe |
+| `lib/rt.mc` | 332 | the `lx` runtime, made thread safe |
 | `lib/conc_rt.mc` | 575 | mutexes, gates, channels, the pool, the intent |
 | `lib/prelude.lx` | 51 | what every `.lx` here includes |
 

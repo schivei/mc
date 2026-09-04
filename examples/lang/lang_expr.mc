@@ -112,8 +112,12 @@ i64 lg_field_use(i64 left, i64 fdi, i64 line, uptr fl) {
         lg_line = line;
         lg_file = fl;
         if (isobj) err_at2(fl, line, "+= on a field of class type", fd_name(f));
-        i64 cur = lg_call(lg_ldn(fd_ty(f)), lg_bin(K_ADD, left, lg_int(fd_off(f))));
-        return lg_call2(lg_stn(fd_ty(f)), addr, lg_bin(op, cur, v));
+        // `addr` is handed over ONCE: a load through a second `left + off` would
+        // put the receiver under two nodes and the walker would lower that
+        // expression twice -- `pick(s).k += 1` calling `pick` twice. The
+        // read-modify-write happens inside the runtime helper, where the address
+        // is a parameter. See lib/rt.mc § compound assignment on a field.
+        return lg_call2(lg_fopn(op, fd_ty(f)), addr, v);
     }
     i64 r = lg_call(lg_ldn(fd_ty(f)), addr);
     lg_xt_set(r, fd_cls(f), fd_if(f), 0, -1);

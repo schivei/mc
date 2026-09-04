@@ -190,6 +190,28 @@ nothing spliced, the node was simply reachable twice and the receiver
 (`tests/92-dup-eval.lx`). All fourteen tests written before it call a method on
 a plain name, where neither half can be seen.
 
+The same rule binds a **compound assignment on a field**, for the same reason:
+`p.f += e` needs the field's address twice, to load and to store, and that
+address is `receiver + offset`.
+
+```
+p.f += e        ->  rt_fadd64(p + off, e)
+p.f -= e        ->  rt_fsub64(p + off, e)
+```
+
+One pair per width (`rt_fadd8/16/32/64`, `rt_fsub8/16/32/64`), picked by
+`lg_fopn` from the field's declared type exactly as `lg_ldn`/`lg_stn` pick
+`ldW`/`stW`. The module used to build `left + off` a second time for the load,
+which put the receiver under two nodes: `pick(s).k += 1` called `pick` twice,
+with the stored value right and the count wrong (`tests/93-dup-field.lx`).
+Moving the read-modify-write inside the helper has two consequences, both
+deliberate: the field is read **after** `e` has been evaluated, and the value of
+the whole expression is the field's new value read back from memory, so a
+`u8`/`u16`/`u32` field yields the narrowed one. `p.f = e`, the plain read and
+`a[i]` never had the defect -- each builds its address once, in one branch --
+and `x += e` on a plain **name** is a `#rule` in `lib/prelude.lx`, which
+re-materializes the name and cannot evaluate anything twice.
+
 ---
 
 ## Memory
@@ -310,13 +332,13 @@ so nothing is mapped and the numbers above are what `mc limits` prints.
 | `lang.mc` | 88 | the module: the includes and `user_init`, where every hook is registered |
 | `lang_solo.mc` | 9 | the empty default of `lg_more()`, the chain point `user_init` ends with: a compiler holds one `user_init`, so a module STACKED on this one (`examples/conc`) registers from there and supplies its own `lg_more` instead of this file |
 | `lang_tab.mc` | 297 | every table, as flat records with named getters |
-| `lang_util.mc` | 374 | names, node builders, the linear lookups |
+| `lang_util.mc` | 384 | names, node builders, the linear lookups |
 | `lang_type.mc` | 318 | reading a type, resolving a name, record/replay of a generic, `where` |
 | `lang_class.mc` | 667 | `class`, `interface`, `namespace`, `import`, `using`, and the code a class generates |
 | `lang_stmt.mc` | 671 | `fn`, the block, `while`/`for`, reference counting, `ref` rewriting |
-| `lang_expr.mc` | 308 | `.`, `[`, `new`, `ref`, qualified names, generic calls |
-| `lib/rt.mc` | 257 | the runtime: arena, free lists, reference counting, printing, and the `rt_vcall<N>`/`rt_icall<N>` dispatch wrappers |
+| `lang_expr.mc` | 312 | `.`, `[`, `new`, `ref`, qualified names, generic calls |
+| `lib/rt.mc` | 283 | the runtime: arena, free lists, reference counting, printing, the `rt_vcall<N>`/`rt_icall<N>` dispatch wrappers and the `rt_fadd<W>`/`rt_fsub<W>` field helpers |
 | `lib/prelude.lx` | 30 | what every `.lx` includes: the runtime plus `+=`/`-=`/`++`/`--` |
 | `main.lx`, `geo.lx` | 65 + 26 | the spec's sample, extended with a namespace in a second file |
-| `tests/*.lx` | 17 tests | one per feature, with `expect-stdout`/`expect-exit`/`expect-error` headers |
+| `tests/*.lx` | 18 tests | one per feature, with `expect-stdout`/`expect-exit`/`expect-error` headers |
 | `test.sh` | 151 | builds with `mc build --compiler-only`, runs the suite, checks determinism, `--dump-asm` and `--dump-rules` |

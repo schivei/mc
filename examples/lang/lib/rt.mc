@@ -226,6 +226,32 @@ i64 rt_icall8(uptr obj, i64 code, i64 a1, i64 a2, i64 a3, i64 a4, i64 a5, i64 a6
 i64 rt_icall9(uptr obj, i64 code, i64 a1, i64 a2, i64 a3, i64 a4, i64 a5, i64 a6, i64 a7, i64 a8, i64 a9) { return callp(rt_islot(obj, code), obj, a1, a2, a3, a4, a5, a6, a7, a8, a9); }
 i64 rt_icall10(uptr obj, i64 code, i64 a1, i64 a2, i64 a3, i64 a4, i64 a5, i64 a6, i64 a7, i64 a8, i64 a9, i64 a10) { return callp(rt_islot(obj, code), obj, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10); }
 
+// ---- compound assignment on a field: the receiver, evaluated once ----
+//
+// `p.f += e` needs the field's ADDRESS twice -- to load the current value and
+// to store the new one -- and that address is `receiver + offset`. Building it
+// twice puts the receiver EXPRESSION under two nodes, and a node reachable from
+// two places is walked twice: `pick(s).k += 1` called `pick` twice
+// (examples/lang/tests/93-dup-field.lx), the same defect the dispatch wrappers
+// above fixed for `o.m()`. The answer is the same one: the address is bound to
+// a PARAMETER, written once by the caller at its own position in the evaluation
+// order and read twice inside. One pair per width, because the field's width is
+// what picks the ldW/stW intrinsic (lang_util.mc, lg_fopn).
+//
+// Two consequences, both deliberate. The field is read AFTER `e` has been
+// evaluated, so `p.f += g()` sees whatever `g` left in it -- before, the load
+// came first, but only because the receiver was being evaluated a second time.
+// And the value of the whole expression is the field's new value read back from
+// memory, so for a u8/u16/u32 field it is the narrowed one.
+i64 rt_fadd8(uptr p, i64 v)   { st8(p, ld8(p) + v);    return ld8(p); }
+i64 rt_fadd16(uptr p, i64 v)  { st16(p, ld16(p) + v);  return ld16(p); }
+i64 rt_fadd32(uptr p, i64 v)  { st32(p, ld32(p) + v);  return ld32(p); }
+i64 rt_fadd64(uptr p, i64 v)  { st64(p, ld64(p) + v);  return ld64(p); }
+i64 rt_fsub8(uptr p, i64 v)   { st8(p, ld8(p) - v);    return ld8(p); }
+i64 rt_fsub16(uptr p, i64 v)  { st16(p, ld16(p) - v);  return ld16(p); }
+i64 rt_fsub32(uptr p, i64 v)  { st32(p, ld32(p) - v);  return ld32(p); }
+i64 rt_fsub64(uptr p, i64 v)  { st64(p, ld64(p) - v);  return ld64(p); }
+
 // ---- output ----
 
 void rt_print_str(uptr s) {
