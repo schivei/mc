@@ -416,8 +416,22 @@ i64 run_syntax_param() {
 // not an override. `#infix` on the same token afterwards is not an error — it
 // goes through infix_set, which clears the handler (the template wins, and
 // docs/surface.md says so).
+//
+// M41.5: a CORE operator may be taught too. `word_add` refuses `if` and `i64`
+// but not `+` -- punctuation is outside K_U8..K_EXTERN -- so the registration
+// was already accepted; what it was not was EFFECTIVE, because ops_init() ran
+// later, as parse_unit's first statement, and rewrote the entry handler
+// included. ops_init() is now idempotent and is called from HERE, so the core
+// entry exists before the lookup below: the duplicate test sees it (a core
+// operator carries no handler, so the first registration is allowed and only a
+// second one is refused), and infix_set re-declares it with the module's
+// precedence. The module's `prec` wins, exactly as a `#infix` on the same token
+// would: this is a re-declaration of the operator, not a decoration of the
+// core's. docs/reference/hooks.md § syntax_infix lists the core precedences a
+// module has to repeat if it wants to keep them.
 void syntax_infix(uptr word, i64 prec, uptr fn) {
     if (prec < 1 || prec > 100) die2("precedence out of 1..100", word);
+    ops_init();                              // M41.5: the core table, before the lookup
     i64 tok = word_add(word);
     i64 i = infix_find(tok);
     if (i >= 0 && ie_fn(ie_at(i))) die2("operator already taught", word);

@@ -1931,6 +1931,73 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `mc2-windows-arm64.sha256` `2aed564c9a9f37c891adb124b01c49d5a5f28abf02d3c69a937faae4142d32ce`
   (872667 B), `mc2-windows-x86_64.sha256`
   `a41a3c727bf13094f3a1907ce7592704e032aa12244339b964afccba4dec4784` (891291 B).
+- M41.5, second follow-up (`docs/specs/M41.5.md` §§ 8-11, `docs/reference/hooks.md` §
+  `syntax_infix`, `docs/surface.md` § "M41.5 -- and a core operator"): **a module may teach a CORE
+  operator.** `stage0/` untouched (2848/3000). The defect the same `ngen` consumer exposed:
+  `syntax_infix("+", 9, &h)` was ACCEPTED -- `word_add` refuses only `K_U8..K_EXTERN`, and `+` is
+  `K_ADD`, punctuation outside that range -- and then silently UNDONE, because `parse_unit()` ran
+  `ops_init()` as its first statement, after `user_init()`, and `infix_set`'s last line is
+  `set_ie_fn(e, 0)` (M21's rule that a `#infix` drops the handler). Reproduced with a handler whose
+  body is an unconditional `die()`: before, the compiler built fine and `i64 main() { return 1 + 2; }`
+  compiled and exited **3**; after, `mc: probe: the + handler fired`, exit 1.
+  * **The owner's decision was permit, not refuse**, consistent with M24 already letting a module
+    replace the machine slot that lowers `+` (`lib/user_badmach.mc`).
+  * **The fix is five code lines**: `i64 ops_ready = 0;` plus a two-line guard at the top of
+    `ops_init()` (`src/parse.mc`) and one `ops_init();` call at the head of `syntax_infix`
+    (`src/hooks.mc`) -- 30 added lines in `src/`, **4 of them neither comment nor blank**.
+    Placement: NOT `src/cli.mc` (another branch is editing it heavily, and "before `user_init()`"
+    is three call sites, not one -- `cli.mc`, `driver.mc`, `limits.mc`, with `astdump.mc` parsing
+    without one at all); the table is an initialisation, not a phase, so it is built ON FIRST USE
+    and the first consumer triggers it. The guard also removes a latent bug: `ops_init` used to
+    re-fill the table on every `parse_unit`, which would have undone a `#infix` and every
+    `syntax_infix` if any process ever parsed two units.
+  * **The precedence question, decided and tested: the module's `prec` wins.** `syntax_infix`
+    re-declares the entry exactly as `#infix` does, so a module that wants the core's grouping
+    repeats the core's number (`docs/reference/language.md` § 3). M21's rule is untouched (a
+    `#infix "+"` in the SOURCE still drops the handler) and the duplicate refusal stays -- the
+    FIRST registration on a core operator is allowed, because a core operator carries no handler
+    to override.
+  * Proofs, `lib/user_coreop.mc` + `lib/mc_coreop.mc` (the `user_badmach`/`mc_badmach` shape) and
+    `scripts/check-surface.sh` (+121/-20): the taught `+` lowers `a + b` to a call `plus(a, b)`
+    the PROGRAM provides -- `v(50) + v(8)` is **58** with `build/mc1` and **42** with
+    `build/mc-coreop`, and `--dump-ast` holds `CALL type=i64 name=plus` with no `op=+`; `*` taught
+    at **3** instead of the core's 10 makes `55 - 6 * 7` parse as `star(55 - 6, 7)` = **42**
+    against **13** for the stock compiler; `--dump-rules` prints `infix + prec 9 left handler`,
+    `infix * prec 3 left handler`, `infix - prec 9 left`; a `#infix "+" 9 left $1 - $2` in a source
+    that defines no `plus` compiles and exits 42 (the handler would have died with
+    `unknown function: plus`); and `lib/user_dupcoreop.mc` gives `mc: operator already taught: +`
+    at `user_init` time -- the old dupop block became a `dup_case` helper run for `.+` and for `+`.
+    No `tests/err/` case was added: the change introduces no new message, and
+    `066-infix-drops-handler.mc` passes unchanged with its exact text. The three new `lib/` files
+    are NOT in `tools/bundle.list`, following the M41 precedent for check-script-only modules
+    (`user_badwidth`, `user_uptr2`, `user_nou32`, `user_nold64`, `user_core_min`).
+  -- inertness: `scripts/check-inert.sh build/mc1.pre build/mc1` (pre = a `mc1` built from the
+  branch's HEAD before the edit) -- **33 objects identical** (`tests/*.mc` and `src/mc.mc`) plus
+  byte-identical artefacts for `examples/api`, `examples/lang`, `examples/conc`,
+  `examples/desktop` and `examples/kernel`. `make bundle` re-run BEFORE bootstrapping (77 files,
+  raw 791608 -> LZ 370822, blob 371756 B). `make check` green end to end (**RC 0, zero FAIL**):
+  `test` 32/32, `check-lex` 125/125 (2 skipped), `check-ast` 125/125, `check-asm` 125/125,
+  `check-obj` **32/32 identical to the frozen seed**, `check-bundle` (lz round trip 101 cases),
+  `bootstrap` at a fixed point (`mc2.o == mc3.o`, 858304 bytes; the `--dump-asm` diff between
+  `mc1` and `mc2` is **empty**), `check-surface` 32/32 + the five new core-operator cases + inert,
+  `test-exe` 32/32, `check-mc` 7/7, `check-standalone`, `check-parts`, `check-toml` 10/10,
+  `check-build` 21/21, `check-stubs` 9/9, `check-limits` 17/17 under 90%, `check-minimal`,
+  `test-linux` 33/33, `test-linux-x86_64` 30/30, `test-windows` 35/35 + `test-windows-x86_64`
+  33/33 cross-compiled, `check-examples`, `check-lang` 14, `check-conc` 21, `check-desktop`,
+  `check-float`, `check-wide`, `check-kernel` (QEMU 11.0.1, exit 0), `check-docs` (180 symbols,
+  19 flags, 17 TOML keys, 10 directives, 47 samples, 244 links), `site` 81 pages + `check-site`
+  (0 link problems). The five goldens rewritten once, only after the empty `--dump-asm` diff and
+  `cmp build/mc2.o build/mc3.o`: `mc2.sha256` `17adb080...4d24ce` ->
+  `0883ef0cedc2f388fa6937452e62d9c0deecbfa81e52b91b64d16526b930bae1`; the Linux pair deleted and
+  re-recorded by `make check-linux-host` -- `mc2-linux-arm64.sha256`
+  `58fef265ba539e386c114f427cc60fffb355b8fa390d38e1a89f85e73609ff2b`,
+  `mc2-linux-x86_64.sha256`
+  `6361d20d6e08e9b57e142dbadfed08e608a43147de324c563c45c2b944132eff` (each after its own
+  `mc2l.o == mc3l.o` and with the cross proof against the macOS `build/mc2.o` green); the Windows pair cross-computed per
+  `tests/golden/README.md` -- `mc2-windows-arm64.sha256`
+  `2ccfc7b850fcd7c17e88ec1b152aaaa399cc12ddc4c53445caf057fd9ef88ebe` (873735 B),
+  `mc2-windows-x86_64.sha256`
+  `bfe9e7540023050a1af5684f787f430f5e5faba36ce374a74f74f9b935d45477` (892351 B).
 - Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
   `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
   from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:

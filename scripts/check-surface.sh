@@ -27,6 +27,12 @@
 # their exact message, the duplicate registration refused at user_init time, the
 # demo test compiled twice byte for byte, and the inertness check of 6(5).
 #
+# M41.5 (second follow-up): syntax_infix on a CORE operator. lib/mc_coreop.mc
+# teaches `+` (at the core's own precedence) and `*` (at 3, which is not) to lower
+# to calls the PROGRAM provides; the answers change, --dump-rules reports both
+# with `handler`, a `#infix` in the source still drops the handler, and a second
+# registration on `+` is still refused.
+#
 # M31 (docs/specs/M31.md § 2): `widen` (decl_find + decl_ret + decl_nparams +
 # decl_param_type), `guard` (on_jump), four more tests/err/ cases, and the ABI
 # contract of docs/reference/objects.md § 4 -- every claim on that page asserted
@@ -984,29 +990,124 @@ else
     fails=$((fails + 1))
 fi
 
-# decision 7.3: teaching the same operator twice is refused at user_init time,
-# before the first token of any source is read
-sed 's|user_default\.mc|user_dupop.mc|' "$save" > "$user"
-if ! grep -q 'user_dupop\.mc' "$user"; then
-    echo "FAIL: could not wire lib/user_dupop.mc into $user"
-    exit 1
-fi
-if ! msg=$("$mc0" src/mc.mc -o build/mc1d.o 2>&1); then
-    echo "FAIL: compiling src/mc.mc with user_dupop: $msg"
-    fails=$((fails + 1))
-elif ! msg=$(scripts/link.sh build/mc1d build/mc1d.o 2>&1); then
-    echo "FAIL: linking build/mc1d: $msg"
-    fails=$((fails + 1))
-elif msg=$(build/mc1d tests/001-return42.mc -o "$tmp/d.o" 2>&1); then
-    echo "FAIL: a duplicate syntax_infix was accepted"
-    fails=$((fails + 1))
-elif [ "$msg" != "mc: operator already taught: .+" ]; then
-    echo "FAIL: duplicate syntax_infix said '$msg'"
+# ---- M41.5: syntax_infix on a CORE operator ----
+# The parser-level counterpart of the machine-level proof just above. Before
+# M41.5 the registration was accepted and then silently undone: ops_init() filled
+# the core precedence table as parse_unit's FIRST statement -- after user_init()
+# -- and infix_set clears the handler column, so a handler with a die() in it
+# never fired and `1 + 2` still compiled to 3. ops_init() is now idempotent and
+# syntax_infix() calls it, so the core entry exists before the lookup.
+coreop="build/mc-coreop"
+rm -f "$coreop"
+# `plus` and `star` cannot use `+` or `*` in their own bodies: this module's
+# rewrite is unconditional and program-wide, so they would call themselves.
+cat > "$tmp/coreop.mc" <<'EOF'
+i64 plus(i64 a, i64 b) { return a - b; }
+i64 star(i64 a, i64 b) { return a - b; }
+i64 v(i64 x) { return x; }
+i64 main() { return v(50) + v(8); }
+EOF
+# the module's precedence wins: `*` is taught at 3, looser than `-`, so this is
+# star(55 - 6, 7) = 42 here and 55 - (6 * 7) = 13 with the stock compiler
+cat > "$tmp/coreop-prec.mc" <<'EOF'
+i64 plus(i64 a, i64 b) { return a - b; }
+i64 star(i64 a, i64 b) { return a - b; }
+i64 main() { return 55 - 6 * 7; }
+EOF
+# a `#infix` on the same token in the SOURCE still drops the handler (M21's rule,
+# tests/err/066): this program defines no `plus`, so if the handler had survived
+# the compile would die with `unknown function: plus`
+cat > "$tmp/coreop-infix.mc" <<'EOF'
+#infix "+" 9 left $1 - $2
+
+i64 v(i64 x) { return x; }
+i64 main() { return v(50) + v(8); }
+EOF
+if ! msg=$("$mc1" --exe lib/mc_coreop.mc -o "$coreop" 2>&1); then
+    echo "FAIL: compiling lib/mc_coreop.mc: $msg"
     fails=$((fails + 1))
 else
-    echo "ok duplicate syntax_infix refused at user_init ($msg)"
+    "$mc1"    --exe "$tmp/coreop.mc" -o "$tmp/coreop-good" 2>/dev/null; "$tmp/coreop-good"; good=$?
+    "$coreop" --exe "$tmp/coreop.mc" -o "$tmp/coreop-tgt" 2>/dev/null; "$tmp/coreop-tgt"; tgt=$?
+    if [ "$good" != 58 ] || [ "$tgt" != 42 ]; then
+        echo "FAIL syntax_infix on a core operator: default=$good taught=$tgt (want 58 and 42)"
+        fails=$((fails + 1))
+    else
+        echo "ok syntax_infix(\"+\"): the taught operator changes the program's answer (58 -> 42)"
+    fi
+    # and it is a PARSER-level change: `+` never becomes an N_BINARY
+    if "$coreop" --dump-ast "$tmp/coreop.mc" 2>&1 | grep -q '^      CALL type=i64 name=plus$' \
+       && ! "$coreop" --dump-ast "$tmp/coreop.mc" 2>&1 | grep -q 'op=+'; then
+        echo "ok syntax_infix(\"+\"): the tree holds a call, not a binary node"
+    else
+        echo "FAIL syntax_infix(\"+\"): the tree still holds a binary +"
+        fails=$((fails + 1))
+    fi
+    # the module's precedence replaces the core's, and --dump-rules says so
+    "$mc1"    --exe "$tmp/coreop-prec.mc" -o "$tmp/prec-good" 2>/dev/null; "$tmp/prec-good"; good=$?
+    "$coreop" --exe "$tmp/coreop-prec.mc" -o "$tmp/prec-tgt" 2>/dev/null; "$tmp/prec-tgt"; tgt=$?
+    if [ "$good" != 13 ] || [ "$tgt" != 42 ]; then
+        echo "FAIL syntax_infix precedence: default=$good taught=$tgt (want 13 and 42)"
+        fails=$((fails + 1))
+    else
+        echo "ok syntax_infix: the module's precedence wins over the core's (13 -> 42)"
+    fi
+    "$coreop" --dump-rules "$tmp/coreop.mc" > "$tmp/coreop-rules" 2>&1
+    if grep -q '^infix + prec 9 left handler$' "$tmp/coreop-rules" \
+       && grep -q '^infix \* prec 3 left handler$' "$tmp/coreop-rules" \
+       && grep -q '^infix - prec 9 left$' "$tmp/coreop-rules"; then
+        echo "ok --dump-rules: the two taught core operators, with the module's precedence"
+    else
+        echo "FAIL --dump-rules does not report the taught core operators"
+        grep '^infix ' "$tmp/coreop-rules" | sed -n 1,6p
+        fails=$((fails + 1))
+    fi
+    # M21's rule is untouched: #infix in the source drops the handler
+    if ! msg=$("$coreop" --exe "$tmp/coreop-infix.mc" -o "$tmp/coreop-inf" 2>&1); then
+        echo "FAIL #infix on a taught core operator: $msg"
+        fails=$((fails + 1))
+    else
+        "$tmp/coreop-inf"; tgt=$?
+        if [ "$tgt" = 42 ] \
+           && ! "$coreop" --dump-ast "$tmp/coreop-infix.mc" 2>&1 | grep -q 'name=plus'; then
+            echo "ok #infix in the source still drops the handler of a core operator"
+        else
+            echo "FAIL #infix did not drop the handler (exit $tgt)"
+            fails=$((fails + 1))
+        fi
+    fi
 fi
-cp "$save" "$user"
+
+# decision 7.3: teaching the same operator twice is refused at user_init time,
+# before the first token of any source is read -- for a taught token (.+) and,
+# since M41.5, for a core one (+), where the FIRST registration is allowed
+# because a core operator carries no handler to override
+dup_case() {
+    sed "s|user_default\\.mc|$1|" "$save" > "$user"
+    if ! grep -q "$1" "$user"; then
+        echo "FAIL: could not wire lib/$1 into $user"
+        exit 1
+    fi
+    if ! msg=$("$mc0" src/mc.mc -o build/mc1d.o 2>&1); then
+        echo "FAIL: compiling src/mc.mc with $1: $msg"
+        fails=$((fails + 1))
+    elif ! msg=$(scripts/link.sh build/mc1d build/mc1d.o 2>&1); then
+        echo "FAIL: linking build/mc1d: $msg"
+        fails=$((fails + 1))
+    elif msg=$(build/mc1d tests/001-return42.mc -o "$tmp/d.o" 2>&1); then
+        echo "FAIL: a duplicate syntax_infix was accepted ($1)"
+        fails=$((fails + 1))
+    elif [ "$msg" != "$2" ]; then
+        echo "FAIL: duplicate syntax_infix said '$msg' (want '$2')"
+        fails=$((fails + 1))
+    else
+        echo "ok duplicate syntax_infix refused at user_init ($msg)"
+    fi
+    cp "$save" "$user"
+}
+
+dup_case user_dupop.mc     "mc: operator already taught: .+"
+dup_case user_dupcoreop.mc "mc: operator already taught: +"
 
 # ---- M21 acceptance 6(5): inert by construction ----
 # With nothing registered, the compiler has to produce exactly what a compiler

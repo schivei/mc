@@ -119,7 +119,7 @@ notatype main() { return 0; }
 | `& expects a name` | `&` applied to an expression | `&` takes a local, a global or a function |
 | `name expected` | `p_ident()` required an identifier | supply a name |
 | `name expected here` / `variable name expected` / `parameter name expected` / `name expected at top level` | a declaration name is missing | supply it. If the token is a taught word, the message is the next one instead |
-| `name reserved by a syntax/type_alias registration` | the name is a word some Tier 3 registration claimed — the detail is the word | a registration reserves the word for the whole program. Rename the identifier, or choose a different word in the module |
+| `name reserved by a syntax/type_alias registration` | the name is a word some Tier 3 registration claimed — the detail is the word. Since M41.5 that word may be a core operator, if a module taught `+` with `syntax_infix` | a registration reserves the word for the whole program. Rename the identifier, or choose a different word in the module |
 | `type expected` | `p_type()` required a type word | one of the seven core types, or a `type_alias` |
 | `type expected at top level` | a top-level declaration that starts with neither a type nor a taught word | this is what the default compiler says about a source written for a taught one |
 | `type expected in parameter` | a parameter with no type | write `i64 x`, never a bare `x` |
@@ -166,7 +166,7 @@ notatype main() { return 0; }
 | `syntax_param handler consumed no tokens` | M41.5: a `syntax_param` handler returned a node without advancing | a handler that claims the parameter has to read it; return 0 to leave it to the core |
 | `syntax_param handler did not return a parameter` | M41.5: what the handler returned is not an `N_PARAM` | build it with `param_new(ty, name)`; the node goes straight into a list `gen_lower` walks by `nd_type`/`nd_name` |
 | `syntax_infix handler produced no expression` | the same for an operator handler | return the resulting node |
-| `operator already taught` | a second `syntax_infix` on the same token | a second registration is a mistake, not an override. A later `#infix` on the token *is* allowed: it clears the handler and the template wins |
+| `operator already taught` | a second `syntax_infix` on the same token, a core one (`+`) included since M41.5 — the FIRST registration on a core operator is allowed, because it carries no handler to override | a second registration is a mistake, not an override. A later `#infix` on the token *is* allowed: it clears the handler and the template wins |
 | `cannot redefine core keyword` | `syntax`/`syntax_stmt`/`syntax_expr`/`syntax_infix`/`type_alias` on a core word | choose another word |
 | `type_alias with invalid type` | the base is not a type id that exists — one of `TY_VOID..TY_UPTR`, or one a `type_new` returned | use a core type constant, or the id `type_new` gave you |
 | `type_new with a width below 1` | M24: a registered type has to occupy at least one byte | the detail is the type's name |

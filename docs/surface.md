@@ -1468,3 +1468,40 @@ parameter of every function, and `scripts/check-surface.sh` checks that its `--d
 objects are byte-identical to the untaught compiler's over the whole `tests/` corpus.
 
 See `docs/specs/M41.5.md` and `docs/reference/hooks.md` § 3.
+
+## M41.5 — and a core operator
+
+The second thing the same consumer hit. `syntax_infix("+", 9, &h)` was **accepted** — `word_add`
+refuses the core keywords, and `+` is punctuation, outside `K_U8..K_EXTERN` — and then silently
+undone: `ops_init()` filled the core precedence table as `parse_unit`'s first statement, after
+`user_init()`, and `infix_set` clears the handler column of the entry it writes. A handler with an
+unconditional `die()` in it never fired, and `1 + 2` compiled to `3`.
+
+The owner's decision was **permit**, not refuse: M24 already lets a module take the machine slot
+that lowers `+` (`lib/user_badmach.mc` makes an addition come out as a subtraction), so refusing
+the same thing one seam earlier, at the parser, would have been arbitrary. `ops_init()` is now
+idempotent and `syntax_infix` calls it, so the core table exists **before** a module reaches for
+one of its entries.
+
+```c
+// lib/user_coreop.mc — `a + b` becomes plus(a, b), a function the PROGRAM provides
+i64 co_plus(i64 left) {
+    i64 line = p_line(); uptr fl = p_file();
+    i64 right = parse_expr(10);              // prec 9, left-associative -> prec + 1
+    set_nd_next(left, right);
+    i64 n = node_new(N_CALL, line, fl);
+    set_nd_name(n, "plus"); set_nd_a(n, left); set_nd_type(n, TY_I64);
+    return n;
+}
+void user_init() { syntax_infix("+", 9, &co_plus); }
+```
+
+The rules that did **not** move: a `#infix "+"` in the source still drops the handler (M21), and a
+second `syntax_infix` on the same token is still `operator already taught: +`. The rule that had to
+be decided: **the module's `prec` wins** — `syntax_infix` re-declares the entry the way `#infix`
+does, so a module that wants the core's grouping repeats the core's number. The same demo teaches
+`*` at 3 instead of 10, and `55 - 6 * 7` parses as `star(55 - 6, 7)`.
+
+Inert by construction, as always: with nothing registered, `ops_init()` still runs from
+`parse_unit` and every object and every `--dump-ast` over `tests/` is byte-identical to the frozen
+seed's.

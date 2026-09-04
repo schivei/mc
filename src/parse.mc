@@ -250,7 +250,9 @@ i64 infix_find(i64 tok) {
 }
 
 // M21. 1 if the operator carries a syntax_infix handler. The core operators live
-// in the same table and are NOT taught: `+` is never blamed by err_name.
+// in the same table and carry none, so `+` is not blamed by err_name -- unless
+// (M41.5) a module has taught `+` itself, in which case it IS one of the words
+// that registration reserved and saying so is the point.
 i64 infix_is_taught(i64 tok) {
     i64 i = infix_find(tok);
     if (i < 0) return 0;
@@ -295,8 +297,21 @@ void prefix_set(i64 tok, i64 tmpl) {
     set_pe_tmpl(e, tmpl);
 }
 
+// M41.5: the core table is built ON FIRST USE, not once per parse. syntax_infix()
+// calls ops_init() before it looks its operator up, so a module that teaches a
+// CORE operator (`+`) finds the core entry already there and re-declares it.
+// Without the guard the fill ran as parse_unit's first statement -- after
+// user_init() -- and infix_set's `set_ie_fn(e, 0)` wiped the module's handler in
+// silence: the operator looked taught and behaved core. The guard is what makes
+// two call sites one initialisation; the table is a set of process-lifetime
+// globals, and a second fill would undo whatever the first parse has since
+// learned (a `#infix` in the source, a syntax_infix from user_init).
+i64 ops_ready = 0;
+
 // core precedences: higher binds tighter
 void ops_init() {
+    if (ops_ready) return;
+    ops_ready = 1;
     infix_set(K_OROR,   1, 0, 0);
     infix_set(K_ANDAND, 2, 0, 0);
     infix_set(K_OR,     3, 0, 0);

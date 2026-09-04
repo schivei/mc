@@ -349,6 +349,37 @@ Teaching the same token twice is `operator already taught` — a second registra
 not an override. A `#infix` on the same token afterwards is *not* an error: it goes through
 `infix_set`, which clears the handler column, and the template wins.
 
+**A core operator may be taught (M41.5).** `word_add` refuses the core *keywords* (`if`, `i64`,
+`extern` …), but `+`, `*`, `==` and the rest are punctuation and were never in that range, so
+`syntax_infix("+", 9, &f)` has always been accepted. Until M41.5 it was accepted and then silently
+undone: the core precedence table was filled by `ops_init()` as `parse_unit`'s first statement —
+*after* `user_init()` — and filling an entry clears its handler column, so the handler never fired
+and `1 + 2` still compiled to `3`. `ops_init()` is now built **on first use** and `syntax_infix`
+calls it before it looks the operator up, so the core entry is already there when a module reaches
+for it. This is the parser-level counterpart of what M24 already allowed one seam later, where a
+module replaces the machine slot that lowers `+` (`lib/user_badmach.mc`).
+
+Three consequences, all tested by `scripts/check-surface.sh` against `lib/mc_coreop.mc`:
+
+* **The module's `prec` wins.** `syntax_infix` *re-declares* the entry, exactly as a `#infix` on
+  the same token would: precedence, associativity (left) and template are rewritten and the
+  handler is installed. A module that wants to keep the core's grouping has to repeat the core's
+  number — they are in [language.md](language.md) § 3, and `--dump-rules` prints the table in
+  effect. Teaching `*` at 3 really does make `a - b * c` parse as `star(a - b, c)`.
+* **`#infix` in the source still drops it.** M21's rule is untouched: a `#infix "+"` written in a
+  program compiled by the taught compiler rewrites the whole entry, handler column included, and
+  the template wins from that point on.
+* **The first registration on a core operator is allowed, a second is not.** A core operator
+  carries no handler, so there is nothing to override; once one is installed,
+  `operator already taught: +`.
+
+A taught core operator is also a word the registration reserved, so `err_name` may now blame it
+(`name reserved by a syntax/type_alias registration: +`) where a name was expected — in that
+compiler, `+` really is taught. The rewrite is unconditional and program-wide: the handler sees
+every `+` in every source that compiler reads, including the ones inside the functions the rewrite
+calls. A module that wants an operator only for its own type has to look at the operands and
+rebuild the core's node when they are not its own.
+
 ### `void type_alias(uptr name, i64 base)`
 
 Makes `name` a valid type word resolving to a type that already exists. `base` is one of
