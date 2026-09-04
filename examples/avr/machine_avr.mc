@@ -257,7 +257,6 @@ void avr_epilogue() {
 void avr_frame_fix(i64 frame) {
     i64 total = frame + avr_out;
     if (total > AVR_FRAME_MAX) die("avr frame too large for 2 KiB of SRAM");
-    set_ins_imm(ins_at(avr_ires), total);
     set_ins_rn(ins_at(avr_ires), total);
     set_ins_rn(ins_at(avr_epi), total);
     // one pass over the function: every frame-relative `off` becomes the Y

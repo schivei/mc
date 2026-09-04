@@ -97,7 +97,6 @@ void img_place() {
     img_lma = img_mmcu + img_mmcu_size();
     // the initialized data: one contiguous run, at its RUN address in SRAM and
     // at img_lma in flash, in the same order and with the same padding
-    i64 lma = img_lma;
     i64 ram = AVR_SRAM;
     img_data = ram;
     i = 0;
@@ -107,7 +106,6 @@ void img_place() {
             i64 a = 1 << sec_align(s);
             if (a > 2) a = 2;                    // an 8-bit part aligns to bytes
             ram = img_align_up(ram, a);
-            lma = img_lma + (ram - img_data);
             set_img_addr_at(i, ram);
             ram = ram + buf_len(sec_data(s));
         }
