@@ -52,3 +52,8 @@ $ make check
 - [ ] `release:major` — a break in the language, the CLI or the file formats
 - [ ] `release:skip` — merge without cutting a version (CI-only, docs-only)
 - [ ] none of the above: this is a **patch**, and the default is correct
+
+## Docs and site
+- [ ] `docs/guide`, `docs/reference` or the example pages updated for this change (the "Docs updated" check fails otherwise when code changed)
+- [ ] `sh scripts/check-docs.sh build/mc1` green locally (samples compile, symbols covered, links resolve)
+- [ ] the site renders (`build/mc1 build site && build/mcsite site --check`)

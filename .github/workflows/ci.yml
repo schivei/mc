@@ -144,3 +144,29 @@ jobs:
 
       - name: Link with ld.lld and run natively
         run: scripts/test-linux.sh --run-only build/linux-objs
+
+  docs-updated:
+    name: Docs updated
+    # Owner's rule (2026-09-04): every PR that changes the compiler, the libraries or the
+    # examples must also update docs/ (the site is regenerated from docs/ on merge).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compare changed paths against the base
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE" "$HEAD")
+          printf '%s\n' "$changed"
+          code=$(printf '%s\n' "$changed" | grep -E '^(src|lib|examples|stage0|tools)/' || true)
+          docs=$(printf '%s\n' "$changed" | grep -E '^docs/' || true)
+          if [ -n "$code" ] && [ -z "$docs" ]; then
+            echo "::error::this PR changes src/, lib/, examples/, stage0/ or tools/ but nothing under docs/ -- update the guide, the reference or the example pages (the site is generated from docs/)"
+            exit 1
+          fi
+          echo "ok: docs gate satisfied"

@@ -164,3 +164,10 @@ that fail a build if broken:
 Open an issue with the source that reproduces it, the command, and what the
 command printed. `mc` is small enough that a ten-line reproducer is usually the
 whole bug report.
+
+## Documentation is part of every change
+
+Every pull request that touches `src/`, `lib/`, `examples/`, `stage0/` or `tools/` must also update
+`docs/` (guide, reference or the example pages). The `Docs updated` check enforces it, `check-docs`
+verifies coverage and compiles every sample, and `site.yml` regenerates https://minicompiler.dev
+from `docs/` on merge. A change that is not documented is not finished.
