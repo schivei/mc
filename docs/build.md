@@ -1789,6 +1789,52 @@ three.
 
 ---
 
+## M43 — `make test-sandbox`, and what a Linux host it needs
+
+`mc sandbox run|exec|check` is a Linux subcommand ([reference/sandbox.md](reference/sandbox.md)),
+so its gate is the one target in `make check` that cannot run on the machine this repository is
+usually developed on. It solves that the way the M16 and M19 targets do — by cross-building and
+delegating:
+
+```
+make test-sandbox            # macOS: cross-build a Linux mc, run it on a Linux kernel
+make mc-linux-gnu            # the aarch64 glibc compiler, if you want it by hand
+make mc-linux-x86_64-gnu     # the x86_64 one
+```
+
+`scripts/test-sandbox.sh` picks the Linux kernel in this order:
+
+1. the Lima instance `mc-k7` (§ "A kernel-7 local oracle with Lima"), where the repository is
+   mounted at the same path it has on the Mac, so the run needs no copy;
+2. `docker run --privileged --platform linux/<arch> alpine:3` — **`--privileged` is required**,
+   because Docker's default seccomp profile puts `unshare`, `mount` and `pivot_root` behind
+   `CAP_SYS_ADMIN` and its default AppArmor profile denies `mount`;
+3. nothing: it prints `test-sandbox: SKIPPED (...)` with the reason and `make check` stays green.
+
+On a Linux host the target runs natively with the compiler that host bootstrapped, and it is in
+the Linux `check` list. Inside a plain (unprivileged) container it self-skips through the box's
+own guard, `mc sandbox check`, which is also the thing to run first on any new machine:
+
+```
+$ mc sandbox check
+kernel: 7.0.0-30-generic
+userns: ok
+landlock: abi 8
+seccomp: notif ok
+overlay: ok
+pidfd: ok
+```
+
+Two host facts it will tell you about, both measured rather than assumed: an Ubuntu 23.10 or later
+needs `kernel.apparmor_restrict_unprivileged_userns=0` (or an AppArmor profile granting `userns,`
+and `mount,`) for the *unprivileged* path, and a machine that runs no container engine may need
+`modprobe overlay` once, because `/proc/filesystems` lists only the filesystems the kernel has
+actually loaded.
+
+The compiler that runs the box must be a binary the host can execute, which is why the two `-gnu`
+targets exist: every Linux host this repository measures on — Lima, the VPS, the Ubuntu runners —
+is a glibc one, and `mc`'s executable writer names musl's loader by default (M42).
+
 ## Limits of M14, M15, M16 and M23
 
 - **`[target]` defaults to the host.** With no `[target]` section at all, `os` and `arch` are what

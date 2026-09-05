@@ -1,11 +1,13 @@
 # `mc sandbox` — compile and run an arbitrary program in isolation
 
-**Status: step A.** What exists today is the system-call shim, the `<mc/core_sandbox>` part,
-`mc sandbox check`, the option parser and the refusals. `run` and `exec` say
-`mc: sandbox run: not in this step` and exit 126 on Linux; the box itself — the three processes,
-the mount tree, Landlock, the seccomp listener and the report — is step B. Everything below that
-describes the box is written as design, and the sections that are measured say so and give the
-host they were measured on.
+**Status: step B.** The box exists and runs: the namespaces, the mount tree, `pivot_root`, the
+caps, the steps, the wall clock and the report. What is **not** here is step C — Landlock and the
+seccomp filter with `SECCOMP_RET_USER_NOTIF`, which are what turn a kill into
+`refused: open /etc/shadow`. So exit code **125** is defined and never produced yet, and a program
+that reaches for something outside the box is stopped by the *mount tree*, the *network namespace*
+and the *rlimits* rather than named: `/etc/shadow` answers `ENOENT` because there is no `/etc`,
+and a connect answers `ENETUNREACH` because the network namespace is empty. Every section below
+says which of the two it describes, and every measured number gives the host it came from.
 
 The design is `docs/specs/M43.md`. This page is the reference.
 
@@ -26,6 +28,16 @@ residual is accepted, and it is written down rather than papered over. For anyth
 public, the answer is policy: a disposable machine that holds nothing, snapshotted, rebuilt from
 a script.
 
+**The process cap, when P is root.** `RLIMIT_NPROC` is a real wall for an ordinary user —
+measured: at 0 the kernel refuses the *first* `clone` with `EAGAIN`, for a plain `fork` and for
+the `clone3(CLONE_VM|CLONE_VFORK)` behind `posix_spawn` alike, and `tests/sandbox/forkbomb.mc`
+prints `forked 0`. Started by root it prints `forked 200`, its own ceiling: `copy_process` skips
+the check outright for `INIT_USER`, and root's box is mapped `0 0 65536`. Nothing escapes either
+way — the children are inside the pid namespace and die with it, and the host's process count is
+the same before and after — but the *count* is bounded only by the machine. Two answers, and the
+second is the real one: run `mc sandbox` as an ordinary user, and wait for step C's seccomp
+profile, which refuses `clone` before it is asked.
+
 Three smaller things are also outside the wall, and each is a deliberate choice:
 
 * **the compiler itself** runs inside the box for `mc sandbox run`, under the compile profile —
@@ -44,10 +56,23 @@ Three smaller things are also outside the wall, and each is a deliberate choice:
 
 | host | `mc sandbox run\|exec\|check` |
 |---|---|
-| Linux, root | the whole thing; the box's uid 0 maps to host 65534 |
-| Linux, unprivileged | the same code path through a user namespace — see the AppArmor section below |
+| Linux, unprivileged | the whole thing, through a user namespace; the box's uid 0 **is** the caller. This is the way to run it — see the AppArmor section below |
+| Linux, root | the same code path, with the identity map `0 0 65536`. Everything works and one wall is missing: `RLIMIT_NPROC` does not bind for root (§ What is not isolated) |
 | macOS | refuses, and prints the Lima command to run instead, exit **126** |
 | Windows | refuses, exit **126** |
+
+Measured, both privileges, on Ubuntu 26.04 / kernel 7.0.0-30 — `scripts/test-sandbox.sh`:
+
+| cell | isolation | the suite | a project | overhead per box |
+|---|---|---|---|---|
+| linux/aarch64, root (Lima `mc-k7`) | 8/8 | 31/31 (1 skipped) | ok | 1.37 ms |
+| linux/aarch64, unprivileged | 8/8 | 31/31 (1 skipped) | ok | 1.43 ms |
+| linux/x86_64, root (the VPS) | 8/8 | 29/29 (3 skipped) | ok | 4.12 ms |
+| linux/x86_64, unprivileged | 8/8 | 29/29 (3 skipped) | ok | 4.98 ms |
+| linux/aarch64, `alpine:3` under `docker run --privileged` (kernel 6.12.76-linuxkit, musl) | 8/8 | 31/31 | ok | not measurable (busybox `date` has no `%N`) |
+
+The two unprivileged cells need `kernel.apparmor_restrict_unprivileged_userns=0`; with the stock 1
+they print the honest refusal instead, which is itself part of the run.
 
 macOS gets no sandbox on purpose. `sandbox-exec(1)`/`sandbox_init(3)` still exist in macOS 26 but
 have been documented as deprecated since 10.8, have no CPU, wall-clock or memory model beyond
@@ -142,6 +167,176 @@ CI job runs both configurations so that the fact cannot be forgotten by a green 
 
 ---
 
+## The box
+
+Four processes, and the fourth is not in the design's drawing — the kernel put it there.
+
+```
+P  mc, on the host, host uid    parses the command line, resolves /proc/self/exe, opens the
+                                pipes, forks I, writes I's uid/gid maps, supervises with ppoll,
+                                enforces the wall clock, reaps, prints the report, exits.
+I  the box                      unshare(NEWUSER|NEWNS|NEWPID|NEWNET|NEWIPC|NEWUTS); waits for
+                                the maps; builds the tree; pivot_root; sethostname; the three
+                                inheritable caps; then forks J and waits.
+J  the steps, pid 1             the first child of I is pid 1 of the new pid namespace. It runs
+                                one child per step and reports each over the status pipe. It is
+                                what P kills for the wall clock.
+C  one step                     closes every inherited descriptor, asks for no_new_privs, reads
+                                one sync byte, sets the three per-step caps, execve.
+```
+
+**Why J exists.** A pid namespace dies with its init, so the compile step cannot *be* pid 1 —
+once it exits, the kernel refuses to put the run step in the same namespace. The obvious repair,
+one fresh namespace per step, is not available either: a second `unshare(CLONE_NEWPID)` answers
+**EINVAL**, because `copy_pid_ns()` refuses when the caller's *active* pid namespace is no longer
+the one its children would join, which is exactly the state the first unshare leaves. So one child
+of I is pid 1 for the whole box and runs the steps underneath it. `SIGKILL` to it from P takes
+every process in the namespace with it — that is the wall-clock kill and it is what makes a fork
+bomb the box's own problem and nobody else's.
+
+### The tree
+
+In order, all inside I's private mount namespace, the first mount being `MS_PRIVATE|MS_REC` on
+`/` so that nothing propagates back:
+
+| path in the box | source | how |
+|---|---|---|
+| `/` | a tmpfs, `size=<--out>m,mode=755`, `MS_NOSUID\|MS_NODEV` | mounted on a fresh `/tmp/.mc-box<pid>`, which P removes afterwards — it is the only thing the sandbox ever writes outside the box, and it is empty |
+| `/mc` | `readlink("/proc/self/exe")`, taken by P before any unshare | bind of a *file* onto an empty file, then remounted read-only |
+| `/src` | the source's directory, or `--root DIR` | overlayfs: `lowerdir=DIR`, `upperdir` and `workdir` on the box tmpfs, `userxattr` |
+| `/out` | the box tmpfs | where the compiler writes when there is no overlay (below) |
+| `/ro0`, `/ro1`, … | each `--ro DIR`, in the order given | bind + remount read-only |
+| `/lib`, `/lib64`, `/usr/lib` | the host's, when they exist | bind + remount read-only, so an M42 dynamic binary finds its loader and its libc |
+| everything else | — | does not exist: no `/proc`, no `/dev`, no `/etc`, no `/tmp`, no `/home` |
+
+Then `pivot_root(".", ".old")` from inside the new root, `umount2("/.old", MNT_DETACH)`,
+`sethostname("sandbox")` and `chdir` to `/src` or to `--cwd`. The environment is three entries and
+nothing else: `HOME=/src`, `PATH=/`, the terminator.
+
+`userxattr` is not decoration. An overlay mounted from a user namespace cannot set
+`trusted.overlay.*` xattrs — that needs `CAP_SYS_ADMIN` in the *init* namespace, which nobody
+here has, root included, because `unshare(CLONE_NEWUSER)` drops it — so the kernel has to be told
+to use the `user.overlay.*` names. A kernel that predates the option answers `EINVAL` and the
+option is dropped and the mount tried again.
+
+**The overlay road, per host.** `overlayfs` was the design's risk 3, on the suspicion that Lima's
+`virtiofs` would refuse it. Measured: it does not. The overlay mounts on **both** hosts —
+`virtiofs` under Lima and `ext4` on the VPS — for root and unprivileged alike, and the fallback
+below has not been reached by any cell of `scripts/test-sandbox.sh`. It exists anyway, because a
+lower filesystem that refuses is a `-EINVAL` away: `/src` becomes a read-only bind, `/out` a
+writable directory on the box tmpfs, the compiler writes there, and the report says so. A
+*project* cannot be built that way (`mc build` writes inside its own tree) and says so.
+
+### The maps
+
+Who the box is, and the one place root and unprivileged differ. Two kernel answers shaped this,
+in this order:
+
+1. `0 65534 1` **alone** — the design's "root inside is nobody outside" — leaves the *caller*
+   unmapped: outer uid 0 has no inner number, the box's fsuid becomes the overflow uid, and every
+   file it creates answers **EOVERFLOW**. It was the box's very first `mkdir`.
+2. `0 65534 1` plus `1 0 1` and a `setuid(0)` fixes that and fails the next test. An overlay
+   copy-up into a directory the *lower* layer owns needs permission on that directory, and a tree
+   owned by outer 0 is inner 1 with mode 755 — not the box's — so `mc --exe` inside the box
+   answered `cannot create: /src/tests/061-pass` on the x86_64 VPS, where the tree belongs to
+   root. `CAP_DAC_OVERRIDE` does not help: `capable_wrt_inode_uidgid()` requires the inode's owner
+   to be mapped in the namespace asking.
+
+So the maps are:
+
+| P is | `uid_map` and `gid_map` | the box is |
+|---|---|---|
+| an ordinary user | `0 <uid> 1` — the only line the kernel accepts | uid 0 inside, that user outside, with that user's reach |
+| root | `0 0 65536` | root inside and root outside, able to read and write any tree its caller could |
+
+`/proc/<I>/setgroups` is written `deny` first, which the unprivileged `gid_map` requires. What
+keeps the root row from being a hole is the tree itself: everything mounted from the host is
+read-only, and the only writable filesystem in the box is a tmpfs that dies with it.
+
+### The caps
+
+`RLIMIT_CPU`, `RLIMIT_FSIZE` and `RLIMIT_CORE` are set by I and inherited; `RLIMIT_AS`,
+`RLIMIT_STACK` and `RLIMIT_NPROC` are set by C, immediately before `execve`. That split is not
+style: `RLIMIT_AS` applies to the process that sets it and I is a fork of `mc` carrying its own
+arena, and `RLIMIT_NPROC` is checked by `fork` and I still has to fork the steps.
+
+| cap | value | what it is |
+|---|---|---|
+| `RLIMIT_CPU` | `--time`, soft = hard | the CPU wall. The kernel sends SIGXCPU at the soft limit and SIGKILL at the hard one; with them equal, SIGKILL is what arrives |
+| `RLIMIT_AS` | `--mem` MiB | the memory wall, and the kernel's own: no capability bypasses it |
+| `RLIMIT_FSIZE` | `--out` MiB | with the tmpfs `size=`, what the program may write |
+| `RLIMIT_NOFILE` | 32 | |
+| `RLIMIT_CORE` | 0 | |
+| `RLIMIT_STACK` | 8 MiB | |
+| `RLIMIT_NPROC` | 0, or 64 with `--allow=threads`, or **16 for the compile step** | the process wall |
+
+The compile step's 16 is not a loophole: `mc build` *writes* a compiler and then runs it, so a
+project needs a handful of processes to build at all. Sixteen is more than the three execs a
+taught build takes and far less than a bomb.
+
+### The report
+
+One line per event, each starting with `sandbox: `, written when the box is gone so that it can
+never interleave with the program's own output — the program's stdout and stderr *are* P's, passed
+straight through. Fixed vocabulary, no pid, no timing, no host path; the only variable text is a
+number the invocation itself chose.
+
+```
+sandbox: compile: exit 0
+sandbox: exit 42
+sandbox: killed: cpu limit (2 s)
+sandbox: killed: wall clock (5 s)
+sandbox: killed: signal 11 (SIGSEGV)
+sandbox: cannot mount /: EACCES (apparmor restricts unprivileged user namespaces: see docs/reference/sandbox.md § Hosts)
+```
+
+| line | when |
+|---|---|
+| `compile: exit N` | the compile step ended on its own; always printed, including `exit 0` |
+| `exit N` | the run step ended on its own. `mc sandbox` exits with that same N |
+| `killed: cpu limit (S s)` | a signal ended a step that had spent its whole `--time`. Exit **124** |
+| `killed: wall clock (S s)` | `--wall` expired and P killed the box. Exit **124** |
+| `killed: signal N (NAME)` | any other signal. Exit **128 + N** |
+| `cannot <site>: ERRNO` | the box could not be built. Exit **126** |
+
+`--report FILE` writes the same text to a file **as well as** to stderr (the design said "instead
+of"; both is what a script needs, so that it can compare two runs byte for byte and a person still
+sees the diagnostic). Two runs of the same case produce byte-identical files — that is asserted by
+`scripts/test-sandbox.sh`, along with "no digit sequence of four or more" so that a pid or a time
+cannot creep in.
+
+The `cannot` sites are: `unshare`, `mount /`, `the box tmpfs`, `create a directory in the box`,
+`bind the compiler at /mc`, `mount /src`, `mount a --ro directory`, `bind the host libraries`,
+`pivot_root`, `detach the old root`, `sethostname`, `chdir`, `set a resource limit`,
+`fork a step`, `create a pipe`, `write the uid map`, `execute the step`, `open the --stdin file`,
+`build a project without an overlay`.
+
+### The steps
+
+| what `run` was given | compile step | run step |
+|---|---|---|
+| `prog.mc` | `/mc --exe /src/prog.mc -o /src/prog` (`--libc=gnu` when this host's loader is glibc's) | `/src/prog ARGS` |
+| `prog.mc` with a `--dump-*` | `/mc --dump-asm /src/prog.mc` | none: the dump **is** the output |
+| a directory holding `mc.toml` | `/mc build /src` (`--config` when given) | `/src/<[project].out> ARGS`, when `kind = "exe"` |
+| `mc sandbox exec BIN` | none | `/src/BIN ARGS` |
+
+A compile failure ends the box with that exit code and no run step, and the report says
+`compile: exit 1`.
+
+Two options widen `/src` beyond the source's own directory, and both were needed by this
+repository's own corpus:
+
+* `--root DIR` makes `/src` the tree `DIR` names and compiles `PATH` inside it. Half of
+  `tests/*.mc` includes `../lib/sys.mc` and `025-linecount` opens its own source by a path
+  relative to the repository root; with `--root .` both resolve inside the box exactly as they do
+  outside it, and nothing in `tests/` had to change.
+* `--config NAME` names the project file to build, relative to the project directory, and
+  `[project].out` stays relative to *that file's* directory. `mc sandbox run --config
+  examples/lang/mc.linux-gnu.toml .` is how a project that includes files from outside its own
+  directory is built.
+
+---
+
 ## The system-call shim
 
 Every system call the sandbox issues goes through one host-layer function
@@ -230,9 +425,17 @@ mc sandbox check                             print what this host can do, exit 0
 ```
 
 The options and the exit codes are in [cli.md](cli.md) § 3c. In one line: `--time`, `--wall`,
-`--mem` and `--out` are the four caps; `--allow=threads` widens the syscall profile; `--stdin`,
-`--ro`, `--cwd`, `--report` and `--verbose` are the rest; **124** means a cap stopped the program,
-**125** a refusal, **126** that the box could not be set up.
+`--mem` and `--out` are the four caps; `--allow=threads` widens what the box permits; `--stdin`,
+`--ro`, `--cwd`, `--root`, `--config`, `--report` and `--verbose` are the rest; **124** means a cap
+stopped the program, **125** a refusal (step C: not produced yet), **126** that the box could not
+be set up.
+
+`scripts/test-sandbox.sh` (`make test-sandbox`, inside `make check`) is the gate: the isolation
+cases of `tests/sandbox/`, the whole `tests/*.mc` suite compiled *and* run inside the box, `exec`
+on two binaries built outside it (one of them dynamic), a project, the determinism of the report,
+the proof that no host file was touched, and the overhead number. On a Linux host it runs
+natively; from macOS it cross-builds a Linux `mc` and hands the run to Lima, else to
+`docker run --privileged`, else prints one `SKIPPED` line with the reason.
 
 ---
 

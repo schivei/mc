@@ -309,12 +309,14 @@ report grammar and what is **not** isolated are in [sandbox.md](sandbox.md).
 | `--mem MiB` | address space (`RLIMIT_AS`), default 256 |
 | `--out MiB` | how much the program may write (the box tmpfs and `RLIMIT_FSIZE`), default 64 |
 | `--allow=threads` | permit `clone`/`clone3` for threads, and the syscalls a thread needs |
-| `--libc=musl\|gnu` | which loader the program expects; by default it is read from its `PT_INTERP` |
+| `--libc=musl\|gnu` | which family the program compiled inside the box is linked against; by default, whichever loader this host has on disk |
 | `--stdin FILE` | the program's standard input; without it, immediate EOF |
 | `--ro DIR` | one more directory the box may read (repeatable, at most 16) |
-| `--cwd DIR` | the working directory inside the box, under `/src` |
-| `--report FILE` | write the report to a file instead of stderr |
-| `--verbose` | add `rusage` to the report. Not deterministic, and the only flag that is not |
+| `--cwd DIR` | the working directory inside the box: an absolute path is a path in the box (`/ro0`), a relative one is under `/src` |
+| `--root DIR` | the tree that becomes `/src`, instead of the source's own directory. `PATH` must be inside it |
+| `--config NAME` | for `run DIR`: the project file to build, relative to `DIR`. `[project].out` stays relative to that file's directory |
+| `--report FILE` | write the report to this file **as well as** to stderr |
+| `--verbose` | add one `rusage: cpu N ms, maxrss N kb` line to the report. Not deterministic, and the only flag that is not |
 
 `mc sandbox check` prints six lines on stdout and exits 0 when every one of the five capabilities
 the box needs is there, 1 otherwise:
@@ -332,6 +334,16 @@ pidfd: ok
 `not loaded (modprobe overlay)`. On macOS and Windows all three verbs print the command to run
 instead and exit **126** ([sandbox.md](sandbox.md) § Hosts).
 
+A run prints the program's own stdout and stderr unchanged and then the report, one line per
+event, on stderr:
+
+```
+$ mc sandbox run --time 2 tests/013-putnum.mc
+46368
+sandbox: compile: exit 0
+sandbox: exit 0
+```
+
 ### Exit codes
 
 | code | meaning |
@@ -341,7 +353,7 @@ instead and exit **126** ([sandbox.md](sandbox.md) § Hosts).
 | `2` | the environment is not ready: no sysroot for the target ([sysroot.md](sysroot.md) § 5) |
 | `3` | verdict `tight` or `grew` (`--limits` / `mc limits` only) |
 | `124` | `mc sandbox`: a cap stopped the program (CPU or wall clock) |
-| `125` | `mc sandbox`: a refusal stopped it (a syscall, a path, `mmap`, a process, `execve`) |
+| `125` | `mc sandbox`: a refusal stopped it (a syscall, a path, `mmap`, a process, `execve`) — defined, and not produced until step C installs the seccomp listener |
 | `126` | `mc sandbox`: the box could not be set up — including "this host is not Linux" |
 
 `--fix-limits` exits 0 when it managed to write a tolerance that fits, and 3 when even `1.0`
