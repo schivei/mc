@@ -301,6 +301,54 @@ truncates, the `llvm-mc` encoder sweep and the field-by-field comparison against
 runs. On a developer machine with Docker, `make check-avr` runs the 1.6 oracle too, out of
 `examples/avr/oracle/Dockerfile`, so a green CI leg follows from a green local run.
 
+### Jobs `sandbox-arm64` / `sandbox-x86-64` — `ubuntu-24.04-arm`, `ubuntu-latest`
+
+M43's runtime oracle, and the one job in this file that exists to prove a **claim about
+isolation** rather than a claim about bytes. Each of the two runners runs the whole of
+`scripts/test-sandbox.sh` **twice** — as an ordinary user and under `sudo` — which is the
+four-cell matrix the milestone asks for
+([sandbox.md](reference/sandbox.md) § Hosts, `docs/specs/M43.md` § 8).
+
+What travels from the macOS job is the artifact `mc-linux-sandbox`: four **executables**, not
+objects. Since M42 `mc build` writes a dynamic ELF itself, so cross-building a runnable Linux
+compiler on macOS costs half a second and needs no linker and no sysroot — the reason the M37
+jobs ship an object does not apply here. Two of the four are glibc-linked (`-gnu`), because the
+Ubuntu runners are glibc and that is the binary the four cells execute; two are musl-linked, for
+the one cell that runs inside `alpine:3`.
+
+Nothing else is installed but `strace` and `binutils`. The box is `mc` itself.
+
+Five things each job asserts, and the first is the reason the job exists at all:
+
+1. **The unprivileged cell with the AppArmor restriction off.** On Ubuntu 23.10 and later
+   `kernel.apparmor_restrict_unprivileged_userns` is 1, and that is the state the project's own
+   machines can measure: the box is refused, by name, at its first mount. The *other* state — the
+   sysctl at 0, which is what the docs tell a deployment to set — is proved **here and nowhere
+   else**. The step prints `mc sandbox check` in both states and requires exit 0 in the second.
+2. **Both cells, with nothing skipped.** `scripts/ci-sandbox-cell.sh` runs the suite and then
+   holds it to what only a runner can be held to: the guard may not skip the run, no isolation
+   case, `exec`, project or overhead measurement may be skipped, and the summary must say
+   `0 failed`. A `// skip-linux:` header inside `tests/*.mc` is still honoured — that is a
+   property of the test, not of the sandbox.
+3. **The profiles, re-measured.** `sh scripts/sandbox-trace.sh --check` traces the compile and run
+   steps with `strace` and compares them against `tools/sandbox/*.list`. A call the table does not
+   have **fails**: it is a box that would refuse a legitimate program. The other direction is a
+   `note`, because the table is the union over the C library *versions* the project supports —
+   these runners are glibc 2.39, the project's oracles are glibc 2.43, and the two do not issue
+   the same calls at start-up (2.39 needs `rt_sigaction` and `clone`; 2.43 needs `madvise` and
+   `getrandom`). `--strict` restores the two-way failure for a single-host audit.
+4. **A container without `--privileged`.** `docker run alpine:3` cannot build a box — Docker's
+   default seccomp profile keeps `unshare`, `mount` and `pivot_root` behind `CAP_SYS_ADMIN` — and
+   the job asserts that `mc` says so: a `sandbox: cannot ...` line and exit **126**, not a crash
+   and not a silent success.
+5. **The order of the two cells.** Unprivileged first, root second, then a `chown` back: a root
+   run leaves root-owned files under `build/`, and the trace step that follows needs to write
+   there.
+
+The macOS job's `make check` runs `test-sandbox` too, but that runner has neither Lima nor Docker,
+so the script prints one `SKIPPED` line with the reason and the build stays green. On a developer
+machine with Lima (`docs/build.md` § Lima) the same script runs for real.
+
 ### Job `windows-arm64` — `windows-11-arm`
 
 The same shape once more, for M19. It downloads `windows-arm64-objects` and runs
@@ -607,8 +655,12 @@ directly. Four decisions:
   `Link and run the suite (linux/x86_64)`, `Link and run the suite (windows/arm64)`, since M20
   `Link and run the suite (windows/x86_64)`, since M37 `mc on linux/arm64 host` and
   `mc on linux/x86_64 host`, since M38 `mc on windows/arm64 host` and
-  `mc on windows/x86_64 host`, since M39 `Boot the kernel (bare-metal riscv64)` and since M40
-  `Run the firmware (bare-metal avr)` — eleven of the job names in `ci.yml`;
+  `mc on windows/x86_64 host`, since M39 `Boot the kernel (bare-metal riscv64)`, since M40
+  `Run the firmware (bare-metal avr)` and since M43 `The sandbox (linux/arm64)` and
+  `The sandbox (linux/x86_64)` — thirteen of the job names in `ci.yml`. The two M43 contexts are
+  the ones the architect adds after this milestone merges: they are the only place the
+  unprivileged user-namespace path is exercised at all (`docs/plan.md` § Rule for every new
+  target, applied by analogy — an isolation claim is a runtime claim);
 - **strict (up to date before merging) is off**: `mc` builds are minutes long and the project is
   one person's; requiring every pull request to re-run against a moved `main` buys little and
   costs a rebase loop. `release.yml` rebuilds and re-runs the whole suite from the tag anyway;
@@ -638,7 +690,9 @@ gh api -X PUT repos/schivei/mc/branches/main/protection --input - <<'JSON'
                  "mc on linux/arm64 host", "mc on linux/x86_64 host",
                  "mc on windows/arm64 host", "mc on windows/x86_64 host",
                  "Boot the kernel (bare-metal riscv64)",
-                 "Run the firmware (bare-metal avr)"]
+                 "Run the firmware (bare-metal avr)",
+                 "The sandbox (linux/arm64)",
+                 "The sandbox (linux/x86_64)"]
   },
   "enforce_admins": false,
   "required_pull_request_reviews": {
