@@ -17,8 +17,11 @@
 //
 // `close` is the one libc name in the file and it resolves on all five targets:
 // libSystem on macOS, libc on both Linux legs, and lib/sys_windows.mc's own
-// kernel32 wrapper (linked next to the test as winrt.obj) on both Windows ones,
-// where close(-1) is CloseHandle(INVALID_HANDLE_VALUE) and therefore -1 too.
+// kernel32 wrapper (linked next to the test as winrt.obj) on both Windows ones.
+// There close(-1) is NOT CloseHandle(INVALID_HANDLE_VALUE): -1 is also the
+// pseudo-handle GetCurrentProcess() returns, and CloseHandle succeeds on a
+// pseudo-handle, so the wrapper refuses a negative descriptor itself and
+// answers -1 like every other close here. The CI legs are what found that.
 // expect-exit: 0
 // expect-stdout: -1 44 -32768 1 1
 

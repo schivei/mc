@@ -122,8 +122,16 @@ i64 creat(uptr path, i64 mode) {
 
 // 0, 1 and 2 are the standard descriptors, not handles: closing them would
 // close the console the program is writing to.
+//
+// A negative descriptor is refused here and never handed to CloseHandle: -1 is
+// INVALID_HANDLE_VALUE, which Windows also uses as the PSEUDO-HANDLE returned
+// by GetCurrentProcess(), and CloseHandle on a pseudo-handle succeeds -- so
+// without this line `close(-1)` would answer 0 where every POSIX close answers
+// -1/EBADF. Found by the windows/arm64 and windows/x86_64 CI legs on
+// tests/mc/093-i32-return.mc, the one test that closes an invalid descriptor.
 i64 close(i64 fd) {
-    if (fd >= 0 && fd <= 2) return 0;
+    if (fd < 0) return 0 - 1;
+    if (fd <= 2) return 0;
     if ((CloseHandle(fd) & BOOL_MASK) == 0) return 0 - 1;
     return 0;
 }

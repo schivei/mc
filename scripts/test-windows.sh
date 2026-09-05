@@ -358,10 +358,8 @@ else
     # the cases with no runtime object next to them: the source includes
     # <sys_windows> itself, so it carries the wrappers and links with nothing but
     # winstart.obj and the import library. 071 and 072 are the M20 ABI tests and
-    # are portable to both Windows architectures; 073 is M45's, and it declares
-    # the three kernel32 entry points it uses itself rather than including the
-    # layer, so it belongs here and not in the kernel32 list.
-    for name in 070-kernel32 071-nested-args 072-six-params 073-int-return; do
+    # are portable to both Windows architectures.
+    for name in 070-kernel32 071-nested-args 072-six-params; do
         f="tests/windows/$name.mc"
         [ -f "$f" ] || continue
         why=$(skip_reason "$f")
@@ -372,6 +370,27 @@ else
             continue
         fi
         build_one "$f" "$name" self
+    done
+
+    # M45's 073 lives in tests/windows/ for the same reason 070-072 do -- it
+    # names kernel32 entry points and nothing else does -- but it is a
+    # `kernel32` link, not a `self` one. `self` means "the source includes
+    # <sys_windows>", and 073 deliberately does not: it declares the three
+    # entry points it uses itself. Without the layer next to it, winstart.obj
+    # (which is in EVERY link line) has no win_setup/win_argv to call, and the
+    # link fails with two undefined symbols -- which is exactly what both
+    # Windows CI legs reported. Nothing in it collides with the layer's names.
+    for name in 073-int-return; do
+        f="tests/windows/$name.mc"
+        [ -f "$f" ] || continue
+        why=$(skip_reason "$f")
+        if [ -n "$why" ]; then
+            skipped="$skipped
+  $name — $why"
+            echo "$name — $why" >> "$split/skipped"
+            continue
+        fi
+        build_one "$f" "$name" kernel32
     done
 
     # the default mode's own gate: the objects have to be LINKABLE. Two are
