@@ -1,13 +1,20 @@
 # `mc sandbox` — compile and run an arbitrary program in isolation
 
-**Status: step B.** The box exists and runs: the namespaces, the mount tree, `pivot_root`, the
-caps, the steps, the wall clock and the report. What is **not** here is step C — Landlock and the
-seccomp filter with `SECCOMP_RET_USER_NOTIF`, which are what turn a kill into
-`refused: open /etc/shadow`. So exit code **125** is defined and never produced yet, and a program
-that reaches for something outside the box is stopped by the *mount tree*, the *network namespace*
-and the *rlimits* rather than named: `/etc/shadow` answers `ENOENT` because there is no `/etc`,
-and a connect answers `ENETUNREACH` because the network namespace is empty. Every section below
-says which of the two it describes, and every measured number gives the host it came from.
+**Status: step C, complete.** The box is there — namespaces, a mount tree, `pivot_root`, the caps,
+the steps, the wall clock and the report — and so are the two walls that make a refusal a
+*sentence*: a **Landlock** ruleset over the box's roots and a **seccomp** filter whose default
+action is not a kill but a question to the supervisor. A program that reaches outside the box is
+named and the box stops:
+
+```
+sandbox: refused: open /etc/shadow
+sandbox: refused: syscall 198 (socket)
+sandbox: refused: mmap 8589934592 bytes over the cap (268435456)
+sandbox: refused: syscall 220 (clone)
+sandbox: refused: process limit (64)
+```
+
+each with exit code **125**. Every measured number below gives the host it came from.
 
 The design is `docs/specs/M43.md`. This page is the reference.
 
@@ -15,9 +22,10 @@ The design is `docs/specs/M43.md`. This page is the reference.
 
 ## What is not isolated
 
-**The kernel.** A program in the box talks to the *host's own Linux kernel* through the fifteen or
-so system calls its profile allows, and a bug in one of those — in `openat`, in `mmap`, in
-`write` — is not stopped by anything here. Namespaces, Landlock, seccomp and rlimits are all
+**The kernel.** A program in the box talks to the *host's own Linux kernel* through the system
+calls its profile allows — **sixteen** for a musl program, **twenty-two** for a glibc one on
+AArch64, measured and listed below — and a bug in one of those, in `openat`, in `mmap`, in
+`write`, is not stopped by anything here. Namespaces, Landlock, seccomp and rlimits are all
 kernel features enforcing kernel policy in the same kernel; there is no second implementation
 between the program and the machine. That is exactly the residual gVisor's user-space kernel and
 Firecracker's microVM exist to remove, at 50 MB and a Go runtime or at a guest kernel and
@@ -28,15 +36,17 @@ residual is accepted, and it is written down rather than papered over. For anyth
 public, the answer is policy: a disposable machine that holds nothing, snapshotted, rebuilt from
 a script.
 
-**The process cap, when P is root.** `RLIMIT_NPROC` is a real wall for an ordinary user —
-measured: at 0 the kernel refuses the *first* `clone` with `EAGAIN`, for a plain `fork` and for
-the `clone3(CLONE_VM|CLONE_VFORK)` behind `posix_spawn` alike, and `tests/sandbox/forkbomb.mc`
-prints `forked 0`. Started by root it prints `forked 200`, its own ceiling: `copy_process` skips
-the check outright for `INIT_USER`, and root's box is mapped `0 0 65536`. Nothing escapes either
-way — the children are inside the pid namespace and die with it, and the host's process count is
-the same before and after — but the *count* is bounded only by the machine. Two answers, and the
-second is the real one: run `mc sandbox` as an ordinary user, and wait for step C's seccomp
-profile, which refuses `clone` before it is asked.
+**The compile step's own forks, when P is root.** The *run* step is covered by the filter: no
+profile contains `clone`, `clone3`, `fork` or `vfork`, so a fork bomb is refused at its first
+attempt whoever started the box, and `RLIMIT_NPROC` is only the wall behind it. The *compile*
+step is not: `mc build` writes a compiler and then runs it, so its profile does contain them
+(measured — `clone3` under glibc, `clone` under musl), and what bounds it is `RLIMIT_NPROC` 16.
+That limit is real for an ordinary user and **not** for root, because `copy_process` skips the
+check outright for `INIT_USER` and root's box is mapped `0 0 65536`. So a source written to make
+the *compiler* fork is bounded by the machine when the box was started by root. Nothing escapes —
+the children are inside the pid namespace and die with it, and the host's process count is the
+same before and after, which `scripts/test-sandbox.sh` asserts — but the count is not bounded.
+The answer is the one this page gives everywhere: run `mc sandbox` as an ordinary user.
 
 Three smaller things are also outside the wall, and each is a deliberate choice:
 
@@ -44,9 +54,13 @@ Three smaller things are also outside the wall, and each is a deliberate choice:
   so a malicious source is contained the same way a malicious program is, but a bug in `mc` that
   is reachable from a source file is reachable there too;
 * **the diagnostic read of a path argument** (`openat` under `SECCOMP_RET_USER_NOTIF`) is a read
-  of the program's own memory and is racy when threads are allowed. Enforcement never depends on
-  it: the mount tree and Landlock are what refuse, and the notification only supplies the name
-  that goes in the report;
+  of the program's own memory with `process_vm_readv`, and with `--allow=threads` another thread
+  may overwrite that buffer between the read and the kernel's own — the classic TOCTOU of a
+  syscall-argument inspector. Enforcement never depends on it: the mount tree and Landlock are
+  what refuse a path, and the notification only supplies the *name* that goes in the report. The
+  worst a race can do is put the wrong path in one line of the report. Without `--allow=threads`
+  a step is single-threaded and there is no race at all — the filter refuses every way of making
+  a thread;
 * **timing** is not isolated at all. The box has no clock policy; a program can measure how long
   things take and so can anything sharing the machine.
 
@@ -61,15 +75,36 @@ Three smaller things are also outside the wall, and each is a deliberate choice:
 | macOS | refuses, and prints the Lima command to run instead, exit **126** |
 | Windows | refuses, exit **126** |
 
-Measured, both privileges, on Ubuntu 26.04 / kernel 7.0.0-30 — `scripts/test-sandbox.sh`:
+Measured with step C in, both privileges, on Ubuntu 26.04 / kernel 7.0.0-30 —
+`scripts/test-sandbox.sh`. "isolation" is the ten cases of `tests/sandbox/` (eight programs, one
+of them run twice); "the suite" is every `tests/*.mc` compiled *and* run inside the box.
 
-| cell | isolation | the suite | a project | overhead per box |
+| cell | isolation | the suite | `exec` | a project | overhead per box |
+|---|---|---|---|---|---|
+| linux/aarch64, glibc, root (Lima `mc-k7`) | 10/10 | 31/31 (1 skipped) | 2/2 | ok | 1.74 ms |
+| linux/aarch64, glibc, unprivileged | 10/10 | 31/31 (1 skipped) | 2/2 | ok | 1.70 ms |
+| linux/x86_64, musl, root (the VPS) | 10/10 | 29/29 (3 skipped) | 2/2 | ok | 3.0–4.5 ms |
+| linux/x86_64, musl, unprivileged | 10/10 | 29/29 (3 skipped) | 2/2 | ok | 3.7 ms |
+| linux/aarch64, musl, `alpine:3` under `docker run --privileged` | 10/10 | 31/31 | 2/2 | ok | not measurable (busybox `date` has no `%N`) |
+
+The x86-64 host is a shared VPS and its numbers move: an unboxed `return 0` program measured
+between 272 µs and 828 µs across the same afternoon, so the box's own cost there is quoted as a
+range. On the quiet AArch64 VM the two steps can be compared directly, and that is the number to
+quote for what the two walls cost:
+
+| | plain | boxed | the box | the walls |
 |---|---|---|---|---|
-| linux/aarch64, root (Lima `mc-k7`) | 8/8 | 31/31 (1 skipped) | ok | 1.37 ms |
-| linux/aarch64, unprivileged | 8/8 | 31/31 (1 skipped) | ok | 1.43 ms |
-| linux/x86_64, root (the VPS) | 8/8 | 29/29 (3 skipped) | ok | 4.12 ms |
-| linux/x86_64, unprivileged | 8/8 | 29/29 (3 skipped) | ok | 4.98 ms |
-| linux/aarch64, `alpine:3` under `docker run --privileged` (kernel 6.12.76-linuxkit, musl) | 8/8 | 31/31 | ok | not measurable (busybox `date` has no `%N`) |
+| step B (no filter, no Landlock) | 199 µs | 1619 µs | 1420 µs | — |
+| step C | 199 µs | 1916 µs | 1717 µs | **+297 µs, +21%** |
+
+That is one Landlock ruleset with eight rules, one `seccomp` install, two `pidfd_getfd` hops and
+about a dozen notification round trips for a program that does nothing. On the x86-64 host the
+same difference is inside the machine's noise.
+
+The glibc profile on x86-64 was measured and exercised separately, on the same VPS, with
+`--libc=gnu` and the glibc-linked compiler: the ten isolation cases and the suite behave exactly
+as they do under musl, with the two numbers that differ named by the architecture and the C
+library (`socket` is 41 there, and a fork is `clone` 56 under glibc where musl uses `fork` 57).
 
 The two unprivileged cells need `kernel.apparmor_restrict_unprivileged_userns=0`; with the stock 1
 they print the honest refusal instead, which is itself part of the run.
@@ -207,7 +242,20 @@ In order, all inside I's private mount namespace, the first mount being `MS_PRIV
 | `/out` | the box tmpfs | where the compiler writes when there is no overlay (below) |
 | `/ro0`, `/ro1`, … | each `--ro DIR`, in the order given | bind + remount read-only |
 | `/lib`, `/lib64`, `/usr/lib` | the host's, when they exist | bind + remount read-only, so an M42 dynamic binary finds its loader and its libc |
-| everything else | — | does not exist: no `/proc`, no `/dev`, no `/etc`, no `/tmp`, no `/home` |
+| `/etc/ld.so.cache` | the host's, when it exists | bind of a *file* onto an empty file, read-only. The **only** thing of `/etc` that is there |
+| everything else | — | does not exist: no `/proc`, no `/dev`, no `/tmp`, no `/home`, and nothing else of `/etc` |
+
+**Why the cache is in the box**, since it was not in the design and it is one host file more than
+"nothing": glibc's loader opens `/etc/ld.so.cache` at every start, and when it is missing it
+falls back to searching the default directories — a *different* code path that issues calls the
+same binary never issues on the host. The seccomp profiles are measured outside the box (below),
+so a box that loads a program differently from the host is a box the measurement is not about.
+Both halves of that were paid for in refusals before the cache went in: on AArch64
+`tests/sandbox/shadow.mc` answered `refused: syscall 233 (madvise)` instead of naming the file it
+opened, and on x86-64 *every* dynamic program died with `refused: syscall 262 (newfstatat)` while
+the loader probed `/lib/x86_64-linux-gnu/glibc-hwcaps/x86-64-v4/`. The cache is world-readable, it
+is a list of library names, and it comes in read-only and granted read-only by Landlock;
+`/etc/shadow` is still absent, and still refused by name.
 
 Then `pivot_root(".", ".old")` from inside the new root, `umount2("/.old", MNT_DETACH)`,
 `sethostname("sandbox")` and `chdir` to `/src` or to `--cwd`. The environment is three entries and
@@ -297,6 +345,7 @@ sandbox: cannot mount /: EACCES (apparmor restricts unprivileged user namespaces
 | `killed: cpu limit (S s)` | a signal ended a step that had spent its whole `--time`. Exit **124** |
 | `killed: wall clock (S s)` | `--wall` expired and P killed the box. Exit **124** |
 | `killed: signal N (NAME)` | any other signal. Exit **128 + N** |
+| `refused: <what>` | the filter asked and the answer was no. Exit **125**; the five forms are in § The explain channel |
 | `cannot <site>: ERRNO` | the box could not be built. Exit **126** |
 
 `--report FILE` writes the same text to a file **as well as** to stderr (the design said "instead
@@ -309,7 +358,8 @@ The `cannot` sites are: `unshare`, `mount /`, `the box tmpfs`, `create a directo
 `bind the compiler at /mc`, `mount /src`, `mount a --ro directory`, `bind the host libraries`,
 `pivot_root`, `detach the old root`, `sethostname`, `chdir`, `set a resource limit`,
 `fork a step`, `create a pipe`, `write the uid map`, `execute the step`, `open the --stdin file`,
-`build a project without an overlay`.
+`build a project without an overlay`, `install the Landlock ruleset`, `install the seccomp
+filter`, `fetch the seccomp listener`.
 
 ### The steps
 
@@ -334,6 +384,203 @@ repository's own corpus:
   `[project].out` stays relative to *that file's* directory. `mc sandbox run --config
   examples/lang/mc.linux-gnu.toml .` is how a project that includes files from outside its own
   directory is built.
+
+---
+
+## The two walls
+
+Both are installed by **C**, the process that `execve`s, in one place: after
+`prctl(PR_SET_NO_NEW_PRIVS)` and before the byte that releases it. They have to be there and
+nowhere else — a seccomp filter and a Landlock domain are inherited, cumulative and irrevocable,
+so I cannot install them (it still has to fork the steps) and the program cannot be trusted to
+install them itself.
+
+### Landlock
+
+A filesystem policy attached to the *process*, independent of the mounts. If a bind were ever
+wrong, a path outside the roots still answers `EACCES`.
+
+The ruleset **handles** every access right the running kernel knows about and **grants** them per
+root; anything handled and not granted is denied. The mask is built up from the ABI the kernel
+reports (`landlock_create_ruleset(0, 0, LANDLOCK_CREATE_RULESET_VERSION)` — it creates nothing
+and answers the version), because a bit an older kernel does not know is `EINVAL`:
+
+| ABI | what joins the mask |
+|---|---|
+| 1 (5.13) | the thirteen filesystem rights: execute, read/write a file, read a directory, remove, and the eight `MAKE_*` |
+| 2 (5.19) | `REFER` — a rename or link across directories |
+| 3 (6.2) | `TRUNCATE` |
+| 4 (6.7) | the **network** field: TCP bind and connect, handled and granted to nobody |
+| 5 (6.10) | `IOCTL_DEV` |
+| 6 (6.12) | the **scoped** field: abstract unix sockets and signals, scoped to the domain |
+
+The floor is 4 (`mc sandbox check` refuses below it); the baseline measures **abi 8**, and the
+mask stops at the six levels above because a bit this compiler has never heard of cannot be asked
+for safely.
+
+| root | granted |
+|---|---|
+| `/src`, `/out` | everything handled — they are the writable pair, the overlay upper and the box tmpfs |
+| `/mc` | execute + read file. It is a **file**, and a rule on a file may not carry a directory right: `READ_DIR` on it is `EINVAL` from `landlock_add_rule`, which is how the first version of this failed |
+| `/lib`, `/lib64`, `/usr/lib` | execute + read file + read directory |
+| `/etc/ld.so.cache` | read file, and nothing else of `/etc` |
+| `/ro0`, `/ro1`, … | read file + read directory |
+
+A root that does not exist in this box is skipped, not an error. Then
+`landlock_restrict_self(fd, 0)`, and the descriptor is closed.
+
+### The seccomp filter
+
+A classic-BPF program over `struct seccomp_data`, installed with
+`seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_NEW_LISTENER, &prog)` — whose **return value
+is a descriptor**, the listener the supervisor answers on. Its shape is fixed and every jump in it
+is forward:
+
+```
+0            ld  [4]                 the architecture
+1            jeq AUDIT_ARCH_*        no  -> KILL_PROCESS
+2            ld  [0]                 the system call number
+3            jge 0x40000000          yes -> KILL_PROCESS   (the x86-64 x32 ABI)
+4 .. 4+m-1   jeq <allowed number>    yes -> ALLOW
+[clone block, four instructions, only with --allow=threads]
+d            ret USER_NOTIF          the fall-through: ask the supervisor
+d+1          ret ALLOW
+d+2          ret KILL_PROCESS
+```
+
+The architecture comes from the host layer (`host_audit_arch()`: `0xC00000B7` on AArch64,
+`0xC000003E` on x86-64) and not from a constant in the filter builder, for the same reason the
+syscall numbers do. `KILL_PROCESS` appears exactly twice, and neither is a policy: a filter
+evaluated against the wrong architecture, or against x32's different numbering, is a filter whose
+allowlist means something else.
+
+The clone block is the one row whose *argument* decides. With `--allow=threads`:
+
+```
+jeq clone      no -> the default
+ld  [16]                              args[0], the flags
+jset CLONE_THREAD      not set -> the default
+jset CLONE_NEW*        set     -> the default,  else ALLOW
+```
+
+so a real thread is allowed without asking and everything else — a `fork`, a `vfork`, a
+`clone3`, a namespace — becomes a question. `clone3` cannot be flag-tested at all: its flags live
+in a struct in the caller's memory, which BPF cannot read, so it stays a notification and the
+supervisor counts it.
+
+---
+
+## The profiles
+
+The allowlist is not written; it is **measured**. `scripts/sandbox-trace.sh` (`make
+sandbox-trace`) runs `strace -f` over every `tests/*.mc` compiled and then executed, over `mc
+build examples/lang`, and over two probes it writes itself, and records what it saw:
+
+```
+tools/sandbox/<arch>-<libc>-compile.list      the compile step: /mc, and any compiler it teaches
+tools/sandbox/<arch>-<libc>-program.list      the run step: an mc program plus its loader
+tools/sandbox/<arch>-<libc>-threads.list      what --allow=threads adds
+```
+
+`src/sandbox_profiles.mc` is generated from those twelve files: per architecture a base (musl), a
+glibc delta **per step**, and one shared threads delta. `sh scripts/sandbox-trace.sh --check`
+(`make sandbox-trace-check`) re-traces the host it runs on and fails if the trace and the recorded
+list disagree in *either* direction, or if regenerating the `.mc` from the lists does not
+reproduce it byte for byte.
+
+Four facts about that, each of which cost a refusal to learn:
+
+* **The trace runs outside the box.** Tracing the box would record the box's own setup —
+  `unshare`, `mount`, `pivot_root` — which must never be in a profile, and once a filter exists
+  the measurement is circular: a call missing from the profile is refused before it can be
+  observed. The two command lines traced are exactly the two the box runs.
+* **`strace -c` is not used.** Its summary drops `exit_group`, which never returns and is
+  therefore never counted — and a profile without `exit_group` refuses every program at its last
+  instruction.
+* **The corpus needs a program that uses the C library.** Every `tests/*.mc` writes with a raw
+  `write` and allocates nothing, so their traces say nothing about `malloc`, stdio, a directory
+  listing or a signal mask. The script writes one that does all four, and allocates **four
+  megabytes in one block** on purpose: that is what makes glibc advise `MADV_HUGEPAGE` on the
+  chunk *every* time. Without it `madvise` appeared in five runs out of sixty — and a profile
+  measured from a corpus that hits a call one run in twelve is a box that refuses a legitimate
+  program one run in twelve.
+* **The delta is per step, not per libc alone.** `read` is in musl's *compile* trace and not in
+  its *program* trace, so a single glibc delta over both kinds would not give a glibc program the
+  `read` it needs (measured: `refused: syscall 0 (read)`); `clone3` is in the compile trace only,
+  so the same union would hand a glibc *program* a way to fork that the profile exists to refuse.
+
+Two things are in every profile whatever the trace said, and they are C's own: the **`read`** that
+waits for the supervisor's sync byte and the **`close`** of its copy of the listener. They cannot
+be moved earlier — the listener does not exist until the filter is installed, and P must hold it
+before the program runs.
+
+Five calls are **never** in the allowlist even though every profile contains them, because they
+are what the supervisor's table decides on: `openat`, `open`, `mmap`, `munmap` and `execve`. They
+are allowed in the end — the answer is `CONTINUE` — but through P, and that is the round trip the
+overhead above pays for.
+
+The sizes, measured (aarch64 first, x86-64 second):
+
+| profile | musl | glibc |
+|---|---|---|
+| compile | 18 / 19 | +8 / +7 |
+| program | 16 / 17 | +9 / +9 |
+| `--allow=threads` delta | 5 shared entries, `clone` excluded (it has the flag test) | |
+
+---
+
+## The explain channel
+
+The listener is a descriptor in C, and C lives in a pid namespace whose numbers mean nothing to P
+— which cannot even *name* C until the first notification arrives, which is what it needs the
+listener for. So the descriptor travels in **two hops of `pidfd_getfd(2)`**, each between a
+process and one of its own descendants:
+
+```
+C  installs the walls, reports [READY, <fd>] to J over its error pipe, blocks on a read
+J  pidfd_open(C) + pidfd_getfd(fd, <that number>)   -> L in J,  announced to P as `L <L>`
+P  pidfd_open(J) + pidfd_getfd(fd, L)               -> the listener
+P  writes one byte to the sync pipe                 -> C closes its copy and execve's
+```
+
+Both hops need `PTRACE_MODE_ATTACH_REALCREDS` on the target and both have it for the same two
+reasons: the same real uid (a user namespace remaps credentials, it does not change them) and a
+descendant, which is what Yama's `ptrace_scope` allows — **1** on both measured hosts, the
+restricted setting, and the one this arrangement is designed for. The sync pipe is created by P
+*before* the box exists, so that the byte meaning "your listener is held" comes from the process
+that holds it.
+
+P then polls the listener beside the status pipe, and answers by table:
+
+| what arrives | what P does |
+|---|---|
+| `openat`, `open` | reads the path with `process_vm_readv`; under one of the box's roots (or relative, or one of the loader's two configuration files) → `SECCOMP_USER_NOTIF_FLAG_CONTINUE`, after `SECCOMP_IOCTL_NOTIF_ID_VALID` says the notification is still live. Otherwise `refused: open PATH` |
+| `mmap` | adds the length to a running total (`munmap` subtracts); over `--mem` → `refused: mmap N bytes over the cap (M)`, else CONTINUE |
+| `clone`, `clone3`, `fork`, `vfork` | without `--allow=threads`, `refused: syscall N (name)` at the first one. With it, counted: the sixty-fifth is `refused: process limit (64)` |
+| `execve` | counted per step — three for a compile, one for a run — then `refused: execve` |
+| anything else | `refused: syscall N (name)`, the number this architecture uses and the name from the one table that carries both columns |
+
+Every refusal is one line, exit code **125**, and the end of the box.
+
+**A refused call never returns.** The notification is *not* answered, which is a deviation from
+the design's table (it has P answer `-EPERM` or `-EACCES` and then kill). It was measured:
+answering wakes the step inside its system call, and it then runs for as long as the `SIGKILL`
+takes to arrive — `tests/sandbox/shadow.mc` printed `shadow errno=13` and `connect.mc` printed
+`socket refused` on some runs and not others. Left unanswered, the step's output ends exactly
+where the refusal happened, which is what makes an `.expect` file possible at all.
+
+**What the numbers in a refusal are.** A system call number is a property of the architecture
+*and* of the C library that issued it. `socket` is 198 on AArch64 and 41 on x86-64; a `fork` is
+`clone` (220 / 56) under glibc, and `fork` (57) under musl on x86-64, where that system call
+exists and the generic table has no such thing. `tests/sandbox/` carries one expectation per
+(architecture, libc) where they differ, which is why the headers read
+`sandbox-report-x86_64-musl:`.
+
+**What `--verbose` adds here**: one line per step with the execve count. It is not noise —
+measured, `mc sandbox run --config examples/lang/mc.linux-gnu.toml .` prints `compile: execve 2`
+(the compiler, then the compiler it taught, which compiles the entry in-process under
+`--entry-only`) and `execve 1` for the run step. The design priced three for a taught build; two
+is what it costs. Three is still the ceiling.
 
 ---
 
@@ -427,8 +674,7 @@ mc sandbox check                             print what this host can do, exit 0
 The options and the exit codes are in [cli.md](cli.md) § 3c. In one line: `--time`, `--wall`,
 `--mem` and `--out` are the four caps; `--allow=threads` widens what the box permits; `--stdin`,
 `--ro`, `--cwd`, `--root`, `--config`, `--report` and `--verbose` are the rest; **124** means a cap
-stopped the program, **125** a refusal (step C: not produced yet), **126** that the box could not
-be set up.
+stopped the program, **125** a refusal, **126** that the box could not be set up.
 
 `scripts/test-sandbox.sh` (`make test-sandbox`, inside `make check`) is the gate: the isolation
 cases of `tests/sandbox/`, the whole `tests/*.mc` suite compiled *and* run inside the box, `exec`

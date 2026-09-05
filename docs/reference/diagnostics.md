@@ -406,13 +406,27 @@ up ([cli.md](cli.md) § 3c) — and 2 stays the option errors' code, as everywhe
 | `mc: the sandbox is a Linux feature; this host is: windows` | any `mc sandbox` verb on Windows. Exit 126 | the same: it is a Linux feature |
 | `mc: unknown sandbox subcommand: WORD` | the verb is not `run`, `exec` or `check`. Exit 2, and the usage follows | one of the three |
 | `mc: unknown sandbox option: --x` | an option `mc sandbox` does not take. Exit 2 | the list is in [cli.md](cli.md) § 3c |
-| `mc: option requires an argument: --time` | `--time`, `--wall`, `--mem`, `--out`, `--stdin`, `--ro`, `--cwd` or `--report` was last on the line. Exit 2 | give it its value |
+| `mc: option requires an argument: --time` | `--time`, `--wall`, `--mem`, `--out`, `--stdin`, `--ro`, `--cwd`, `--root`, `--config` or `--report` was last on the line. Exit 2 | give it its value |
 | `mc: not a number: abc` | a non-decimal value for `--time`/`--wall`/`--mem`/`--out`. Exit 2 | a non-negative decimal |
 | `mc: unknown --allow value: X` | only `threads` exists today. Exit 2 | `--allow=threads` |
 | `mc: unknown --libc value: X` | `--libc` takes `musl` or `gnu`. Exit 2 | one of the two, or leave it out and let `PT_INTERP` decide |
 | `mc: too many --ro directories` | more than 16. Exit 2 | the box mounts one bind per `--ro`; group them under a common parent |
 | `mc: sandbox run needs a source path` / `mc: sandbox exec needs a program` | the verb had options and nothing else. Exit 2 | give it the path |
-| `mc: sandbox run: not in this step` / `mc: sandbox exec: not in this step` | **step A only**: the box is not built yet. Exit 126 | `mc sandbox check` works today; the box is step B |
+| `mc: sandbox run: not in this step` / `mc: sandbox exec: not in this step` | a compiler built before M43 step B, where only `mc sandbox check` existed. Exit 126 | gone since step B: `run` and `exec` build the box ([sandbox.md](sandbox.md)) |
+| `sandbox: cannot install the Landlock ruleset: ERRNO` / `cannot install the seccomp filter: ERRNO` / `cannot fetch the seccomp listener: ERRNO` | the three step-C ways the box can fail to be built, reported like every other `cannot` site. Exit 126 | `mc sandbox check` first: a kernel below Landlock ABI 4, or without `SECCOMP_RET_USER_NOTIF`, cannot run this box |
+
+The report is not a diagnostic table either: it is a fixed vocabulary written to stderr (and to
+`--report FILE`) after the box is gone, and [sandbox.md](sandbox.md) § The report is where it is
+defined. The five lines that end a box with **125** are the ones a person is most likely to have
+to read, so they are here too:
+
+| line | cause | fix |
+|---|---|---|
+| `sandbox: refused: syscall N (name)` | the step made a call that is in no profile for its step, architecture and C library. The number is this architecture's | if the call is legitimate for the corpus, re-measure: `make sandbox-trace` ([sandbox.md](sandbox.md) § The profiles). `socket`, `connect`, `bind`, `clone` and `fork` are refused on purpose |
+| `sandbox: refused: open PATH` | an `openat`/`open` of a path under none of the box's roots (`/src`, `/out`, `/mc`, `/lib`, `/lib64`, `/usr/lib`, `/roN`) | `--ro DIR` puts one more tree in the box, at `/ro0`, `/ro1`, … A program that probes for a file it does not expect to find is stopped just the same: the box does not answer ENOENT for a path it will not look at |
+| `sandbox: refused: mmap N bytes over the cap (M)` | the running total of what the step has mapped went past `--mem` | raise `--mem`; `RLIMIT_AS` is the same number and the kernel's own wall behind it |
+| `sandbox: refused: process limit (64)` | with `--allow=threads`, the sixty-fifth process | threads are free; processes are counted |
+| `sandbox: refused: execve` | a step exec'd more times than its budget — three for a compile step, one for a run step | a program that re-execs itself is out of scope for the box |
 
 `mc sandbox check` is not a diagnostic: it writes its six lines to **stdout** and exits 1 when a
 capability is missing. The one line most likely to need reading is

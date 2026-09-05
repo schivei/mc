@@ -1835,6 +1835,32 @@ The compiler that runs the box must be a binary the host can execute, which is w
 targets exist: every Linux host this repository measures on — Lima, the VPS, the Ubuntu runners —
 is a glibc one, and `mc`'s executable writer names musl's loader by default (M42).
 
+### `make sandbox-trace` — the profiles are measured, not written
+
+The seccomp allowlist a step runs under is a **measurement**
+([reference/sandbox.md](reference/sandbox.md) § The profiles), and these two targets are how it is
+taken and how it is kept honest:
+
+```
+make sandbox-trace          # re-trace THIS host and rewrite the tables
+make sandbox-trace-check    # trace and compare, both directions, exit 1 on a difference
+```
+
+Both need `strace` (`apt-get install strace`, `apk add strace`) and a Linux host; on macOS, and
+without strace, they print one `SKIPPED` line. `sandbox-trace` runs the whole corpus twice — once
+compiling, once running — plus `mc build examples/lang` and two probes it writes itself, and
+records one list per *(architecture, C library, step)* in `tools/sandbox/`. `src/sandbox_profiles.mc`
+is then generated from every list file present, so a machine that can only measure one
+architecture never erases the other's numbers, and the file that is checked in is what the script
+printed. Neither target is in `make check`: the first writes generated source and the second is a
+full corpus run per libc, which belongs in the sandbox CI job.
+
+The twelve lists in this repository were taken on four cells: `aarch64` glibc (Lima) and musl
+(`alpine:3` under the same kernel), and `x86_64` glibc and musl (both on the VPS, which has both
+loaders installed). Run `make sandbox-trace-check` after anything that changes what the compiler
+asks the kernel for — a new libc call in a host file, a new step in the driver — because the
+first thing a missing entry does is refuse a legitimate program.
+
 ## Limits of M14, M15, M16 and M23
 
 - **`[target]` defaults to the host.** With no `[target]` section at all, `os` and `arch` are what

@@ -308,7 +308,7 @@ report grammar and what is **not** isolated are in [sandbox.md](sandbox.md).
 | `--wall S` | wall-clock seconds before the box is killed, default 5 |
 | `--mem MiB` | address space (`RLIMIT_AS`), default 256 |
 | `--out MiB` | how much the program may write (the box tmpfs and `RLIMIT_FSIZE`), default 64 |
-| `--allow=threads` | permit `clone`/`clone3` for threads, and the syscalls a thread needs |
+| `--allow=threads` | let the filter allow a `clone` that is a real thread (`CLONE_THREAD` set, no `CLONE_NEW*`) and the system calls a thread needs; every other way of making a process is then COUNTED, up to 64 ([sandbox.md](sandbox.md) § The explain channel) |
 | `--libc=musl\|gnu` | which family the program compiled inside the box is linked against; by default, whichever loader this host has on disk |
 | `--stdin FILE` | the program's standard input; without it, immediate EOF |
 | `--ro DIR` | one more directory the box may read (repeatable, at most 16) |
@@ -316,7 +316,7 @@ report grammar and what is **not** isolated are in [sandbox.md](sandbox.md).
 | `--root DIR` | the tree that becomes `/src`, instead of the source's own directory. `PATH` must be inside it |
 | `--config NAME` | for `run DIR`: the project file to build, relative to `DIR`. `[project].out` stays relative to that file's directory |
 | `--report FILE` | write the report to this file **as well as** to stderr |
-| `--verbose` | add one `rusage: cpu N ms, maxrss N kb` line to the report. Not deterministic, and the only flag that is not |
+| `--verbose` | add one `rusage: cpu N ms, maxrss N kb` line to the report — not deterministic, and the only line that is not — and one `execve N` line per step, which is |
 
 `mc sandbox check` prints six lines on stdout and exits 0 when every one of the five capabilities
 the box needs is there, 1 otherwise:
@@ -344,6 +344,14 @@ sandbox: compile: exit 0
 sandbox: exit 0
 ```
 
+and one line, with exit code **125**, when the box refused something:
+
+```
+$ mc sandbox run tests/sandbox/shadow.mc
+sandbox: compile: exit 0
+sandbox: refused: open /etc/shadow
+```
+
 ### Exit codes
 
 | code | meaning |
@@ -353,7 +361,7 @@ sandbox: exit 0
 | `2` | the environment is not ready: no sysroot for the target ([sysroot.md](sysroot.md) § 5) |
 | `3` | verdict `tight` or `grew` (`--limits` / `mc limits` only) |
 | `124` | `mc sandbox`: a cap stopped the program (CPU or wall clock) |
-| `125` | `mc sandbox`: a refusal stopped it (a syscall, a path, `mmap`, a process, `execve`) — defined, and not produced until step C installs the seccomp listener |
+| `125` | `mc sandbox`: a refusal stopped it — a system call outside the profile, a path outside the box's roots, an `mmap` over `--mem`, a process over the cap, an `execve` too many ([sandbox.md](sandbox.md) § The explain channel) |
 | `126` | `mc sandbox`: the box could not be set up — including "this host is not Linux" |
 
 `--fix-limits` exits 0 when it managed to write a tolerance that fits, and 3 when even `1.0`
