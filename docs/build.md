@@ -1789,6 +1789,92 @@ three.
 
 ---
 
+## M43 — `make test-sandbox`, and what a Linux host it needs
+
+`mc sandbox run|exec|check` is a Linux subcommand ([reference/sandbox.md](reference/sandbox.md)),
+so its gate is the one target in `make check` that cannot run on the machine this repository is
+usually developed on. It solves that the way the M16 and M19 targets do — by cross-building and
+delegating:
+
+```
+make test-sandbox            # macOS: cross-build a Linux mc, run it on a Linux kernel
+make mc-linux-gnu            # the aarch64 glibc compiler, if you want it by hand
+make mc-linux-x86_64-gnu     # the x86_64 one
+```
+
+`scripts/test-sandbox.sh` picks the Linux kernel in this order:
+
+1. the Lima instance `mc-k7` (§ "A kernel-7 local oracle with Lima"), where the repository is
+   mounted at the same path it has on the Mac, so the run needs no copy;
+2. `docker run --privileged --platform linux/<arch> alpine:3` — **`--privileged` is required**,
+   because Docker's default seccomp profile puts `unshare`, `mount` and `pivot_root` behind
+   `CAP_SYS_ADMIN` and its default AppArmor profile denies `mount`;
+3. nothing: it prints `test-sandbox: SKIPPED (...)` with the reason and `make check` stays green.
+
+On a Linux host the target runs natively with the compiler that host bootstrapped, and it is in
+the Linux `check` list. Inside a plain (unprivileged) container it self-skips through the box's
+own guard, `mc sandbox check`, which is also the thing to run first on any new machine:
+
+```
+$ mc sandbox check
+kernel: 7.0.0-30-generic
+userns: ok
+landlock: abi 8
+seccomp: notif ok
+overlay: ok
+pidfd: ok
+```
+
+Two host facts it will tell you about, both measured rather than assumed: an Ubuntu 23.10 or later
+needs `kernel.apparmor_restrict_unprivileged_userns=0` (or an AppArmor profile granting `userns,`
+and `mount,`) for the *unprivileged* path, and a machine that runs no container engine may need
+`modprobe overlay` once, because `/proc/filesystems` lists only the filesystems the kernel has
+actually loaded.
+
+The compiler that runs the box must be a binary the host can execute, which is why the two `-gnu`
+targets exist: every Linux host this repository measures on — Lima, the VPS, the Ubuntu runners —
+is a glibc one, and `mc`'s executable writer names musl's loader by default (M42).
+
+### `make sandbox-trace` — the profiles are measured, not written
+
+The seccomp allowlist a step runs under is a **measurement**
+([reference/sandbox.md](reference/sandbox.md) § The profiles), and these two targets are how it is
+taken and how it is kept honest:
+
+```
+make sandbox-trace          # re-trace THIS host and rewrite the tables
+make sandbox-trace-check    # trace and compare: a missing call is a failure
+sh scripts/sandbox-trace.sh --union    # trace and ADD what this host needs
+sh scripts/sandbox-trace.sh --strict   # both directions fail (a single-host audit)
+```
+
+**The two directions are not the same kind of fact**, and the CI job is what made the difference
+matter. A call in the trace that the table does not have is a box that would refuse a legitimate
+program on that host: it fails, always. A table entry this host did not use is a `note` line,
+because the list is the union over the C library *versions* the project supports and no single
+host can exercise them all — measured with the same compiler and the same corpus, glibc 2.43
+(Ubuntu 26.04, the project's oracles) uses `madvise` and `getrandom` at start-up and `clone3` to
+spawn, where glibc 2.39 (Ubuntu 24.04, both GitHub runners) uses neither and needs `rt_sigaction`
+and `clone` instead. `--union` is how a new host adds what it needs without erasing what another
+one needs; `--strict` restores the two-way failure, and is only meaningful on the host that last
+wrote the table with a plain, replacing run.
+
+Both need `strace` (`apt-get install strace`, `apk add strace`) and a Linux host; on macOS, and
+without strace, they print one `SKIPPED` line. `sandbox-trace` runs the whole corpus twice — once
+compiling, once running — plus `mc build examples/lang` and two probes it writes itself, and
+records one list per *(architecture, C library, step)* in `tools/sandbox/`. `src/sandbox_profiles.mc`
+is then generated from every list file present, so a machine that can only measure one
+architecture never erases the other's numbers, and the file that is checked in is what the script
+printed. Neither target is in `make check`: the first writes generated source and the second is a
+full corpus run per libc, which belongs in the sandbox CI job.
+
+The twelve lists in this repository were taken on five cells: `aarch64` glibc (Lima, Ubuntu 26.04)
+and musl (`alpine:3` under the same kernel), `x86_64` glibc and musl (both on the VPS, which has
+both loaders installed), and `aarch64` glibc 2.39 (`ubuntu:24.04`, the version the GitHub runners
+carry) folded in with `--union`. Run `make sandbox-trace-check` after anything that changes what the compiler
+asks the kernel for — a new libc call in a host file, a new step in the driver — because the
+first thing a missing entry does is refuse a legitimate program.
+
 ## Limits of M14, M15, M16 and M23
 
 - **`[target]` defaults to the host.** With no `[target]` section at all, `os` and `arch` are what

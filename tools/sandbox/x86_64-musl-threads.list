@@ -1,0 +1,5 @@
+clone
+exit
+futex
+membarrier
+nanosleep

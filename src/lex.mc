@@ -512,9 +512,20 @@ void lex_add_include_path(uptr dir) {
     nincpath = nincpath + 1;
 }
 
-// 1 if the file can be opened for reading
+// 1 if the file can be opened for reading.
+//
+// `open` returns a C `int`, so the failure is -1 in the low 32 bits and the
+// bits above it are UNSPECIFIED -- the hazard M42 wrote down and M45 fixed at
+// every other call site (read_file, write_file, sysroot.mc, waitpid). This one
+// was left, and it is not theoretical: on the GitHub runners (glibc 2.39,
+// kernel 6.17) a failing `open` hands back 0x00000000ffffffff, so `fd < 0` was
+// false for a file that does not exist and this function answered "readable"
+// for every missing path. The observed shape was `mc build` on a fresh tree
+// dying with `mc: cannot open: .../build/.mc-usage.toml` -- lex_readable said
+// the file was there, read_file (which does narrow) disagreed. c_int() is the
+// narrowing.
 i64 lex_readable(uptr path) {
-    i64 fd = open(path, O_RDONLY, 0);
+    i64 fd = c_int(open(path, O_RDONLY, 0));
     if (fd < 0) return 0;
     close(fd);
     return 1;

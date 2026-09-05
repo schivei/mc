@@ -1,0 +1,59 @@
+# mc.linux.toml -- the same example, built for and ON a Linux host, and what
+# `mc sandbox run` uses for it.
+#
+#   mc build examples/lang --config mc.linux.toml
+#   mc sandbox run --config examples/lang/mc.linux.toml .
+#
+# ONE thing differs from mc.toml: there is no target section at all, so the pair
+# is the HOST's (M37: a missing [target] means the host pair). That is what
+# makes one file serve linux/aarch64 and linux/x86_64 -- and, since M42 writes a
+# dynamic ELF executable itself, what makes it need no [linker], no sysroot and
+# nothing installed.
+#
+# The sandbox builds it with the REPOSITORY as /src and this file named through
+# --config, because lang_tab.mc includes ../../lib/prelude.mc: the project reads
+# a file outside its own directory, and /src has to be a tree that holds both.
+# [project].out stays relative to THIS file's directory, as it is for mc build.
+
+[project]
+name  = "lang"
+entry = "main.lx"
+out   = "build/lang-demo"
+kind  = "exe"
+
+# The compiler that compiles `entry` is not the one running: `class`,
+# `interface`, `fn`, `new`, `ref`, generics, namespaces and the whole memory
+# model come from lang.mc.
+#
+# There is no `core` key: the core comes from the binary's own bundle,
+# `#include <mc/core>`, which is the default. Until M21.5 this example had to
+# ship its own copy of the core's module list (`lang_core.mc`, plus a
+# `lang_main.mc` with the CLI) because `<mc/core>` dragged the bundle blob in as
+# a 22 000-element array initializer -- one AST node per element -- and the
+# module did not fit next to it. M21.5 carries the blob as `#embed` bytes: one
+# node. The two copies are gone and this project needs no path into `src/`.
+#
+# M31: `lang_solo.mc` is the empty default of `lg_more()`, the chain point
+# lang.mc's `user_init` ends with. A compiler holds exactly one `user_init`, so
+# a module stacked on top of `lx` -- examples/conc, whose modules are
+# `["../lang/lang.mc", "conc.mc"]` -- has nowhere else to register from. Stacking
+# a module means dropping this file and defining `lg_more` in the new one.
+[compiler]
+modules = ["lang.mc", "lang_solo.mc"]
+out     = "build/mc-lang"
+
+# The reserve `mc build` takes from the estimate, before any table exists. The
+# static estimate is a function of source BYTES, and a taught compiler this size
+# lands about twice its prediction, so the default 0.25 makes the `nodes` and
+# `ins` tables double mid-build -- about 3 MiB of arena allocated and abandoned.
+# At 1.0 nothing grows (`mc limits examples/lang`: heap 20.0 MiB used of the
+# 32 MiB static arena, grow 0 everywhere; `ins` reports `tight`, which is the
+# report saying the reserve is close, not that anything failed). From the second
+# build on, the remembered usage in build/.mc-usage.toml is what sizes the tables.
+[limits]
+tolerance = 1.0
+
+# `#include "lib/prelude.lx"` already resolves against main.lx's own directory;
+# this root is what lets a file be moved into lib/ and included by bare name.
+[include]
+paths = ["lib"]

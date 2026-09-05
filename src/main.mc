@@ -1,8 +1,9 @@
 // main.mc — the entry point, and the only file that names every part.
 //
-// Since M41 the core is composable: src/core.mc is the sum of five parts
+// Since M41 the core is composable: src/core.mc is the sum of six parts
 // (<mc/core_min>, <mc/core_machines>, <mc/core_writers>, <mc/core_build>,
-// <mc/core_bundle>, docs/reference/bundle.md § The parts) and this file is the
+// <mc/core_bundle>, <mc/core_sandbox>, docs/reference/bundle.md § The parts)
+// and this file is the
 // `main()` that turns that pile of registries into `mc`:
 //
 //   host_init(envp)      the host layer, before anything else (M37)
@@ -11,6 +12,7 @@
 //   mc_bundle_init()     `#include <name>`                     <mc/core_bundle>
 //   mc_build_init()      `mc build|limits|sysroot`, and the pre-scan
 //                                                              <mc/core_build>
+//   mc_sandbox_init()    `mc sandbox`                          <mc/core_sandbox>
 //   mc_main(argc, argv, envp)  everything else                 <mc/core_min>
 //
 // A recreated compiler is this file with a different list -- its own machine,
@@ -32,5 +34,6 @@ i64 main(i64 argc, uptr argv, uptr envp) {
     mc_writers_init();
     mc_bundle_init();
     mc_build_init();
+    mc_sandbox_init();
     return mc_main(argc, argv, envp);
 }

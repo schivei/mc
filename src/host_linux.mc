@@ -71,3 +71,21 @@ uptr host_home() {
 // distribution ships one of the two; the CI runners have both.
 uptr host_downloader()     { return "curl"; }
 uptr host_downloader_alt() { return "wget"; }
+
+// M43: the raw system-call shim. Every system call the sandbox issues goes
+// through here, because `prctl`, `syscall` and `clone` are VARIADIC in musl and
+// this project refuses a variadic extern (M5.6), and because `seccomp`,
+// `landlock_*`, `pidfd_*` and `close_range` have no musl wrapper at all. The
+// implementation is `sys6` in the architecture file this host includes
+// (src/sysno_linux_aarch64.mc / src/sysno_linux_x86_64.mc), which also carries
+// the number table host_sysno() reads. The result is the kernel's own: -errno
+// on failure, exactly as lib/sys_linux.mc documents.
+i64 host_syscall6(i64 n, i64 a, i64 b, i64 c, i64 d, i64 e, i64 f) {
+    return sys6(n, a, b, c, d, e, f);
+}
+
+// 1 when `mc sandbox run|exec|check` can do anything at all on this host. It is
+// not "the box will work" -- that is what `mc sandbox check` measures against
+// the running kernel -- only "this operating system is the one the sandbox was
+// written for". macOS and Windows answer 0 and print the command to run instead.
+i64 host_sandbox_supported() { return 1; }

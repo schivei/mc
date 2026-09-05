@@ -1536,6 +1536,154 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `5836c1fd...c0344` -> `d73a2861da0233e9c99b17ab3ace4104a97d21f0113f08251be024d4e849b79b`, the
   Linux pair re-recorded by `make check-linux-host` (Docker, both arches, each after its own fixed
   point) and the Windows pair cross-computed per `tests/golden/README.md`.
+- M43 step B ✔ (`docs/specs/M43.md` § Implementation notes -- step B, ten numbered kernel
+  corrections): **the box and the supervisor, without seccomp/Landlock (step C).**
+  `src/sandbox_box.mc` (440) and `src/sandbox.mc` (1280); `scripts/test-sandbox.sh`;
+  `tests/sandbox/*.mc` (clean, forever, sleeper, eightgib, shadow, connect, forkbomb, rocwd).
+  What the kernel decided: **four processes, not three** -- P (supervisor), I (unshares the six
+  namespaces, builds the tree, `pivot_root`s), **J** (pid 1 of the pid namespace, runs one C per
+  step: an init that exits accepts no new process, and a second `unshare(CLONE_NEWPID)` is EINVAL),
+  C (the step). Maps: `0 <uid> 1` unprivileged and **`0 0 65536`** for root, no `setuid` -- `0 65534
+  1` alone left the caller unmapped (`mkdirat` EOVERFLOW) and `+ 1 0 1` broke overlay copy-up on a
+  root-owned lower (the inode owner must be mapped; `CAP_DAC_OVERRIDE` does not help); the cost is
+  that `RLIMIT_NPROC` does not bind for root (`copy_process` exempts `INIT_USER`), documented with
+  "run it unprivileged" as the answer. Overlay needs `userxattr` inside a user namespace, and it
+  mounts on virtiofs (Lima) and ext4 (VPS), root and unprivileged -- the priced ro-`/src` + `/out`
+  fallback is implemented and no cell reached it. `RLIMIT_AS`/`NPROC`/`STACK` are set by C right
+  before `execve` (in I they would cap the box's own arena and refuse its own fork); the compile
+  step gets `NPROC 16` because `mc build` spawns the compiler it taught. Soft = hard `RLIMIT_CPU`
+  is SIGKILL, not SIGXCPU, and rusage lands a shade under the cap (1.997 s for 2), so J's cpu
+  verdict carries 100 ms of slack; the wall-clock line is P's because killing J kills the reporter.
+  Two options the corpus forced: `--root DIR` (with `/src` at the source's own directory,
+  `#include "../lib/sys.mc"` resolved to `/lib/sys.mc` -- nine tests) and `--config NAME`
+  (`examples/lang` needs `mc.linux.toml`/`mc.linux-gnu.toml` without `[target]`); `--report FILE`
+  writes the file AND stderr. **Globals: 422/512** -- one global (`sb_state`, an arena record with
+  `SB_*` accessors) for the whole milestone; step A's sixteen became the record.
+  Measured (Ubuntu 26.04, 7.0.0-30, Lima aarch64 + VPS x86_64, root and unprivileged; plus
+  `alpine:3 --privileged` on 6.12): isolation cases 8/8 in every cell, the suite 31/31 and 29/29
+  through `mc sandbox run` with identical exit/stdout, `mc sandbox exec` on static AND dynamic
+  M42 binaries with only `/lib` bound, `examples/lang` taught and run inside (`13 25 12 box`),
+  host tree untouched; `clean.mc` byte-identical to the unsandboxed run; `forever.mc` `killed: cpu
+  limit (2 s)` exit 124 at 2.006 s; `sleeper.mc` `killed: wall clock (5 s)` exit 124 at 5.01 s;
+  `eightgib.mc`'s `malloc(8 GiB)` returns 0 under `RLIMIT_AS`; `shadow.mc` gets ENOENT (`/etc` does
+  not exist -- the NAMED `refused: open` is step C's); `connect.mc` ENETUNREACH from the empty
+  netns; `forkbomb.mc` `forked 0` unprivileged (EAGAIN on the first clone) and 200 as root;
+  unprivileged with the stock sysctl: `sandbox: cannot mount /: EACCES (apparmor restricts
+  unprivileged user namespaces: ...)`, exit 126. **Overhead per box: 1.37/1.43 ms aarch64,
+  4.12/4.98 ms x86_64** (root/unprivileged). Reports deterministic (`cmp` equal, no digit run >= 4),
+  no `/tmp/.mc-box*` left, `find -newer` empty outside `build/`.
+  -- `stage0/`, `lib/`, `tests/*.mc` untouched; bundle 84 files (blob 454822 B); `make check` RC 0
+  with `test-sandbox` 49 ok / 1 skipped inside it (delegating to Lima from macOS); `check-obj`
+  32/32; fixed point 1050240 B; `check-limits` 17/17; four Linux cells RC 0; `check-inert`
+  identical everywhere. Goldens rewritten once: `mc2.sha256`
+  `675d62a48b1ca5d1f04649a2b88aa151da8fec53654dcd5ea3e0790ffe1ef0fd`, Linux `bee69954…46dea4` /
+  `97c888a8…7251ca`, Windows `edd2d619…e0776` / `08a6d675…6e0a`. Not yet: the CI job (acceptance
+  10), exit 125 and every `refused:` line (step C).
+- M43 step C ✔ (`docs/specs/M43.md` § Implementation notes -- step C, fourteen kernel/libc facts):
+  **the two walls and the explain channel.** `src/seccomp.mc` (600): the BPF builder
+  (`ld[arch]`/`jeq host_audit_arch()` -- a new host-layer answer, not a constant -- `/ld[nr]/jge
+  0x40000000 -> KILL (x32)/one JEQ per profile entry/the clone flag block/ret USER_NOTIF`),
+  Landlock with the ABI probed at runtime (**abi 8** measured, floor 4; masks per level, 12-byte
+  packed `path_beneath`, O_PATH fds; a rule on a FILE may not carry `READ_DIR`, EINVAL), installed
+  by C in the marked spot: Landlock, the per-step rlimits, then seccomp with `NEW_LISTENER`.
+  **The listener road, decided by measurement**: two `pidfd_getfd` hops (C -> J -> P), because C's
+  pid is a number in the box's namespace that P only learns from the first notification; Yama
+  `ptrace_scope` = 1 on both hosts and both hops are parent -> descendant, same uid. The explain
+  channel in P (`src/sandbox.mc` +180): `ppoll` over status pipe + listener, `NOTIF_RECV`/`SEND`/
+  `ID_VALID`, `process_vm_readv` page by page; the § 4 table plus `fork`/`vfork` in the
+  process-creating set; `sn_names[]` in `src/sysno.mc` indexed by the same `SN_*` as the number
+  table (one table, two columns). **A refused call is killed and NOT answered** (deviation from
+  § 4): answering woke the step and `shadow errno=13`/`socket refused` appeared on some runs only.
+  **Profiles measured, not written**: `scripts/sandbox-trace.sh` (386) with `strace -fc` OUTSIDE the
+  box (tracing the box records `unshare`/`mount`/`pivot_root`, and once a filter exists the
+  measurement is circular), `tools/sandbox/*.list` (12), `src/sandbox_profiles.mc` (198, generated,
+  in `SN_*` terms): compile musl 18/19, glibc +8/+7; program musl 16/17, glibc +9/+9; threads
+  delta 5 (aarch64/x86_64). `--check` green on four cells both ways and exit 1 on a deliberate extra
+  entry. `strace -c` DROPS `exit_group` -- a profile without it refuses every program at its last
+  instruction. musl on x86_64 forks with `fork` (57). glibc's loader needs `/etc/ld.so.cache`
+  bound AND granted by Landlock, else its fallback path hits `madvise` (aarch64, 1 run in 12) or
+  `newfstatat` (x86_64, every dynamic program, probing `glibc-hwcaps/x86-64-v4/`). The process cap
+  needs `RLIMIT_NPROC` (128) looser than P's counter (64) or the kernel's EAGAIN wins. Unprivileged
+  copy-up needs owner AND group mapped.
+  Acceptance 2, every line, per cell (Lima aarch64 root+unprivileged, VPS x86_64 root+unprivileged,
+  x86_64 glibc by hand): `refused: open /etc/shadow` -- **before the kernel answers ENOENT**, the
+  notification fires on `openat` entry (the step-B compiler prints `shadow errno=2` on the same
+  source); `refused: syscall 198 (socket)` / `41`; `refused: syscall 220 (clone)` / `57 (fork)`
+  musl / `56 (clone)` glibc; `refused: process limit (64)` with `--allow=threads`; `refused: mmap
+  8589934592 bytes over the cap (268435456)`; all exit 125; `killed:` lines unchanged (124);
+  `clean.mc` byte-identical with the program profile installed. Host process count and available
+  memory unchanged, asserted by the script. Suites 31/31 and 29/29 through the box, `exec` 2/2
+  incl. a `PT_INTERP` binary, `examples/lang` inside with **`compile: execve 2`** (`mc build` execs
+  the compiler it wrote, which compiles the entry in-process; 3 kept as the ceiling). Five cells
+  **52/52/50/50/50 ok, 0 failed**. Overhead with the filter: 1916 us vs 1619 us per box on aarch64
+  (**+297 us, +21%**); on the VPS inside the noise.
+  -- `stage0/`, `lib/`, `tests/*.mc` untouched; bundle 86 files (blob 478358 B); `make check` RC 0
+  (`check-lex`/`ast`/`asm` 134/134, `check-obj` 32/32, fixed point 1099928 B, `check-limits` 17/17
+  with **globals 432/512**, `test-sandbox` 52 ok / 1 skipped); four Linux cells RC 0; `check-inert`
+  identical everywhere. Goldens rewritten once: `mc2.sha256`
+  `bb48b0b27df913fcaa54b60a59da3a0e9c3cf219d0f474f731adb7b9b7bf6075`, Linux `394ce144…34579` /
+  `8c9c7fab…167c17`, Windows `f2d9b228…ad4ff6` / `3596c00b…15e98e`. Not yet: the CI job
+  (acceptance 10) and `docs/guide/99-sandbox.md` (step D).
+- M43 step D ✔ (`docs/specs/M43.md` § Implementation notes -- step D): **the CI job, the guide,
+  the last acceptance items.** Two jobs in `.github/workflows/ci.yml`, `The sandbox (linux/arm64)`
+  (`ubuntu-24.04-arm`) and `The sandbox (linux/x86_64)` (`ubuntu-latest`), `needs: check`: the
+  macOS job cross-compiles FOUR executables (`mc-linux{,-x86_64}{,-gnu}`, `mc build` writes the
+  dynamic ELF itself since M42) into `mc-linux-sandbox`; each job flips
+  `kernel.apparmor_restrict_unprivileged_userns` both ways and asserts `mc sandbox check` in each
+  state, runs the unprivileged cell and the root cell (`scripts/ci-sandbox-cell.sh`, 70 lines: a
+  skip on a runner is a failure unless it is a test's own `// skip-linux:` header, and `0 failed`
+  is required), `scripts/sandbox-trace.sh --check` with `strace`, and `docker run` WITHOUT
+  `--privileged` (`userns: EPERM`, `run` -> `cannot unshare: EPERM`, exit 126). Both contexts go
+  into the required checks after the merge (`docs/ci.md` § Branch protection).
+  **The runners' answers** (kernel `6.17.0-1022-azure`, glibc 2.39, Landlock **abi 7**): sysctl = 1
+  -> `userns: restricted (apparmor)` exit 1; sysctl = 0 -> `userns: ok` **exit 0** -- the cell no
+  local oracle could measure. Suites 52/50 ok, 0 failed, per cell; box cost ~2.1-2.2 ms.
+  **Two defects only CI could find**, both fixed here: (1) a profile is a UNION over glibc versions
+  (2.39 needs `rt_sigaction` and `clone`) -- `sandbox-trace.sh` gained `--union`/`--strict`, and
+  `--check` fails only on "the trace has a call the table lacks", reporting the reverse as `note`;
+  (2) **`lex_readable` (`src/lex.mc`) was the one `open` in `src/` without `c_int()`** (an M45 D8
+  miss): on a glibc host a failing `open` returns `0x00000000ffffffff`, so every missing file was
+  "readable" and `mc build` on a fresh tree died with `cannot open: build/.mc-usage.toml`; it also
+  affected `[include].paths`. One line.
+  `docs/guide/99-sandbox.md` (205 lines, 2 samples compiled and not run, with the reason on the
+  page); `docs/reference/sandbox.md` complete (the four CI cells in § Hosts, the union rule, the
+  Docker-Desktop `fakeowner` finding); `check-parts` gained acceptance 9's second half (a compiler
+  without `<mc/core_sandbox>` prints no `sandbox` usage line and refuses `mc sandbox` as
+  `cannot open: sandbox`). Oracles cleaned (VPS `/root/m43`, `mcbox` user, Lima `/tmp`; sysctl
+  back to 1 on both).
+  -- `stage0/`, `lib/`, `tests/*.mc` untouched; bundle 86 files (blob 478867 B); `make check` RC 0
+  (`check-lex`/`ast`/`asm` 134/134, `check-obj` 32/32, fixed point 1100464 B, empty `--dump-asm`
+  diff, `check-limits` 17/17, `test-sandbox` 52 ok / 1 skipped, `check-docs` 192 symbols / 33 flags
+  / 50 samples / 318 links, site 87 pages); four Linux cells RC 0; `check-inert` against a `mc1`
+  from 3966268 identical everywhere. Goldens rewritten (twice in this step: the union, then the
+  `lex.mc` line), final: `mc2.sha256`
+  `f8b05c08c9f06a14ba17ae3f329f240396ff5dc2473c07c445a4013feba173e1`, Linux `d8bdbeeb…da6b59` /
+  `ed7c7f61…fd08dd`, Windows `4de1c3c9…d48cf3` / `7da0aa71…1c0d01`. Draft PR #23: three CI
+  rounds, the last two **14/14 green**.
+- M43 review batch ✔ (`docs/specs/M43.md` § Implementation notes -- the review): the security
+  review's HIGH finding, **reproduced before it was fixed**. The COMPILE profile listed `clone`
+  (and `clone3` in the glibc variant) as a plain ALLOW -- the arg-checked clone block was emitted
+  only under `--allow=threads` -- so a program reachable from an untrusted tree (`mc build` runs
+  `[linker].cmd` from the source's own `mc.toml`: `/src/bomb`, `PATH=/`, `/src` writable and
+  executable) forked freely with no `refused:` line: `forked 12` unprivileged, `forked 200` as
+  root, and `nsclone.mc` created a USER NAMESPACE inside the box (`cloned 4`). Rule now: **a
+  process-creating call is never a plain ALLOW in any profile** -- `clone`/`clone3`/`fork`/`vfork`
+  always reach P (`sb_notified`), any `CLONE_NEW*` bit is `refused: clone with namespace flags`
+  (for `clone3` the first u64 of `clone_args` read with `process_vm_readv`; unreadable ->
+  `refused: clone3 with unreadable arguments`), the rest counted per step -- compile **16**, run
+  0, `--allow=threads` 64 -- as `refused: process limit (N)`; `RLIMIT_NPROC` stays the second
+  wall (compile 32, so the named one wins). The generated profiles say
+  `// SN_CLONE  notified, never allowed`. New cases `tests/sandbox/linkbomb/` (the hostile
+  `mc.toml`), `nsclone.mc`, `nsclone3.mc`; `forkbomb.mc`'s three per-libc headers collapsed into
+  one line. LOW: `sb_num` stops at 10^12 with maxima 86400 s / 1048576 MiB / 65536 MiB and minimum
+  1 (`--mem 0` used to SIGSEGV the compile step). INFO: `landlock: abi N (no scoped signals below
+  6)`. The docs' "compile-step forks" residual paragraph is gone because it is no longer true.
+  Measured: Lima aarch64 glibc root+unprivileged 55/55, VPS x86_64 musl root+unprivileged 53/53,
+  x86_64 glibc by hand, CI four cells 55/55 x2 + 53/53 x2; host process count 134 -> 134 in every
+  case; `sandbox-trace.sh --check` green everywhere. `make check` RC 0, `check-obj` 32/32,
+  `check-inert` identical, four Linux cells RC 0; goldens rewritten once: `mc2.sha256`
+  `9e7b803f127cb6f1e059c1e6572a629bfa909cfbecbfae18b01abd1fd7a2d431`, Linux `182a4c6d…036679` /
+  `e63d09bc…d99ffa`, Windows `dcaac914…4256c3` / `dfaf002c…a97b861`. PR #23 CI 14/14.
 - Next: M18 or M24 (`docs/plan.md`); M40 (the word-size sweep AVR/PIC need) is
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
 - M24 step A ✔ (`docs/specs/M24.md` § M1-M6, M8 and decision D5): **Tier 4 -- the inert half.
@@ -2756,6 +2904,45 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `mc2-windows-x86_64.sha256`
   `e4aa4ebe060c4ad36f55af6c5e19257aa38fdca78e731da834d040f3ee74cdcb` (979195 B), both also
   written byte for byte by `build/mc2`.
+- M43 step A ✔ (`docs/specs/M43.md` § Implementation notes -- step A): **the syscall shim, the
+  number tables and `<mc/core_sandbox>`**, proved before anything uses them (the M39/M42 probe
+  discipline). `src/sysno.mc` (the `SN_*` enum, 60 names + `SN_ABSENT`) shared by the four host
+  files -- ONE file, not four copies (deviation 1); `src/sysno_linux_aarch64.mc` (`sys6` as eight
+  `#opcode` words, `mov x8,x0` first so the number is read before x0 moves) and
+  `src/sysno_linux_x86_64.mc` (six `emit()` words = the 24 bytes `llvm-mc` assembles for
+  `mov rax,rdi ... mov r9,[rbp+16]; syscall`, verified BEFORE the file was written); the host layer
+  gained `host_syscall6`, `host_sysno(sn)` (the per-architecture table read, so `sandbox.mc` names
+  no number and does no offset access) and `host_sandbox_supported()` (macOS/Windows answer -38 /
+  an all-absent table / 0). `src/core_sandbox.mc` is the sixth part; `src/sandbox.mc` holds the
+  option parser, `check` and the refusals (macOS/Windows: the Lima command, exit 126 for all three
+  verbs; Linux `run`/`exec`: `not in this step`, exit 126). `scripts/check-shim.sh`
+  (`make check-shim`): `getpid` through the shim == libc's, `openat` of a missing file == -2, a
+  `write`, and a six-argument `mmap` at offset 4096 -- the only proof that parameter 7 reaches the
+  kernel -- **rc 0 on linux/aarch64 (Lima mc-k7) and linux/x86_64 (the VPS), root and unprivileged**.
+  `check-surface` asserts the eight AArch64 words, `check-parts` the six x86-64 words and that
+  `<mc/core_min>` + `<mc/core_sandbox>` stands alone.
+  **What did not survive contact with the kernel** (Ubuntu 26.04, 7.0.0-30, both arches):
+  (1) with `kernel.apparmor_restrict_unprivileged_userns = 1` an unconfined process's
+  `unshare(NEWUSER|NEWNS|NEWPID|NEWNET|NEWIPC|NEWUTS)` SUCCEEDS -- the kernel transitions it into
+  the `unprivileged_userns` profile and the denial comes at the box's first `mount` (EACCES,
+  `capable sys_admin` in dmesg) and at `sethostname` (EPERM); so `userns:` is a TWO-stage probe
+  (unshare, then a mount in the child's private namespace), the step-B supervisor's first
+  diagnostic is `cannot mount: EACCES`, and a deployment's AppArmor profile must grant `userns,`
+  AND `mount,`. The sysctl = 0 cell is unmeasured here (the CI cell will close it).
+  (2) `/proc/filesystems` lists only LOADED filesystems: the VPS has `overlay.ko.zst` and no engine
+  that loaded it, and a child user namespace cannot `request_module`, so `check` says
+  `overlay: not loaded (modprobe overlay)`. (3) Landlock is ABI 8 on this baseline (floor 4).
+  (4) `check` exits 126, not 1, where the sandbox is refused outright. (5) **`MAXGLOBALS` of the
+  frozen seed is the tight row: 420/512 -> 437/512 (85%)**, `check-limits` fails at 90% (460), and
+  step B adds the BPF builder, the notif records and the profiles -- so the sandbox state lives in
+  ONE arena record with accessors, at most 12 new globals, and the two ELF writers (87 globals
+  between `backend_elf_exe`/`backend_exe`/`backend_elf`) are the global diet to take when needed.
+  -- `stage0/`, `lib/`, `tests/*.mc` untouched; `make bundle` re-run (83 entries); `make check`
+  RC 0 (`check-lex`/`ast`/`asm` 131/131, `check-obj` 32/32, fixed point 976696 B, `check-limits`
+  17/17, four Linux cells RC 0, `check-docs` 191 symbols / 32 flags); `check-inert` identical
+  everywhere (a registered subcommand emits nothing). Goldens rewritten once: `mc2.sha256`
+  `aab9ae12a7ba7904f6667f45fe63460974295a12d0dd5f21c359b3ed6b97bd79`, Linux
+  `57a959a5…28b613` / `ae26b4cb…224555`, Windows `938c4e93…568a25` / `04642639…4860d2`.
 - Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
   `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
   from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:

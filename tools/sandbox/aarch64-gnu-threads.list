@@ -1,0 +1,7 @@
+clock_nanosleep
+clone
+clone3
+exit
+futex
+madvise
+rt_sigaction

@@ -1,0 +1,32 @@
+# A HOSTILE PROJECT. It is the reproduction of the post-M43 review's first
+# finding, kept as a test (docs/specs/M43.md § Implementation notes -- the
+# review; scripts/test-sandbox.sh part 2b).
+#
+# `mc build` runs whatever [linker].cmd names, and [linker].cmd comes out of
+# the source tree's own mc.toml -- so a tree nobody audited chooses which
+# binary the COMPILE step executes. Here it is a fork bomb shipped beside the
+# sources.
+#
+# Before the review this worked: `clone` was measured into the compile profile
+# (`mc build` really does fork) and a profile entry is a PLAIN ALLOW, a call
+# the supervisor never sees. The bomb forked until RLIMIT_NPROC stopped it --
+# and for a box started by root it did not stop it at all -- with no `refused:`
+# line anywhere and a report that said `compile: exit 1`.
+#
+# Now every process-creating call is a notification: the sixteen the compile
+# step is allowed are counted and the seventeenth is
+# `sandbox: refused: process limit (16)`, exit 125.
+#
+# scripts/test-sandbox.sh copies this directory into build/, compiles bomb.mc
+# there with the compiler under test, and runs the box on the copy -- so the
+# binary this file names is built by the test and never checked in.
+
+[project]
+name = "linkbomb"
+entry = "app.mc"
+out = "build/app"
+kind = "exe"
+
+[linker]
+cmd = "/src/bomb"
+args = ["-o", "{out}", "{obj}"]

@@ -1,6 +1,6 @@
 // core.mc — the compiler without the extension point, as the SUM OF ITS PARTS.
 //
-// Since M41 the core is composable. Five parts, each a file of its own and each
+// Since M41 the core is composable. Six parts, each a file of its own and each
 // a bundled name a recreated compiler can include or omit:
 //
 //   <mc/core_min>       arena lz objmodel lex ast parse gen_resolve gen_walk
@@ -9,6 +9,7 @@
 //   <mc/core_writers>   sha256 macho backend_exe backend_elf backend_coff
 //   <mc/core_build>     toml driver sysroots sysroot stubs limits
 //   <mc/core_bundle>    bundle_data bundle — `#include <name>`
+//   <mc/core_sandbox>   sandbox — `mc sandbox run|exec|check` (M43)
 //
 // and then main.mc, which is the `main()` that calls each part's *_init and
 // hands over to mc_main(). That is the design's load-bearing property: the full
@@ -35,4 +36,5 @@
 #include "core_writers.mc"
 #include "core_build.mc"
 #include "core_bundle.mc"
+#include "core_sandbox.mc"
 #include "main.mc"

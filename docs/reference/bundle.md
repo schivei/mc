@@ -35,7 +35,7 @@ root in order.
 
 ## The catalogue
 
-The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 65 entries,
+The manifest is `tools/bundle.list`, one `NAME<TAB>PATH` per line, sorted by name: 83 entries,
 plus `mc/bundle_data`, which is regenerated on demand (see below). Those are the names `<...>`
 accepts.
 
@@ -100,6 +100,10 @@ and supplying that function *is* a taught compiler ([hooks.md](hooks.md)).
 | `<mc/sysroots>` | `src/sysroots.mc` |
 | `<mc/stubs>` | `src/stubs.mc` |
 | `<mc/limits>` | `src/limits.mc` |
+| `<mc/sandbox>` | `src/sandbox.mc` — `mc sandbox` (M43) |
+| `<mc/sysno>` | `src/sysno.mc` — the `SN_*` system-call names (M43) |
+| `<mc/sysno_linux_aarch64>` | `src/sysno_linux_aarch64.mc` — `sys6` and the AArch64 numbers |
+| `<mc/sysno_linux_x86_64>` | `src/sysno_linux_x86_64.mc` — `sys6` and the x86-64 numbers |
 | `<mc/bundle>` | `src/bundle.mc` |
 | `<mc/cli>` | `src/cli.mc` — `mc_main()` (M41) |
 | `<mc/main>` | `src/main.mc` |
@@ -189,8 +193,8 @@ downloaded binary with no checkout:
 
 ### The parts of the core (M41)
 
-`<mc/core>` is the **sum of five parts**, each a bundled name of its own. A recreated compiler
-names the parts it wants and writes its own `main()`; `src/core.mc` is literally those five plus
+`<mc/core>` is the **sum of six parts**, each a bundled name of its own. A recreated compiler
+names the parts it wants and writes its own `main()`; `src/core.mc` is literally those six plus
 `src/main.mc`, and `scripts/check-parts.sh` compiles both spellings and `cmp`s the two objects, so
 this table cannot drift from the code.
 
@@ -201,10 +205,17 @@ this table cannot drift from the code.
 | `<mc/core_writers>` | `src/core_writers.mc` | `sha256` `macho` `backend_exe` `backend_elf` `backend_elf_exe` `backend_coff` | `mc_writers_init()` — the eight `backend()` and five `target()` registrations |
 | `<mc/core_build>` | `src/core_build.mc` | `sha256` `toml` `driver` `sysroots` `sysroot` `stubs` `limits` | `mc_build_init()` — `mc build`, `mc limits`, `mc sysroot`, and the pre-scan |
 | `<mc/core_bundle>` | `src/core_bundle.mc` | `bundle_data` `bundle` | `mc_bundle_init()` — `#include <name>` itself |
+| `<mc/core_sandbox>` | `src/core_sandbox.mc` | `sandbox` | `mc_sandbox_init()` — `mc sandbox run\|exec\|check` ([sandbox.md](sandbox.md)) |
 
 The two files M41 split out are bundled under their own names too: `<mc/objmodel>`
 (`src/objmodel.mc`, the section/symbol/relocation model every writer reads) and `<mc/cli>`
 (`src/cli.mc`, `mc_main()`). `<mc/macho>` is now the Mach-O writer alone.
+
+`<mc/core_sandbox>` (M43) needs nothing but `<mc/core_min>` and the host file: every system call
+it issues goes through `host_syscall6()` and is named by an `SN_*` index of `<mc/sysno>`, whose
+per-architecture number tables are `<mc/sysno_linux_aarch64>` and `<mc/sysno_linux_x86_64>` — the
+two files that also carry `sys6`, the raw shim. Those three are bundled because a Linux host file
+includes one of them, and `mc build` writes `#include <mc/host>` for a taught compiler.
 
 Spelled out, the whole compiler is:
 
@@ -215,6 +226,7 @@ Spelled out, the whole compiler is:
 #include <mc/core_writers>
 #include <mc/core_build>
 #include <mc/core_bundle>
+#include <mc/core_sandbox>
 #include <mc/main>
 #include <user_default>
 ```
@@ -222,7 +234,7 @@ Spelled out, the whole compiler is:
 and `docs/guide/98-recreating-the-compiler.md` is what each omitted line costs, in bytes and in
 capability.
 
-**A part stands on `<mc/core_min>` alone**, and `scripts/check-parts.sh` compiles each of the four
+**A part stands on `<mc/core_min>` alone**, and `scripts/check-parts.sh` compiles each of the five
 optional parts on top of the minimal one to say so. It is not free: four names had to move when M41
 landed, because the full assembly hides a cross-part dependency completely. `tm_cat` and
 `tm_num_str` went from `src/toml.mc` to `src/arena.mc` (`src/cli.mc` needs the first for

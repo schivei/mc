@@ -1,0 +1,17 @@
+arch_prctl
+brk
+close
+execve
+exit_group
+fcntl
+getdents64
+lseek
+mmap
+mprotect
+mremap
+munmap
+open
+readv
+rt_sigprocmask
+set_tid_address
+write

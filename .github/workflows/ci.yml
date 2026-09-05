@@ -18,7 +18,8 @@ permissions:
 # (linux/arm64)", "Link and run the suite (linux/x86_64)", "Link and run the
 # suite (windows/arm64)", "mc on linux/arm64 host", "mc on linux/x86_64 host"
 # and, since M38, "mc on windows/arm64 host" and "mc on windows/x86_64 host",
-# and since M39 "Boot the kernel (bare-metal riscv64)" -- so they must not be
+# since M39 "Boot the kernel (bare-metal riscv64)" and since M43 "The sandbox
+# (linux/arm64)" and "The sandbox (linux/x86_64)" -- so they must not be
 # renamed without updating the branch protection (docs/ci.md § Branch protection).
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
@@ -153,6 +154,35 @@ jobs:
             file build/mc-linux-arm64.o build/mc-linux-x86_64.o
             file build/mc-linux-arm64.o  | grep -q 'ELF 64-bit.*aarch64'
             file build/mc-linux-x86_64.o | grep -q 'ELF 64-bit.*x86-64'
+          fi
+
+      # M43: the sandbox job runs `mc sandbox` on a real Linux kernel, so what
+      # it needs is a RUNNABLE compiler and not an object -- there is nothing to
+      # link on that runner and no reason to link anything: since M42 `mc build`
+      # writes the dynamic ELF executable itself, with no ld.lld and no sysroot.
+      # Four of them, because two axes matter and both are measured there:
+      #   *-gnu   the Ubuntu runners are glibc, so this is the binary the four
+      #           cells (root and unprivileged, on two architectures) execute;
+      #   plain   musl, for the `docker run` WITHOUT --privileged cell, which is
+      #           `alpine:3` and could not execute a glibc binary.
+      # Half a second each on this runner.
+      - name: Cross-compile mc for the sandbox job
+        run: |
+          set -eu
+          make mc-linux-gnu
+          make mc-linux-x86_64-gnu
+          make mc-linux
+          make mc-linux-x86_64
+          ls -l build/mc-linux-arm64-gnu build/mc-linux-x86_64-gnu \
+                build/mc-linux-arm64 build/mc-linux-x86_64
+          for exe in build/mc-linux-arm64-gnu build/mc-linux-x86_64-gnu \
+                     build/mc-linux-arm64 build/mc-linux-x86_64; do
+            [ -s "$exe" ] || { echo "::error::$exe was not produced"; exit 1; }
+          done
+          if command -v file >/dev/null 2>&1; then
+            file build/mc-linux-arm64-gnu build/mc-linux-x86_64-gnu
+            file build/mc-linux-arm64-gnu  | grep -q 'ELF 64-bit.*aarch64'
+            file build/mc-linux-x86_64-gnu | grep -q 'ELF 64-bit.*x86-64'
           fi
 
       # M38: `mc` hosted on Windows. Same split, same reason as the Linux pair
@@ -337,6 +367,22 @@ jobs:
             build/mc-linux-x86_64.o
           if-no-files-found: error
           retention-days: 14
+
+      # M43: the four Linux compilers the sandbox job executes. Uploaded as
+      # binaries and not as objects -- see the cross-compile step above -- so
+      # the sandbox job installs nothing but `strace`. The exec bit does not
+      # survive an artifact, so that job chmods them.
+      - name: Upload the cross-built sandbox compilers
+        uses: actions/upload-artifact@v4
+        with:
+          name: mc-linux-sandbox
+          path: |
+            build/mc-linux-arm64-gnu
+            build/mc-linux-x86_64-gnu
+            build/mc-linux-arm64
+            build/mc-linux-x86_64
+          if-no-files-found: error
+          retention-days: 7
 
       # The two objects the Windows host jobs link, plus everything else those
       # links need. Named for what they become, not for what they are.
@@ -543,6 +589,246 @@ jobs:
         run: |
           chmod +x build/linux-exes-x86_64/* 2>/dev/null || true
           scripts/test-linux.sh --arch x86_64 --exe --run-only build/linux-exes-x86_64
+
+  # M43: the sandbox, on a real Linux kernel. Two jobs, two cells each -- root
+  # and unprivileged -- which is the four-cell matrix docs/specs/M43.md § 8 asks
+  # for, plus the profile trace and the unprivileged-container refusal. Nothing
+  # is skipped here: this runner has the kernel the milestone claims, so a
+  # skipped isolation case is a failure (scripts/ci-sandbox-cell.sh).
+  sandbox-arm64:
+    name: The sandbox (linux/arm64)
+    runs-on: ubuntu-24.04-arm
+    needs: check
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        # From the repository root: the box compiles tests/*.mc with /src bound
+        # to the checkout, and 025-linecount opens its own source by a relative
+        # path from here.
+        uses: actions/checkout@v4
+
+      - name: Download the cross-built sandbox compilers
+        uses: actions/download-artifact@v4
+        with:
+          name: mc-linux-sandbox
+          path: build
+
+      # `strace` is the only thing installed: the box itself is `mc`, written in
+      # mc against the kernel ABI, and it links nothing but the C library.
+      # binutils gives readelf, which the suite uses to show that the binary it
+      # runs through `mc sandbox exec` really is dynamic.
+      - name: Tools and kernel facts
+        run: |
+          set -eu
+          chmod +x build/mc-linux-arm64-gnu build/mc-linux-arm64
+          uname -a
+          id
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends strace binutils
+          strace --version | head -1
+          ldd --version | head -1
+          build/mc-linux-arm64-gnu --host
+
+      # THE CELL NO ORACLE OUTSIDE CI CAN MEASURE. On Ubuntu 23.10 and later
+      # `kernel.apparmor_restrict_unprivileged_userns` is 1, and what the
+      # project's own machines could measure is only that state: the box is
+      # refused, by name, at its first mount. The state where an unprivileged
+      # user CAN build a box -- the sysctl at 0, which is what the docs tell a
+      # deployment to set -- is proved here and nowhere else, so both answers
+      # are printed and the second one has to be exit 0.
+      - name: The AppArmor restriction, both ways
+        run: |
+          set -eu
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$knob" ]; then before=$(cat "$knob"); else before=absent; fi
+          echo "kernel.apparmor_restrict_unprivileged_userns = $before"
+          echo "-- mc sandbox check, unprivileged, as this runner ships:"
+          build/mc-linux-arm64-gnu sandbox check || echo "   (exit $?)"
+          if [ "$before" != absent ] && [ "$before" != 0 ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          # /proc/filesystems lists what is LOADED, and a child user namespace
+          # cannot autoload a module (docs/reference/sandbox.md § check).
+          if build/mc-linux-arm64-gnu sandbox check | grep -q 'overlay: not loaded'; then
+            sudo modprobe overlay
+          fi
+          echo "-- mc sandbox check, unprivileged, with the restriction off:"
+          build/mc-linux-arm64-gnu sandbox check
+
+      # Cell 1 of 2 on this runner, and the one the design recommends: an
+      # ordinary user, whose box maps `0 <uid> 1` and whose RLIMIT_NPROC
+      # actually binds. It runs first, so that nothing root wrote is in the way.
+      - name: The suite through the sandbox, unprivileged
+        run: sh scripts/ci-sandbox-cell.sh unprivileged build/mc-linux-arm64-gnu
+
+      # Cell 2: root. The same code path with the identity map `0 0 65536`
+      # (docs/reference/sandbox.md § The maps), which is what `sudo mc sandbox`
+      # and a privileged container get.
+      - name: The suite through the sandbox, root
+        run: |
+          set -eu
+          sudo sh scripts/ci-sandbox-cell.sh root build/mc-linux-arm64-gnu
+          sudo chown -R "$(id -u):$(id -g)" build
+
+      # Acceptance 5 in CI: the seccomp profiles are diffed against a trace
+      # taken here, on every pull request. A system call the compiler has gained
+      # and the table has not is a box that refuses a legitimate program, and
+      # this is what fails on it. The other direction is a `note`: the table is
+      # the union over the C library VERSIONS the project supports, and this
+      # runner's glibc is 2.39 where the project's own oracles run 2.43
+      # (scripts/sandbox-trace.sh, the comment above `newlist`).
+      - name: The profiles, measured against the checked-in tables
+        run: |
+          set -eu
+          rc=0
+          sh scripts/sandbox-trace.sh --check build/mc-linux-arm64-gnu \
+             > build/trace.log 2>&1 || rc=$?
+          cat build/trace.log
+          if grep -q SKIPPED build/trace.log; then
+            echo "::error::the trace did not run (no strace?)"; exit 1
+          fi
+          [ "$rc" = 0 ] || { echo "::error::the trace and the tables disagree"; exit 1; }
+
+      # Acceptance 8, the third refusal: a container WITHOUT --privileged.
+      # Docker's default seccomp profile puts `unshare`, `mount` and
+      # `pivot_root` behind CAP_SYS_ADMIN, which the container does not have, so
+      # the box cannot be built and `mc` has to say so instead of failing in
+      # some other way. alpine:3 is musl, so this is the one cell that runs the
+      # musl-linked compiler.
+      - name: docker run WITHOUT --privileged says so
+        run: |
+          set -eu
+          d="docker run --rm --platform linux/arm64 -v $PWD:/w -w /w alpine:3"
+          echo "-- mc sandbox check inside an unprivileged container:"
+          $d build/mc-linux-arm64 sandbox check || echo "   (exit $?)"
+          rc=0
+          $d build/mc-linux-arm64 sandbox run tests/sandbox/clean.mc \
+             > build/docker.out 2> build/docker.err || rc=$?
+          cat build/docker.out build/docker.err
+          [ "$rc" = 126 ] || { echo "::error::exit $rc, expected 126"; exit 1; }
+          grep -q '^sandbox: cannot ' build/docker.err || {
+            echo "::error::no 'sandbox: cannot ...' line"; exit 1; }
+          echo "ok   the box is refused with a named reason, exit 126"
+
+  # M43: the sandbox, on a real Linux kernel. Two jobs, two cells each -- root
+  # and unprivileged -- which is the four-cell matrix docs/specs/M43.md § 8 asks
+  # for, plus the profile trace and the unprivileged-container refusal. Nothing
+  # is skipped here: this runner has the kernel the milestone claims, so a
+  # skipped isolation case is a failure (scripts/ci-sandbox-cell.sh).
+  sandbox-x86-64:
+    name: The sandbox (linux/x86_64)
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        # From the repository root: the box compiles tests/*.mc with /src bound
+        # to the checkout, and 025-linecount opens its own source by a relative
+        # path from here.
+        uses: actions/checkout@v4
+
+      - name: Download the cross-built sandbox compilers
+        uses: actions/download-artifact@v4
+        with:
+          name: mc-linux-sandbox
+          path: build
+
+      # `strace` is the only thing installed: the box itself is `mc`, written in
+      # mc against the kernel ABI, and it links nothing but the C library.
+      # binutils gives readelf, which the suite uses to show that the binary it
+      # runs through `mc sandbox exec` really is dynamic.
+      - name: Tools and kernel facts
+        run: |
+          set -eu
+          chmod +x build/mc-linux-x86_64-gnu build/mc-linux-x86_64
+          uname -a
+          id
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends strace binutils
+          strace --version | head -1
+          ldd --version | head -1
+          build/mc-linux-x86_64-gnu --host
+
+      # THE CELL NO ORACLE OUTSIDE CI CAN MEASURE. On Ubuntu 23.10 and later
+      # `kernel.apparmor_restrict_unprivileged_userns` is 1, and what the
+      # project's own machines could measure is only that state: the box is
+      # refused, by name, at its first mount. The state where an unprivileged
+      # user CAN build a box -- the sysctl at 0, which is what the docs tell a
+      # deployment to set -- is proved here and nowhere else, so both answers
+      # are printed and the second one has to be exit 0.
+      - name: The AppArmor restriction, both ways
+        run: |
+          set -eu
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$knob" ]; then before=$(cat "$knob"); else before=absent; fi
+          echo "kernel.apparmor_restrict_unprivileged_userns = $before"
+          echo "-- mc sandbox check, unprivileged, as this runner ships:"
+          build/mc-linux-x86_64-gnu sandbox check || echo "   (exit $?)"
+          if [ "$before" != absent ] && [ "$before" != 0 ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          # /proc/filesystems lists what is LOADED, and a child user namespace
+          # cannot autoload a module (docs/reference/sandbox.md § check).
+          if build/mc-linux-x86_64-gnu sandbox check | grep -q 'overlay: not loaded'; then
+            sudo modprobe overlay
+          fi
+          echo "-- mc sandbox check, unprivileged, with the restriction off:"
+          build/mc-linux-x86_64-gnu sandbox check
+
+      # Cell 1 of 2 on this runner, and the one the design recommends: an
+      # ordinary user, whose box maps `0 <uid> 1` and whose RLIMIT_NPROC
+      # actually binds. It runs first, so that nothing root wrote is in the way.
+      - name: The suite through the sandbox, unprivileged
+        run: sh scripts/ci-sandbox-cell.sh unprivileged build/mc-linux-x86_64-gnu
+
+      # Cell 2: root. The same code path with the identity map `0 0 65536`
+      # (docs/reference/sandbox.md § The maps), which is what `sudo mc sandbox`
+      # and a privileged container get.
+      - name: The suite through the sandbox, root
+        run: |
+          set -eu
+          sudo sh scripts/ci-sandbox-cell.sh root build/mc-linux-x86_64-gnu
+          sudo chown -R "$(id -u):$(id -g)" build
+
+      # Acceptance 5 in CI: the seccomp profiles are diffed against a trace
+      # taken here, on every pull request. A system call the compiler has gained
+      # and the table has not is a box that refuses a legitimate program, and
+      # this is what fails on it. The other direction is a `note`: the table is
+      # the union over the C library VERSIONS the project supports, and this
+      # runner's glibc is 2.39 where the project's own oracles run 2.43
+      # (scripts/sandbox-trace.sh, the comment above `newlist`).
+      - name: The profiles, measured against the checked-in tables
+        run: |
+          set -eu
+          rc=0
+          sh scripts/sandbox-trace.sh --check build/mc-linux-x86_64-gnu \
+             > build/trace.log 2>&1 || rc=$?
+          cat build/trace.log
+          if grep -q SKIPPED build/trace.log; then
+            echo "::error::the trace did not run (no strace?)"; exit 1
+          fi
+          [ "$rc" = 0 ] || { echo "::error::the trace and the tables disagree"; exit 1; }
+
+      # Acceptance 8, the third refusal: a container WITHOUT --privileged.
+      # Docker's default seccomp profile puts `unshare`, `mount` and
+      # `pivot_root` behind CAP_SYS_ADMIN, which the container does not have, so
+      # the box cannot be built and `mc` has to say so instead of failing in
+      # some other way. alpine:3 is musl, so this is the one cell that runs the
+      # musl-linked compiler.
+      - name: docker run WITHOUT --privileged says so
+        run: |
+          set -eu
+          d="docker run --rm --platform linux/amd64 -v $PWD:/w -w /w alpine:3"
+          echo "-- mc sandbox check inside an unprivileged container:"
+          $d build/mc-linux-x86_64 sandbox check || echo "   (exit $?)"
+          rc=0
+          $d build/mc-linux-x86_64 sandbox run tests/sandbox/clean.mc \
+             > build/docker.out 2> build/docker.err || rc=$?
+          cat build/docker.out build/docker.err
+          [ "$rc" = 126 ] || { echo "::error::exit $rc, expected 126"; exit 1; }
+          grep -q '^sandbox: cannot ' build/docker.err || {
+            echo "::error::no 'sandbox: cannot ...' line"; exit 1; }
+          echo "ok   the box is refused with a named reason, exit 126"
 
   # M37: `mc` HOSTED on Linux. Not "a Linux target built from macOS" -- the
   # object downloaded here is the compiler; this job links it and it compiles

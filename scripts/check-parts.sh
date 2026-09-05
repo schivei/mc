@@ -4,7 +4,7 @@
 #
 # Four proofs, in the order docs/specs/M41.md § Acceptance lists them:
 #
-#   1. THE PARTS ARE THE CORE. An object built from `<mc/host>` + the five parts
+#   1. THE PARTS ARE THE CORE. An object built from `<mc/host>` + the six parts
 #      spelled out + `<mc/main>` + `<user_default>` is byte-identical to one
 #      built from `<mc/host>` + `<mc/core>` + `<user_default>`. This is the
 #      anti-drift proof: it fails the moment src/core.mc and the part files
@@ -64,6 +64,7 @@ cat > "$tmp/parts.mc" <<'EOF'
 #include <mc/core_writers>
 #include <mc/core_build>
 #include <mc/core_bundle>
+#include <mc/core_sandbox>
 #include <mc/main>
 #include <user_default>
 EOF
@@ -73,13 +74,13 @@ cat > "$tmp/whole.mc" <<'EOF'
 #include <user_default>
 EOF
 if ! msg=$("$mc" "$tmp/parts.mc" -o "$tmp/parts.o" 2>&1); then
-    fail "compiling the five parts spelled out: $msg"
+    fail "compiling the six parts spelled out: $msg"
 elif ! msg=$("$mc" "$tmp/whole.mc" -o "$tmp/whole.o" 2>&1); then
     fail "compiling <mc/core>: $msg"
 elif ! cmp -s "$tmp/parts.o" "$tmp/whole.o"; then
     fail "the parts and <mc/core> produce different objects (src/core.mc has drifted)"
 else
-    echo "ok   the five parts + <mc/main> == <mc/core>, byte for byte ($(wc -c < "$tmp/parts.o" | tr -d ' ') bytes)"
+    echo "ok   the six parts + <mc/main> == <mc/core>, byte for byte ($(wc -c < "$tmp/parts.o" | tr -d ' ') bytes)"
 fi
 
 # ------------------------------------------------- 1b. each part on its own
@@ -88,12 +89,13 @@ fi
 # another part's file, a helper that drifted into the driver -- and it is how
 # three of them were found and fixed when M41 landed (tm_cat, tm_num_str,
 # MODE_755, R_X86_PC32/R_X86_PLT32).
-for p in core_machines core_writers core_build core_bundle; do
+for p in core_machines core_writers core_build core_bundle core_sandbox; do
     case "$p" in
         core_machines) init=mc_machines_init ;;
         core_writers)  init=mc_writers_init ;;
         core_build)    init=mc_build_init ;;
         core_bundle)   init=mc_bundle_init ;;
+        core_sandbox)  init=mc_sandbox_init ;;
     esac
     { echo '#include <mc/host>'
       echo '#include <mc/core_min>'
@@ -111,6 +113,31 @@ for p in core_machines core_writers core_build core_bundle; do
         echo "ok   <mc/core_min> + <mc/$p> stands on its own"
     fi
 done
+
+# --------------------------------------- 1c. the x86-64 system-call shim (M43)
+# src/sysno_linux_x86_64.mc is six emit() words: 24 bytes of x86 cut into
+# four-byte pieces, so an instruction straddles a word boundary and a typo is
+# invisible by inspection. The bytes came from
+#   llvm-mc -triple=x86_64-linux-musl -x86-asm-syntax=intel --show-encoding
+# of `mov rax,rdi; mov rdi,rsi; mov rsi,rdx; mov rdx,rcx; mov r10,r8;
+#     mov r8,r9; mov r9,[rbp+16]; syscall`
+# and they are asserted here (docs/specs/M43.md § 2, acceptance 1). It lives in
+# check-parts and not in check-surface because the ONLY compiler that has to be
+# able to dump it is one with <mc/core_machines>, and this is the script that
+# reasons about parts.
+x86_want='  .word 0x48f88948
+  .word 0x8948f789
+  .word 0xca8948d6
+  .word 0x4dc2894d
+  .word 0x8b4cc889
+  .word 0x050f104d'
+x86_got=$("$mc" --dump-asm --machine=x86_64 src/sysno_linux_x86_64.mc 2>&1 | grep '^  \.word ')
+if [ "$x86_got" = "$x86_want" ]; then
+    echo "ok   sys6 (x86-64): the six words are the 24 bytes llvm-mc assembles"
+else
+    fail "sys6 (x86-64): the shim's words moved"
+    printf '%s\n' "$x86_got"
+fi
 
 # ------------------------------------------------------------- 4. the measure
 cat > "$tmp/min.mc" <<'EOF'
@@ -165,6 +192,39 @@ else
         fail "the core_min-only compiler still carries:$absent"
     else
         echo "ok   in mc and not in core_min: _macho_write _elf_write _coff_write _bundle_open _drv_build _m_arm64"
+    fi
+fi
+
+# ------------------------------------------ 4b. the part that is not there (M43)
+# Acceptance 9 of M43: a compiler assembled without <mc/core_sandbox> has no
+# `sandbox` subcommand at all -- not a stub, not a refusal it has to keep true.
+# It prints one usage line fewer (the usage text IS the subcommand table, since
+# M41: each registration carries its own line), and the word `sandbox` on its
+# command line is an ordinary file name, refused exactly as any other unknown
+# argument is.
+if [ -x "$tmp/mcmin" ]; then
+    if "$tmp/mcmin" 2>&1 | grep -q sandbox; then
+        fail "the core_min-only compiler still prints a sandbox usage line"
+    else
+        echo "ok   no <mc/core_sandbox>: no sandbox usage line"
+    fi
+    msg=$("$tmp/mcmin" sandbox 2>&1); rc=$?
+    if [ "$rc" = 1 ] && [ "$msg" = "mc: cannot open: sandbox" ]; then
+        echo "ok   no <mc/core_sandbox>: 'mc sandbox' is 'mc: cannot open: sandbox', exit 1"
+    else
+        fail "no <mc/core_sandbox>: 'mc sandbox' said [$msg], exit $rc"
+    fi
+    msg=$("$tmp/mcmin" sandbox check 2>&1); rc=$?
+    if [ "$rc" = 1 ] && [ "$msg" = "mc: duplicate entry: check" ]; then
+        echo "ok   no <mc/core_sandbox>: 'mc sandbox check' is 'mc: duplicate entry: check', exit 1"
+    else
+        fail "no <mc/core_sandbox>: 'mc sandbox check' said [$msg], exit $rc"
+    fi
+    # and the whole compiler, for contrast: the same two words are a subcommand
+    if "$mc" 2>&1 | grep -q 'mc sandbox run|exec'; then
+        echo "ok   with the part: the usage carries the two sandbox lines"
+    else
+        fail "the whole compiler does not print the sandbox usage lines"
     fi
 fi
 
