@@ -205,6 +205,12 @@ $ otool -L examples/api/build/api
   business: **see `docs/specs/M13.md`**.
 - **One connection at a time.** `http_accept` is blocking; a client that opens the connection and
   never speaks holds the server hostage.
+- **A negative `sqlite3_column_int` changed meaning at M45**, and for the better. Every SQLite
+  entry point that C declares `int` is now declared `i32` in `lib/sqlite.mc`, so the compiler
+  sign-extends the result (`docs/reference/language.md` § 6). A column holding, say, `-1` used to
+  arrive as `4294967295` and now arrives as `-1` — which is what it always was in C. The same
+  applies to `lib/http.mc`: `socket`, `bind`, `listen` and `accept` are tested for `< 0`, and
+  before M45 that test was right only because the callee happened to leave the sign in place.
 - **`REQ_BUF_CAP` is 64 KiB** of header plus body; a larger request is treated as malformed, not as
   `413`.
 - **`#dylib` only works with `--exe`.** The `.o` + `ld` path compiles, but `ld` refuses to link the

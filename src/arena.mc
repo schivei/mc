@@ -2,6 +2,13 @@
 // little-endian and I/O by fd. Same functions, same order, same I/O shape.
 // No struct: Buf is a flat 24-byte record (BUF_* + accessors).
 
+// M45: `open`, `creat` and `close` return a C `int` and the sign of that result
+// comes from c_int() below. The DECLARATIONS stay `i64` -- not `i32`, which
+// the frozen stage0 cannot resolve at all, and not `u32` either, because a
+// narrow declaration makes THIS compiler emit a `mov w, w` after the call that
+// the frozen seed does not, and scripts/check-asm.sh compares the two over
+// exactly this file (docs/specs/M45.md § Implementation notes 4). c_int is
+// correct either way: it reads the low 32 bits and restores the sign.
 extern i64 open(uptr path, i64 flags, i64 mode);
 extern i64 read(i64 fd, uptr buf, i64 n);
 extern i64 write(i64 fd, uptr buf, i64 n);
@@ -25,6 +32,21 @@ extern uptr mmap(uptr addr, i64 len, i64 prot, i64 flags, i64 fd, i64 off);
 // (0x40/0x200), so they live in the host layer (src/host_macos.mc,
 // src/host_linux.mc) with everything else that does. Nothing in the arena
 // needs them -- write_file goes through `creat`, which is not variadic.
+// M45: the value of a C `int` result. Every ABI this compiler targets leaves
+// bits 63..32 of a 32-bit return unspecified, so a result read as 64 bits is
+// only trustworthy after this. Pure arithmetic -- the low 32 bits, sign-extended
+// from bit 31 -- so it is right whether the callee left the sign there or not,
+// and right under every seed and every machine. It is what src/ uses instead of
+// a narrow declaration, and the ONE place src/ reads a narrow C result.
+//
+// A source the seed never compiles writes `extern i32 open(...)` instead and
+// needs none of this -- see docs/reference/language.md § 6.
+i64 c_int(i64 v) {
+    v = v & 0xffffffff;
+    if (v & 0x80000000) return v - 0x100000000;
+    return v;
+}
+
 #define O_RDONLY 0
 #define O_WRONLY 1
 #define MODE_644 420                  // 0644 in decimal: no octal literal
@@ -546,7 +568,7 @@ void err_at2(uptr file, i64 line, uptr msg, uptr detail) {
 #define RF_CHUNK 65536                // the C uses `u8 tmp[65536]` on the frame; here it comes from the arena
 
 uptr read_file(uptr path, uptr plen) {
-    i64 fd = open(path, O_RDONLY, 0);
+    i64 fd = c_int(open(path, O_RDONLY, 0));
     if (fd < 0) die2("cannot open", path);
     u8 b[BUF_SIZE];
     buf_init(b);
@@ -564,7 +586,7 @@ uptr read_file(uptr path, uptr plen) {
 }
 
 void write_file(uptr path, uptr b) {
-    i64 fd = creat(path, MODE_644);       // see the NOTE about variadic open above
+    i64 fd = c_int(creat(path, MODE_644)); // see the NOTE about variadic open above
     if (fd < 0) die2("cannot create", path);
     io_write(fd, buf_p(b), buf_len(b));
     close(fd);

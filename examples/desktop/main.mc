@@ -259,7 +259,7 @@ i64 main(i64 argc, uptr argv) {
     // g_application_run documents argc == 0 with a NULL argv as valid.
     uptr app = gtk_application_new("dev.minicompiler.desktop", G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect_data(app, "activate", &on_activate, 0, 0, 0);
-    i64 status = (u32) g_application_run(app, 0, 0);
+    i64 status = g_application_run(app, 0, 0);   // M45: `extern i32` does the narrowing
     g_object_unref(app);
     return status;
 }

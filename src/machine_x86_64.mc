@@ -99,7 +99,15 @@
 #define X_SPADD   43                  // add rsp, imm
 #define X_SPSUB   44                  // sub rsp, imm
 #define X_EMIT    45                  // one raw 32-bit word, little-endian
-#define X_COUNT   46
+// M45: the signed halves. movsx/movsxd into a 64-bit register, in both the
+// register and the memory form -- the sign-extending twin of movzx/mov r32.
+#define X_LDS8    46                  // movsx r64, byte [m]
+#define X_LDS16   47                  // movsx r64, word [m]
+#define X_LDS32   48                  // movsxd r64, dword [m]
+#define X_MOVSXB  49                  // movsx rd, rn (byte)
+#define X_MOVSXW  50                  // movsx rd, rn (word)
+#define X_MOVSXD  51                  // movsxd rd, rn (dword)
+#define X_COUNT   52
 
 // ---- how an opcode is encoded: the form decides which of five shapes, the
 // other five columns fill it in. Everything not in a shape is XF_SPEC and has
@@ -162,14 +170,21 @@ i64 x86_desc[] = {
     XF_ST,         1, 0x89,   0, 0,    0,        // 42 mov [m], r64
     XF_SPEC,       0, 0,      0, 0,    0,        // 43 add rsp, imm
     XF_SPEC,       0, 0,      0, 0,    0,        // 44 sub rsp, imm
-    XF_SPEC,       0, 0,      0, 0,    0         // 45 raw word
+    XF_SPEC,       0, 0,      0, 0,    0,        // 45 raw word
+    XF_LD,         1, 0x1be,  0, 0,    0,        // 46 movsx r64, byte [m]
+    XF_LD,         1, 0x1bf,  0, 0,    0,        // 47 movsx r64, word [m]
+    XF_LD,         1, 0x63,   0, 0,    0,        // 48 movsxd r64, dword [m]
+    XF_RD,         1, 0x1be,  0, 0,    0,        // 49 movsx r64, r8
+    XF_RD,         1, 0x1bf,  0, 0,    0,        // 50 movsx r64, r16
+    XF_RD,         1, 0x63,   0, 0,    0         // 51 movsxd r64, r32
 };
 
 uptr x86_name[] = { "", "nop", "push", "push", "leave", "ret", "mov", "mov32",
     "mov", "lea", "lea", "add", "sub", "and", "or", "xor", "imul", "cqo",
     "xor32", "idiv", "div", "shl", "shr", "sar", "neg", "not", "cmp", "test",
     "set", "movzxb", "movzxw", "jmp", "j", "call", "call", "movzxb", "movzxw",
-    "mov32", "mov", "mov8", "mov16", "mov32", "mov", "add", "sub", ".word" };
+    "mov32", "mov", "mov8", "mov16", "mov32", "mov", "add", "sub", ".word",
+    "movsxb", "movsxw", "movsxd", "movsxb", "movsxw", "movsxd" };
 
 uptr m_x86_64[MTASK_COUNT];           // the task table the walker drives
 uptr m_x86_64_win[MTASK_COUNT];       // the same thirty-one entries, Win64 prologue
@@ -192,7 +207,8 @@ i64  x86_shadow  = 0;                 // bytes the caller reserves below the arg
 i64 x86_cond[] = { 4, 5, 12, 14, 15, 13 };       // MCOND_EQ NE LT LE GT GE, signed
 i64 x86_binop[] = { X_ADD, X_SUB, X_IMUL, 0, 0, 0, 0,   // MOP_*; the four divisions
                     X_AND, X_OR, X_XOR, X_SHL, X_SHR, X_SAR };   // go to x86_divmod
-i64 x86_memop[] = { X_LD64, X_ST64, X_LD32, X_ST32, X_LD16, X_ST16, X_LD8, X_ST8 };
+i64 x86_memop[] = { X_LD64, X_ST64, X_LD32, X_ST32, X_LD16, X_ST16, X_LD8, X_ST8,
+                    X_LDS32, X_ST32, X_LDS16, X_ST16, X_LDS8, X_ST8 };
 
 i64  x86_argreg_at(i64 i) { return ld64(x86_args + i * 8); }
 i64  x86_cond_at(i64 i)   { return ld64(x86_cond + i * 8); }
@@ -205,12 +221,18 @@ void set_xdslot_at(i64 i, i64 v) { st64(xdslot + i * 8, v); }
 
 i64 x86_form(i64 op) { return x86_d(op, 0); }
 
+// M45: by WIDTH and, for a load, by KIND -- never by the id. The three signed
+// loads sit six slots past their unsigned twin and share the store, which
+// truncates and never cares about the sign.
 i64 x86_mem_op(i64 t, i64 store) {
-    i64 i = 0;
-    if (t == TY_U8)       i = 6;
-    else if (t == TY_U16) i = 4;
-    else if (t == TY_U32) i = 2;
-    return x86_memop_at(i + store);
+    i64 w = type_width(t);
+    i64 i = 0;                            // 8 bytes, and any width with no form here
+    if (w == 4)      i = 2;
+    else if (w == 2) i = 4;
+    else if (w == 1) i = 6;
+    if (store) return x86_memop_at(i + 1);
+    if (i && type_kind(t) == TK_SINT) i = i + 6;
+    return x86_memop_at(i);
 }
 
 // ---- depth, register and spill ----
@@ -380,11 +402,24 @@ void x86_bool(i64 d) {
     x86_dst_done(d, rd);
 }
 
+// M45: fill the bytes above the type's width -- zero for a TK_INT, the sign for
+// a TK_SINT -- by width and kind, never by the id
 void x86_cast(i64 ty, i64 d) {
     i64 rd = x86_val_reg(d, XREG_S1);
-    if (ty == TY_U8)       e2(X_MOVZXB, rd, rd);
-    else if (ty == TY_U16) e2(X_MOVZXW, rd, rd);
-    else if (ty == TY_U32) e2(X_MOV32, rd, rd);  // a 32-bit mov zeroes the top half
+    i64 w = type_width(ty);
+    i64 sgn = type_kind(ty) == TK_SINT;
+    if (w == 1) {
+        if (sgn) e2(X_MOVSXB, rd, rd);
+        else     e2(X_MOVZXB, rd, rd);
+    }
+    else if (w == 2) {
+        if (sgn) e2(X_MOVSXW, rd, rd);
+        else     e2(X_MOVZXW, rd, rd);
+    }
+    else if (w == 4) {
+        if (sgn) e2(X_MOVSXD, rd, rd);
+        else     e2(X_MOV32, rd, rd);            // a 32-bit mov zeroes the top half
+    }
     x86_dst_done(d, rd);
 }
 

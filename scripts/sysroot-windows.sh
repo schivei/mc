@@ -11,14 +11,20 @@
 # `kernel32.lib` from it, with no network and no Windows SDK.
 #
 # The list is exactly the entry points lib/sys_windows.mc and
-# lib/sys_windows_host.mc declare. A
+# lib/sys_windows_host.mc declare, plus GetFileAttributesA, which only
+# tests/windows/073-int-return.mc uses (M45: a DWORD result of -1). A
 # program that needs more than that (a whole SDK, other DLLs) is what
 # `mc sysroot fetch windows-*` will be for; this is the toolchain the test suite
 # needs and nothing else.
 #
-# The directory is a CACHE: with kernel32.lib already there the script says so
-# and does nothing, so `make test-windows` does not rebuild it on every run.
-# Pass -f (or set FORCE=1) to repopulate it.
+# The directory is a CACHE: with kernel32.lib already there AND its kernel32.def
+# equal to the list below, the script says so and does nothing, so
+# `make test-windows` does not rebuild it on every run. The def is compared and
+# not just looked for, because a cache populated before a name was added to the
+# list is worse than no cache at all: the link fails with an "undefined symbol"
+# that names an entry point the script already knows about (M45 added
+# GetFileAttributesA and a stale cache was the first thing the widened
+# test-windows gate reported). Pass -f (or set FORCE=1) to repopulate it.
 arch="aarch64"
 dir=""
 while [ $# -gt 0 ]; do
@@ -38,7 +44,41 @@ case "$arch" in
 esac
 [ -n "$dir" ] || dir="build/sysroot/windows-$arch"
 
-if [ -z "$FORCE" ] && [ -f "$dir/kernel32.lib" ]; then
+# The kernel32 entry points the two layers declare, one per line: the seven of
+# lib/sys_windows.mc (M19) and the seven more lib/sys_windows_host.mc needs for
+# a HOSTED compiler (M38) -- spawning a tool, asking why a spawn failed, waiting
+# for it, creating and deleting a file, and the arena's mapping -- plus
+# GetEnvironmentVariableA,
+# which is how src/host_windows.mc answers host_home() (M25: there is no
+# environment array on this host, so USERPROFILE is asked for by name). Keep
+# this list and the `extern`s in those two files in step: a name here that no
+# layer uses costs nothing, a name a layer uses and this list does not have is
+# an "unresolved external symbol" at link time.
+deftmp="${TMPDIR:-/tmp}/kernel32.def.$$"
+cat > "$deftmp" <<'DEF'
+LIBRARY kernel32.dll
+EXPORTS
+CloseHandle
+CreateDirectoryA
+CreateFileA
+CreateProcessA
+DeleteFileA
+ExitProcess
+GetCommandLineA
+GetEnvironmentVariableA
+GetExitCodeProcess
+GetFileAttributesA
+GetLastError
+GetStdHandle
+ReadFile
+VirtualAlloc
+WaitForSingleObject
+WriteFile
+DEF
+
+if [ -z "$FORCE" ] && [ -f "$dir/kernel32.lib" ] && [ -f "$dir/kernel32.def" ] \
+   && cmp -s "$deftmp" "$dir/kernel32.def"; then
+    rm -f "$deftmp"
     echo "sysroot already populated: $dir"
     exit 0
 fi
@@ -53,41 +93,13 @@ if [ -z "$dlltool" ]; then
     done
 fi
 if [ -z "$dlltool" ]; then
+    rm -f "$deftmp"
     echo "sysroot-windows: llvm-dlltool not found (brew install llvm)" >&2
     exit 1
 fi
 
-mkdir -p "$dir" || exit 1
-
-# The kernel32 entry points the two layers declare, one per line: the seven of
-# lib/sys_windows.mc (M19) and the seven more lib/sys_windows_host.mc needs for
-# a HOSTED compiler (M38) -- spawning a tool, asking why a spawn failed, waiting
-# for it, creating and deleting a file, and the arena's mapping -- plus
-# GetEnvironmentVariableA,
-# which is how src/host_windows.mc answers host_home() (M25: there is no
-# environment array on this host, so USERPROFILE is asked for by name). Keep
-# this list and the `extern`s in those two files in step: a name here that no
-# layer uses costs nothing, a name a layer uses and this list does not have is
-# an "unresolved external symbol" at link time.
-cat > "$dir/kernel32.def" <<'DEF'
-LIBRARY kernel32.dll
-EXPORTS
-CloseHandle
-CreateDirectoryA
-CreateFileA
-CreateProcessA
-DeleteFileA
-ExitProcess
-GetCommandLineA
-GetEnvironmentVariableA
-GetExitCodeProcess
-GetLastError
-GetStdHandle
-ReadFile
-VirtualAlloc
-WaitForSingleObject
-WriteFile
-DEF
+mkdir -p "$dir" || { rm -f "$deftmp"; exit 1; }
+mv "$deftmp" "$dir/kernel32.def" || { rm -f "$deftmp"; exit 1; }
 
 "$dlltool" -m "$machine" -d "$dir/kernel32.def" -D kernel32.dll -l "$dir/kernel32.lib" \
     || { echo "sysroot-windows: llvm-dlltool failed" >&2; exit 1; }

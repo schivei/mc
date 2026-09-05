@@ -26,6 +26,11 @@ teaching-surface mechanisms themselves.
 No `i8/i16/i32`, no `float`, no `bool` — comparisons produce `i64` 0/1. Comparisons are always
 signed (addresses stay below 2^63, by documented convention, not checked at runtime).
 
+That is the CORE, which is also what the frozen `stage0/` implements. The self-hosted compiler
+registers one more word for itself at start-up, `i32` (M45), through the same `type_new` a module
+uses; it is not in the ladder and `stage0` has never heard of it, which is why no file the seed
+compiles may spell it. See [reference/language.md](reference/language.md) § 2.
+
 ## Literals
 
 - Decimal and hex integer (`0x...`).

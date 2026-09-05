@@ -36,6 +36,9 @@
 #include "sys_windows.mc"
 
 // ---- kernel32, the second set ----
+// M45: BOOL and DWORD are 32 bits; the `& BOOL_MASK` masks are what this file
+// does about it and they stay, and the declarations stay `i64` -- the same two
+// reasons as in sys_windows.mc.
 extern i64  CreateProcessA(uptr appname, uptr cmdline, uptr procattr, uptr thrattr,
                            i64 inherit, i64 flags, uptr env, uptr cwd,
                            uptr si, uptr pi);

@@ -583,6 +583,7 @@ void lim_compile_file(uptr in) {
     lim_plan(in, lim_tol, 0, in);
     tok_init();
     lex_init(in);
+    core_types_init();                            // M45: `i32`, before user_init
     user_init();
     i64 unit = parse_unit();
     unit = run_passes(unit);

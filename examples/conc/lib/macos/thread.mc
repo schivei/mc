@@ -33,20 +33,24 @@
 #define PT_COND_SZ   48
 #define DISPATCH_FOREVER (0 - 1)
 
-extern i64  pthread_create(uptr th, uptr attr, uptr entry, uptr arg);
-extern i64  pthread_join(uptr th, uptr ret);
-extern i64  pthread_detach(uptr th);
+// M45: every pthread entry point returns a C `int` (an errno, or 0), so the
+// declaration is `i32`. dispatch_semaphore_wait/signal return `intptr_t` and
+// stay `i64`. Nothing here is compiled by the frozen seed, so the truthful word
+// is available.
+extern i32  pthread_create(uptr th, uptr attr, uptr entry, uptr arg);
+extern i32  pthread_join(uptr th, uptr ret);
+extern i32  pthread_detach(uptr th);
 extern uptr pthread_self();
 
-extern i64 pthread_mutex_init(uptr m, uptr attr);
-extern i64 pthread_mutex_lock(uptr m);
-extern i64 pthread_mutex_unlock(uptr m);
-extern i64 pthread_mutex_destroy(uptr m);
+extern i32 pthread_mutex_init(uptr m, uptr attr);
+extern i32 pthread_mutex_lock(uptr m);
+extern i32 pthread_mutex_unlock(uptr m);
+extern i32 pthread_mutex_destroy(uptr m);
 
-extern i64 pthread_cond_init(uptr c, uptr attr);
-extern i64 pthread_cond_wait(uptr c, uptr m);
-extern i64 pthread_cond_signal(uptr c);
-extern i64 pthread_cond_broadcast(uptr c);
+extern i32 pthread_cond_init(uptr c, uptr attr);
+extern i32 pthread_cond_wait(uptr c, uptr m);
+extern i32 pthread_cond_signal(uptr c);
+extern i32 pthread_cond_broadcast(uptr c);
 
 extern uptr dispatch_semaphore_create(i64 value);
 extern i64  dispatch_semaphore_wait(uptr sem, i64 timeout);
@@ -54,7 +58,7 @@ extern i64  dispatch_semaphore_signal(uptr sem);
 
 // hw.optional.arm.FEAT_LSE, read as a 32-bit int. Returns 0 on a machine that
 // does not report the feature and on a machine where the name does not exist.
-extern i64 sysctlbyname(uptr name, uptr oldp, uptr oldlenp, uptr newp, i64 newlen);
+extern i32 sysctlbyname(uptr name, uptr oldp, uptr oldlenp, uptr newp, i64 newlen);
 
 i64 conc_has_lse() {
     u8 val[8];

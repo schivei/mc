@@ -102,7 +102,15 @@
 #define V_JNZ   38                    // beq rd,zero,+8 ; jal zero,L    8 bytes
 #define V_FRAME 39                    // addi sp,sp,-imm       (t2 fallback above 2048)
 #define V_EMIT  40                    // one raw 32-bit word
-#define V_COUNT 41
+// M45: the signed halves. A TK_SINT load sign-extends (lb/lh/lw against
+// lbu/lhu/lwu) and a cast to one fills the bytes above its width with the sign
+// -- a shift pair at 1 and 2 bytes, and `sext.w` (addiw rd, rn, 0) at 4.
+#define V_SRAI  41                    // srai rd, rn, shamt    (funct6 0x10)
+#define V_ADDIW 42                    // addiw rd, rn, imm     opcode 0x1b
+#define V_LB    43
+#define V_LH    44
+#define V_LW    45
+#define V_COUNT 46
 
 // ---- the instruction tables. The encoder and the dump read the same ones. ----
 // R-type, three registers: rd, rn, rm
@@ -113,14 +121,26 @@ i64  rv_rf3[]   = { 0, 0, 0, 4, 5, 6, 7, 7, 6, 4, 1, 5, 5, 2, 3 };
 uptr rv_rname[] = { "add", "sub", "mul", "div", "divu", "rem", "remu", "and",
                     "or", "xor", "sll", "srl", "sra", "slt", "sltu" };
 // I-type, register + 12-bit immediate
-i64  rv_iop[]   = { V_ADDI, V_XORI, V_SLTIU, V_ANDI, V_SLLI, V_SRLI, 0 };
-i64  rv_if3[]   = { 0, 4, 3, 7, 1, 5 };
-uptr rv_iname[] = { "addi", "xori", "sltiu", "andi", "slli", "srli" };
-// memory, widest to narrowest, load then store at each width
-i64  rv_mop[]   = { V_LD, V_SD, V_LWU, V_SW, V_LHU, V_SH, V_LBU, V_SB, 0 };
-i64  rv_mf3[]   = { 3, 3, 6, 2, 5, 1, 4, 0 };
-i64  rv_mstore[] = { 0, 1, 0, 1, 0, 1, 0, 1 };
-uptr rv_mname[] = { "ld", "sd", "lwu", "sw", "lhu", "sh", "lbu", "sb" };
+// M45 adds a funct6 column, 0 for every row that existed: srai is srli with
+// 0x10 in the high SIX bits of the immediate field. RV64I's shift-immediate
+// forms take a 6-bit shamt (bits 25:20), so the differentiator above it is a
+// funct6 at bits 31:26 -- not the funct7 the REGISTER forms (sll/srl/sra) carry
+// at 31:25. The single value used lands on bit 30 either way, so the encoding
+// was right when this column was called funct7 and shifted by 5; a multi-bit
+// value would not have been, which is why the column now says what it is.
+i64  rv_iop[]   = { V_ADDI, V_XORI, V_SLTIU, V_ANDI, V_SLLI, V_SRLI, V_SRAI, 0 };
+i64  rv_if3[]   = { 0, 4, 3, 7, 1, 5, 5 };
+i64  rv_if6[]   = { 0, 0, 0, 0, 0, 0, 0x10 };
+uptr rv_iname[] = { "addi", "xori", "sltiu", "andi", "slli", "srli", "srai" };
+// memory, widest to narrowest, load then store at each width; M45 appends the
+// three SIGNED loads, each sharing the store of its width
+i64  rv_mop[]   = { V_LD, V_SD, V_LWU, V_SW, V_LHU, V_SH, V_LBU, V_SB,
+                    V_LW, V_SW, V_LH, V_SH, V_LB, V_SB, 0 };
+i64  rv_mf3[]   = { 3, 3, 6, 2, 5, 1, 4, 0,
+                    2, 2, 1, 1, 0, 0 };
+i64  rv_mstore[] = { 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1 };
+uptr rv_mname[] = { "ld", "sd", "lwu", "sw", "lhu", "sh", "lbu", "sb",
+                    "lw", "sw", "lh", "sh", "lb", "sb" };
 // the MOP_* vocabulary, in its own order, spelled in RV64IM. Every one of the
 // thirteen is a single R-type instruction: no msub, no cqo/idiv, no special case.
 i64 rv_binop[] = { V_ADD, V_SUB, V_MUL, V_DIV, V_DIVU, V_REM, V_REMU,
@@ -145,6 +165,7 @@ i64  rv_rf3_at(i64 i)    { return ld64(rv_rf3 + i * 8); }
 uptr rv_rname_at(i64 i)  { return ld64(rv_rname + i * 8); }
 i64  rv_iop_at(i64 i)    { return ld64(rv_iop + i * 8); }
 i64  rv_if3_at(i64 i)    { return ld64(rv_if3 + i * 8); }
+i64  rv_if6_at(i64 i)    { return ld64(rv_if6 + i * 8); }
 uptr rv_iname_at(i64 i)  { return ld64(rv_iname + i * 8); }
 i64  rv_mop_at(i64 i)    { return ld64(rv_mop + i * 8); }
 i64  rv_mf3_at(i64 i)    { return ld64(rv_mf3 + i * 8); }
@@ -185,12 +206,16 @@ i64 rv_mslot(i64 op) {
 }
 
 // access of width t; the even positions are load, the odd ones store
+// M45: by WIDTH and, for a load, by KIND -- never by the id (contract v4).
 i64 rv_mem_op(i64 t, i64 store) {
-    i64 i = 0;
-    if (t == TY_U8)       i = 6;
-    else if (t == TY_U16) i = 4;
-    else if (t == TY_U32) i = 2;
-    return rv_mop_at(i + store);
+    i64 w = type_width(t);
+    i64 i = 0;                            // 8 bytes, and any width with no form here
+    if (w == 4)      i = 2;
+    else if (w == 2) i = 4;
+    else if (w == 1) i = 6;
+    if (store) return rv_mop_at(i + 1);
+    if (i && type_kind(t) == TK_SINT) i = i + 6;
+    return rv_mop_at(i);
 }
 
 // ---- depth, register and spill ----
@@ -360,16 +385,22 @@ void rv_bool(i64 d) {
 
 // andi reaches 0xff; 0xffff and 0xffffffff do not fit a signed 12-bit field, so
 // they are a shift pair
+// M45: fill the bytes above the type's width -- zero for a TK_INT, the sign for
+// a TK_SINT -- by width and kind, never by the id
 void rv_cast(i64 ty, i64 d) {
     i64 rd = rv_val_reg(d, RVREG_S1);
-    if (ty == TY_U8) {
-        ei(V_ANDI, rd, rd, 0xff);
-    } else if (ty == TY_U16) {
+    i64 w = type_width(ty);
+    i64 sgn = type_kind(ty) == TK_SINT;
+    if (w == 1) {
+        if (sgn) { ei(V_SLLI, rd, rd, 56); ei(V_SRAI, rd, rd, 56); }
+        else       ei(V_ANDI, rd, rd, 0xff);
+    } else if (w == 2) {
         ei(V_SLLI, rd, rd, 48);
-        ei(V_SRLI, rd, rd, 48);
-    } else if (ty == TY_U32) {
-        ei(V_SLLI, rd, rd, 32);
-        ei(V_SRLI, rd, rd, 32);
+        if (sgn) ei(V_SRAI, rd, rd, 48);
+        else     ei(V_SRLI, rd, rd, 48);
+    } else if (w == 4) {
+        if (sgn) ei(V_ADDIW, rd, rd, 0);             // sext.w
+        else { ei(V_SLLI, rd, rd, 32); ei(V_SRLI, rd, rd, 32); }
     }
     rv_dst_done(d, rd);
 }
@@ -608,7 +639,12 @@ void rv_put(uptr e, i64 pc, uptr lab, uptr o) {
             return;
         }
         if (!rv_fits12(im)) die("riscv immediate out of 12 bits");
-        rv_put_i(o, 0x13, im, rn, rv_if3_at(k), rd);
+        rv_put_i(o, 0x13, im | (rv_if6_at(k) << 6), rn, rv_if3_at(k), rd);
+        return;
+    }
+    if (op == V_ADDIW) {                          // M45: sext.w is addiw rd, rn, 0
+        if (!rv_fits12(im)) die("riscv immediate out of 12 bits");
+        rv_put_i(o, 0x1b, im, rn, 0, rd);
         return;
     }
     k = rv_mslot(op);
@@ -701,6 +737,13 @@ void rv_dump(uptr in) {
         rvd_head(rv_iname_at(k));
         rvd_reg(rd); out_str(1, ", "); rvd_reg(rn); out_str(1, ", "); rvd_num(im);
         out_str(1, "\n");
+        return;
+    }
+    if (op == V_ADDIW) {                          // M45: the canonical `sext.w`
+        if (im == 0) { rvd_head("sext.w"); rvd_reg(rd); out_str(1, ", "); rvd_reg(rn);
+                       out_str(1, "\n"); return; }
+        rvd_head("addiw"); rvd_reg(rd); out_str(1, ", "); rvd_reg(rn); out_str(1, ", ");
+        rvd_num(im); out_str(1, "\n");
         return;
     }
     k = rv_mslot(op);

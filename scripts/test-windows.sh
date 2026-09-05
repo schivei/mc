@@ -34,10 +34,12 @@
 #
 # The default mode is what `make test-windows` runs on the development machine:
 # cross-compile everything, check every object's COFF header with `llvm-readobj`
-# when it is available, and LINK three of them with `lld-link` -- one per link
-# mode, plus the one that pulls the layer in through an extern -- to prove the
-# objects are linkable. It does not run anything -- there is no Windows host
-# here, and the CI leg is the runtime oracle.
+# when it is available, and LINK every one of them with `lld-link`, each with
+# the link mode the manifest recorded, to prove the objects are linkable. It
+# does not run anything -- there is no Windows host here, and the CI leg is the
+# runtime oracle for behaviour. Linking all of them and not a sample is what
+# makes a test classified into the wrong link mode fail HERE (M45: 073 was in
+# the `self` list and CI was the first to say so).
 #
 # Headers, the same ones scripts/test.sh and scripts/test-linux.sh read:
 #
@@ -337,19 +339,23 @@ else
         build_one "$f" "$name" kernel32
     done
 
-    # M38: the one tests/mc/ case that belongs to every target -- twelve
-    # parameters, four of them on the stack. It lives in tests/mc/ because the
-    # frozen C seed refuses it (`at most 8 parameters`), not because it needs
-    # anything Windows cannot give: it links like every other test here.
-    f="tests/mc/080-twelve-params.mc"
-    why=$(skip_reason "$f")
-    if [ -n "$why" ]; then
-        skipped="$skipped
-  080-twelve-params — $why"
-        echo "080-twelve-params — $why" >> "$split/skipped"
-    else
-        build_one "$f" 080-twelve-params kernel32
-    fi
+    # M38, then M45: the tests/mc/ cases that belong to EVERY target -- twelve
+    # parameters, four of them on the stack, and a signed 32-bit integer. They
+    # live in tests/mc/ because the frozen C seed refuses them (`at most 8
+    # parameters`, `type expected`), not because they need anything Windows
+    # cannot give: they link like every other test here.
+    for f in tests/mc/0[89]*.mc; do
+        [ -f "$f" ] || continue
+        name=$(basename "$f" .mc)
+        why=$(skip_reason "$f")
+        if [ -n "$why" ]; then
+            skipped="$skipped
+  $name — $why"
+            echo "$name — $why" >> "$split/skipped"
+        else
+            build_one "$f" "$name" kernel32
+        fi
+    done
 
     # the cases with no runtime object next to them: the source includes
     # <sys_windows> itself, so it carries the wrappers and links with nothing but
@@ -368,27 +374,50 @@ else
         build_one "$f" "$name" self
     done
 
-    # the default mode's own gate: the objects have to be LINKABLE. Two are
-    # enough to exercise both modes -- 001 is the smallest program there is and
-    # 013 pulls the layer in through an extern -- and neither is executed,
-    # because this is not a Windows machine.
+    # M45's 073 lives in tests/windows/ for the same reason 070-072 do -- it
+    # names kernel32 entry points and nothing else does -- but it is a
+    # `kernel32` link, not a `self` one. `self` means "the source includes
+    # <sys_windows>", and 073 deliberately does not: it declares the three
+    # entry points it uses itself. Without the layer next to it, winstart.obj
+    # (which is in EVERY link line) has no win_setup/win_argv to call, and the
+    # link fails with two undefined symbols -- which is exactly what both
+    # Windows CI legs reported. Nothing in it collides with the layer's names.
+    for name in 073-int-return; do
+        f="tests/windows/$name.mc"
+        [ -f "$f" ] || continue
+        why=$(skip_reason "$f")
+        if [ -n "$why" ]; then
+            skipped="$skipped
+  $name — $why"
+            echo "$name — $why" >> "$split/skipped"
+            continue
+        fi
+        build_one "$f" "$name" kernel32
+    done
+
+    # the default mode's own gate: EVERY object has to be LINKABLE, with the
+    # link mode the manifest recorded for it. It used to be three of them, one
+    # per mode, and that is how a test classified into the wrong mode reached
+    # CI: an undefined symbol is a property of the pair (object, mode), so only
+    # linking the pair can see it. The linker is here, so the rule applies --
+    # what can run locally runs locally, and the CI leg is left with the one
+    # thing it alone can do, which is EXECUTE.
     if [ "$mode" = "full" ] && [ -n "$linker" ]; then
         linked=0
-        for pair in "001-return42 kernel32" "013-putnum kernel32" "070-kernel32 self"; do
-            set -- $pair
-            [ -f "$split/$1.obj" ] || continue
-            if ! msg=$(link_one "$1" "$2"); then
-                echo "FAIL $1 (link: $msg)"; fails=$((fails + 1)); continue
+        while read -r lname lmode; do
+            [ -n "$lname" ] || continue
+            [ -f "$split/$lname.obj" ] || continue
+            if ! msg=$(link_one "$lname" "$lmode"); then
+                echo "FAIL $lname (link: $msg)"; fails=$((fails + 1)); continue
             fi
             if [ -n "$readobj" ]; then
-                case "$("$readobj" --file-headers "$split/$1.exe" 2>&1)" in
+                case "$("$readobj" --file-headers "$split/$lname.exe" 2>&1)" in
                     *"$cmachine"*) ;;
-                    *) echo "FAIL $1 (linked .exe is not $arch)"; fails=$((fails + 1)); continue ;;
+                    *) echo "FAIL $lname (linked .exe is not $arch)"; fails=$((fails + 1)); continue ;;
                 esac
             fi
             linked=$((linked + 1))
-            echo "linked $1.exe"
-        done
+        done < "$split/manifest"
         echo "$linked executables linked with lld-link (not executed: no Windows host)"
     fi
 fi

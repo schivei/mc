@@ -477,6 +477,66 @@ void sd_make() {
     sd_emit(ti, mang, ty, nval, line, fl);
 }
 
+// ---- M45: p_cp(), the cursor, against p_start(), the token ----
+// A syntax_lit-style handler scans RAW SOURCE forward from the token it was
+// given. The two ways to say where that scan begins are not the same, and the
+// difference shows up in exactly one place: a token p_subst_name() replaced.
+// subst_apply (src/lex.mc) swaps tok_start/tok_len for the REPLACEMENT string,
+// which lives in the arena, so p_start() on such a token points at the
+// replacement's first byte and a scan from it reads the arena lexeme. p_cp() is
+// the lexer's own cursor and still points into the pushed source, just past the
+// token.
+//
+// The two words below report the byte at each of the two positions; `probe`
+// generates a function that calls them from inside a p_push_source frame where
+// the word itself arrived through p_subst_name. scripts/check-surface.sh
+// compares the four answers.
+i64 sd_srcbyte() {                               // the byte AFTER the token, in the source
+    i64 line = p_line();
+    uptr fl = p_file();
+    uptr q = p_cp();
+    i64 v = 0;
+    if (q < p_src_end()) v = ld8(q);
+    p_next();
+    return sd_int(v, line, fl);
+}
+
+i64 sd_srcbyte0() {                              // the byte AT p_start()
+    i64 line = p_line();
+    uptr fl = p_file();
+    i64 v = ld8(p_start());
+    p_next();
+    return sd_int(v, line, fl);
+}
+
+// probe NAME;  ->  i64 NAME() { return W  * 1000 + V; }  with W -> srcbyte and
+// V -> srcbyte0, pushed as a second source. Two spaces after W on purpose: the
+// byte p_cp() reports there is a space (32), while the byte p_start() reports
+// is the first of the arena string "srcbyte" (115) -- and the SOURCE at that
+// position holds `W` (87), which is what makes the pair discriminating.
+void sd_probe() {
+    i64 line = p_line();
+    uptr fl = p_file();
+    p_next();                                    // the `probe` word
+    uptr name = p_ident();
+    if (p_id() != K_SEMI) err_at(p_file(), p_line(), "expected ; after probe");
+    u8 b[BUF_SIZE];
+    buf_init(b);
+    buf_put(b, "i64 ", 4);
+    buf_put(b, name, cstrlen(name));
+    buf_put(b, "() { return W  * 1000 + V; }", 28);
+    p_subst_reset();
+    p_subst_name("W", "srcbyte");
+    p_subst_name("V", "srcbyte0");
+    i64 d0 = p_depth();
+    p_push_source(sd_frame(name, fl, line), buf_p(b), buf_len(b));
+    p_next();                                    // the contract: discards the `;`
+    loop {
+        if (p_depth() == d0) break;
+        top_add(parse_top());
+    }
+}
+
 // ---- M31 (2.1): `widen`, a statement that reads the callee's declaration ----
 // `widen x = f(a, b);` declares a local whose type is f's DECLARED RETURN TYPE
 // and narrows every argument to the DECLARED PARAMETER TYPE. Neither is written
@@ -619,12 +679,19 @@ i64 sd_retcount() {
 }
 
 // ---- M24 (Tier 4): a PRIMITIVE the core has never heard of ----
-// Two registered types and one literal syntax, deliberately unrelated to
-// floats: `fix` is 16.16 signed fixed point in eight bytes and `pair` is a
-// sixteen-byte opaque value, which is all it takes to exercise every core
-// decision M24 delegates -- the width of a frame slot, the width of a global,
-// the name --dump-ast prints, the type a cast and a parameter may name, and the
-// three folding guards.
+// Three registered types and one literal syntax, deliberately unrelated to
+// floats: `fix` is 16.16 signed fixed point in eight bytes, `pair` is a
+// sixteen-byte opaque value and `i16` (M45) is a signed 16-bit integer, which
+// is all it takes to exercise every core decision M24 delegates -- the width of
+// a frame slot, the width of a global, the name --dump-ast prints and the type
+// a cast and a parameter may name.
+//
+// M45 moved the folding guards from the ID to the KIND, so `fix` -- a TK_INT --
+// now folds exactly as a core literal does: `1.5 + 2.5` is one constant, and
+// that is right, because at run time the machine's integer `add` of the two
+// representations is what the folder just computed. What does NOT fold is a
+// TK_FLOAT, TK_WIDE or TK_OPAQUE, whose arithmetic is the module's;
+// scripts/check-surface.sh asserts both halves, the second through <float>.
 //
 // `1.5` is written in the source and read HERE, not in lex_number: the lexer
 // stops the number at the `.` (its token is `1`), the handler rescans the raw
@@ -638,6 +705,12 @@ i64 sd_retcount() {
 // MTASK_CONST carries it to a machine -- no new node kind and no new task.
 i64 sd_ty_fix  = 0;
 i64 sd_ty_pair = 0;
+// M45: the whole of a signed 16-bit integer, from outside the compiler. One
+// type_new with TK_SINT buys the sign-extending load (`ldrsh`), the
+// sign-extending cast (`sxth`), signed `/ % >>`, a signed comparison and the
+// narrowing of a call result -- because every one of those decisions is keyed
+// on the type's KIND and WIDTH and not on its id.
+i64 sd_ty_i16  = 0;
 
 i64 sd_dig(i64 c) { return c >= '0' && c <= '9'; }
 
@@ -898,6 +971,7 @@ i64 sd_defaults(i64 root) {
 void user_init() {
     sd_ty_fix  = type_new("fix",  8,  8,  TK_INT);    // M24: two taught primitives
     sd_ty_pair = type_new("pair", 16, 16, TK_WIDE);
+    sd_ty_i16  = type_new("i16",  2,  2,  TK_SINT);   // M45: a third, in one line
     syntax_lit(&sd_lit);                         // M24: the literal position
     intrinsic("rbit", 1, TY_I64, &sd_rbit);      // M24: one instruction, by name
     syntax("enum", &sd_enum);                    // M12: top-level position
@@ -909,6 +983,9 @@ void user_init() {
     syntax_expr("nil", &sd_nil);                 // broken on purpose: tests/err/065
     syntax_infix(".+", SD_SAT_PREC, &sd_sat);    // M21: taught operator
     syntax_infix("~>", 12, &sd_arrow);
+    syntax_expr("srcbyte", &sd_srcbyte);         // M45: p_cp(), the cursor
+    syntax_expr("srcbyte0", &sd_srcbyte0);       // M45: p_start(), the token
+    syntax("probe", &sd_probe);                  // M45: both, under a substitution
     syntax("tmpl", &sd_tmpl);                    // M21: record
     syntax("make", &sd_make);                    // M21: replay
     on_stmt(&sd_count);                          // M21.5: every statement

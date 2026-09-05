@@ -957,7 +957,7 @@ i64 const_bin(i64 op, i64 x, i64 y, i64 type, i64 n) {
     if (op == K_MUL) return a * b;
     if (op == K_DIV || op == K_MOD) {
         if (y == 0) err_node(n, "division by zero");
-        if (type != TY_I64) {                          // mirrors udiv
+        if (!type_signed(type)) {                      // mirrors udiv
             if (op == K_DIV) return a / b;
             return a % b;
         }
@@ -973,7 +973,7 @@ i64 const_bin(i64 op, i64 x, i64 y, i64 type, i64 n) {
     if (op == K_XOR) return a ^ b;
     if (op == K_SHL) return a << (b & 63);
     if (op == K_SHR) {
-        if (type == TY_I64) return x >> (y & 63);      // arithmetic
+        if (type_signed(type)) return x >> (y & 63);   // arithmetic
         return a >> (b & 63);                          // logical
     }
     if (op == K_EQ) return x == y;
@@ -994,8 +994,19 @@ i64 const_bin(i64 op, i64 x, i64 y, i64 type, i64 n) {
 // three guards `1.5 + 2.5` would fold to an INTEGER add of two bit patterns and
 // produce an infinity at compile time with no diagnostic, and `-1.5` would
 // integer-negate one. The node is left alone and reaches the module's machine.
-// Inert today: no node the core builds carries a type at or above TY_MAX.
-i64 fold_taught(i64 n) { return nd_type(n) >= TY_MAX; }
+//
+// M45: the test is the KIND, not the id. The core folds what its own operators
+// compute -- TK_INT and TK_SINT, core or registered -- and delegates TK_FLOAT,
+// TK_WIDE and TK_OPAQUE, whose arithmetic is the module's. That is the
+// definition of TK_INT ("an integer the core's own operators fit") applied to
+// the folder, and it is what keeps fold() and the runtime in agreement BY
+// CONSTRUCTION: for those two kinds the runtime IS bin_op/const_bin, which pick
+// signed or unsigned from type_signed, and MTASK_CAST, which extends by the same
+// width and kind fold_cast masks by.
+i64 fold_taught(i64 n) {
+    i64 k = type_kind(nd_type(n));
+    return k != TK_INT && k != TK_SINT;
+}
 
 // type: a literal is i64; a binary inherits the left operand's; a cast sets its own
 void fold_unary(i64 n) {
@@ -1040,9 +1051,14 @@ void fold_cast(i64 n) {
     if (fold_taught(a) || fold_taught(n)) return;
     u64 v = nd_val(a);
     i64 t = nd_type(n);
-    if (t == TY_U8)       v = v & 0xff;
-    else if (t == TY_U16) v = v & 0xffff;
-    else if (t == TY_U32) v = v & 0xffffffff;
+    // M45: by width and kind, which is byte-identical to the three masks it
+    // replaces for u8/u16/u32 and sign-extends from bit 8w-1 for a TK_SINT.
+    i64 w = type_width(t);
+    if (w < 8) {
+        u64 m = (1 << (8 * w)) - 1;
+        v = v & m;
+        if (type_kind(t) == TK_SINT && ((v >> (8 * w - 1)) & 1)) v = v - (m + 1);
+    }
     set_nd_kind(n, N_INT);
     set_nd_val(n, v);
     set_nd_a(n, 0);                                // type = the cast's own
@@ -1803,6 +1819,19 @@ void top_add(i64 n) {
 uptr p_start() { return tok_start(cur); }
 i64  p_depth() { return nopen; }
 
+// M45: the lexer's own cursor -- the first byte of the source that has NOT been
+// lexed yet -- for a handler that scans raw source forward. It is not the same
+// thing as p_start(), and the difference is exactly one case: on a token that
+// p_subst_name()/p_subst_int() replaced, subst_apply (src/lex.mc) swaps
+// tok_start/tok_len for the REPLACEMENT text, which lives in the arena. A scan
+// that begins at p_start() then reads the arena lexeme and runs off the end of
+// it; p_cp() still points into the pushed source, just past the token.
+//
+// So a syntax_lit-style handler that has to look at what FOLLOWS the token it
+// was given -- inside a p_push_source frame, where a substitution is exactly
+// what a replay does -- reads from p_cp() and stops at p_src_end().
+uptr p_cp() { return cp; }
+
 // M31 (2.2): how many blocks are open in the function being parsed -- exactly
 // the number an on_jump handler receives as `depth`. A scope guard records it
 // when it opens its own body and compares: a jump reported at a GREATER depth is
@@ -1849,6 +1878,13 @@ uptr p_skip_balanced(i64 open, i64 close, uptr plen) {
     i64 d0 = nopen;
     i64 depth = 0;
     uptr e = s;
+    // the frame the LAST token consumed was read in. M45 (review): it has to be
+    // sampled before the lookahead next(), not after -- lex_next pops an
+    // exhausted #include frame BEFORE it produces a token, so a region whose
+    // closer is the last token of an included file was read entirely inside
+    // that file and yet left `nopen` one lower by the time the loop exits.
+    // Reading nopen after the loop refused such a region as if it had crossed.
+    i64 dend = d0;
     loop {
         // unterminated is reported at the OPENING token: that is the position
         // that tells the reader which region never closed
@@ -1856,12 +1892,16 @@ uptr p_skip_balanced(i64 open, i64 close, uptr plen) {
         if (tok_id(cur) == open) depth = depth + 1;
         else if (tok_id(cur) == close) depth = depth - 1;
         e = tok_start(cur) + tok_len(cur);
+        dend = nopen;
         next();
         if (depth == 0) break;
     }
     // the span is a slice of ONE buffer: a region that ended in the includer
-    // (the file ran out in the middle) has no byte range at all
-    if (nopen != d0) err_at(fl, line, "region crosses a file boundary");
+    // (the file ran out in the middle) has no byte range at all. The comparison
+    // is opener-frame against CLOSER-frame, which is exactly "both delimiters
+    // live in the same buffer" -- an #include opened and closed inside the
+    // region moves nopen up and back down and is fine.
+    if (dend != d0) err_at(fl, line, "region crosses a file boundary");
     st64(plen, e - s);
     return s;
 }

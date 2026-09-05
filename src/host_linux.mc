@@ -14,6 +14,13 @@
 #define O_CREAT 0x40
 #define O_TRUNC 0x200
 
+// M45: every one of these returns a C `int` (`waitpid` a `pid_t`, which is an
+// `int` too), so bits 63..32 of the result are unspecified. The declarations
+// stay `i64` for the reason src/arena.mc gives -- this file is in the seed set
+// and a narrow declaration would move its codegen away from the frozen seed's
+// -- and src/driver.mc reads `waitpid`, the one that can be negative, through
+// c_int(). posix_spawnp's result is an errno compared against 0 and ENOENT,
+// which is right on a zero-extended value either way.
 extern i64 posix_spawnp(uptr pid, uptr file, uptr fa, uptr attr, uptr av, uptr envp);
 extern i64 posix_spawn_file_actions_init(uptr fa);
 extern i64 posix_spawn_file_actions_addopen(uptr fa, i64 fd, uptr path, i64 flags, i64 mode);

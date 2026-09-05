@@ -13,7 +13,7 @@
 //   CMP        all six MCOND_*
 //   UN         MUN_NEG, MUN_NOT, MUN_LNOT
 //   BOOL       && and ||
-//   CAST       u8, u16, u32
+//   CAST       u8, u16, u32, and (M45) i32 -- the signed side of the same slot
 //   LOAD/STORE all four widths, through ld8..st64
 //   LOCAL_*    scalars, an array, and a 3000-byte frame past RV's 2047
 //   SYM_ADDR   a global's address, a string literal, and `&function`
@@ -93,6 +93,23 @@ i64 sw_casts(i64 v) {
     i64 c = (u32) v;
     return a + b + c;
 }
+// M45: the signed 32-bit half of MTASK_CAST and of the load/store slots --
+// `sext.w` for the cast, `lw` for a load, `sw` for a store (shared with u32),
+// and the signed `div`/`rem`/`sra` that type_signed picks. A machine that keyed
+// these on the core ids alone would silently read eight bytes and cast nothing.
+i32 sw_i32g;
+i32 sw_i32a[4];
+
+i32 sw_i32_id(i32 x) { return x; }
+
+i64 sw_signed32(i64 v) {
+    i32 a = v;
+    sw_i32g = v;
+    st32(sw_i32a, v);
+    i64 c = (i32) v;
+    return a + sw_i32g + c + (i32) ld32(sw_i32a)
+         + sw_i32_id(a) + a / 3 + a % 5 + (a >> 2);
+}
 
 // MTASK_LOAD / MTASK_STORE at all four widths, and MTASK_GLOBAL_* likewise
 i64 sw_memory(uptr p) {
@@ -168,7 +185,7 @@ i64 sw_all() {
     return sw_unsigned(9, 4) + sw_signed(9, 4) + sw_compare(1, 2)
          + sw_consts() + sw_casts(0x1234567) + sw_memory(sw_arr)
          + sw_big_frame() + sw_twelve(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
-         + sw_deep(1) + sw_control(10) + sw_addresses();
+         + sw_deep(1) + sw_control(10) + sw_addresses() + sw_signed32(0x89abcdef);
 }
 
 void _start() {

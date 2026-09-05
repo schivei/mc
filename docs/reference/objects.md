@@ -302,6 +302,36 @@ them. A taught runtime may therefore keep state in `x19..x28` across generated c
 switch, a thread pointer — and a future register allocator that spent them would silently break
 every such runtime, which is exactly why the claim is written down and tested.
 
+### A narrow result is extended by the CALLER, and by the callee too (M45)
+
+Every ABI here — AAPCS64, System V x86-64, both Windows ones — leaves the bits **above** a 32-, 16-
+or 8-bit result unspecified in the result register. `mc` therefore extends, at both ends, from the
+DECLARED type:
+
+- after a `bl`/`call`, when the callee's declaration says the result is narrower than the word:
+  `sxtw` for `i32` (any `TK_SINT`), `and #0xff` / `and #0xffff` / `mov wd, wn` for `u8`/`u16`/`u32`,
+  nothing at width 8 and nothing for `uptr`;
+- before the `ret` of a function whose OWN declared result is narrow, so a C caller of an mc
+  `u8 f(...)` or `i32 f(...)` gets what its ABI entitles it to.
+
+```
+  bl _abiext32
+  mov x9, x0
+  sxtw x9, w9          // extern i32: the result is sign-extended from bit 31
+  ...
+  bl _abiext8
+  mov x9, x0
+  and x9, x9, #255     // extern u8: zero-extended from bit 7
+  ...
+  bl _abiext64
+  mov x9, x0           // extern i64: nothing at all
+```
+
+Two things a taught runtime should read carefully. **A function with no explicit `return` is
+untouched** — the epilogue rule above stands, which is what keeps an `#opcode` syscall wrapper
+returning the kernel's raw `x0`. And **`callp` is excepted**: a pointer call has no declaration, so
+its result stays `i64` and `(i32) callp(...)` is the spelling.
+
 ### `callp(p, a1..a11)`
 
 The pointer goes to `x16`, the arguments follow the ordinary rule — `x0..x7`, then the outgoing
@@ -362,6 +392,13 @@ Depth 4 and beyond spills to the frame through `rax`/`rcx`. The `frame too large
 bytes) is AArch64's 12-bit immediate and x86 has no such bound, but the walker keeps it so the
 diagnostic is the same on every target.
 
+**A narrow result is extended the same way** (M45): `movsxd rd, rd` after a `call` whose callee is
+declared `i32` (any `TK_SINT`), `movzx`/`mov r32, r32` for `u8`/`u16`/`u32`, nothing at width 8;
+and the same before the `ret` of a narrow-declared mc function. The x86-64 case is the sharper one,
+because `mov eax, -1` provably zeroes the upper half of `rax`, so an `extern i64 f()` reading a C
+`int` -1 sees `0x00000000ffffffff` and `< 0` is false — measured on musl and on glibc, both
+architectures ([M45](../specs/M45.md) § Implementation notes).
+
 `callp(p, a1..a11)` puts the pointer in `rax` and the arguments in `rdi..r9`; a seventh and later go
 on the stack, through the same `x86_push_args` a direct call uses. `#opcode` writes a raw 4-byte little-endian word wherever it stands, exactly as on AArch64 —
 but the words themselves are an instruction set, so a source that uses it is not portable between
@@ -386,6 +423,9 @@ the calling convention, and it changes in exactly five places
   at the `call`: `8*np + 32` is `0 mod 16` exactly when `np`, the number of stack arguments, is
   even, which is the same "pad 8 when the count is odd" rule § 4b already had.
 - **The epilogue leaves `rax` alone**, and **the frame record is unconditional** — unchanged.
+- **The narrow-result extension of § 4b is unchanged**: it is a property of the machine's
+  `MTASK_CAST`, which `x86_64-win` shares slot for slot with `x86_64`. It matters more here, since
+  `BOOL` and `DWORD` are 32-bit and every kernel32 entry point returns one.
 - **The register partition** is unchanged from § 4b except for the argument column: `rax`, `rcx`,
   `rdx` and `r8..r11` are volatile in both ABIs, so the depths stay in `r8..r11` and the scratch
   stays `rax`/`rcx`/`rdx`. `rdi` and `rsi` become callee-saved on Win64 and the machine simply

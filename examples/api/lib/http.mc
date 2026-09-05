@@ -22,11 +22,14 @@
 #define SA_IN_LEN    16               // sizeof(struct sockaddr_in)
 
 // read/write/close come from lib/sys.mc, included by rt.mc
-extern i64 socket(i64 domain, i64 type, i64 proto);
-extern i64 setsockopt(i64 fd, i64 level, i64 opt, uptr value, i64 len);
-extern i64 bind(i64 fd, uptr sa, i64 len);
-extern i64 listen(i64 fd, i64 backlog);
-extern i64 accept(i64 fd, uptr sa, uptr plen);
+// M45: all five return a C `int`, and each of them is tested for `< 0` -- the
+// exact defect class the milestone exists for. Nothing here is compiled by the
+// frozen seed, so the declaration is the truthful `i32`.
+extern i32 socket(i64 domain, i64 type, i64 proto);
+extern i32 setsockopt(i64 fd, i64 level, i64 opt, uptr value, i64 len);
+extern i32 bind(i64 fd, uptr sa, i64 len);
+extern i32 listen(i64 fd, i64 backlog);
+extern i32 accept(i64 fd, uptr sa, uptr plen);
 
 // ---- sockaddr_in assembled byte by byte ----
 // macOS's struct sockaddr_in:

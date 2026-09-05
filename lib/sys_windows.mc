@@ -41,6 +41,13 @@
 // All non-variadic. A DWORD parameter travels in the low half of its register,
 // which is what AAPCS64 and Win64 both do with a 32-bit argument anyway, so an
 // i64 is the right shape for every one of them.
+// M45: a BOOL is a 32-bit `int` and a DWORD a 32-bit `unsigned`, so bits 63..32
+// of every result below are unspecified -- and the `& BOOL_MASK` masks are what
+// this file has always done about it. They STAY, and the declarations stay
+// `i64`: the Windows chain bootstraps from a published release that does not
+// narrow (D9), and this file is in the seed set, where a narrow declaration
+// would move the codegen away from the frozen seed's
+// (docs/specs/M45.md § Implementation notes 4).
 extern uptr GetStdHandle(i64 nStdHandle);
 extern i64 WriteFile(uptr hFile, uptr buf, i64 n, uptr written, uptr overlapped);
 extern i64 ReadFile(uptr hFile, uptr buf, i64 n, uptr got, uptr overlapped);
@@ -115,8 +122,16 @@ i64 creat(uptr path, i64 mode) {
 
 // 0, 1 and 2 are the standard descriptors, not handles: closing them would
 // close the console the program is writing to.
+//
+// A negative descriptor is refused here and never handed to CloseHandle: -1 is
+// INVALID_HANDLE_VALUE, which Windows also uses as the PSEUDO-HANDLE returned
+// by GetCurrentProcess(), and CloseHandle on a pseudo-handle succeeds -- so
+// without this line `close(-1)` would answer 0 where every POSIX close answers
+// -1/EBADF. Found by the windows/arm64 and windows/x86_64 CI legs on
+// tests/mc/093-i32-return.mc, the one test that closes an invalid descriptor.
 i64 close(i64 fd) {
-    if (fd >= 0 && fd <= 2) return 0;
+    if (fd < 0) return 0 - 1;
+    if (fd <= 2) return 0;
     if ((CloseHandle(fd) & BOOL_MASK) == 0) return 0 - 1;
     return 0;
 }

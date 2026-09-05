@@ -55,7 +55,7 @@
 // and Linux, and CreateFileA refuses it on Windows), and there is nothing a
 // directory probe would add -- a missing directory is a missing marker.
 i64 path_exists(uptr p) {
-    i64 fd = open(p, O_RDONLY, 0);
+    i64 fd = c_int(open(p, O_RDONLY, 0));   // M45: `open` returns a C `int`
     if (fd < 0) return 0;
     close(fd);
     return 1;

@@ -25,26 +25,28 @@
 #define PT_COND_SZ   48
 #define PT_SEM_SZ    32
 
-extern i64  pthread_create(uptr th, uptr attr, uptr entry, uptr arg);
-extern i64  pthread_join(uptr th, uptr ret);
-extern i64  pthread_detach(uptr th);
+// M45: every pthread and sem entry point returns a C `int`. `getauxval`
+// returns an `unsigned long` and stays `i64`.
+extern i32  pthread_create(uptr th, uptr attr, uptr entry, uptr arg);
+extern i32  pthread_join(uptr th, uptr ret);
+extern i32  pthread_detach(uptr th);
 extern uptr pthread_self();
 
-extern i64 pthread_mutex_init(uptr m, uptr attr);
-extern i64 pthread_mutex_lock(uptr m);
-extern i64 pthread_mutex_unlock(uptr m);
-extern i64 pthread_mutex_destroy(uptr m);
+extern i32 pthread_mutex_init(uptr m, uptr attr);
+extern i32 pthread_mutex_lock(uptr m);
+extern i32 pthread_mutex_unlock(uptr m);
+extern i32 pthread_mutex_destroy(uptr m);
 
-extern i64 pthread_cond_init(uptr c, uptr attr);
-extern i64 pthread_cond_wait(uptr c, uptr m);
-extern i64 pthread_cond_signal(uptr c);
-extern i64 pthread_cond_broadcast(uptr c);
+extern i32 pthread_cond_init(uptr c, uptr attr);
+extern i32 pthread_cond_wait(uptr c, uptr m);
+extern i32 pthread_cond_signal(uptr c);
+extern i32 pthread_cond_broadcast(uptr c);
 
 // sem_init(sem, pshared, value): pshared 0 = threads of this process only
-extern i64 sem_init(uptr sem, i64 pshared, i64 value);
-extern i64 sem_wait(uptr sem);
-extern i64 sem_post(uptr sem);
-extern i64 sem_destroy(uptr sem);
+extern i32 sem_init(uptr sem, i64 pshared, i64 value);
+extern i32 sem_wait(uptr sem);
+extern i32 sem_post(uptr sem);
+extern i32 sem_destroy(uptr sem);
 
 // getauxval(AT_HWCAP) -- 16 is AT_HWCAP, 256 is HWCAP_ATOMICS (the LSE bit).
 // On x86-64 the bit is not there and the runtime takes its ldxr/stxr-free

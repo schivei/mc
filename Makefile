@@ -244,7 +244,8 @@ sysroot-windows-x86_64:
 
 # M19: the whole suite cross-compiled to windows/aarch64 with the
 # `coff-obj-arm64` backend, every object's COFF header checked with
-# llvm-readobj when it is available, and three of them linked with lld-link.
+# llvm-readobj when it is available, and every one of them linked with lld-link
+# in the mode the manifest recorded (M45).
 # Nothing is EXECUTED
 # here -- there is no Windows host on this machine, and the windows-11-arm CI
 # leg is the runtime oracle (docs/ci.md). Guarded like test-linux: without the

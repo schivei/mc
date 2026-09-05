@@ -1,6 +1,7 @@
 # The machine task contract
 
-> **Contract version 3 -- the integer tasks, the depth type, and deriving a machine (M17, M24, M39).**
+> **Contract version 4 -- the integer tasks, the depth type, deriving a machine, and the KIND
+> obligation (M17, M24, M39, M45).**
 > `src/gen_walk.mc` is the target-independent walker; `src/machine_arm64.mc` (M17 step A) and
 > `src/machine_x86_64.mc` (step B, and M20's Win64 half) are the three machines behind it in the
 > compiler -- `arm64`, `x86_64`, `x86_64-win` -- and `machine(name, tab)` in `src/hooks.mc` is
@@ -29,6 +30,18 @@
 > the old § 3 specified — thirteen `mf_*` slots — were **dropped**: a second register file needs no
 > contract line once the walker says what type is at a depth, and `<float>` is a library over that
 > (`docs/specs/M24.md`). `#machine` was dropped with them, for the reasons in § 4.
+>
+> **Version 3 → 4 (M45) appends no slot and changes no signature either.** The bump is an
+> OBLIGATION: the `ty` a `ty`-carrying slot receives may be an id the registry owns, of width 1, 2,
+> 4 or 8 and of kind `TK_INT` **or `TK_SINT`**, and a machine owes extension **by kind** — zero
+> above the width for a `TK_INT`, the sign for a `TK_SINT` — in its loads and its `MTASK_CAST`, and
+> truncation by width in its stores. The core itself now registers one such id, `i32`
+> ([language.md](language.md) § 2), so this is not hypothetical. **A machine that keys those slots
+> on the core ids alone is silently wrong**: its `MTASK_CAST(i32)` is a no-op and its
+> `MTASK_LOCAL_LOAD(i32)` reads eight bytes out of a four-byte slot. The rule, stated once:
+> dispatch on `type_width(ty)` and `type_kind(ty)`, never on the id. A machine that will not
+> implement the kind must remove the word from its surface — `type_disable(ty_i32)` from its
+> `user_init`, which is what `examples/avr` does.
 
 ## Why the split exists
 
@@ -115,8 +128,11 @@ them at a machine other than the host's: `mc --dump-asm --machine=x86_64 f.mc`.
 
 Every task takes **depth indices**, never registers: the walker says "the value is at depth 2", and
 whether depth 2 lives in a register or in a frame slot is the machine's decision. `ty` is a core
-type constant (`TY_U8`, `TY_U16`, `TY_U32`, `TY_U64`, `TY_I64`, `TY_UPTR`) and stands for the access
-width; `l` is a label number; `sym` a symbol index; `e` an `Ins` record.
+type id — one of the core constants (`TY_U8`, `TY_U16`, `TY_U32`, `TY_U64`, `TY_I64`, `TY_UPTR`) or
+one the registry owns, `i32` included — and stands for the access **width** and, for a load or a
+cast, for the **kind** that says how the bytes above that width are filled (contract version 4:
+`type_width(ty)` and `type_kind(ty)`, never the id); `l` is a label number; `sym` a symbol index;
+`e` an `Ins` record.
 
 | slot | signature | meaning |
 |---|---|---|
@@ -129,14 +145,14 @@ width; `l` is a label number; `sym` a symbol index; `e` an `Ins` record.
 | `MTASK_CMP` | `void f(i64 cond, i64 d, i64 d2)` | `MCOND_*`, result 0/1 at `d` |
 | `MTASK_UN` | `void f(i64 op, i64 d)` | `MUN_*` in place |
 | `MTASK_BOOL` | `void f(i64 d)` | `d = (d != 0)` — the normalisation `&&`/`\|\|` needs |
-| `MTASK_CAST` | `void f(i64 ty, i64 d)` | narrow depth `d` to that width |
-| `MTASK_LOAD` | `void f(i64 ty, i64 d)` | `d = [d]`, zero-extended (`ld8..ld64`) |
-| `MTASK_STORE` | `void f(i64 ty, i64 d)` | `[d] = d + 1` (`st8..st64`) |
+| `MTASK_CAST` | `void f(i64 ty, i64 d)` | extend depth `d` to the type's width **by its kind**: zero-fill for `TK_INT`, sign-fill for `TK_SINT`, nothing at width 8 |
+| `MTASK_LOAD` | `void f(i64 ty, i64 d)` | `d = [d]` at the type's width, zero- or sign-extended by its kind (`ld8..ld64` are all `TK_INT`) |
+| `MTASK_STORE` | `void f(i64 ty, i64 d)` | `[d] = d + 1`, truncated to the width — the same instruction for both kinds (`st8..st64`) |
 | `MTASK_LOCAL_ADDR` | `void f(i64 d, i64 off)` | the address of a frame slot |
-| `MTASK_LOCAL_LOAD` | `void f(i64 ty, i64 d, i64 off)` | read a frame slot into `d` |
+| `MTASK_LOCAL_LOAD` | `void f(i64 ty, i64 d, i64 off)` | read a frame slot into `d`, extended by the type's kind |
 | `MTASK_LOCAL_STORE` | `void f(i64 ty, i64 d, i64 off)` | write depth `d` into a frame slot |
 | `MTASK_SYM_ADDR` | `void f(i64 d, i64 sym)` | a symbol's address — a global, a string literal, or a function taken with `&` |
-| `MTASK_GLOBAL_LOAD` | `void f(i64 ty, i64 d, i64 sym)` | read the global at `sym` into `d` |
+| `MTASK_GLOBAL_LOAD` | `void f(i64 ty, i64 d, i64 sym)` | read the global at `sym` into `d`, extended by the type's kind |
 | `MTASK_GLOBAL_STORE` | `void f(i64 ty, i64 d, i64 sym)` | write depth `d` into the global at `sym` |
 | `MTASK_CALL` | `void f(i64 d, i64 nargs, i64 sym)` | a direct call; the arguments are depths `d .. d+nargs-1`, the result lands at `d` |
 | `MTASK_CALLP` | `void f(i64 d, i64 nargs)` | an indirect call; the pointer is argument 0, at depth `d` |
@@ -162,8 +178,17 @@ MCOND_EQ MCOND_NE MCOND_LT MCOND_LE MCOND_GT MCOND_GE
 
 Signed and unsigned are **separate operations**, not a flag: the walker picks `MOP_SDIV` over
 `MOP_UDIV` (and `MOP_SAR` over `MOP_SHR`) from `res_type` of the left operand, which is mc's actual
-rule — only `i64` divides and shifts with sign. Comparisons are always signed, so there is one set
-of six.
+rule — `i64` and every `TK_SINT` divide and shift with sign, everything else does not
+(`type_signed`, M45). Comparisons are always signed, so there is one set of six.
+
+**The walker itself issues `MTASK_CAST` in two places no expression asked for it** (M45): after
+`MTASK_CALL`, when the callee's declared result is a `TK_INT`/`TK_SINT` narrower than the word and
+is not `uptr`, and before `MTASK_RET`, when the function's own declared result is. Every ABI leaves
+the bits above a narrow result unspecified, so that extension is the compiler's to perform, and
+routing it through a slot every machine already fills is what keeps the contract at 31 slots. The
+`ty` those two casts carry is the DECLARED type, and the walker rewrites `walk_depth_type(d)` to
+it before the call-side one, so a derived machine reading the depth type as the cast's SOURCE sees
+an integer and not the type of argument 0.
 
 The four divide operations say nothing about a **zero divisor** or about `INT64_MIN / -1`: a
 machine emits its target's divide instruction and the ISA answers, so a new machine owes no guard
@@ -326,13 +351,18 @@ writer that consumes it. Nothing in `src/` changed to make it possible.
 | `x / 0`, `x % 0`, `INT64_MIN / -1` | `0`, `x`, `INT64_MIN`, no trap | `SIGFPE`, the process dies | `-1`, `x`, `INT64_MIN`, no trap |
 | relocations | `BRANCH26` `PAGE21` `PAGEOFF12` `UNSIGNED` | `R_X86_64_PLT32` `PC32` `64` | two module-private kinds, 32 and 33 |
 | relocation offset | 0 | 1 (`call`), 3 (`lea [rip+d32]`) | 0 |
+| narrow load, `TK_INT` (M45) | `ldrb` `ldrh` `ldr w` | `movzx` `movzx` `mov r32` | `lbu` `lhu` `lwu` |
+| narrow load, `TK_SINT` (M45) | `ldrsb` `ldrsh` `ldrsw` | `movsx` `movsx` `movsxd` | `lb` `lh` `lw` |
+| cast, `TK_INT` (M45) | `and #0xff` `and #0xffff` `mov wd, wn` | `movzx` `movzx` `mov r32,r32` | `andi` / `slli+srli` |
+| cast, `TK_SINT` (M45) | `sxtb` `sxth` `sxtw` | `movsx` `movsx` `movsxd r64,r32` | `slli+srai` / `sext.w` |
 
 Three things are worth reading it for, beyond the columns.
 
 **`MTASK_BIN` has no special case at all.** All thirteen `MOP_*` are one R-type instruction each:
 no `msub` for the remainder, no `cqo`/`idiv` pair, no ModRM. `sll`/`srl`/`sra` already mask the
 count modulo 64 and `lbu`/`lhu`/`lwu`/`ld` already zero-extend, which is exactly what
-`MTASK_LOAD` asks for. RV64IM is the friendliest set the walker has met.
+`MTASK_LOAD` asks for — and `lb`/`lh`/`lw` are the sign-extending twins contract version 4 asks
+for, at no cost. RV64IM is the friendliest set the walker has met.
 
 **Two relocations are fused into one instruction.** `MTASK_SYM_ADDR` is a single 8-byte `Ins`
 holding `auipc rd,0` + `addi rd,rd,0`, and `MTASK_CALL` a single one holding
@@ -419,9 +449,12 @@ the extra byte is zero by the slot invariant, which turns the signed comparison 
 one. `avr_cmp_width` is the whole rule.
 
 **Every slot holds eight valid bytes.** A value of a type of width `w` has its bytes above `w`
-zeroed (every core type but `i64` is unsigned), which is what lets a consumer read a depth at a
-width the producer did not use — `i64 x = u8v;` stores one byte and reads eight, and both are
-right. Without that invariant every task would need to know what the next one intends.
+filled by its KIND — zero for a `TK_INT`, the sign for `i64` and for a `TK_SINT` — which is what
+lets a consumer read a depth at a width the producer did not use: `i64 x = u8v;` stores one byte
+and reads eight, and both are right. Without that invariant every task would need to know what the
+next one intends. This machine implements the zero half only, and the compiler that drives it
+therefore takes the one `TK_SINT` word the core registers back out of the surface
+(`type_disable(ty_i32)` in `examples/avr/mc-avr.mc`); sign-fill on AVR is a later ask.
 
 **Verification.** Every distinct instruction the machine emits over the firmware (570) and the two
 sweeps (675 and 735) re-assembles byte-identically under `llvm-mc -triple=avr -mcpu=atmega328p`;

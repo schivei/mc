@@ -248,6 +248,10 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
         if (ip) lex_add_include_path(tm_cat(ip, "/"));
         i = i + 1;
     }
+    // M45: the core's own registered primitives -- `i32` today. After
+    // tok_init() for the same reason user_init is, and BEFORE it so that a
+    // module registering the same word wins (alias_find walks from the end).
+    core_types_init();
     // Tier 2 after tok_init(): the ids K_U8..K_EXTERN are fixed at 256..269, so
     // a user_init that calls tok_add before that would shift the table and break
     // the entire core. Before any token is read, because the lexer is

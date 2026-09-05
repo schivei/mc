@@ -31,7 +31,7 @@
 
 // changes the mode of a file that already exists: `creat` only applies the mode
 // when it creates it, so rewriting an existing -o would keep the old permission
-extern i64 chmod(uptr path, i64 mode);
+extern i64 chmod(uptr path, i64 mode);   // a C `int`; the result is unused
 
 // ---- Mach-O constants that MH_OBJECT does not use ----
 #define MH_EXECUTE   2
@@ -706,7 +706,7 @@ void exe_sig(uptr o, uptr ident, i64 codelimit, i64 nslots, i64 texts, i64 textl
 
 // ---- writing ----
 void exe_write_file(uptr path, uptr b) {
-    i64 fd = creat(path, MODE_755);
+    i64 fd = c_int(creat(path, MODE_755));
     if (fd < 0) die2("cannot create", path);
     io_write(fd, buf_p(b), buf_len(b));
     close(fd);

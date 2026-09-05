@@ -414,13 +414,33 @@ Registers a type the core has never heard of and returns its id, which is at or 
 
 | kind | meaning to a machine |
 |---|---|
-| `TK_INT` | an integer the core's own operators fit |
+| `TK_INT` | an integer the core's own operators fit, **unsigned** |
 | `TK_FLOAT` | a floating-point value |
 | `TK_WIDE` | wider than a register; lives in a frame slot |
 | `TK_OPAQUE` | the core knows nothing about it but its size |
+| `TK_SINT` | an integer the core's own operators fit, **signed** (M45) |
 
-and is never read by the core — it is what a machine dispatches on when it does not know the exact
-id (`type_new with an unknown kind` otherwise).
+It is primarily what a machine dispatches on when it does not know the exact id
+(`type_new with an unknown kind` otherwise). Since M45 **the core reads it too, in exactly three
+places**, and nowhere else:
+
+- `type_signed(t)` — `t == TY_I64 || type_kind(t) == TK_SINT` — decides `/`, `%` and `>>` at
+  run time (`bin_op`) and at compile time (`const_bin`);
+- `fold_taught(n)` — the folder runs for `TK_INT` and `TK_SINT` and stands aside for `TK_FLOAT`,
+  `TK_WIDE` and `TK_OPAQUE`, whose arithmetic is the module's;
+- `walk_narrow(t)` — a `TK_INT` or `TK_SINT` narrower than the word (and not `uptr`) is extended by
+  the walker after a call and before a `return`, through `MTASK_CAST`
+  ([machine.md](machine.md), contract version 4).
+
+`TK_INT` keeps the number 0 and `TY_I64` keeps answering `TK_INT` from `type_kind`, so nothing a
+module already wrote moves. What the fifth kind buys is that a signed narrow integer is **one
+line**: `type_new("i16", 2, 2, TK_SINT)` gets a sign-extending load, a sign-extending cast, signed
+division and shifting, a signed comparison and a narrowed call result, with no line in `src/` and
+no line in a machine that honours the kind.
+
+The id a registration returns is **not surface**: it is `TY_MAX + n` for the *n*-th registration in
+this process, the core's own `i32` is the first of them, and a module keeps it in a global
+(`i64 ty_f64 = 0;` … `ty_f64 = type_new(...)`) rather than writing the number down.
 
 The word is reserved through the same `word_add` every registration above uses, so `type_new("if",
 …)` is `cannot redefine core keyword: if`, and it is entered in the same table `type_alias` writes,
@@ -428,8 +448,8 @@ so the name is valid in all seven type positions at once. It is an ordinary func
 `user_init()`: no keyword and no directive, so `tok_init()` is untouched, the ids `K_U8..K_EXTERN`
 do not shift, and `scripts/check-lex.sh` keeps cross-checking the two lexers over the whole tree.
 
-What the core then does with the id is exactly four things — `type_width`, `type_align`,
-`type_name` and nothing else — and is spelled out in [language.md](language.md) § 2. Arithmetic,
+What the core then does with the id is `type_width`, `type_align`, `type_name` and the three
+`kind` reads above, and is spelled out in [language.md](language.md) § 2. Arithmetic,
 literals, the ABI and the instructions belong to the module: `syntax_lit` below, `intrinsic`
 (§ 2), and a derived machine table ([machine.md](machine.md) § 3).
 
@@ -441,6 +461,7 @@ literals, the ABI and the instructions belong to the module: `syntax_lit` below,
 | `i64 type_width(i64 t)` | its width in bytes (1, 2, 4, 8 for the core types) |
 | `i64 type_align(i64 t)` | its alignment; a core type aligns to its own width |
 | `i64 type_kind(i64 t)` | its `TK_*`; every core type answers `TK_INT` |
+| `i64 type_signed(i64 t)` | whether `/ % >>` are signed for it: `TY_I64` or a `TK_SINT` (M45) |
 | `uptr type_name(i64 t)` | the name `--dump-ast` prints; `"?"` for an id that is not registered |
 | `i64 type_of_token(i64 id)` | the type a token names — core word, `type_alias` or `type_new` — or -1 |
 
@@ -781,7 +802,8 @@ instantiation needs.
 | `void p_push_source(uptr name, uptr text, i64 len)` | parse a second source with `#include`'s exact semantics: the lexer pops on its own at the end, and `name` is what `err_at` prints for everything inside |
 | `void p_resplit_punct(i64 n)` | the current punctuation token, of length > `n`, becomes the punctuation formed by its first `n` bytes; the cursor rewinds to just after them |
 | `void p_take_lit(uptr q)` | the current numeric token really ends at `q`: the cursor moves there, the token's length grows with it, and the next token is lexed from `q` (M24) |
-| `uptr p_src_end()` | where the source being lexed ends — what a handler scanning raw bytes forward from `p_start()` has to stop at (M24) |
+| `uptr p_src_end()` | where the source being lexed ends — what a handler scanning raw bytes forward has to stop at (M24) |
+| `uptr p_cp()` | the lexer's **cursor**: the first byte of the source that has not been lexed yet, i.e. just past the current token (M45) |
 
 `p_skip_balanced` counts depth over **real tokens**, which is what makes a `}` inside a string or
 a comment harmless — a byte scan could not do that. An unterminated region is reported at the
@@ -790,6 +812,18 @@ which region never closed. A span is a slice of one buffer, so a region whose fi
 middle is refused (`region crosses a file boundary`) rather than returning a bogus byte range.
 The span lives in the arena for the whole compilation, so a module may keep it and push it back
 as many times as it likes.
+
+The boundary test compares the `#include` frame the **opening** delimiter was read in against the
+one the **closing** delimiter was read in — not the frame the parser is in once it has moved past
+the closer. The two differ at exactly one place, and it is a common one: a region that ends on the
+last token of an included file. `lex_next` pops an exhausted frame *before* it produces the next
+token, so the lookahead past the closer already belongs to the includer. A region that ends flush
+with the end of a file is therefore accepted (it is a slice of one buffer, which is all the rule
+ever meant), and one whose `{` is in an include and whose `}` is in the includer — or the reverse —
+is still refused, at the opening token's position. An `#include` opened *and* closed inside the
+region is fine and always was: the frame depth goes up and comes back down. Fixed in M45; before
+it, a `tmpl`-style module could not put a template in a file of its own without a trailing token
+after it.
 
 `p_push_source` has one contract worth memorising: the push does **not** touch the pending
 lookahead token, so the `p_next()` after it discards the lookahead and reads the first token of
@@ -810,6 +844,17 @@ reason (`p_take_lit outside the source token`). The lexer stops a number where *
 — `1.5` is the token `1` with the cursor left on the `.` — so a handler that scanned further says
 where its literal really ended. `q` may not be before the cursor (a handler cannot un-read) and
 may not be past `p_src_end()`.
+
+**`p_cp()` and `p_start()` are not the same position, and the difference matters exactly once.**
+`p_start()` is where the CURRENT TOKEN starts. On a token `p_subst_name()` replaced, `subst_apply`
+swaps `tok_start`/`tok_len` for the **replacement string**, which lives in the arena — so inside a
+`p_push_source` frame a scan that begins at `p_start()` reads the arena lexeme and runs off the
+end of it, while the source the handler meant to read is somewhere else entirely. `p_cp()` is the
+lexer's cursor and still points into the pushed text, just past the token. A handler that scans
+raw source FORWARD from the token it was given — the `syntax_lit` shape — should read from
+`p_cp()` and stop at `p_src_end()`; `p_start()` is for a handler that wants the token's own
+lexeme, and for `p_skip_balanced`-style span recording, where the token is one the lexer really
+read. `scripts/check-surface.sh` asserts the four values a substituted frame produces.
 
 ### Hygienic substitution
 
@@ -934,6 +979,15 @@ on macOS, `0x40`/`0x200` on Linux, `0x100`/`0x200` on Windows). On macOS and Lin
 names are in libSystem and in musl; on Windows none of them exists, and they are shims over
 kernel32 in `lib/sys_windows_host.mc`, compiled once into `build/mcrt-windows-<arch>.obj` and
 linked next to the compiler ([../guide/95-windows-host.md](../guide/95-windows-host.md) § 3).
+
+Those declarations say `i64` where C says `int` — `open`, `creat`, `close`, `waitpid`, `mkdir`,
+`unlink`, `chmod` — because the files that carry them are also compiled by the frozen C seed,
+which has no 32-bit type. The sign therefore comes from **`c_int(v)`** (`src/arena.mc`): the low 32
+bits of `v`, sign-extended from bit 31, which is what a C `int` result is worth once the
+unspecified bits above it are discarded. `if (c_int(waitpid(...)) < 0)` and
+`i64 fd = c_int(open(...))` are the whole of its use in the compiler. Code outside the seed set
+declares the width instead — `extern i32 f(...)` — and the compiler extends at the call site
+([language.md](language.md) § 6).
 
 What the host layer decides, in the driver and the CLI:
 

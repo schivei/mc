@@ -23,19 +23,27 @@
 
 #dylib "/usr/lib/libsqlite3.dylib"
 
-extern i64  sqlite3_open(uptr path, uptr ppdb);
-extern i64  sqlite3_close(uptr db);
-extern i64  sqlite3_exec(uptr db, uptr sql, uptr cb, uptr arg, uptr perrmsg);
-extern i64  sqlite3_prepare_v2(uptr db, uptr sql, i64 nbyte, uptr ppstmt, uptr ptail);
-extern i64  sqlite3_step(uptr stmt);
-extern i64  sqlite3_finalize(uptr stmt);
-extern i64  sqlite3_bind_int(uptr stmt, i64 idx, i64 v);
-extern i64  sqlite3_bind_text(uptr stmt, i64 idx, uptr s, i64 n, uptr dtor);
-extern i64  sqlite3_column_int(uptr stmt, i64 col);
+// M45: everything SQLite declares `int` is `i32` here. Nothing in this file is
+// compiled by the frozen seed, so it says the truthful word rather than
+// `u32` + `c_int` the way src/*.mc has to. `sqlite3_last_insert_rowid` returns
+// a `sqlite3_int64` and stays `i64`; the two text accessors return pointers.
+//
+// One behaviour change to know about: `sqlite3_column_int` of a NEGATIVE column
+// used to come back as a large positive number and now comes back negative,
+// which is what it always was in C (examples/api/README.md).
+extern i32  sqlite3_open(uptr path, uptr ppdb);
+extern i32  sqlite3_close(uptr db);
+extern i32  sqlite3_exec(uptr db, uptr sql, uptr cb, uptr arg, uptr perrmsg);
+extern i32  sqlite3_prepare_v2(uptr db, uptr sql, i64 nbyte, uptr ppstmt, uptr ptail);
+extern i32  sqlite3_step(uptr stmt);
+extern i32  sqlite3_finalize(uptr stmt);
+extern i32  sqlite3_bind_int(uptr stmt, i64 idx, i64 v);
+extern i32  sqlite3_bind_text(uptr stmt, i64 idx, uptr s, i64 n, uptr dtor);
+extern i32  sqlite3_column_int(uptr stmt, i64 col);
 extern uptr sqlite3_column_text(uptr stmt, i64 col);
 extern uptr sqlite3_errmsg(uptr db);
 extern i64  sqlite3_last_insert_rowid(uptr db);
-extern i64  sqlite3_changes(uptr db);
+extern i32  sqlite3_changes(uptr db);
 
 // back to libSystem: without this reset every extern declared after a
 // #include "sqlite.mc" would end up in libsqlite3
