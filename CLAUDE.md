@@ -1684,6 +1684,41 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `check-inert` identical, four Linux cells RC 0; goldens rewritten once: `mc2.sha256`
   `9e7b803f127cb6f1e059c1e6572a629bfa909cfbecbfae18b01abd1fd7a2d431`, Linux `182a4c6d…036679` /
   `e63d09bc…d99ffa`, Windows `dcaac914…4256c3` / `dfaf002c…a97b861`. PR #23 CI 14/14.
+- M44 step 2 ✔ (`docs/specs/M44.md` § Implementation notes -- step 2; Amendment § A1-A3, A5, A6,
+  D1'/D2'/D10'/D24): **angle brackets are libraries, quotes are my files.** `tok_add(".", 1)`
+  appended LAST in `tok_init` (no id moves; `examples/lang`'s own `tok_add(".")` lands on the same
+  id); `lex_include_name` is three steps through two pointers -- the lock road (`lopen_fn`,
+  `lex_set_libs` from `mc_build_init()`), the bundle (`bopen_fn`, unchanged), the installed `mc`
+  package (`<libs>/mc/v<mc_version()>/` + the `bundle.list` map) -- a trailing `.mc` stripped from
+  every `<...>` name, `<pack>` alone = the lock row's `lib`, the once-only key for a disk-served
+  name its NORMALISED path (no `getcwd` here), never the working directory, never an unlocked
+  directory; `lex_root_of` + the edge list + the closure test for `#include` and `#embed`.
+  `src/deps.mc` (662): the name rule and the reserved set (`mc`, `mc/...`, `deps`, `build`),
+  `[deps]`/`[replace]`/`[registry]`, the lock READER, the tree hash, `libs_open` (vendored
+  `deps/<pack>/` wins, then `<libs>/<pack>/v<version>/`), semver, the refusals (`mc.lock is stale`
+  with the M25 `run:` block, `<pack> <ver>: <file> does not match mc.lock`, `is not fetched`,
+  and -- vendored trees have no manifest for per-file attribution -- `the tree does not match
+  mc.lock`). `src/toml.mc` re-entrant (`toml_push`/`toml_pop`, `toml_occurrences`);
+  `src/driver.mc` `--libs-dir` (default `host_home()/.mc/libs`), `drv_apply_deps` for both halves,
+  `<...>` modules verbatim. Cost **999 added lines in `src/`, 677 code** (spec ~543); globals
+  432 -> **439/512**. **What did not survive**: `check-lex` cannot stay 100% -- `--dump-tokens`
+  processes no directive, so `lib/syntax_demo_test.mc`'s `#infix ".+"` now lexes `.` `+` where the
+  seed says `unexpected character` (M44 risk 17, measured); a new `// lex-skip:` header (NOT
+  `seed-skip:`, which `check-asm`/`check-ast` also honour and which would have dropped the file from
+  two gates that still compare it byte for byte) -- 135/135 identical, 3 skipped. Two silent path
+  bugs only a fixture found: `path_norm` drops a trailing slash and macOS `TMPDIR` ends in `/`, so
+  every package root was a prefix of nothing and the closure rule never fired -- `dp_set_dir`
+  normalises once. Fixtures `tests/pkg/` (mathx 1.0.0, geo 1.2.0, teach, bad, float 1.3.0, app,
+  app-float, `nobundle.mc` = every part but `<mc/core_bundle>`, which is what `mc-slim` will be);
+  `scripts/check-pkg.sh` **31/31** inside `make check`, under a `curl`/`wget`/`tar` shim that exits
+  97 if invoked: acceptance 5-11, 18, 19 measured as the spec spells them, and step 3 of A3 --
+  `<mc/host>` + `<mc/core>` + `<user_default>` served from a hand-laid `<libs>/mc/v0.0.0-dev/`
+  compiles to an object `cmp`-identical to `build/mc1 src/mc.mc`. `make check` RC 0 (`check-obj`
+  32/32, `check-ast`/`asm` 137/137, fixed point 1154264 B, `check-docs` 196 symbols / 35 flags /
+  24 TOML keys / 349 links), four Linux cells RC 0, `check-inert` identical everywhere (D24: no
+  `[deps]`, no change). Goldens rewritten once (after the rebase onto 167d540 re-recorded step 1's):
+  `mc2.sha256` `9e00398d7338ad9b53654c7f07e0d16ff21319e79c915b2ac473d20e1411420a`, Linux
+  `67f062a4…7a02fd` / `3c93e81f…debe70`, Windows `2858b236…3f5959` / `c75e23fd…b909322`.
 - Next: M18 or M24 (`docs/plan.md`); M40 (the word-size sweep AVR/PIC need) is
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
 - M24 step A ✔ (`docs/specs/M24.md` § M1-M6, M8 and decision D5): **Tier 4 -- the inert half.
