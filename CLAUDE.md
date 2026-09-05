@@ -1752,6 +1752,36 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `cede0b38…07284`, Linux `e4c876dd…dbc02` / `3f036b4d…d2012`, Windows `70a2259d…68309` /
   `98cf8605…4fde5`. Steps 4-5 (the slim binary, `mc install`, `mc upgrade`) follow the site, per
   the owner's sequencing of 2026-09-05.
+- M44 review batch ✔ (`docs/specs/M44.md` § Implementation notes -- the supply-chain review): the
+  reviewer's CRITICAL, **reproduced before it was fixed**: `[package].files` of a dependency went
+  to `path_join`/`path_norm` uncontained (`path_join` DISCARDS its base on an absolute `rel`;
+  `path_norm` resolves `..` with no floor) -- arbitrary READ on every `mc build` (`files =
+  ["../../../payload.txt"]` hashed, rc 0), arbitrary WRITE by `mc pkg vendor` (a payload landed
+  outside the project), arbitrary DELETE on a hash MISMATCH (`pkg_unbless` re-read the just-refused
+  tree and unlinked what it listed: a registry row with a wrong `sha256` deleted a canary two
+  directories up -- the attacker never needs a hash that passes). Rule now: ONE reader of
+  `package.files`, `dep_read_files()`, behind `dep_rel_ok` (no empty/absolute, no `.`/`..`/empty
+  component, no backslash, no byte < 0x20) + `dep_under` (normalised-join prefix) ->
+  `<pack> <ver>: files entry escapes the package: <entry>`, exit 2; `pkg_unbless` deletes what the
+  EXTRACTION wrote (the member table) and never reads that list again. HIGH: `fetch_extract`
+  trusted `tar` (a symlink member to `/etc/hosts` was vendored into `deps/`): `fetch_check_members`
+  lists twice (names, then the type column) and refuses links, absolute or `..` members and anything
+  leaving `dest` after `--strip-components` (`member escapes the archive` / `archive member is a
+  link`, exit 2, archive unlinked), every listed regular file checked afterwards; NOT done, on
+  record: the extraction still names no members (a member with a space cannot travel on argv).
+  MEDIUM: the hash line is now injective (`<hex> <len>:<path>\n`; control bytes refused; a forgery
+  was not constructible anyway because line 1 digests `mc.toml`, where the list lives -- measured);
+  `pkg_check_immutable` no longer skips without `--yes` on a URL registry and distinguishes a 404
+  (`curl -f` 22 / `wget` 8 = new) from any other failure (`cannot read the published index`).
+  LOW: the missing-file failure now unblesses first ("collect the error", `dep_hash_soft`);
+  size caps 64 MiB archive / 1 MiB index (`larger than the cap`). `check-pkg` 63 -> **78/78**
+  (four escaping shapes each with a canary asserted untouched, the cross-directory vendor case,
+  the wrong-hash unbless, three crafted archives, the `check` refusals, a 68 MB archive, the line
+  shape). Cost: `deps.mc` +106 code, `fetch.mc` +197, `pkg.mc` +46. `make check` RC 0 (`check-obj`
+  32/32, empty `--dump-asm` diff, `check-lex` 143/143 (3 skipped), `check-docs` 197 symbols),
+  four Linux cells RC 0, `check-inert` identical. Goldens rewritten once: `mc2.sha256`
+  `4cd11bf19c21d28fd112b498bf0ac51b7394dbfa958707429c3892a71b576855`, Linux `1205bf75…f4e47` /
+  `f84a7b8d…1dcdf`, Windows `073e0576…de07f` / `18f3362a…3c919`.
 - Next: M18 or M24 (`docs/plan.md`); M40 (the word-size sweep AVR/PIC need) is
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
 - M24 step A ✔ (`docs/specs/M24.md` § M1-M6, M8 and decision D5): **Tier 4 -- the inert half.
