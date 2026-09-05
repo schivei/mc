@@ -1536,6 +1536,49 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `5836c1fd...c0344` -> `d73a2861da0233e9c99b17ab3ace4104a97d21f0113f08251be024d4e849b79b`, the
   Linux pair re-recorded by `make check-linux-host` (Docker, both arches, each after its own fixed
   point) and the Windows pair cross-computed per `tests/golden/README.md`.
+- M43 step B ✔ (`docs/specs/M43.md` § Implementation notes -- step B, ten numbered kernel
+  corrections): **the box and the supervisor, without seccomp/Landlock (step C).**
+  `src/sandbox_box.mc` (440) and `src/sandbox.mc` (1280); `scripts/test-sandbox.sh`;
+  `tests/sandbox/*.mc` (clean, forever, sleeper, eightgib, shadow, connect, forkbomb, rocwd).
+  What the kernel decided: **four processes, not three** -- P (supervisor), I (unshares the six
+  namespaces, builds the tree, `pivot_root`s), **J** (pid 1 of the pid namespace, runs one C per
+  step: an init that exits accepts no new process, and a second `unshare(CLONE_NEWPID)` is EINVAL),
+  C (the step). Maps: `0 <uid> 1` unprivileged and **`0 0 65536`** for root, no `setuid` -- `0 65534
+  1` alone left the caller unmapped (`mkdirat` EOVERFLOW) and `+ 1 0 1` broke overlay copy-up on a
+  root-owned lower (the inode owner must be mapped; `CAP_DAC_OVERRIDE` does not help); the cost is
+  that `RLIMIT_NPROC` does not bind for root (`copy_process` exempts `INIT_USER`), documented with
+  "run it unprivileged" as the answer. Overlay needs `userxattr` inside a user namespace, and it
+  mounts on virtiofs (Lima) and ext4 (VPS), root and unprivileged -- the priced ro-`/src` + `/out`
+  fallback is implemented and no cell reached it. `RLIMIT_AS`/`NPROC`/`STACK` are set by C right
+  before `execve` (in I they would cap the box's own arena and refuse its own fork); the compile
+  step gets `NPROC 16` because `mc build` spawns the compiler it taught. Soft = hard `RLIMIT_CPU`
+  is SIGKILL, not SIGXCPU, and rusage lands a shade under the cap (1.997 s for 2), so J's cpu
+  verdict carries 100 ms of slack; the wall-clock line is P's because killing J kills the reporter.
+  Two options the corpus forced: `--root DIR` (with `/src` at the source's own directory,
+  `#include "../lib/sys.mc"` resolved to `/lib/sys.mc` -- nine tests) and `--config NAME`
+  (`examples/lang` needs `mc.linux.toml`/`mc.linux-gnu.toml` without `[target]`); `--report FILE`
+  writes the file AND stderr. **Globals: 422/512** -- one global (`sb_state`, an arena record with
+  `SB_*` accessors) for the whole milestone; step A's sixteen became the record.
+  Measured (Ubuntu 26.04, 7.0.0-30, Lima aarch64 + VPS x86_64, root and unprivileged; plus
+  `alpine:3 --privileged` on 6.12): isolation cases 8/8 in every cell, the suite 31/31 and 29/29
+  through `mc sandbox run` with identical exit/stdout, `mc sandbox exec` on static AND dynamic
+  M42 binaries with only `/lib` bound, `examples/lang` taught and run inside (`13 25 12 box`),
+  host tree untouched; `clean.mc` byte-identical to the unsandboxed run; `forever.mc` `killed: cpu
+  limit (2 s)` exit 124 at 2.006 s; `sleeper.mc` `killed: wall clock (5 s)` exit 124 at 5.01 s;
+  `eightgib.mc`'s `malloc(8 GiB)` returns 0 under `RLIMIT_AS`; `shadow.mc` gets ENOENT (`/etc` does
+  not exist -- the NAMED `refused: open` is step C's); `connect.mc` ENETUNREACH from the empty
+  netns; `forkbomb.mc` `forked 0` unprivileged (EAGAIN on the first clone) and 200 as root;
+  unprivileged with the stock sysctl: `sandbox: cannot mount /: EACCES (apparmor restricts
+  unprivileged user namespaces: ...)`, exit 126. **Overhead per box: 1.37/1.43 ms aarch64,
+  4.12/4.98 ms x86_64** (root/unprivileged). Reports deterministic (`cmp` equal, no digit run >= 4),
+  no `/tmp/.mc-box*` left, `find -newer` empty outside `build/`.
+  -- `stage0/`, `lib/`, `tests/*.mc` untouched; bundle 84 files (blob 454822 B); `make check` RC 0
+  with `test-sandbox` 49 ok / 1 skipped inside it (delegating to Lima from macOS); `check-obj`
+  32/32; fixed point 1050240 B; `check-limits` 17/17; four Linux cells RC 0; `check-inert`
+  identical everywhere. Goldens rewritten once: `mc2.sha256`
+  `675d62a48b1ca5d1f04649a2b88aa151da8fec53654dcd5ea3e0790ffe1ef0fd`, Linux `bee69954…46dea4` /
+  `97c888a8…7251ca`, Windows `edd2d619…e0776` / `08a6d675…6e0a`. Not yet: the CI job (acceptance
+  10), exit 125 and every `refused:` line (step C).
 - Next: M18 or M24 (`docs/plan.md`); M40 (the word-size sweep AVR/PIC need) is
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
 - M24 step A ✔ (`docs/specs/M24.md` § M1-M6, M8 and decision D5): **Tier 4 -- the inert half.
