@@ -85,6 +85,16 @@
 #define I_EMIT    44
 #define I_NOP     45                  // erased in the frame fixup, generates no word
 #define I_BLR     46                  // blr xN: callp's indirect call
+// M45: the signed halves of the three narrow widths. A load into a depth is
+// zero-extending for TK_INT and sign-extending for TK_SINT, and MTASK_CAST
+// fills the bytes above the width the same way -- SBFM xd, xn, #0, #7/15/31,
+// which is what `sxtb`/`sxth`/`sxtw` are.
+#define I_LDRSB   47
+#define I_LDRSH   48
+#define I_LDRSW   49
+#define I_SXTB    50
+#define I_SXTH    51
+#define I_SXTW    52
 
 // AArch64 conditions used by M1
 #define C_EQ  0
@@ -136,12 +146,18 @@ u32 rrr_base[] = { 0x8B000000, 0xCB000000, 0x9B007C00, 0x9AC00C00, 0x9AC00800,
                    0x9AC02000, 0x9AC02400, 0x9AC02800 };
 uptr rrr_name[] = { "add", "sub", "mul", "sdiv", "udiv", "and", "orr", "eor",
                     "lsl", "lsr", "asr" };
-// memory: load/store pairs by width, from widest to narrowest
-i64 mem_ins[] = { I_LDR, I_STR, I_LDRW, I_STRW, I_LDRH, I_STRH, I_LDRB, I_STRB, 0 };
+// memory: load/store pairs by width, from widest to narrowest. M45 appends the
+// three SIGNED loads in the same even-load/odd-store shape, each sharing the
+// store of its width -- a store truncates and never cares about the sign.
+i64 mem_ins[] = { I_LDR, I_STR, I_LDRW, I_STRW, I_LDRH, I_STRH, I_LDRB, I_STRB,
+                  I_LDRSW, I_STRW, I_LDRSH, I_STRH, I_LDRSB, I_STRB, 0 };
 u32 mem_base[] = { 0xF9400000, 0xF9000000, 0xB9400000, 0xB9000000,
-                   0x79400000, 0x79000000, 0x39400000, 0x39000000 };
-i64 mem_scale[] = { 8, 8, 4, 4, 2, 2, 1, 1 };
-uptr mem_name[] = { "ldr", "str", "ldr", "str", "ldrh", "strh", "ldrb", "strb" };
+                   0x79400000, 0x79000000, 0x39400000, 0x39000000,
+                   0xB9800000, 0xB9000000, 0x79800000, 0x79000000,
+                   0x39800000, 0x39000000 };
+i64 mem_scale[] = { 8, 8, 4, 4, 2, 2, 1, 1, 4, 4, 2, 2, 1, 1 };
+uptr mem_name[] = { "ldr", "str", "ldr", "str", "ldrh", "strh", "ldrb", "strb",
+                    "ldrsw", "str", "ldrsh", "strh", "ldrsb", "strb" };
 // the MOP_* / MCOND_* vocabulary, in its own order, spelled in AArch64
 i64 bin_rrr[] = { I_ADD, I_SUB, I_MUL, I_SDIV, I_UDIV, I_SDIV, I_UDIV,
                   I_AND, I_ORR, I_EOR, I_LSLV, I_LSRV, I_ASRV };
@@ -167,15 +183,24 @@ i64 mem_slot(i64 op) {                // -1 if it is not a memory access
     return -1;
 }
 
-// access of width t; the even positions are load, the odd ones store
+// M45: an access is chosen by the type's WIDTH and, for a load, by its KIND --
+// never by the id, so a registered i16 or u32 gets the same instruction the
+// core type of that width gets. The even positions are load, the odd ones
+// store; the three signed loads sit six slots past their unsigned twin.
 i64 mem_op(i64 t, i64 store) {
-    i64 i = 0;
-    if (t == TY_U8)       i = 6;
-    else if (t == TY_U16) i = 4;
-    else if (t == TY_U32) i = 2;
+    i64 w = type_width(t);
+    i64 i = 0;                            // 8 bytes, and any width this machine has no form for
+    if (w == 4)      i = 2;
+    else if (w == 2) i = 4;
+    else if (w == 1) i = 6;
     if (store) return mem_ins_at(i + 1);
+    if (i && type_kind(t) == TK_SINT) i = i + 6;
     return mem_ins_at(i);
 }
+
+// the destination of a signed load is an X register; every other narrow access
+// names a W one
+i64 mem_wreg(i64 i) { return i >= 2 && i < 8; }
 
 // 64-bit immediate in up to 4 instructions: movz of the low word + movk of the rest
 void gen_imm(i64 rd, u64 v) {
@@ -189,10 +214,25 @@ void gen_imm(i64 rd, u64 v) {
     }
 }
 
+// M45: fill the bytes above the type's width -- with zero for a TK_INT, with
+// the sign for a TK_SINT. By width and kind, not by id, so a module's i16 casts
+// the way the core's i32 does. Width 8 (and any width with no form here) is a
+// no-op, exactly as before.
 void gen_cast(i64 rd, i64 ty) {
-    if (ty == TY_U8)       ei(I_ANDI, rd, rd, 0xff);
-    else if (ty == TY_U16) ei(I_ANDI, rd, rd, 0xffff);
-    else if (ty == TY_U32) e2(I_MOVW, rd, rd);        // mov wd, wn zeroes the top half
+    i64 w = type_width(ty);
+    i64 sgn = type_kind(ty) == TK_SINT;
+    if (w == 1) {
+        if (sgn) e2(I_SXTB, rd, rd);
+        else     ei(I_ANDI, rd, rd, 0xff);
+    }
+    else if (w == 2) {
+        if (sgn) e2(I_SXTH, rd, rd);
+        else     ei(I_ANDI, rd, rd, 0xffff);
+    }
+    else if (w == 4) {
+        if (sgn) e2(I_SXTW, rd, rd);
+        else     e2(I_MOVW, rd, rd);                  // mov wd, wn zeroes the top half
+    }
 }
 
 // address of a symbol: adrp of the page + add of the offset
@@ -566,7 +606,7 @@ void dump_ins(uptr in) {
         i = i + 1;
     }
     i64 mi = mem_slot(op);
-    if (mi >= 0) { d_mem(mem_name_at(mi), mi >= 2, ins_rd(in), ins_rn(in), ins_imm(in)); return; }
+    if (mi >= 0) { d_mem(mem_name_at(mi), mem_wreg(mi), ins_rd(in), ins_rn(in), ins_imm(in)); return; }
     if (op == I_MOV)  { d_2("mov", ins_rd(in), ins_rn(in)); return; }
     if (op == I_MOVW) { d_head("mov"); out_str(1, "w"); out_num(1, ins_rd(in));
                         out_str(1, ", w"); out_num(1, ins_rn(in)); out_str(1, "\n"); return; }
@@ -581,6 +621,15 @@ void dump_ins(uptr in) {
                         out_str(1, "\n"); return; }
     if (op == I_CSET) { d_head("cset"); d_reg(ins_rd(in)); out_str(1, ", ");
                         out_str(1, cond_name(ins_imm(in))); out_str(1, "\n"); return; }
+    // M45: the source of a sign extension is named as a W register, which is
+    // the only spelling the assembler takes back (`sxtb x9, w9`)
+    if (op == I_SXTB || op == I_SXTH || op == I_SXTW) {
+        if (op == I_SXTB)      d_head("sxtb");
+        else if (op == I_SXTH) d_head("sxth");
+        else                   d_head("sxtw");
+        d_reg(ins_rd(in)); out_str(1, ", w"); out_num(1, ins_rn(in)); out_str(1, "\n");
+        return;
+    }
     if (op == I_ANDI) { d_i("and", ins_rd(in), ins_rn(in), ins_imm(in)); return; }
     if (op == I_ADDI) { if (ins_imm(in) == 0) d_2("mov", ins_rd(in), ins_rn(in));
                         else d_i("add", ins_rd(in), ins_rn(in), ins_imm(in)); return; }
@@ -651,6 +700,10 @@ i64 encode(uptr in, i64 pc, uptr lab) {
         return 0xF100001F | ((im & 0xfff) << 10) | (rn << 5);
     }
     if (op == I_CSET) return 0x9A9F07E0 | (((ins_imm(in) ^ 1) & 0xf) << 12) | rd;
+    // M45: SBFM xd, xn, #0, #7/15/31 -- sxtb, sxth, sxtw
+    if (op == I_SXTB) return 0x93401C00 | (rn << 5) | rd;
+    if (op == I_SXTH) return 0x93403C00 | (rn << 5) | rd;
+    if (op == I_SXTW) return 0x93407C00 | (rn << 5) | rd;
     if (op == I_ANDI) {                        // 2^k-1 mask: N=1, immr=0, imms=k-1
         u64 m = ins_imm(in);
         i64 k = 0;

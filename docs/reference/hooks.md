@@ -414,13 +414,33 @@ Registers a type the core has never heard of and returns its id, which is at or 
 
 | kind | meaning to a machine |
 |---|---|
-| `TK_INT` | an integer the core's own operators fit |
+| `TK_INT` | an integer the core's own operators fit, **unsigned** |
 | `TK_FLOAT` | a floating-point value |
 | `TK_WIDE` | wider than a register; lives in a frame slot |
 | `TK_OPAQUE` | the core knows nothing about it but its size |
+| `TK_SINT` | an integer the core's own operators fit, **signed** (M45) |
 
-and is never read by the core — it is what a machine dispatches on when it does not know the exact
-id (`type_new with an unknown kind` otherwise).
+It is primarily what a machine dispatches on when it does not know the exact id
+(`type_new with an unknown kind` otherwise). Since M45 **the core reads it too, in exactly three
+places**, and nowhere else:
+
+- `type_signed(t)` — `t == TY_I64 || type_kind(t) == TK_SINT` — decides `/`, `%` and `>>` at
+  run time (`bin_op`) and at compile time (`const_bin`);
+- `fold_taught(n)` — the folder runs for `TK_INT` and `TK_SINT` and stands aside for `TK_FLOAT`,
+  `TK_WIDE` and `TK_OPAQUE`, whose arithmetic is the module's;
+- `walk_narrow(t)` — a `TK_INT` or `TK_SINT` narrower than the word (and not `uptr`) is extended by
+  the walker after a call and before a `return`, through `MTASK_CAST`
+  ([machine.md](machine.md), contract version 4).
+
+`TK_INT` keeps the number 0 and `TY_I64` keeps answering `TK_INT` from `type_kind`, so nothing a
+module already wrote moves. What the fifth kind buys is that a signed narrow integer is **one
+line**: `type_new("i16", 2, 2, TK_SINT)` gets a sign-extending load, a sign-extending cast, signed
+division and shifting, a signed comparison and a narrowed call result, with no line in `src/` and
+no line in a machine that honours the kind.
+
+The id a registration returns is **not surface**: it is `TY_MAX + n` for the *n*-th registration in
+this process, the core's own `i32` is the first of them, and a module keeps it in a global
+(`i64 ty_f64 = 0;` … `ty_f64 = type_new(...)`) rather than writing the number down.
 
 The word is reserved through the same `word_add` every registration above uses, so `type_new("if",
 …)` is `cannot redefine core keyword: if`, and it is entered in the same table `type_alias` writes,
@@ -428,8 +448,8 @@ so the name is valid in all seven type positions at once. It is an ordinary func
 `user_init()`: no keyword and no directive, so `tok_init()` is untouched, the ids `K_U8..K_EXTERN`
 do not shift, and `scripts/check-lex.sh` keeps cross-checking the two lexers over the whole tree.
 
-What the core then does with the id is exactly four things — `type_width`, `type_align`,
-`type_name` and nothing else — and is spelled out in [language.md](language.md) § 2. Arithmetic,
+What the core then does with the id is `type_width`, `type_align`, `type_name` and the three
+`kind` reads above, and is spelled out in [language.md](language.md) § 2. Arithmetic,
 literals, the ABI and the instructions belong to the module: `syntax_lit` below, `intrinsic`
 (§ 2), and a derived machine table ([machine.md](machine.md) § 3).
 
@@ -441,6 +461,7 @@ literals, the ABI and the instructions belong to the module: `syntax_lit` below,
 | `i64 type_width(i64 t)` | its width in bytes (1, 2, 4, 8 for the core types) |
 | `i64 type_align(i64 t)` | its alignment; a core type aligns to its own width |
 | `i64 type_kind(i64 t)` | its `TK_*`; every core type answers `TK_INT` |
+| `i64 type_signed(i64 t)` | whether `/ % >>` are signed for it: `TY_I64` or a `TK_SINT` (M45) |
 | `uptr type_name(i64 t)` | the name `--dump-ast` prints; `"?"` for an id that is not registered |
 | `i64 type_of_token(i64 id)` | the type a token names — core word, `type_alias` or `type_new` — or -1 |
 

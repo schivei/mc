@@ -462,6 +462,12 @@ i64 abimod(i64 a, i64 b) { return a % b; }
 i64 abicallp(uptr p, i64 a) { return callp(p, a); }
 i64 abi12(i64 a, i64 b, i64 c, i64 d, i64 e, i64 f, i64 g, i64 h, i64 i, i64 j, i64 k, i64 l) { return l; }
 i64 abicall12(i64 a) { return abi12(a, a, a, a, a, a, a, a, a, a, a, a); }
+extern i32 abiext32(i64 x);
+extern u8  abiext8(i64 x);
+extern i64 abiext64(i64 x);
+i64 abinarrow32() { return abiext32(1); }
+i64 abinarrow8()  { return abiext8(1); }
+i64 abinarrow64() { return abiext64(1); }
 ABIEOF
 "$mc1" --dump-asm "$abi_src" > "$tmp/abi.asm" 2>&1
 
@@ -714,6 +720,59 @@ EOF
 # hold the arguments when the first `.word` executes and the epilogue does not
 # touch the x0 the kernel left.
 "$mc1" --dump-asm tests/032-svc.mc > "$tmp/svc.asm" 2>&1
+# ---- M45: a call returns what the callee DECLARED ----
+# The walker issues MTASK_CAST after MTASK_CALL when the declared result is
+# narrower than the word (docs/reference/objects.md § 4). Every ABI this
+# compiler targets leaves the bits above a 32/16/8-bit result UNSPECIFIED, so
+# the extension is the caller's to perform, and its FLAVOUR is the type's kind:
+# sign for a TK_SINT, zero for a TK_INT, nothing at all at width 8.
+abi_case "a call declared i32 is sign-extended from bit 31 (sxtw)" abinarrow32 "$(cat <<'EOF'
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  movz x9, #1
+  mov x0, x9
+  bl _abiext32
+  mov x9, x0
+  sxtw x9, w9
+  mov x0, x9
+  b L1
+L1:
+  ldp x29, x30, [sp], #16
+  ret
+EOF
+)"
+
+abi_case "a call declared u8 is zero-extended from bit 7 (and #255)" abinarrow8 "$(cat <<'EOF'
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  movz x9, #1
+  mov x0, x9
+  bl _abiext8
+  mov x9, x0
+  and x9, x9, #255
+  mov x0, x9
+  b L1
+L1:
+  ldp x29, x30, [sp], #16
+  ret
+EOF
+)"
+
+abi_case "a call declared i64 gets no cast at all" abinarrow64 "$(cat <<'EOF'
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  movz x9, #1
+  mov x0, x9
+  bl _abiext64
+  mov x9, x0
+  mov x0, x9
+  b L1
+L1:
+  ldp x29, x30, [sp], #16
+  ret
+EOF
+)"
+
 abi_fn2() { awk -v f="_$1:" '$0 == f { on = 1; next } on && /^_/ { exit } on { print }' "$tmp/svc.asm"; }
 got=$(abi_fn2 write)
 want=$(cat <<'EOF'
@@ -801,39 +860,85 @@ else
     fails=$((fails + 1))
 fi
 
-# M3: the core has no arithmetic for a type it did not define, so none of these
-# five folds. Without the guards `1.5 + 2.5` would become an INTEGER add of two
-# bit patterns at compile time, silently.
+# M3, as M45 D17 re-pointed it: the guard is the KIND, not the id. The core
+# folds what its own operators compute -- TK_INT and TK_SINT, core or registered
+# -- and delegates TK_FLOAT, TK_WIDE and TK_OPAQUE. So `fix`, a TK_INT of width
+# 8, folds exactly as a core literal does, and it is right that it does: at run
+# time the machine's integer `add` of the two 16.16 representations is precisely
+# what the folder just computed. A `f64` does NOT fold, and that is the half
+# that has to be proved, because there the runtime is `fadd` and an integer
+# addition of two IEEE-754 patterns would be an infinity with no diagnostic.
 #
 # The observable is --dump-asm, not --dump-ast: fold() runs after the AST dump.
 # An unfolded expression leaves instructions behind -- an `add` beside the
 # frame's own, a `neg`, an `mvn`, a `cmp`/`cset` -- and a folded one leaves a
 # single `movz` and nothing else.
-fold_ops() {                        # fold_ops SOURCE OP -> how many in _main
-    "$demo" --dump-asm "$1" | sed -n '/^_main:/,/^$/p' | grep -cE "^  $2 "
+fold_ops() {                        # fold_ops COMPILER SOURCE OP -> how many in _main
+    "$1" --dump-asm --machine=arm64 "$2" | sed -n '/^_main:/,/^$/p' | grep -cE "^  $3 "
 }
 printf 'i64 main() { fix a = 1.5 + 2.5; fix b = -1.5; fix c = ~1.5; i64 d = !1.5; fix e = (fix) 3; i64 g = (i64) 1.5; return d; }\n' > "$tmp/m24-fold.mc"
 printf 'i64 main() { i64 a = 1 + 2; i64 b = -1; i64 c = ~1; i64 d = !1; i64 e = (u8) 3; i64 g = (i64) 1; return d; }\n'          > "$tmp/m24-nofold.mc"
 unfolded=0
-# +, -, ~ and ! survive on a taught literal...
-[ "$(fold_ops "$tmp/m24-fold.mc" add)"  = 2 ] || { echo "FAIL fold guard: + folded"; unfolded=1; }
-[ "$(fold_ops "$tmp/m24-fold.mc" neg)"  = 1 ] || { echo "FAIL fold guard: - folded"; unfolded=1; }
-[ "$(fold_ops "$tmp/m24-fold.mc" mvn)"  = 1 ] || { echo "FAIL fold guard: ~ folded"; unfolded=1; }
-[ "$(fold_ops "$tmp/m24-fold.mc" cset)" = 1 ] || { echo "FAIL fold guard: ! folded"; unfolded=1; }
-# ...and only on a taught literal: the same five on core literals still fold to
-# one constant each, which is the whole of the frame's `add`/`sub` and no more
-[ "$(fold_ops "$tmp/m24-nofold.mc" add)"  = 1 ] || { echo "FAIL fold guard: core + stopped folding"; unfolded=1; }
-[ "$(fold_ops "$tmp/m24-nofold.mc" neg)"  = 0 ] || { echo "FAIL fold guard: core - stopped folding"; unfolded=1; }
-[ "$(fold_ops "$tmp/m24-nofold.mc" mvn)"  = 0 ] || { echo "FAIL fold guard: core ~ stopped folding"; unfolded=1; }
-[ "$(fold_ops "$tmp/m24-nofold.mc" cset)" = 0 ] || { echo "FAIL fold guard: core ! stopped folding"; unfolded=1; }
-# the cast, both ways: (fix) 3 and (i64) 1.5 are conversions a module's machine
-# performs, so neither may be masked away at compile time
+# a registered TK_INT folds exactly as a core literal does...
+[ "$(fold_ops "$demo" "$tmp/m24-fold.mc" add)"  = 1 ] || { echo "FAIL fold guard: fix + did not fold"; unfolded=1; }
+[ "$(fold_ops "$demo" "$tmp/m24-fold.mc" neg)"  = 0 ] || { echo "FAIL fold guard: fix - did not fold"; unfolded=1; }
+[ "$(fold_ops "$demo" "$tmp/m24-fold.mc" mvn)"  = 0 ] || { echo "FAIL fold guard: fix ~ did not fold"; unfolded=1; }
+[ "$(fold_ops "$demo" "$tmp/m24-fold.mc" cset)" = 0 ] || { echo "FAIL fold guard: fix ! did not fold"; unfolded=1; }
+# ...which is the same shape the core literals themselves produce
+[ "$(fold_ops "$demo" "$tmp/m24-nofold.mc" add)"  = 1 ] || { echo "FAIL fold guard: core + stopped folding"; unfolded=1; }
+[ "$(fold_ops "$demo" "$tmp/m24-nofold.mc" neg)"  = 0 ] || { echo "FAIL fold guard: core - stopped folding"; unfolded=1; }
+[ "$(fold_ops "$demo" "$tmp/m24-nofold.mc" mvn)"  = 0 ] || { echo "FAIL fold guard: core ~ stopped folding"; unfolded=1; }
+[ "$(fold_ops "$demo" "$tmp/m24-nofold.mc" cset)" = 0 ] || { echo "FAIL fold guard: core ! stopped folding"; unfolded=1; }
+# the AST assertion stands unchanged: fold() runs after --dump-ast, so the cast
+# node is still there to be seen
 if "$demo" --dump-ast "$tmp/m24-fold.mc" 2>&1 | grep -q 'CAST type=fix'; then :
 else echo "FAIL fold guard: (fix) 3 is not in the tree"; unfolded=1; fi
+# and the half that must NOT fold, through <float>'s f64 -- a TK_FLOAT, whose
+# arithmetic is its module's
+mcfloat="build/mc-float-surface"
+rm -f "$mcfloat"
+if ! msg=$("$mc1" --exe lib/mc_float.mc -o "$mcfloat" 2>&1); then
+    echo "FAIL fold guard: compiling lib/mc_float.mc: $msg"; unfolded=1
+else
+    printf 'i64 main() { f64 a = 1.5 + 2.5; f64 b = -1.5; i64 d = !1.5; return d; }\n' > "$tmp/m45-ffold.mc"
+    [ "$(fold_ops "$mcfloat" "$tmp/m45-ffold.mc" fadd)" = 1 ] || { echo "FAIL fold guard: f64 + folded"; unfolded=1; }
+    [ "$(fold_ops "$mcfloat" "$tmp/m45-ffold.mc" fneg)" = 1 ] || { echo "FAIL fold guard: f64 - folded"; unfolded=1; }
+    [ "$(fold_ops "$mcfloat" "$tmp/m45-ffold.mc" fcmp)" = 1 ] || { echo "FAIL fold guard: f64 ! folded"; unfolded=1; }
+fi
 if [ "$unfolded" = 0 ]; then
-    echo "ok fold guards: +, -, ~, ! and a cast leave a taught literal alone, and only it"
+    echo "ok fold guards by kind: a TK_INT literal folds like a core one, a TK_FLOAT does not"
 else
     fails=$((fails + unfolded))
+fi
+
+# ---- M45: what one type_new(name, w, a, TK_SINT) buys ----
+# lib/user_syntax_demo.mc registers `i16` in ONE line and gets, from the core
+# and from the bundled machine and with no line of its own: a sign-extending
+# load (ldrsh), a sign-extending cast (sxth), signed arithmetic and comparison,
+# and the narrowing of a call result. The word `i16` is one the seed never
+# spells, so the registration itself compiles under the frozen stage0.
+cat > "$tmp/m45-i16.mc" <<'I16EOF'
+i16 f(i64 x) { return x; }
+i64 main() {
+    i16 a = -2;
+    if (f(40000) != -25536) return 1;
+    if (a * 2 != -4) return 2;
+    if (a >= 0) return 3;
+    return 42;
+}
+I16EOF
+if ! msg=$("$demo" --exe "$tmp/m45-i16.mc" -o "$tmp/m45-i16" 2>&1); then
+    echo "FAIL i16 (compilation: $msg)"; fails=$((fails + 1))
+else
+    "$tmp/m45-i16"; rc=$?
+    asm=$("$demo" --dump-asm --machine=arm64 "$tmp/m45-i16.mc")
+    ldrsh=$(printf '%s\n' "$asm" | grep -c '^  ldrsh ')
+    sxth=$(printf '%s\n' "$asm" | grep -c '^  sxth ')
+    if [ "$rc" = 42 ] && [ "$ldrsh" -ge 1 ] && [ "$sxth" -ge 1 ]; then
+        echo "ok type_new(TK_SINT): i16 in one line -- $ldrsh ldrsh, $sxth sxth, exit 42"
+    else
+        echo "FAIL i16 (exit $rc, ldrsh $ldrsh, sxth $sxth)"; fails=$((fails + 1))
+    fi
 fi
 
 # M1: type_new goes through word_add, so a type named after a core keyword is

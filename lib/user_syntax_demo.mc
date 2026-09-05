@@ -619,12 +619,19 @@ i64 sd_retcount() {
 }
 
 // ---- M24 (Tier 4): a PRIMITIVE the core has never heard of ----
-// Two registered types and one literal syntax, deliberately unrelated to
-// floats: `fix` is 16.16 signed fixed point in eight bytes and `pair` is a
-// sixteen-byte opaque value, which is all it takes to exercise every core
-// decision M24 delegates -- the width of a frame slot, the width of a global,
-// the name --dump-ast prints, the type a cast and a parameter may name, and the
-// three folding guards.
+// Three registered types and one literal syntax, deliberately unrelated to
+// floats: `fix` is 16.16 signed fixed point in eight bytes, `pair` is a
+// sixteen-byte opaque value and `i16` (M45) is a signed 16-bit integer, which
+// is all it takes to exercise every core decision M24 delegates -- the width of
+// a frame slot, the width of a global, the name --dump-ast prints and the type
+// a cast and a parameter may name.
+//
+// M45 moved the folding guards from the ID to the KIND, so `fix` -- a TK_INT --
+// now folds exactly as a core literal does: `1.5 + 2.5` is one constant, and
+// that is right, because at run time the machine's integer `add` of the two
+// representations is what the folder just computed. What does NOT fold is a
+// TK_FLOAT, TK_WIDE or TK_OPAQUE, whose arithmetic is the module's;
+// scripts/check-surface.sh asserts both halves, the second through <float>.
 //
 // `1.5` is written in the source and read HERE, not in lex_number: the lexer
 // stops the number at the `.` (its token is `1`), the handler rescans the raw
@@ -638,6 +645,12 @@ i64 sd_retcount() {
 // MTASK_CONST carries it to a machine -- no new node kind and no new task.
 i64 sd_ty_fix  = 0;
 i64 sd_ty_pair = 0;
+// M45: the whole of a signed 16-bit integer, from outside the compiler. One
+// type_new with TK_SINT buys the sign-extending load (`ldrsh`), the
+// sign-extending cast (`sxth`), signed `/ % >>`, a signed comparison and the
+// narrowing of a call result -- because every one of those decisions is keyed
+// on the type's KIND and WIDTH and not on its id.
+i64 sd_ty_i16  = 0;
 
 i64 sd_dig(i64 c) { return c >= '0' && c <= '9'; }
 
@@ -898,6 +911,7 @@ i64 sd_defaults(i64 root) {
 void user_init() {
     sd_ty_fix  = type_new("fix",  8,  8,  TK_INT);    // M24: two taught primitives
     sd_ty_pair = type_new("pair", 16, 16, TK_WIDE);
+    sd_ty_i16  = type_new("i16",  2,  2,  TK_SINT);   // M45: a third, in one line
     syntax_lit(&sd_lit);                         // M24: the literal position
     intrinsic("rbit", 1, TY_I64, &sd_rbit);      // M24: one instruction, by name
     syntax("enum", &sd_enum);                    // M12: top-level position

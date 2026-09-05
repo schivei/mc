@@ -84,6 +84,12 @@
 #define TK_FLOAT  1                   // a floating-point value
 #define TK_WIDE   2                   // wider than a register; lives in a slot
 #define TK_OPAQUE 3                   // the core knows nothing but its size
+// M45: an integer the core's own operators fit, SIGNED. Appended, so the four
+// values above do not move and a machine that never sees one emits byte for
+// byte what it emitted before. It is the column that carries signedness: the
+// core reads `kind` in exactly three places -- type_signed (below), fold_taught
+// (src/parse.mc) and walk_narrow (src/gen_walk.mc) -- and nothing tests an id.
+#define TK_SINT   4                   // an integer the core's operators fit, SIGNED
 
 uptr ty_name;                         // parallel arrays, index = t - TY_MAX
 uptr ty_w;
@@ -308,6 +314,14 @@ i64 type_kind(i64 t) {
     if (ty_registered(t)) return ld64(ty_k + (t - TY_MAX) * 8);
     return TK_INT;
 }
+
+// M45: the core decides "signed?" by KIND, not by id. TY_I64 keeps answering
+// TK_INT from type_kind (every core type does, and modules key on that), so it
+// is named here once -- and this is the ONLY place signedness is written down.
+// Read by bin_op (src/gen_walk.mc) and const_bin (src/parse.mc); a module's
+// type_new("i16", 2, 2, TK_SINT) gets signed division, shift and comparison
+// from the same predicate, with no line anywhere else.
+i64 type_signed(i64 t) { return t == TY_I64 || type_kind(t) == TK_SINT; }
 
 uptr kind_name(i64 k) {
     if (k >= 0 && k < N_KIND_MAX) return ld64(kind_names + k * 8);

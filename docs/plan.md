@@ -78,7 +78,9 @@ i64 main(i64 argc, uptr argv) {
 bytes; `u16/u32` because Mach-O fields require them (`n_desc`, `n_strx`); `uptr` is the only
 pointer — opaque, no pointee type, byte arithmetic. No `i8/i16/i32`, no float, no bool
 (comparisons yield `i64` 0/1). Comparisons are always signed (addresses < 2^63; documented,
-not enforced).
+not enforced). Since M45 the self-hosted compiler registers `i32` for itself at start-up, with
+the same `type_new` a module uses — it is not a keyword, not in the ladder, and `stage0` still
+has exactly these seven words.
 
 **Memory (intrinsics, not syntax):** `ld8 ld16 ld32 ld64` (read, zero-extend) and
 `st8 st16 st32 st64(p, v)` (write); `&x` gives the `uptr` of a local/global; an array name decays

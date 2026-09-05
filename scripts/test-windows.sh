@@ -337,25 +337,31 @@ else
         build_one "$f" "$name" kernel32
     done
 
-    # M38: the one tests/mc/ case that belongs to every target -- twelve
-    # parameters, four of them on the stack. It lives in tests/mc/ because the
-    # frozen C seed refuses it (`at most 8 parameters`), not because it needs
-    # anything Windows cannot give: it links like every other test here.
-    f="tests/mc/080-twelve-params.mc"
-    why=$(skip_reason "$f")
-    if [ -n "$why" ]; then
-        skipped="$skipped
-  080-twelve-params — $why"
-        echo "080-twelve-params — $why" >> "$split/skipped"
-    else
-        build_one "$f" 080-twelve-params kernel32
-    fi
+    # M38, then M45: the tests/mc/ cases that belong to EVERY target -- twelve
+    # parameters, four of them on the stack, and a signed 32-bit integer. They
+    # live in tests/mc/ because the frozen C seed refuses them (`at most 8
+    # parameters`, `type expected`), not because they need anything Windows
+    # cannot give: they link like every other test here.
+    for f in tests/mc/0[89]*.mc; do
+        [ -f "$f" ] || continue
+        name=$(basename "$f" .mc)
+        why=$(skip_reason "$f")
+        if [ -n "$why" ]; then
+            skipped="$skipped
+  $name — $why"
+            echo "$name — $why" >> "$split/skipped"
+        else
+            build_one "$f" "$name" kernel32
+        fi
+    done
 
     # the cases with no runtime object next to them: the source includes
     # <sys_windows> itself, so it carries the wrappers and links with nothing but
     # winstart.obj and the import library. 071 and 072 are the M20 ABI tests and
-    # are portable to both Windows architectures.
-    for name in 070-kernel32 071-nested-args 072-six-params; do
+    # are portable to both Windows architectures; 073 is M45's, and it declares
+    # the three kernel32 entry points it uses itself rather than including the
+    # layer, so it belongs here and not in the kernel32 list.
+    for name in 070-kernel32 071-nested-args 072-six-params 073-int-return; do
         f="tests/windows/$name.mc"
         [ -f "$f" ] || continue
         why=$(skip_reason "$f")

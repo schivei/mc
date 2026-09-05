@@ -62,6 +62,12 @@ i64 main(i64 argc, uptr argv, uptr envp) {
 // step, so the image IS the artefact and `kind = "exe"` needs no [linker].
 void user_init() {
     type_set_width(TY_UPTR, 2);                  // M41 § 4a: the declared word
+    // M45: this machine's invariant is that every slot holds eight valid bytes
+    // with the ones above the width ZEROED -- "extend" always means zero here,
+    // which is false for a TK_SINT. Rather than be silently wrong, the word is
+    // taken out of the surface: `i32 x;` is `i32: removed by this compiler`.
+    // Sign-fill on AVR is a later ask (docs/specs/M45.md § A3).
+    type_disable(ty_i32);
     machine_avr_init();                          // fills m_avr, registers "avr"
     backend("avr-image", &backend_avr_image);
     backend_default("avr-image");

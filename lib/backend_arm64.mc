@@ -26,10 +26,15 @@ i64 sur_rrr_ins[]  = { I_ADD, I_SUB, I_MUL, I_SDIV, I_UDIV, I_AND, I_ORR, I_EOR,
 u32 sur_rrr_base[] = { 0x8B000000, 0xCB000000, 0x9B007C00, 0x9AC00C00, 0x9AC00800,
                        0x8A000000, 0xAA000000, 0xCA000000,
                        0x9AC02000, 0x9AC02400, 0x9AC02800 };
-i64 sur_mem_ins[]  = { I_LDR, I_STR, I_LDRW, I_STRW, I_LDRH, I_STRH, I_LDRB, I_STRB, 0 };
+// M45: the three signed loads sit past the unsigned pairs, in the shape
+// src/machine_arm64.mc's own table uses
+i64 sur_mem_ins[]  = { I_LDR, I_STR, I_LDRW, I_STRW, I_LDRH, I_STRH, I_LDRB, I_STRB,
+                       I_LDRSW, I_STRW, I_LDRSH, I_STRH, I_LDRSB, I_STRB, 0 };
 u32 sur_mem_base[] = { 0xF9400000, 0xF9000000, 0xB9400000, 0xB9000000,
-                       0x79400000, 0x79000000, 0x39400000, 0x39000000 };
-i64 sur_mem_scale[] = { 8, 8, 4, 4, 2, 2, 1, 1 };
+                       0x79400000, 0x79000000, 0x39400000, 0x39000000,
+                       0xB9800000, 0xB9000000, 0x79800000, 0x79000000,
+                       0x39800000, 0x39000000 };
+i64 sur_mem_scale[] = { 8, 8, 4, 4, 2, 2, 1, 1, 4, 4, 2, 2, 1, 1 };
 
 i64 sur_rrr_ins_at(i64 i)   { return ld64(sur_rrr_ins + i * 8); }
 i64 sur_rrr_base_at(i64 i)  { return ld32(sur_rrr_base + i * 4); }
@@ -94,6 +99,9 @@ i64 sur_encode(uptr e, i64 pc, uptr lab) {
         return 0xF100001F | ((im & 0xfff) << 10) | (rn << 5);
     }
     if (op == I_CSET) return 0x9A9F07E0 | (((ins_imm(e) ^ 1) & 0xf) << 12) | rd;
+    if (op == I_SXTB) return 0x93401C00 | (rn << 5) | rd;   // M45: SBFM xd, xn, #0, #7
+    if (op == I_SXTH) return 0x93403C00 | (rn << 5) | rd;   //      ... #15
+    if (op == I_SXTW) return 0x93407C00 | (rn << 5) | rd;   //      ... #31
     if (op == I_ANDI) {                       // mask 2^k-1: N=1, immr=0, imms=k-1
         u64 m = ins_imm(e);
         i64 k = 0;

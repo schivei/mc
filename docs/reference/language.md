@@ -57,8 +57,9 @@ Punctuation is matched by **longest prefix**, scanning the table linearly. `>>=`
 
 ## 2. Types
 
-Seven words in the core. An eighth is `type_alias` (a second name for one of the seven) or, since
-M24, `type_new` — a **primitive the core has never heard of**, registered by a module.
+Seven words in the core, and an eighth the core itself **registers**: `i32` (M45). A ninth is
+`type_alias` (a second name for an existing one) or, since M24, `type_new` — a **primitive the
+core has never heard of**, registered by a module.
 
 | type | width | signedness of `/ % >>` | notes |
 |---|---|---|---|
@@ -69,10 +70,48 @@ M24, `type_new` — a **primitive the core has never heard of**, registered by a
 | `i64` | 8 | **signed** | the working integer type |
 | `uptr` | 8 | unsigned | the only pointer: opaque, no pointee, byte arithmetic |
 | `void` | — | — | return type only |
+| `i32` | 4 | **signed** | M45; C's `int`, and the type an `extern` returning `int` declares |
 
-There is no `i8/i16/i32`, no float, no `bool`. A comparison yields `i64` `0` or `1`, and
-comparisons are always **signed** — the convention is that addresses stay below 2^63; it is
-documented, not enforced.
+There is no `i8/i16`, no float, no `bool` — but each of those is now **one line** away, see
+"Types a module registers" below. A comparison yields `i64` `0` or `1`, and comparisons are always
+**signed** — the convention is that addresses stay below 2^63; it is documented, not enforced.
+
+### `i32`: the eighth word, and it is registered, not a keyword
+
+`i32` is not in the `TY_*` ladder and is not a token `tok_init` creates. The core calls
+`type_new("i32", 4, 4, TK_SINT)` from `core_types_init()` before `user_init()`, so the word arrives
+through exactly the mechanism M24 gave a module — the alias table, `word_add`, `type_of_token`'s
+last arm — and `TY_MAX` is still 7. Two consequences a program can see: `i32` is **reserved
+program-wide** (a variable called `i32` is `name reserved by a syntax/type_alias registration`),
+and a recreated compiler whose machine cannot sign-fill removes the word with
+`type_disable(ty_i32)`, after which every position that names it answers
+`i32: removed by this compiler` (that is what `examples/avr` does).
+
+The value of a type narrower than the word is **defined by extension from its width** — zero for
+`u8`/`u16`/`u32`, sign for `i32`:
+
+| | `u8` `u16` `u32` | `i32` |
+|---|---|---|
+| a load into an expression (a local, a global, a parameter re-read) | zero-extends: `ldrb`/`ldrh`/`ldr w`; `movzx`/`mov r32`; `lbu`/`lhu`/`lwu` | **sign-extends**: `ldrsw`; `movsxd`; `lw` |
+| a store | truncates to the width | truncates — **the same instruction** as `u32` |
+| arithmetic | 64-bit on the extended value; wraps at the next store or cast | the same |
+| `/ % >>` | unsigned | **signed** (`sdiv`/`idiv`, `asr`) |
+| comparisons | signed on the 64-bit value | signed on the 64-bit value, and now correct |
+| `(T) x` | zero-fill: `and #mask` / `mov wd, wn` | **sign-fill**: `sxtw` / `movsxd` / `sext.w` |
+| a constant cast, at compile time | masks | sign-extends from bit 31 |
+| a literal | there is none; `i32 x = -1` stores `0xffffffff` and reads back `-1` | |
+| the signed read of raw memory | `ld32(p)` stays `u32`, zero-extending | spelled `(i32) ld32(p)` |
+
+`u32` and `i32` are the same four **stored** bytes; what differs is bits 63..32 of the value once
+it is read. `(i32) 0xffffffff` is `-1` and `(u32)` of an `i32` `-1` is `4294967295`.
+
+**The one observable difference from C**, stated once: `INT_MIN / -1`. With
+`i32 a = -2147483648; i32 b = -1;`, `a / b` is a 64-bit `sdiv` on sign-extended operands and the
+answer is `2147483648` on every machine — no `#DE` trap on x86-64, where a 32-bit `idiv` would
+raise one — and `INT_MIN` again only after a store back into an `i32`. That is the price of
+"64-bit on the extended value", the model `u32` has had since M0
+(`u32 a = 0xffffffff; i64 x = a + 1` is `4294967296`), and it is what keeps `fold()` and the
+runtime in agreement.
 
 `uptr` has no pointee type, so `p + 1` is one **byte** further, never one element. There is no
 `*p` and no `p->f`: memory is read and written by explicit width (§ 5).
@@ -83,23 +122,34 @@ narrows through a mask (`u8`/`u16`/`u32`) and is otherwise a no-op. `(void) x` i
 
 ### Types a module registers (M24)
 
-`type_new(name, width, align, kind)` ([hooks.md](hooks.md) § 3) appends an eighth id, a ninth, and
-so on. The rule that keeps the core honest is a number: **an id below `TY_MAX` (7) is a core type
-and behaves exactly as it always has; an id at or above it was registered, and every core decision
-about it is delegated.** The core consumes exactly two of the four columns —
+`type_new(name, width, align, kind)` ([hooks.md](hooks.md) § 3) appends ids past the ladder. The
+core appends the **eighth**, `i32`, from `core_types_init()` before `user_init()`; a module's first
+is the **ninth**. The rule that keeps the core honest is a number: **an id below `TY_MAX` (7) is a
+core type and behaves exactly as it always has; an id at or above it was registered, and every core
+decision about it is delegated** — to the registry's columns, and to nothing that tests the id
+itself. The core consumes three of the four columns and one reading of the fourth —
 
 - `width` sizes a global, an array element and a **frame slot** (`slot_new(type_width(ty))`), so a
   16-byte type gets 16 bytes of frame where an `i64` gets 8;
 - `align` is the alignment `glob_place` places it at;
 - `name` is what `--dump-ast` prints (`type=f64`, not `?`);
-- `kind` — `TK_INT`, `TK_FLOAT`, `TK_WIDE`, `TK_OPAQUE` — is for the **machine**, which dispatches
-  on it when it does not know the exact id. The core never reads it.
+- `kind` — `TK_INT`, `TK_FLOAT`, `TK_WIDE`, `TK_OPAQUE`, `TK_SINT` — is what the **machine**
+  dispatches on when it does not know the exact id. Since M45 the core reads it too, in exactly
+  three places: `type_signed` (signed `/ % >>`), `fold_taught` (what folds) and `walk_narrow`
+  (what is extended after a call and before a `return`).
 
 Everything else about such a type belongs to the module that registered it: its literals
 (`syntax_lit`), its arithmetic and its ABI (a derived machine table, [machine.md](machine.md)) and
-its named hardware instructions (`intrinsic`). In particular the core **does not fold** `+`, `-`,
-`~`, `!` or a cast over a literal of a registered type — it has no arithmetic for a representation
-it did not define, so the node reaches the module's machine untouched.
+its named hardware instructions (`intrinsic`). The core **does not fold** `+`, `-`, `~`, `!` or a
+cast over a literal of a `TK_FLOAT`, `TK_WIDE` or `TK_OPAQUE` type — it has no arithmetic for a
+representation it did not define, so the node reaches the module's machine untouched. It does fold
+a `TK_INT` or `TK_SINT` one, because for those two kinds the runtime **is** the core's own integer
+operators.
+
+That is also what makes a signed narrow integer one line of a module: `type_new("i16", 2, 2,
+TK_SINT)` gets `ldrsh`, `sxth`, signed division, signed comparison and a narrowed call result from
+the core and from a machine that honours the kind, with no further line anywhere
+(`lib/user_syntax_demo.mc` does exactly this, and `scripts/check-surface.sh` asserts it).
 
 `type_new` reserves the word for the whole program, exactly as `type_alias` does: a compiler that
 loads `<float>` has no identifier called `f32`. That is why `<float>` is not in
@@ -164,12 +214,17 @@ same signedness rule as the runtime. A `#define` is folded at *definition* time 
 a constant, never a textual macro. Folding `x / 0` where both sides are constants is
 `division by zero` at compile time.
 
-Folding stops at a **type the core did not define** (§ 2): `fold_unary`, `fold_binary` and
-`fold_cast` each return early when an operand — or, for a cast, the destination — carries an id at
-or above `TY_MAX`. Without that, a float literal carried as its IEEE bit pattern would make
-`1.5 + 2.5` an integer add of two bit patterns and produce an infinity at compile time with no
-diagnostic. `--dump-ast` shows the tree *before* `fold()` runs, so the observable difference is in
-`--dump-asm`: a taught `-1.5` leaves a `neg` behind where a core `-1` leaves one `movz`.
+Folding stops at a **kind the core's integer operators do not fit** (§ 2): `fold_unary`,
+`fold_binary` and `fold_cast` each return early when an operand — or, for a cast, the destination
+— is `TK_FLOAT`, `TK_WIDE` or `TK_OPAQUE`. Without that, a float literal carried as its IEEE bit
+pattern would make `1.5 + 2.5` an integer add of two bit patterns and produce an infinity at
+compile time with no diagnostic. `--dump-ast` shows the tree *before* `fold()` runs, so the
+observable difference is in `--dump-asm`: a taught `-1.5` leaves a `fneg` behind where a core `-1`
+leaves one `movz`.
+
+A `TK_INT` or `TK_SINT` type folds, core or registered, and `fold_cast` masks to the type's width
+and then fills the bytes above it by the kind — which is exactly what `MTASK_CAST` does at run
+time. So `#define M (i32) 0x80000000` is the constant `-2147483648` and not an instruction.
 
 ### Division by zero at run time is the target's answer, not the language's
 
@@ -309,6 +364,36 @@ A **prototype** is `type name(params);` with no body and no `extern`. The later 
 match the return type and the arity (`declaration does not match prototype`); a prototype nobody
 defines is `prototype with no definition`.
 
+### A call returns what it declares (M45)
+
+The result of a call has the type the **callee's declaration** gives it, and when that type is
+narrower than the word the compiler extends it — by the sign for `i32` (and for any `TK_SINT` a
+module registered), by zero for `u8`/`u16`/`u32`. This is not an optimisation detail: AAPCS64, the
+SysV x86-64 ABI and both Windows ABIs all leave the bits **above** a 32/16/8-bit result
+unspecified, so a caller that reads all 64 of them is reading whatever the callee happened to
+leave. Declaring `extern i32 open(...)` is therefore how a C `int` is spelled, and
+`i64 fd = open(...); if (fd < 0)` then works.
+
+The symmetric half holds too: an `mc` function declared `u8` or `i32` extends its own result
+before `return`, so a C caller of it gets what its ABI entitles it to. A function with no explicit
+`return` is untouched — that is what keeps the `#opcode` syscall wrappers, which rely on "the
+epilogue leaves `x0` alone", working.
+
+`callp` is the exception, by decision: a pointer call has no declaration, its result stays `i64`,
+and a caller that knows better writes `(i32) callp(...)`.
+
+```mc
+// expect-exit: 42
+u8  low(i64 x)  { return x; }        // 300 -> 44, on both sides of the call
+i32 neg()       { return 0 - 1; }
+
+i64 main() {
+    if (low(300) != 44) return 1;
+    if (neg() >= 0) return 2;        // -1, not 4294967295
+    return 42;
+}
+```
+
 ### `extern`
 
 `extern type name(type a, …);` declares an undefined symbol `_name`. The compiler does **not**
@@ -331,7 +416,8 @@ The core has no function type. `&name` on a function or an `extern` is a `uptr` 
 
 `callp(p, a1, …, a11)` puts `p` in `x16` and the arguments where a direct call would put them —
 `x0..x7`, then the stack — and issues `blr x16`. Live depth registers are saved exactly as for a
-`bl`. The result is `x0`, typed `i64`; converting it is the caller's job. Arity is 1 to 12 counting
+`bl`. The result is `x0`, typed `i64` — a pointer call has no declaration, so it is the one call
+M45's narrowing does not touch; converting it is the caller's job, `(i32) callp(...)`. Arity is 1 to 12 counting
 the pointer (`callp expects 1 to 12 arguments`).
 
 ```mc

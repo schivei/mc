@@ -957,7 +957,7 @@ i64 const_bin(i64 op, i64 x, i64 y, i64 type, i64 n) {
     if (op == K_MUL) return a * b;
     if (op == K_DIV || op == K_MOD) {
         if (y == 0) err_node(n, "division by zero");
-        if (type != TY_I64) {                          // mirrors udiv
+        if (!type_signed(type)) {                      // mirrors udiv
             if (op == K_DIV) return a / b;
             return a % b;
         }
@@ -973,7 +973,7 @@ i64 const_bin(i64 op, i64 x, i64 y, i64 type, i64 n) {
     if (op == K_XOR) return a ^ b;
     if (op == K_SHL) return a << (b & 63);
     if (op == K_SHR) {
-        if (type == TY_I64) return x >> (y & 63);      // arithmetic
+        if (type_signed(type)) return x >> (y & 63);   // arithmetic
         return a >> (b & 63);                          // logical
     }
     if (op == K_EQ) return x == y;
@@ -994,8 +994,19 @@ i64 const_bin(i64 op, i64 x, i64 y, i64 type, i64 n) {
 // three guards `1.5 + 2.5` would fold to an INTEGER add of two bit patterns and
 // produce an infinity at compile time with no diagnostic, and `-1.5` would
 // integer-negate one. The node is left alone and reaches the module's machine.
-// Inert today: no node the core builds carries a type at or above TY_MAX.
-i64 fold_taught(i64 n) { return nd_type(n) >= TY_MAX; }
+//
+// M45: the test is the KIND, not the id. The core folds what its own operators
+// compute -- TK_INT and TK_SINT, core or registered -- and delegates TK_FLOAT,
+// TK_WIDE and TK_OPAQUE, whose arithmetic is the module's. That is the
+// definition of TK_INT ("an integer the core's own operators fit") applied to
+// the folder, and it is what keeps fold() and the runtime in agreement BY
+// CONSTRUCTION: for those two kinds the runtime IS bin_op/const_bin, which pick
+// signed or unsigned from type_signed, and MTASK_CAST, which extends by the same
+// width and kind fold_cast masks by.
+i64 fold_taught(i64 n) {
+    i64 k = type_kind(nd_type(n));
+    return k != TK_INT && k != TK_SINT;
+}
 
 // type: a literal is i64; a binary inherits the left operand's; a cast sets its own
 void fold_unary(i64 n) {
@@ -1040,9 +1051,14 @@ void fold_cast(i64 n) {
     if (fold_taught(a) || fold_taught(n)) return;
     u64 v = nd_val(a);
     i64 t = nd_type(n);
-    if (t == TY_U8)       v = v & 0xff;
-    else if (t == TY_U16) v = v & 0xffff;
-    else if (t == TY_U32) v = v & 0xffffffff;
+    // M45: by width and kind, which is byte-identical to the three masks it
+    // replaces for u8/u16/u32 and sign-extends from bit 8w-1 for a TK_SINT.
+    i64 w = type_width(t);
+    if (w < 8) {
+        u64 m = (1 << (8 * w)) - 1;
+        v = v & m;
+        if (type_kind(t) == TK_SINT && ((v >> (8 * w - 1)) & 1)) v = v - (m + 1);
+    }
     set_nd_kind(n, N_INT);
     set_nd_val(n, v);
     set_nd_a(n, 0);                                // type = the cast's own

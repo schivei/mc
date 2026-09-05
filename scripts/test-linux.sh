@@ -590,20 +590,27 @@ else
         fi
     done
 
-    # M38: the one tests/mc/ case that belongs to every target. It lives there
-    # because the frozen C seed refuses it (`at most 8 parameters`), not because
-    # it needs anything the other tests do not -- twelve parameters, four of them
-    # on the stack, is an ABI claim and every ABI has to answer it.
-    why=$(skip_reason tests/mc/080-twelve-params.mc)
-    if [ -n "$why" ]; then
-        skipped="$skipped
-  080-twelve-params — $why"
-        [ "$mode" = "build" ] && echo "080-twelve-params — $why" >> "$split/skipped"
-    elif [ "$mode" = "build" ]; then
-        build_one tests/mc/080-twelve-params.mc 080-twelve-params musl
-    else
-        run_one tests/mc/080-twelve-params.mc 080-twelve-params "$MUSL_ARGS"
-    fi
+    # M38, then M45: the tests/mc/ cases that belong to EVERY target. They live
+    # there because the frozen C seed refuses them -- 080 with `at most 8
+    # parameters`, 090..093 with `type expected`, since it has neither a
+    # registry nor an alias table -- and not because they need anything the
+    # other tests do not. Twelve parameters four of which are on the stack, and
+    # a signed 32-bit integer, are ABI claims, and every ABI has to answer them.
+    # The glob is `0[89]*` so that a new one is picked up by existing.
+    for f in tests/mc/0[89]*.mc; do
+        [ -f "$f" ] || continue
+        name=$(basename "$f" .mc)
+        why=$(skip_reason "$f")
+        if [ -n "$why" ]; then
+            skipped="$skipped
+  $name — $why"
+            [ "$mode" = "build" ] && echo "$name — $why" >> "$split/skipped"
+        elif [ "$mode" = "build" ]; then
+            build_one "$f" "$name" musl
+        else
+            run_one "$f" "$name" "$MUSL_ARGS"
+        fi
+    done
 
     # M42: errno (thread-local) and malloc, from an entry point that is not
     # crt1.o. It links like any other libc test in the object mode and is one
@@ -617,6 +624,20 @@ else
         build_one tests/linux/071-errno-malloc.mc 071-errno-malloc musl
     else
         run_one tests/linux/071-errno-malloc.mc 071-errno-malloc "$MUSL_ARGS"
+    fi
+
+    # M45: a call returns what the callee declared, against a real libc. Three
+    # `int`-returning functions, one of which reproduces the defect on each
+    # libc/architecture pair (docs/specs/M45.md § Implementation notes).
+    why=$(skip_reason tests/linux/072-int-return.mc)
+    if [ -n "$why" ]; then
+        skipped="$skipped
+  072-int-return — $why"
+        [ "$mode" = "build" ] && echo "072-int-return — $why" >> "$split/skipped"
+    elif [ "$mode" = "build" ]; then
+        build_one tests/linux/072-int-return.mc 072-int-return musl
+    else
+        run_one tests/linux/072-int-return.mc 072-int-return "$MUSL_ARGS"
     fi
 
     # the no-libc case: no crt objects, no libc.a, entry point _start

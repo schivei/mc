@@ -7,9 +7,16 @@ written, the instructions that operate on it, and the registers it travels in. N
 `src/`, and none of it needs to be.
 
 The rule the core follows is a single number. **A type id below `TY_MAX` (7) is a core type and
-behaves exactly as it always has. An id at or above it was registered by a module, and every
-decision about it is delegated.** The core keeps three questions for itself — how wide is it, how
-is it aligned, what is it called — and hands over the rest.
+behaves exactly as it always has. An id at or above it was registered, and every decision about it
+is delegated.** The core keeps three questions for itself — how wide is it, how is it aligned, what
+is it called — plus, since M45, one reading of `kind`; it hands over the rest.
+
+The mechanism is good enough that **the core uses it on itself**: `i32` is the eighth id, the
+first registered one, and it is registered by `core_types_init()` in `src/hooks.mc` with exactly
+the call a module makes. So a module's first id is the *ninth*, and the fifth kind, `TK_SINT`, is
+what makes `type_new("i16", 2, 2, TK_SINT)` a complete signed 16-bit integer in one line —
+sign-extending loads and casts, signed `/ % >>`, signed comparison and a narrowed call result, all
+from the core and from a machine that honours the kind. Nothing writes an id down as a number.
 
 | you want | you use | it lives in |
 |---|---|---|

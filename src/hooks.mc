@@ -490,11 +490,29 @@ void type_alias(uptr name, i64 base) {
 i64 type_new(uptr name, i64 width, i64 align, i64 kind) {
     if (width < 1) die2("type_new with a width below 1", name);
     if (align < 1) die2("type_new with an alignment below 1", name);
-    if (kind < TK_INT || kind > TK_OPAQUE) die2("type_new with an unknown kind", name);
+    if (kind < TK_INT || kind > TK_SINT) die2("type_new with an unknown kind", name);
     i64 t = ty_reg_add(name, width, align, kind);
     alias_add(name, t);                  // word_add refuses a core keyword here
     return t;
 }
+
+// ---- M45: the core's own registered primitives ----
+// The same call a module makes (lib/float.mc), made from src/ before
+// user_init(): the word enters the alias table type_of_token already consults,
+// and the id is at or above TY_MAX. So `i32` costs zero lines in tok_init,
+// type_of_token, word_add's core-keyword guard, the #rule guard or
+// type_names[] -- and the signedness lives in the kind, which is what buys a
+// module's `i16` or `i8` for one more type_new call.
+//
+// The id is a global the core exports and is never written down as a number;
+// TY_MAX stays 7 and a module's first id is now TY_MAX + 1.
+//
+// A recreated compiler that cannot honour it says type_disable(ty_i32) from
+// its user_init (examples/avr), and every position that names the word answers
+// `i32: removed by this compiler`.
+i64 ty_i32 = 0;
+
+void core_types_init() { ty_i32 = type_new("i32", 4, 4, TK_SINT); }
 
 // ---- M41: the machine-declared width of uptr ----
 // The one fixed decision of the core a module may override, and the reason M24

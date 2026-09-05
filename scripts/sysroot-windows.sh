@@ -11,7 +11,8 @@
 # `kernel32.lib` from it, with no network and no Windows SDK.
 #
 # The list is exactly the entry points lib/sys_windows.mc and
-# lib/sys_windows_host.mc declare. A
+# lib/sys_windows_host.mc declare, plus GetFileAttributesA, which only
+# tests/windows/073-int-return.mc uses (M45: a DWORD result of -1). A
 # program that needs more than that (a whole SDK, other DLLs) is what
 # `mc sysroot fetch windows-*` will be for; this is the toolchain the test suite
 # needs and nothing else.
@@ -81,6 +82,7 @@ ExitProcess
 GetCommandLineA
 GetEnvironmentVariableA
 GetExitCodeProcess
+GetFileAttributesA
 GetLastError
 GetStdHandle
 ReadFile

@@ -233,6 +233,12 @@ touches no flag. The two `pop`s at the bottom of the body undo it.
   reentrant. An interrupt handler that divides while `main` is dividing would see
   it change under itself. The handler here does not.
 * **An ISR must not re-enable interrupts** before it returns.
+* **No `i32`, and it says so.** This machine's slot invariant is that the bytes
+  above a value's width are ZEROED — "extend" always means zero here — which is
+  false for a signed narrow integer. Rather than be silently wrong, `mc-avr.mc`
+  calls `type_disable(ty_i32)`, so a source that writes `i32` is refused with
+  `i32: removed by this compiler` at the token (M45; the contract obligation is
+  `docs/reference/machine.md`, version 4). Sign-fill on AVR is a later ask.
 * **No `lpm`-based flash strings.** Every literal is copied into SRAM at startup;
   a program that wants to keep them in flash uses `lpm8` directly and tracks two
   address spaces, which is the SRAM-saving follow-up `docs/specs/M40.md` D7 names.

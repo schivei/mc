@@ -336,6 +336,7 @@ i64 drv_parse(uptr src, i64 cfg, uptr label) {
     lim_plan(src, drv_tol, drv_usage_file(), label);   // M23: before any table exists
     tok_init();
     lex_init(src);
+    core_types_init();                                 // M45: `i32`, before user_init
     user_init();
     // M39.5: HERE. After user_init(), so a [target] a module registered is in
     // the registry; before parse_unit(), so an unknown pair is still reported

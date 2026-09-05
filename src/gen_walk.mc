@@ -358,6 +358,34 @@ void em(i64 op, i64 rt, i64 rn, i64 off) { ins_add(op, rt, rn, 0, off, 0, 0); }
 i64 walk_word()  { return type_width(TY_UPTR); }
 i64 walk_align() { return walk_word() * 2; }
 
+// ---- M45: a type whose value at a depth is DEFINED by extension ----
+// A depth is one machine word. A type narrower than that word has, at a depth,
+// exactly one valid representation: extended from its width -- zero for
+// TK_INT, sign for TK_SINT. Every load and every cast already produces it; the
+// two places a FOREIGN register hands the walker a bare narrow view are a
+// CALL's result and a RETURN's value, and this predicate is what says the
+// walker has to perform the extension there (through MTASK_CAST, no new slot).
+//
+// Core or registered makes no difference -- a module's `i16` is narrowed after
+// a call exactly as `u8` is. TK_FLOAT, TK_WIDE and TK_OPAQUE are the module's
+// (M24's rule): <float>'s own MTASK_CALL already returns f32 from s0. uptr is
+// excluded: a pointer IS the machine's word and is never narrow relative to
+// itself (on AVR it is two bytes). type_width(TY_VOID) answers 8, so `void`
+// needs no test.
+i64 walk_narrow(i64 t) {
+    i64 k = type_kind(t);
+    if (k != TK_INT && k != TK_SINT) return 0;
+    if (t == TY_UPTR) return 0;
+    return type_width(t) < 8;
+}
+
+// M45: the declared result type of the function being walked, for the RETURN
+// side. gen_func sets it; N_RETURN extends to it before MTASK_RET, so a C
+// caller of an `mc` function declared u8/i32 gets what every ABI entitles it
+// to. A function with no explicit `return` is untouched, which is what keeps
+// the #opcode syscall wrappers ("the epilogue leaves x0 alone") working.
+i64 walk_fn_ret = TY_I64;
+
 i64 align_up(i64 v, i64 a) { return (v + a - 1) & ~(a - 1); }
 
 // ---- the frame, in bytes ----
@@ -562,7 +590,8 @@ i64 cmp_cond(i64 op) {
     return -1;
 }
 
-// only i64 divides and shifts with sign; everything else (u8..u64, uptr) is unsigned
+// M45: i64 and every TK_SINT divide and shift with sign; everything else
+// (u8..u64, uptr, a registered TK_INT) is unsigned
 i64 bin_op(i64 op, i64 sgn) {
     i64 i = 0;
     loop {
@@ -619,7 +648,7 @@ void gen_binary(i64 n, i64 depth) {
     gen_value(nd_b(n), depth + 1);
     i64 cond = cmp_cond(op);
     if (cond >= 0) { callp(mach(MTASK_CMP), cond, depth, depth + 1); return; }
-    i64 mop = bin_op(op, res_type(nd_a(n)) == TY_I64);
+    i64 mop = bin_op(op, type_signed(res_type(nd_a(n))));
     if (mop < 0) err_node(n, "binary operator with no codegen");
     callp(mach(MTASK_BIN), mop, depth, depth + 1);
 }
@@ -769,6 +798,19 @@ void gen_call(i64 n, i64 depth) {
         a = nd_next(a);
     }
     callp(mach(MTASK_CALL), depth, i, sym_ref(usym(fs_name(fs_at(fi)))));
+    // M45: a call returns what the callee DECLARED. gen_resolve already typed
+    // the node from the declaration; bits above the declared width are
+    // unspecified in every ABI this compiler targets, so the walker extends
+    // them here. The set_walk_depth_type line is load-bearing: after
+    // MTASK_CALL, dtype[depth] still describes ARGUMENT 0 (gen_value wrote it),
+    // and a derived machine's MTASK_CAST reads it as the SOURCE type -- for
+    // `extern i32 f(f64 x)` <float>'s fa_cast would otherwise see f64 and emit
+    // fcvtzs instead of delegating to the integer sxtw.
+    i64 rt = res_type(n);
+    if (walk_narrow(rt)) {
+        set_walk_depth_type(depth, rt);
+        callp(mach(MTASK_CAST), rt, depth);
+    }
 }
 
 // M24: the announcement wrapper around the dispatch. `walk_ret` is saved and
@@ -902,7 +944,19 @@ void gen_stmt(i64 n, i64 lepi) {
         return;
     }
     if (k == N_RETURN) {
-        if (nd_a(n)) { gen_value(nd_a(n), 0); callp(mach(MTASK_RET), 0); }
+        if (nd_a(n)) {
+            gen_value(nd_a(n), 0);
+            // M45, the callee half: hand back a fully extended result. The
+            // depth type is NOT rewritten before the cast -- unlike the call
+            // above, it already describes the value gen_value produced, which
+            // is exactly the SOURCE a derived machine needs -- and it is
+            // rewritten after, so MTASK_RET sees the declared type.
+            if (walk_narrow(walk_fn_ret)) {
+                callp(mach(MTASK_CAST), walk_fn_ret, 0);
+                set_walk_depth_type(0, walk_fn_ret);
+            }
+            callp(mach(MTASK_RET), 0);
+        }
         callp(mach(MTASK_JUMP), lepi);
         return;
     }
@@ -1001,6 +1055,7 @@ void gen_func(i64 f, i64 text) {
     ins_base = nins; nlabels = 0; nlocals = 0; nloops = 0; frame_off = 0;
     prel_base = nprel; pend_type = -1;
     depth_types_reset();                          // M24: nothing announced yet
+    walk_fn_ret = nd_type(f);                     // M45: what a `return` extends to
     if ((sec_flags(sec_at(text)) & 0xff) == S_ZEROFILL) err_node(f, "function in a zerofill section");
     nlabels = nlabels + 1;
     i64 lepi = nlabels;

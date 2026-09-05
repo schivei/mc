@@ -2385,6 +2385,76 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   (`fdaa573611f5c90677d799346173114ff50a4fb3435ba0d1ef65a75e98dbc75e` and
   `63962f990b853564a4926d1216a25e017faa47477477af5e84c7c506e18ef32b`, and `build/mc2` writes both
   byte for byte as `build/mc1` does).
+- M45 step 1 (the mechanism) ✔ (`docs/specs/M45.md` § Amendment + § Implementation notes):
+  **`i32`, and a call returns what it declares** -- the mechanism half, INERT. `stage0/` untouched
+  (`git diff stage0/` empty).
+  * **`i32` is registered by the core, not a keyword.** `core_types_init()` (`src/hooks.mc`) calls
+    `type_new("i32", 4, 4, TK_SINT)` before `user_init()`, so the word arrives through exactly the
+    M24 mechanism a module uses -- the alias table, `word_add`, `type_of_token`'s last arm --
+    `TY_MAX` stays 7, `tok_init` is untouched and `src/lexdump.mc` still lexes `i32` as identifier
+    1, byte for byte what the frozen `stage0/lex.c` does. **Three call sites, not the one the spec
+    named**: `mc build` (`src/driver.mc`) and `mc limits` (`src/limits.mc`) run their own
+    tok_init/lex_init/user_init and would otherwise leave `ty_i32` at 0 -- found by
+    `type_disable(ty_i32)` in `examples/avr` disabling `TY_VOID`.
+  * **`TK_SINT`, a fifth kind**, appended so `TK_INT..TK_OPAQUE` keep 0..3, and
+    `type_signed(t) = t == TY_I64 || type_kind(t) == TK_SINT` (`src/ast.mc`) as the ONE place
+    signedness is written down. The core now reads `kind` in exactly three places -- `type_signed`,
+    `fold_taught` and `walk_narrow` -- and nothing tests an id. What that buys is measured, not
+    asserted: `type_new("i16", 2, 2, TK_SINT)` in `lib/user_syntax_demo.mc` is **one line** and
+    gets `ldrsh`, `sxth`, signed `/ % >>`, a signed comparison and a narrowed call result.
+  * **The fold guards key on kind (D17).** `fold_taught` is `k != TK_INT && k != TK_SINT`, and
+    `fold_cast`'s three masks became a width-and-kind rule (byte-identical for `u8`/`u16`/`u32`).
+    So `fix` -- `lib/user_syntax_demo.mc`'s `TK_INT` -- now folds like a core literal, which is
+    what `check-surface`'s M24 fold case asserts; the non-folding half moved onto `<float>`'s
+    `f64` (`fadd`/`fneg`/`fcmp` all survive) in the same case.
+  * **The walker narrows through the existing `MTASK_CAST`, no new slot** (D4/D5/D7'):
+    `walk_narrow(t)` admits a `TK_INT`/`TK_SINT` of width < 8 except `uptr`, and `gen_call` issues
+    `set_walk_depth_type(depth, rt)` + `MTASK_CAST(rt, depth)` after `MTASK_CALL`, `N_RETURN`
+    issues one before `MTASK_RET` from `walk_fn_ret`. The `set_walk_depth_type` line is
+    load-bearing and was proved so: without it `extern i32 ilogb(f64 x)` lowers as
+    `fcvtzu x9, d16` -- a float register that never held the value -- and with it as `sxtw x9, w9`
+    (`tests/float/022-int-return.mc`). **Deviation:** the RETURN side does NOT rewrite the depth
+    type before its cast, only after; there `dtype[0]` already describes the value `gen_value`
+    produced, which is the SOURCE a derived machine needs.
+  * **Contract version 4** (`docs/reference/machine.md`): no slot, no signature change. The bump
+    is the obligation -- every `ty`-carrying slot dispatches on `type_width` and `type_kind`,
+    never on the id; zero-fill for `TK_INT`, sign-fill for `TK_SINT`; a machine that will not
+    implement it says `type_disable(ty_i32)`. Four machines updated: `src/machine_arm64.mc`
+    (`I_LDRSB/LDRSH/LDRSW`, `I_SXTB/SXTH/SXTW`), `src/machine_x86_64.mc` (`X_LDS8/16/32`,
+    `X_MOVSXB/W/D`, both forms), `lib/backend_arm64.mc` (the surface encoder, same rows) and
+    `examples/kernel/machine_riscv64.mc` (`lb`/`lh`/`lw`, `srai` through a new funct7 column,
+    `sext.w` as `V_ADDIW`); `examples/avr/mc-avr.mc` calls `type_disable(ty_i32)` instead.
+  * **Acceptance 1 was MEASURED before anything changed** and is in `docs/specs/M45.md`
+    § Implementation notes 1. `open`/`close(-1)`/`waitpid(-1)` return a full 64-bit -1 on musl and
+    glibc, both architectures, and on macOS -- **the spec's `open` claim did not reproduce**. The
+    defect class does: `atoi("-1")` is `0x00000000ffffffff` on musl (both arches) and
+    `strcmp("a","b")` is on glibc/x86_64, so `< 0` is FALSE through the pre-milestone compiler; on
+    macOS an ordinary `int m45_neg(void){return -1;}` compiled by clang (`mov w0, #-0x1; ret`)
+    reads back `0x00000000ffffffff` too. That measurement is why `lib/sys.mc` keeps its `i64`
+    declarations (§ 5's row, decided by measurement) and why `tests/linux/072` declares three
+    functions rather than one.
+  — **Inertness is the gate and it held.** `scripts/check-inert.sh` between the `build/mc1` of
+  `6fab014` and this one: 33 objects identical (`tests/*.mc` + `src/mc.mc`) and `api`/`lang`/
+  `conc`/`desktop` identical through the taught compiler each builds; `examples/kernel`'s image
+  (3304 B) and `examples/avr`'s ELF compared by hand, pre compiler + pre machine against post +
+  post -- **identical** (the script's kernel case cannot run across this milestone: the pre
+  compiler's bundle has no `TK_SINT`). Sweep: 16 distinct new instructions re-assemble byte for
+  byte under `llvm-mc` on each of mach-o arm64, elf aarch64, coff aarch64, elf x86-64 and coff
+  x86-64; `examples/kernel`'s own sweep goes 262 -> 285 with 0 mismatches, plus a scratch run with
+  `i8`/`i16` registered (62, 0 mismatches, `lb`/`lh`/`srai` present).
+  New: `tests/mc/090-i32-basic.mc`, `091-i32-cast.mc`, `092-i32-div.mc` (`INT_MIN / -1` is
+  2147483648 on every machine, no `#DE`), `093-i32-return.mc`, `tests/linux/072-int-return.mc`,
+  `tests/windows/073-int-return.mc`, `tests/float/022-int-return.mc`;
+  `scripts/test-linux.sh`/`test-windows.sh` run `tests/mc/0[89]*.mc` on every target;
+  `scripts/sysroot-windows.sh` gained `GetFileAttributesA`.
+  Cost in `src/`: **234 added lines, 128 of them code** (86 of the 128 in the two machines).
+  `make check` green end to end (RC 0, zero FAIL, 5m09s), `make check-linux-host` green on both
+  architectures with the cross proof. All five goldens rewritten once: `mc2.sha256`
+  `7baa684a…9b2c5` -> `77a973a294e24c9ec4df0b95e021dead8525178288371e75a60336a02a87d1b9`,
+  `mc2-linux-arm64` `167b37cb6c0b71b0a4d1046700afa5e3a9299337c11b7e22f3ff63af0df9dcdf`,
+  `mc2-linux-x86_64` `067cfbc824ec1fbdabdccddee85aab1d454b6945e8dacb4dabe388a98e6087a2`,
+  `mc2-windows-arm64` `f778e38a8fcfb32626a0b0f6fa786d6c122bbc8506ba95eb68534369d67e161d`,
+  `mc2-windows-x86_64` `73c904a1a70fd5791f78d76b874572c571d42180de53f5878ea500ae7117fa88`.
 - Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
   `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
   from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:
