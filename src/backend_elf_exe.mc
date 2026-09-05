@@ -880,13 +880,14 @@ void ee_write(uptr path) {
     // post-M42 patch: `link = "static"` is an ASSERTION, and this is where it is
     // checked, because the import set is the only thing that answers it. A
     // program built on <sys_linux> imports nothing and gets the static image
-    // below; a program that calls into a libc needs that libc's archive, and mc
-    // has no archive linker -- so it is refused by name instead of being handed
-    // a dynamic binary it did not ask for. dyn_die puts the mc.toml file:line:col
+    // below; a program that imports ANYTHING -- a libc symbol or a `#dylib`
+    // one, the count does not distinguish -- would need an archive to link,
+    // and mc has no archive linker: it is refused by name instead of being
+    // handed a dynamic binary it did not ask for. dyn_die puts the mc.toml file:line:col
     // in front when there is a file (src/objmodel.mc).
     if (dyn_static && nundef > 0)
         dyn_die("target.link",
-                "static link with a libc needs [linker]: see docs/build.md -- static linking (M46)");
+                "static link with imports needs [linker]: see docs/build.md -- static linking (M46)");
     ee_dynamic = nundef > 0;
     ee_nlib = 1 + dylib_count();
     ee_pick_entry();

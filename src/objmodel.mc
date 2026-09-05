@@ -126,7 +126,7 @@
 //          wrong. 0 is musl, the libc this repository's Linux half is tested
 //          against.
 //   link   dynamic (0) or static (1). Static is an ASSERTION: the writer
-//          refuses a program that imports a libc symbol, because mc has no
+//          refuses a program that imports any symbol, because mc has no
 //          archive linker -- that road is [linker] + ld.lld (docs/build.md).
 //
 // `interp` stays an explicit path override for the loader, for a system whose

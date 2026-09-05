@@ -541,7 +541,7 @@ cli_refuse() {                           # name, flags, expected last line
 }
 
 cli_refuse "cli --link=static with an import" --link=static \
-    "mc: static link with a libc needs [linker]: see docs/build.md -- static linking (M46)"
+    "mc: static link with imports needs [linker]: see docs/build.md -- static linking (M46)"
 cli_refuse "cli --libc=uclibc" --libc=uclibc "mc: --libc must be gnu or musl: uclibc"
 cli_refuse "cli --link=half" --link=half "mc: --link must be dynamic or static: half"
 
@@ -683,7 +683,7 @@ os = "windows"
     'CFG:6:6: windows requires [linker]: there is no direct executable: target.os'
 
 # post-M42 patch: the refused cells of the matrix. `link = "static"` against a
-# program that imports a libc symbol is the important one -- it is the cell mc
+# program that imports a symbol is the important one -- it is the cell mc
 # cannot write, and the message names the road (an external linker) and the
 # milestone that would remove the need for it. The position is the KEY's, and
 # the check that it is the key's is that the refusal comes from the WRITER,
@@ -698,7 +698,7 @@ os   = "linux"
 arch = "aarch64"
 link = "static"
 ' \
-    'CFG:8:8: static link with a libc needs [linker]: see docs/build.md -- static linking (M46): target.link'
+    'CFG:8:8: static link with imports needs [linker]: see docs/build.md -- static linking (M46): target.link'
 
 # a soname where a family belongs -- the shape M42 accepted, refused now, with
 # the migration in the message itself

@@ -128,7 +128,7 @@ counting imports — a program on `<sys_linux>` imports nothing and gets an imag
 the set the build stops rather than quietly producing a dynamic binary.
 
 ```
-mc.toml:10:8: static link with a libc needs [linker]: see docs/build.md -- static linking (M46): target.link
+mc.toml:10:8: static link with imports needs [linker]: see docs/build.md -- static linking (M46): target.link
 ```
 
 A static link against a real `libc.a` is the `[linker]` road ([../build.md](../build.md#the-linker-road-which-is-still-there)):

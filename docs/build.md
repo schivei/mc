@@ -738,7 +738,7 @@ The six cells, and the road to each:
 
 | | `link = "dynamic"` (default) | `link = "static"` |
 |---|---|---|
-| `libc = "gnu"` | **`mc --exe` / `mc build`.** `PT_INTERP` `/lib/ld-linux-<arch>.so.1`, `DT_NEEDED` `libc.so.6` | **`[linker]` only.** Without one: `static link with a libc needs [linker]: see docs/build.md -- static linking (M46)`, exit 1 |
+| `libc = "gnu"` | **`mc --exe` / `mc build`.** `PT_INTERP` `/lib/ld-linux-<arch>.so.1`, `DT_NEEDED` `libc.so.6` | **`[linker]` only.** Without one: `static link with imports needs [linker]: see docs/build.md -- static linking (M46)`, exit 1 |
 | `libc = "musl"` | **`mc --exe` / `mc build`.** `PT_INTERP` `/lib/ld-musl-<arch>.so.1`, `DT_NEEDED` `libc.so` | **`[linker]` only**, against the `libc.a` of a sysroot — same message without one |
 | no libc (the program imports nothing: `<sys_linux>`, raw `svc`) | **`mc --exe`**, and there is nothing dynamic about it: no `PT_INTERP`, no `PT_DYNAMIC`, no PLT | **`mc --exe`** — the same image. `link = "static"` here is an assertion that is checked, not a switch |
 
@@ -746,7 +746,7 @@ Two things follow from that table and are worth saying plainly.
 
 **The static image is chosen by the program, not by the key.** The writer decides by counting
 imports: no undefined symbol, no `PT_INTERP`. `link = "static"` does not create that case — it
-*requires* it, and refuses the build when the program does import a libc symbol, instead of quietly
+*requires* it, and refuses the build when the program does import anything (a libc symbol or a `#dylib` one), instead of quietly
 handing back a dynamic binary. mc has no archive linker, so a static link against a real `libc.a`
 is the `[linker]` road below; **M46** is the milestone that would remove the need for it.
 
@@ -764,7 +764,7 @@ The same from the single-file CLI, with no `mc.toml` anywhere:
 ```
 $ mc --exe --libc=gnu hello.mc -o hello           # glibc, dynamic
 $ mc --exe --libc=musl --link=static hello.mc -o hello
-mc: static link with a libc needs [linker]: see docs/build.md -- static linking (M46)
+mc: static link with imports needs [linker]: see docs/build.md -- static linking (M46)
 ```
 
 The compiler **never probes the host** for its libc: one source gives one answer on every machine

@@ -712,8 +712,8 @@ and it names the `PT_INTERP` path and the `DT_NEEDED` soname together, defaultin
 
 The static path is taken by counting imports: no undefined symbol, no `PT_INTERP`, no
 `PT_DYNAMIC`, no `.dynsym`, no PLT and no GOT. `[target].link = "static"` (`--link=static`) does
-not select it — it asserts it, and the writer refuses a program that does import a libc symbol
-with `static link with a libc needs [linker]: see docs/build.md -- static linking (M46)`, because
+not select it — it asserts it, and the writer refuses a program that does import any symbol, libc or `#dylib`,
+with `static link with imports needs [linker]: see docs/build.md -- static linking (M46)`, because
 there is no archive linker here.
 
 `DT_HASH` and not `DT_GNU_HASH`: the SysV table is nine lines and every loader accepts it, while

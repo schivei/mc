@@ -73,7 +73,7 @@ $ mc --exe --libc=gnu hello.mc -o hello
 A program that imports nothing — anything on `<sys_linux>`, which is raw `svc #0` syscalls —
 comes out **static**, with no `PT_INTERP` and no `PT_DYNAMIC` at all. That is not a switch: the
 writer counts imports. `link = "static"` does not create that case, it *requires* it — a program
-that does import a libc symbol is refused (`static link with a libc needs [linker]: see
+that does import anything is refused (`static link with imports needs [linker]: see
 docs/build.md -- static linking (M46)`) rather than handed a dynamic binary, because `mc` has no
 archive linker. The full matrix is [../build.md § The matrix](../build.md#the-matrix-libc-x-link).
 
