@@ -27,9 +27,17 @@
 # Each test file in tests/sandbox/ carries its own expectations in its header:
 #
 #   // sandbox-exit: N       the exit code of `mc sandbox`
-#   // sandbox-stdout: TEXT  the program's stdout, exactly
+#   // sandbox-stdout: TEXT  the program's stdout, exactly (the header may be
+#                            present and empty, which asserts that there is none)
 #   // sandbox-report: LINE  a report line that must be there, exactly
+#   // sandbox-report-<arch>: LINE   the same, when the two architectures
+#                            disagree -- a refusal names a system call NUMBER,
+#                            and `socket` is 198 on AArch64 and 41 on x86-64
 #   // sandbox-opts: OPTS    extra options for this case
+#   // sandbox-alt-*:        a SECOND run of the same source with other options,
+#                            for the case that has two answers: a fork bomb is
+#                            refused at its first clone by default and at the
+#                            sixty-fifth with --allow=threads
 #
 # tests/*.mc keep the headers scripts/test.sh reads (`// expect-exit:`,
 # `// expect-stdout:`) and the skip headers scripts/test-linux.sh reads.
@@ -118,47 +126,90 @@ sed 's/^/    /' "$out/check.txt"
 touch "$out/marker"
 
 hdr() { sed -n "s|^// $1: ||p" "$2" | head -1; }
+# is the header there at all? An expectation of "no output" is a header with
+# nothing after the colon, and it has to be told apart from no header.
+has_hdr() { grep -q "^// $1:" "$2"; }
+
+# one case: MC sandbox run OPTS FILE, against an exit code, a stdout and a
+# report line
+run_case() {   # run_case NAME FILE OPTS WANT_EXIT WANT_REPORT CHECK_STDOUT
+    cname="$1"; cfile="$2"; copts="$3"; cexit="$4"; crep="$5"; cstdout="$6"
+    # shellcheck disable=SC2086
+    "$mc" sandbox run $copts --report "$out/$cname.report" "$cfile" \
+          > "$out/$cname.out" 2> "$out/$cname.err"
+    crc=$?
+    cok=1
+    [ "$crc" = "$cexit" ] || { cok=0; echo "     exit $crc, want $cexit"; sed 's/^/       /' "$out/$cname.report"; }
+    if [ "$cstdout" = 1 ]; then
+        cgot=$(cat "$out/$cname.out")
+        [ "$cgot" = "$want_out" ] || { cok=0; echo "     stdout [$cgot], want [$want_out]"; }
+    fi
+    if [ -n "$crep" ]; then
+        grep -qx "sandbox: $crep" "$out/$cname.report" || {
+            cok=0; echo "     report has no line 'sandbox: $crep':"; sed 's/^/       /' "$out/$cname.report"; }
+    fi
+    if [ "$cok" = 1 ]; then say_ok "$cname"; else say_fail "$cname"; fi
+}
 
 # ---- 2. the isolation cases ------------------------------------------------
 echo "-- isolation"
+procs_before=$(ls /proc | grep -c '^[0-9]')
+mem_before=$(awk '/^MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo)
+
 for f in tests/sandbox/*.mc; do
     name=$(basename "$f" .mc)
     want_exit=$(hdr sandbox-exit "$f")
     want_out=$(hdr sandbox-stdout "$f")
-    want_rep=$(hdr sandbox-report "$f")
+    # the most specific header wins: a refusal names a system call NUMBER, and
+    # which number a `fork` is depends on the architecture AND on the C library
+    # (musl on x86-64 uses fork(57), glibc uses clone(56), and AArch64 has no
+    # fork at all)
+    want_rep=$(hdr "sandbox-report-$arch-$libc" "$f")
+    [ -n "$want_rep" ] || want_rep=$(hdr "sandbox-report-$arch" "$f")
+    [ -n "$want_rep" ] || want_rep=$(hdr sandbox-report "$f")
     opts=$(hdr sandbox-opts "$f")
     # clean.mc is tests/013-putnum.mc VERBATIM (the acceptance list says so), so
     # it carries the suite's own headers and not this milestone's.
     [ -n "$want_exit" ] || want_exit=$(hdr expect-exit "$f")
-    [ -n "$want_out" ]  || want_out=$(hdr expect-stdout "$f")
-    # a case whose answer depends on the privilege the box was started with
-    # (forkbomb: RLIMIT_NPROC does not bind for root -- copy_process exempts
-    # INIT_USER, and the root map is the identity range)
-    if [ "$(id -u)" = 0 ]; then
-        root_out=$(hdr sandbox-stdout-root "$f")
-        [ -z "$root_out" ] || want_out="$root_out"
+    check_out=0
+    has_hdr sandbox-stdout "$f" && check_out=1
+    if [ "$check_out" = 0 ] && has_hdr expect-stdout "$f"; then
+        want_out=$(hdr expect-stdout "$f"); check_out=1
     fi
     [ -n "$want_exit" ] || { say_skip "$name (no // sandbox-exit: header)"; continue; }
-    # shellcheck disable=SC2086
-    "$mc" sandbox run $opts --report "$out/$name.report" "$f" > "$out/$name.out" 2> "$out/$name.err"
-    rc=$?
-    ok=1
-    [ "$rc" = "$want_exit" ] || { ok=0; echo "     exit $rc, want $want_exit"; }
-    if [ -n "$want_out" ]; then
-        got=$(cat "$out/$name.out")
-        [ "$got" = "$want_out" ] || { ok=0; echo "     stdout [$got], want [$want_out]"; }
+    run_case "$name" "$f" "$opts" "$want_exit" "$want_rep" "$check_out"
+
+    # the same source with other options, when the header asks for it
+    if has_hdr sandbox-alt-exit "$f"; then
+        want_out=
+        run_case "$name (alt)" "$f" "$(hdr sandbox-alt-opts "$f")" \
+                 "$(hdr sandbox-alt-exit "$f")" "$(hdr sandbox-alt-report "$f")" 1
     fi
-    if [ -n "$want_rep" ]; then
-        grep -qx "sandbox: $want_rep" "$out/$name.report" || {
-            ok=0; echo "     report has no line 'sandbox: $want_rep':"; sed 's/^/       /' "$out/$name.report"; }
-    fi
-    if [ "$ok" = 1 ]; then say_ok "$name"; else say_fail "$name"; fi
 done
 
-# the fork bomb leaves nothing behind: whatever it forked was inside the pid
-# namespace, and the namespace died with its init
+# What the isolation cases must NOT have done to the host (acceptance 2): the
+# fork bomb's children were inside the pid namespace and died with it, and the
+# eight-gibibyte mapping was never made.
 procs_after=$(ls /proc | grep -c '^[0-9]')
-say_ok "host process count after the fork bomb: $procs_after"
+mem_after=$(awk '/^MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo)
+# A window of eight, because the machine is not idle -- a timer, a login shell
+# or the test harness itself moves the count by one or two between the two
+# readings. What this rules out is what the case is about: the fork bomb asks
+# for two hundred, and with --allow=threads for sixty-five.
+procs_moved=$((procs_after - procs_before))
+[ "$procs_moved" -lt 0 ] && procs_moved=$((0 - procs_moved))
+if [ "$procs_moved" -lt 8 ]; then
+    say_ok "the host process count is unchanged ($procs_before -> $procs_after)"
+else
+    say_fail "the host process count moved: $procs_before -> $procs_after"
+fi
+# a 64 MiB window: the machine is doing other things, and 8 GiB is not 64 MiB
+mem_lost=$((mem_before - mem_after))
+if [ "$mem_lost" -lt 64 ]; then
+    say_ok "the host's available memory is unchanged (${mem_before} MiB -> ${mem_after} MiB)"
+else
+    say_fail "the host lost ${mem_lost} MiB of available memory"
+fi
 
 # ---- 3. the suite ----------------------------------------------------------
 # Every tests/*.mc, compiled AND run inside the box: the source goes in, the
@@ -189,13 +240,19 @@ done
 
 # ---- 4. mc sandbox exec ----------------------------------------------------
 # The other half of § 5: a binary that was built OUTSIDE the box and only runs
-# inside it. 071-errno-malloc is the dynamic one -- it calls fopen and malloc,
-# so it needs its loader and its libc, and the only reason it finds them is the
-# read-only bind of /lib, /lib64 and /usr/lib (§ 3).
+# inside it. libcuser is the dynamic one -- it allocates, reads a file through
+# stdio and hands both back, so it needs its loader and its libc, and the only
+# reason it finds them is the read-only bind of /lib, /lib64 and /usr/lib (§ 3).
+#
+# It replaced tests/linux/071-errno-malloc.mc here when step C landed, and the
+# reason is the milestone's own policy rather than an accident: that program
+# opens /nonexistent-m42/nope on purpose, to read an errno, and a path under
+# none of the box's roots is `refused: open ...`, exit 125 (§ 4). The box does
+# not answer ENOENT for a path it will not look at.
 echo "-- mc sandbox exec"
 lf=
 [ "$libc" = gnu ] && lf=--libc=gnu
-for pair in "013-putnum tests/013-putnum.mc 46368" "071-errno tests/linux/071-errno-malloc.mc errno=2 malloc ok"; do
+for pair in "013-putnum tests/013-putnum.mc 46368" "libcuser tests/sandbox/libcuser.mc libc ok"; do
     set -- $pair
     n=$1; src=$2; shift 2; want="$*"
     # shellcheck disable=SC2086
@@ -208,8 +265,8 @@ for pair in "013-putnum tests/013-putnum.mc 46368" "071-errno tests/linux/071-er
     if [ "$rc" = 0 ] && [ "$got" = "$want" ]; then say_ok "exec $n"
     else say_fail "exec $n (exit $rc, stdout [$got], want [$want])"; fi
 done
-if readelf -l "$out/071-errno" 2>/dev/null | grep -q INTERP; then
-    say_ok "exec 071-errno is dynamic (PT_INTERP)"
+if readelf -l "$out/libcuser" 2>/dev/null | grep -q INTERP; then
+    say_ok "exec libcuser is dynamic (PT_INTERP)"
 else
     say_skip "PT_INTERP check (no readelf on this host)"
 fi

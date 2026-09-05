@@ -1,5 +1,7 @@
-// sandbox-exit: 0
-// sandbox-stdout: socket ok connect=-1 errno=101
+// sandbox-exit: 125
+// sandbox-stdout:
+// sandbox-report: refused: syscall 198 (socket)
+// sandbox-report-x86_64: refused: syscall 41 (socket)
 // The network namespace (§ 3): the box unshares CLONE_NEWNET, so its network
 // stack is a fresh one with nothing but a DOWN loopback. `socket` still
 // succeeds -- creating one is not reaching anything -- and the connect to

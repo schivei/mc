@@ -1,12 +1,17 @@
-// sandbox-report: exit 0
-// sandbox-exit: 0
-// sandbox-stdout: shadow errno=2
-// /etc/shadow is not refused in step B: it DOES NOT EXIST. The box's root is a
-// tmpfs holding /mc, /src, /out and the bind mounts of the tree in § 3, and
-// there is no /etc at all -- so the program gets ENOENT (2) from the kernel and
-// prints it. The NAMED refusal, `sandbox: refused: open /etc/shadow` with exit
-// 125, is step C's seccomp notification; this file is what proves the mount
-// tree on its own, and its expectation changes when step C lands.
+// sandbox-report: refused: open /etc/shadow
+// sandbox-exit: 125
+// sandbox-stdout:
+// The named refusal (M43 step C, § 4): every openat and open reaches the
+// supervisor as a SECCOMP_RET_USER_NOTIF notification, P reads the path out of
+// this process with process_vm_readv, finds it under none of the box's roots,
+// and stops the box -- `sandbox: refused: open /etc/shadow`, exit 125.
+//
+// TWO walls would have stopped it anyway, and that is the point of naming it:
+// there is no /etc in the box (the tree of § 3 is a tmpfs with /mc, /src, /out
+// and the read-only binds), and Landlock grants nothing outside those roots.
+// What step C adds is the sentence. The refused call never returns -- P kills
+// the box while this process is still inside the openat -- so nothing below is
+// printed and the expected stdout is empty.
 #include <sys>
 #include <io>
 
