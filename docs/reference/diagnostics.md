@@ -395,6 +395,30 @@ own, all exit 1:
 | `mc: cannot run llvm-dlltool for: PATH` | the Windows stub writer could not start `llvm-dlltool` | put it on `PATH` (Homebrew keeps it in `opt/llvm/bin`) |
 | `mc: llvm-dlltool failed for: PATH` | it started and returned non-zero | its own diagnostic came out on stderr just above; the `.def` it was given is the named file |
 
+## 11b. `mc sandbox`
+
+Its exit codes are its own — **124** a cap, **125** a refusal, **126** the box could not be set
+up ([cli.md](cli.md) § 3c) — and 2 stays the option errors' code, as everywhere else.
+
+| message | cause | fix |
+|---|---|---|
+| `mc: the sandbox is a Linux feature; on this Mac: limactl shell mc-k7 build/mc-linux-arm64 sandbox run PATH (docs/build.md § Lima)` | any `mc sandbox` verb on macOS. Exit 126 | run the command it prints. There is no macOS sandbox and there will not be one ([sandbox.md](sandbox.md) § Hosts) |
+| `mc: the sandbox is a Linux feature; this host is: windows` | any `mc sandbox` verb on Windows. Exit 126 | the same: it is a Linux feature |
+| `mc: unknown sandbox subcommand: WORD` | the verb is not `run`, `exec` or `check`. Exit 2, and the usage follows | one of the three |
+| `mc: unknown sandbox option: --x` | an option `mc sandbox` does not take. Exit 2 | the list is in [cli.md](cli.md) § 3c |
+| `mc: option requires an argument: --time` | `--time`, `--wall`, `--mem`, `--out`, `--stdin`, `--ro`, `--cwd` or `--report` was last on the line. Exit 2 | give it its value |
+| `mc: not a number: abc` | a non-decimal value for `--time`/`--wall`/`--mem`/`--out`. Exit 2 | a non-negative decimal |
+| `mc: unknown --allow value: X` | only `threads` exists today. Exit 2 | `--allow=threads` |
+| `mc: unknown --libc value: X` | `--libc` takes `musl` or `gnu`. Exit 2 | one of the two, or leave it out and let `PT_INTERP` decide |
+| `mc: too many --ro directories` | more than 16. Exit 2 | the box mounts one bind per `--ro`; group them under a common parent |
+| `mc: sandbox run needs a source path` / `mc: sandbox exec needs a program` | the verb had options and nothing else. Exit 2 | give it the path |
+| `mc: sandbox run: not in this step` / `mc: sandbox exec: not in this step` | **step A only**: the box is not built yet. Exit 126 | `mc sandbox check` works today; the box is step B |
+
+`mc sandbox check` is not a diagnostic: it writes its six lines to **stdout** and exits 1 when a
+capability is missing. The one line most likely to need reading is
+`userns: restricted (apparmor)` — [sandbox.md](sandbox.md) § The AppArmor restriction says what
+it means and what the two ways out are.
+
 ## 12. Runtime and I/O
 
 | message | cause | fix |

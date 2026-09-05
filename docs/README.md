@@ -44,6 +44,7 @@ nothing to a running signed binary in about two minutes.
 | [machine.md](reference/machine.md) | the machine task contract: the 31 tasks, and the three instruction sets side by side |
 | [diagnostics.md](reference/diagnostics.md) | every message the compiler emits, with cause and fix |
 | [bundle.md](reference/bundle.md) | every `#include <name>` the binary carries |
+| [sandbox.md](reference/sandbox.md) | `mc sandbox`: the box, the shim, `check`, and what is *not* isolated |
 
 ## The design documents
 

@@ -971,6 +971,15 @@ A taught compiler gets one from the bundle: `mc build` writes `#include <mc/host
 | `host_downloader()` | the program `mc sysroot fetch` spawns to download a pinned archive: `"curl"` on macOS and Linux, `"curl.exe"` on Windows. `mc` speaks no HTTP and no TLS |
 | `host_downloader_alt()` | the one to try when the first is not on `PATH`: `"wget"` on Linux, 0 on macOS and Windows, where `curl` ships with the system |
 | `host_bundle_open(name, base, pcanon, plen)` | the lexer's one door into the bundle (`src/core_bundle.mc`): resolves `mc/host` to `host_include()` and passes everything else through to `bundle_open` |
+| `host_syscall6(n, a, b, c, d, e, f)` | issue system call `n` on this host and hand back the kernel's own result — a small negative value is `-errno`. Linux implements it as `sys6`, eight `#opcode` words on AArch64 and six `emit()` words on x86-64 (`src/sysno_linux_aarch64.mc`, `src/sysno_linux_x86_64.mc`); macOS and Windows answer `-38` (`ENOSYS`). It exists because `prctl`, `syscall` and `clone` are variadic in every libc and this language has no variadic extern, and because `seccomp`, `landlock_*`, `pidfd_*` and `close_range` have no wrapper at all (M43) |
+| `host_sysno(sn)` | the number of the system call `sn` on this host, or `-1` when this architecture does not have it. `sn` is an `SN_*` index of `src/sysno.mc`, never a number: that is what lets `src/sandbox.mc` compile unchanged for both architectures and for a host with no such calls |
+| `host_sandbox_supported()` | 1 when `mc sandbox run\|exec\|check` can do anything at all here — 1 on Linux, 0 on macOS and Windows, where the subcommand prints the command to run instead ([sandbox.md](sandbox.md) § Hosts). It is not "the box will work": that is what `mc sandbox check` measures against the running kernel |
+
+`host_syscall6`, `host_sysno` and `host_sandbox_supported` are the M43 additions, and they follow
+the same rule as everything else on this page: the question "can you issue system call N?" is a
+question about the system the compiler is *running on*, so it belongs here and nowhere else.
+`<mc/core_sandbox>` therefore compiles on every host, and what refuses on a Mac is `host_os()`
+rather than a missing symbol.
 
 The host file also declares `posix_spawnp`, `posix_spawn_file_actions_*`, `waitpid`, `mkdir` and
 `unlink` — the same declarations on all three systems, so the compiler's own code does not change

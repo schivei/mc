@@ -289,6 +289,49 @@ without the build. `fetch` is the **only** thing in `mc` that reaches the networ
 downloads. Everything about the chain, the cache and the pinned rows is in
 [sysroot.md](sysroot.md).
 
+## 3c. `mc sandbox` — compile and run something you do not trust
+
+```
+mc sandbox run  [OPTS] PATH [--] [ARGS]
+mc sandbox exec [OPTS] BIN  [--] [ARGS]
+mc sandbox check
+```
+
+A Linux-only subcommand, registered by `<mc/core_sandbox>` ([bundle.md](bundle.md) § The parts).
+`run` compiles `PATH` inside the box and then runs what it built; `exec` runs an
+already-built Linux executable; `check` prints what the running kernel can do. The box, the
+report grammar and what is **not** isolated are in [sandbox.md](sandbox.md).
+
+| flag | meaning |
+|---|---|
+| `--time S` | CPU seconds (`RLIMIT_CPU`), default 2 |
+| `--wall S` | wall-clock seconds before the box is killed, default 5 |
+| `--mem MiB` | address space (`RLIMIT_AS`), default 256 |
+| `--out MiB` | how much the program may write (the box tmpfs and `RLIMIT_FSIZE`), default 64 |
+| `--allow=threads` | permit `clone`/`clone3` for threads, and the syscalls a thread needs |
+| `--libc=musl\|gnu` | which loader the program expects; by default it is read from its `PT_INTERP` |
+| `--stdin FILE` | the program's standard input; without it, immediate EOF |
+| `--ro DIR` | one more directory the box may read (repeatable, at most 16) |
+| `--cwd DIR` | the working directory inside the box, under `/src` |
+| `--report FILE` | write the report to a file instead of stderr |
+| `--verbose` | add `rusage` to the report. Not deterministic, and the only flag that is not |
+
+`mc sandbox check` prints six lines on stdout and exits 0 when every one of the five capabilities
+the box needs is there, 1 otherwise:
+
+```
+kernel: 7.0.0-30-generic
+userns: ok
+landlock: abi 8
+seccomp: notif ok
+overlay: ok
+pidfd: ok
+```
+
+`userns` is `ok`, `restricted (apparmor)`, `EPERM`, `EACCES` or `errno N`; `overlay` is `ok` or
+`not loaded (modprobe overlay)`. On macOS and Windows all three verbs print the command to run
+instead and exit **126** ([sandbox.md](sandbox.md) § Hosts).
+
 ### Exit codes
 
 | code | meaning |
@@ -297,6 +340,9 @@ downloads. Everything about the chain, the cache and the pinned rows is in
 | `1` | any diagnostic: a compile error, a TOML error, a spawned tool that failed |
 | `2` | the environment is not ready: no sysroot for the target ([sysroot.md](sysroot.md) § 5) |
 | `3` | verdict `tight` or `grew` (`--limits` / `mc limits` only) |
+| `124` | `mc sandbox`: a cap stopped the program (CPU or wall clock) |
+| `125` | `mc sandbox`: a refusal stopped it (a syscall, a path, `mmap`, a process, `execve`) |
+| `126` | `mc sandbox`: the box could not be set up — including "this host is not Linux" |
 
 `--fix-limits` exits 0 when it managed to write a tolerance that fits, and 3 when even `1.0`
 would not have been enough (the file is left alone in that case).
