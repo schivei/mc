@@ -106,3 +106,18 @@ uptr host_home() {
 // § 2); /usr/bin/curl ships with macOS, so there is nothing to fall back to.
 uptr host_downloader()     { return "curl"; }
 uptr host_downloader_alt() { return 0; }
+
+// ---- M43: the sandbox host questions ----
+// The sandbox is a Linux feature (docs/specs/M43.md § 7). macOS answers them so
+// that <mc/core_sandbox> COMPILES on every host and the refusal is a sentence
+// host_os() produces, not a link error: host_syscall6 is ENOSYS, the number
+// table is all SN_ABSENT, and host_sandbox_supported() is 0.
+#include "sysno.mc"
+
+u16 sysno_tab[SN_COUNT];                  // never read; the shape of the Linux one
+
+i64 host_syscall6(i64 n, i64 a, i64 b, i64 c, i64 d, i64 e, i64 f) { return -38; }   // -ENOSYS
+
+i64 host_sysno(i64 sn) { return -1; }
+
+i64 host_sandbox_supported() { return 0; }
