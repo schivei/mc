@@ -2627,6 +2627,63 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `26c9a7c8070e64471bafecfeb42917ba43dec6e2413374a5ea25b0ebc9923c06`. The four foreign goldens are
   deliberately NOT re-recorded here: they move with the same `src/parse.mc` edit and the same
   bundle, and the architect asked for one re-recording after the rebase.
+- M45 rebased onto `origin/main` e4a4c40 (PR #21, `[target].libc` as a family) and the five
+  goldens re-recorded once, which is the "one re-recording after the rebase" the entry above
+  defers to. Six files conflicted and each was resolved by reading both sides: `CLAUDE.md`
+  (main's post-M42 entry kept AND the M45 entries after it, M45 last), `docs/specs/M45.md`
+  (main's corrected defect paragraph -- the one the spec PR re-measured -- plus this branch's
+  § Implementation notes), `src/bundle_data.mc` and the five `tests/golden/*.sha256`
+  (regenerated / re-recorded below). `src/cli.mc`, `src/driver.mc`, `src/hooks.mc`,
+  `src/objmodel.mc`, `scripts/test-linux.sh`, `docs/reference/{diagnostics,hooks,objects}.md`
+  auto-merged and were read to confirm BOTH sides survived: `core_types_init()` at its three call
+  sites (`cli.mc:254`, `driver.mc:339`, `limits.mc:586`, each before `user_init()`) next to
+  main's `linkflag` gating through `backend_is_exe` and its `dyn_interp`/`dyn_libc` globals; the
+  `c_` prefix still in `scripts/check-docs.sh`'s symbol regex; `test-linux.sh` carrying main's
+  `--libc musl|gnu` vocabulary with M45's `tests/mc/0[89]*.mc` loop and `072-int-return` written
+  in it. `src/arena.mc`'s tag list was checked BY NAME rather than by position (the M42 lesson):
+  `T_SYNPARAM 30`, `T_BACKENDS 31`, `T_COUNT 39`, and `lim_seeds[31] = 16` is still on
+  `backends` -- only this branch touched the file, so nothing moved.
+  -- `make bundle` re-run FIRST (78 files, raw 871568 -> LZ 407042, blob 407995 B), then
+  `make check` green end to end (**RC 0, zero FAIL**): `budget` 2848/3000, `test` 32/32,
+  `check-lex` 126/126 (2 skipped), `check-ast` 126/126, `check-asm` 126/126, `check-obj`
+  **32/32 identical to the frozen seed**, `check-bundle`, `bootstrap` at a fixed point
+  (`mc2.o == mc3.o`, 941576 B; the `--dump-asm` diff between `mc1` and `mc2` is **empty**),
+  `check-surface` 32/32 + 116 ok lines, `test-exe` 32/32, `check-mc` 11/11, `check-standalone`,
+  `check-parts` (the five parts + `<mc/main>` == `<mc/core>`, 941576 B), `check-toml` 10/10,
+  `check-build` **53/53** (main's `[target].libc`/`link` cases plus M45's), `check-sysroots`,
+  `check-stubs` 9/9, `check-limits` 17/17 under 90%, `check-minimal`, `test-linux` 39/39,
+  `test-linux-x86_64` 36/36, `test-linux-exe` 42/42 musl + 42/42 gnu,
+  `test-linux-x86_64-exe` 39/39 + 39/39 -- so the M45 corpus (`090..093`, `072-int-return`) runs
+  on the `--exe` legs main added, on both libcs -- `test-windows` 40/40 objects,
+  `test-windows-x86_64` 38/38, `check-examples`, `check-lang`, `check-conc`, `check-desktop`,
+  `check-float` (13/13 macos, 13/13 linux/aarch64, 13/13 linux/x86_64, 11/11 + 11/11 windows
+  objects), `check-wide`, `check-kernel` (QEMU 11.0.1, `kernel.bin` 3304 B, exit 0), `check-avr`
+  (simavr + QEMU, `avr.elf` 15255 B), `check-docs` (**188 symbols**, 22 flags, 20 TOML keys,
+  10 directives, 48 samples, 287 links), `site` 85 pages + `check-site` 0 link problems.
+  `make check-linux-host` RC 0 over all four cells -- linux/aarch64 musl (suite 39/39,
+  `test-exe` 31/31 via `--exe --libc=musl`, `check-obj` 31/31), linux/aarch64 gnu (40/40
+  natively), linux/x86_64 musl (36/36, `test-exe` 29/29, `check-obj` 29/29), linux/x86_64 gnu
+  (37/37) -- each after its own `mc2l.o == mc3l.o` and with the cross proof
+  (`mc2l --backend=macho src/mc.mc` byte for byte the macOS `build/mc2.o`) green.
+  Inertness against `origin/main` e4a4c40, measured over e4a4c40's OWN tree (the pre compiler
+  cannot read this branch's `examples/`, which now declare `extern i32`): **33 objects identical**
+  (`tests/*.mc` + `src/mc.mc`), `lang`, `conc`, `desktop` and `kernel` identical through the
+  taught compiler each side builds, and `DIFF` on `examples/api` alone -- the two synthesized
+  `and x9, x9, #255` of the review batch above, confirmed here by diffing `--dump-asm` of
+  `examples/api/main.mc` through each taught `mc-api`: exactly two added instructions, nothing
+  else.
+  The five goldens rewritten **once**, each only after its own criterion: `mc2.sha256`
+  `26c9a7c8...923c06` -> `90ce56dcfc6f3c7a785013871b5df9f8ad6ed36ad24acb28256e60385435ee38`
+  (empty `--dump-asm` diff + `cmp build/mc2.o build/mc3.o`); the Linux pair deleted and
+  re-recorded by `make check-linux-host` --
+  `mc2-linux-arm64.sha256` `8cb319f2648b2a1eb37dcdc19b46290ca111ad7543482fbd349c6c2bcb415856`,
+  `mc2-linux-x86_64.sha256` `c0882f93933469e066ba73f461fe2be4caa13de558d09ba534955b0a80e19b93`,
+  each recorded in its musl cell and re-verified by the gnu cell of the same architecture;
+  the Windows pair cross-computed per `tests/golden/README.md` --
+  `mc2-windows-arm64.sha256` `2c55021d3a87ebb087165f77d03fbf8d96f58bb6e4cfb428328f05c909382eab`
+  (959407 B), `mc2-windows-x86_64.sha256`
+  `af21fe6f17f6d0ca13554b122536178688284f759b990cc8ebb1ccb336ed947f` (978891 B), both also
+  written byte for byte by `build/mc2`.
 - Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
   `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
   from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:
