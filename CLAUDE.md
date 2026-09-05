@@ -2504,6 +2504,29 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `mc2-linux-x86_64` `02eec99d84119a077c806ca14230bfa58aba63affd4591efbf06b3b54ed94893`,
   `mc2-windows-arm64` `57b2a7e174f6be3f3ca8063d503a8dffc7fd650cbce2e4b83d41ce0540879ce6`,
   `mc2-windows-x86_64` `24b994e706bc37d9533898331da538fdab4814ee1097f78fe04e8ac2e5a2bb45`.
+- M45 step 3 ✔ (`docs/specs/M45.md` § Implementation notes 5): **`p_cp()` public** -- the lexer's
+  cursor, for a handler that scans raw source forward. Not part of the spec; asked for alongside it
+  because the ngen consumer hit it. `p_start()` is where the CURRENT TOKEN starts, and on a token
+  `p_subst_name()` replaced, `subst_apply` swaps `tok_start`/`tok_len` for the REPLACEMENT string,
+  which lives in the arena -- so a `syntax_lit`-style scan from `p_start()` inside a
+  `p_push_source` frame reads the arena lexeme and not the source. One line in `src/parse.mc`
+  beside `p_start()`/`p_src_end()`, a row and a caveat paragraph in
+  `docs/reference/hooks.md` § Record and replay, and a `check-surface` case
+  (`p_cp-under-substitution`) built on three new demo registrations: `srcbyte` (`ld8(p_cp())`),
+  `srcbyte0` (`ld8(p_start())`) and `probe NAME;`, which pushes
+  `i64 NAME() { return W  * 1000 + V; }` with `W -> srcbyte` and `V -> srcbyte0` so both run on
+  SUBSTITUTED tokens. The four numbers: 59 and 115 in ordinary source (where the two positions
+  agree), then **32** from `p_cp()` -- the space that really follows `W` in the pushed text -- and
+  **115** from `p_start()`, the arena copy of `"srcbyte0"`, where the source holds `V` (86).
+  Inert: `check-inert` between the step-2 compiler and this one is identical everywhere, all five
+  taught examples included, and the `mc1`/`mc2` `--dump-asm` diff over `src/mc.mc` is empty; the
+  goldens move only because `p_cp` is a new function. `make check` RC 0, zero FAIL;
+  `make check-linux-host` RC 0 on both architectures. Goldens rewritten a third time:
+  `mc2.sha256` `60b21acb8c61fdfea8803c3ec8bda15341ab9aef36f78f6f4425038fafc8db6c`,
+  `mc2-linux-arm64` `89fab268edeccb94f86c3b9f98f1d4206464cc40bf0306f4a1a8297cafdae37d`,
+  `mc2-linux-x86_64` `68b2c57d1b9ac8787abce3647ac545c70978376247010f7af6fda3637bf12659`,
+  `mc2-windows-arm64` `2877458c375b72018b2b9a62d30bb30cd7ee84488a938a1bcacf05653388f3b8`,
+  `mc2-windows-x86_64` `97e02abd56e1e11d595d54f2586437f56bb45596e2c0cf2b5a852a5ab2c3629f`.
 - Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
   `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
   from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:

@@ -911,6 +911,36 @@ else
     fails=$((fails + unfolded))
 fi
 
+# ---- M45: p_cp(), the lexer's cursor, against p_start(), the token ----
+# A syntax_lit-style handler scans raw source forward. p_start() is where the
+# CURRENT TOKEN starts -- and on a token p_subst_name() replaced, subst_apply
+# swapped tok_start/tok_len for the REPLACEMENT string, which lives in the
+# arena. So inside a p_push_source frame a scan from p_start() reads the arena
+# lexeme, not the source. p_cp() is the cursor and still points into the pushed
+# text, just past the token.
+#
+# The demo's `srcbyte` reports ld8(p_cp()) and `srcbyte0` reports ld8(p_start());
+# `probe p1;` pushes `i64 p1() { return W  * 1000 + V; }` with W -> srcbyte and
+# V -> srcbyte0, so both words run on SUBSTITUTED tokens. The numbers are what
+# make the two positions distinguishable:
+#
+#   a = 59   the `;` after `srcbyte` in ordinary source
+#   b = 115  's', the first byte of the word `srcbyte0` -- here p_start() IS
+#            the source, so the two agree outside a substitution
+#   p1() = 32115, i.e. W -> 32 and V -> 115: p_cp() answers the SPACE that
+#            really follows `W` in the pushed text, while p_start() answers
+#            's' -- the arena copy of "srcbyte0" -- where the source holds `V`
+#            (86). A handler scanning from p_start() there reads the arena.
+hook_case p_cp-under-substitution 42 'probe p1;
+i64 main() {
+    i64 a = srcbyte;
+    i64 b = srcbyte0;
+    if (a != 59) return 1;
+    if (b != 115) return 2;
+    if (p1() != 32115) return 3;
+    return 42;
+}'
+
 # ---- M45: what one type_new(name, w, a, TK_SINT) buys ----
 # lib/user_syntax_demo.mc registers `i16` in ONE line and gets, from the core
 # and from the bundled machine and with no line of its own: a sign-extending

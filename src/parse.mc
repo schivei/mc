@@ -1819,6 +1819,19 @@ void top_add(i64 n) {
 uptr p_start() { return tok_start(cur); }
 i64  p_depth() { return nopen; }
 
+// M45: the lexer's own cursor -- the first byte of the source that has NOT been
+// lexed yet -- for a handler that scans raw source forward. It is not the same
+// thing as p_start(), and the difference is exactly one case: on a token that
+// p_subst_name()/p_subst_int() replaced, subst_apply (src/lex.mc) swaps
+// tok_start/tok_len for the REPLACEMENT text, which lives in the arena. A scan
+// that begins at p_start() then reads the arena lexeme and runs off the end of
+// it; p_cp() still points into the pushed source, just past the token.
+//
+// So a syntax_lit-style handler that has to look at what FOLLOWS the token it
+// was given -- inside a p_push_source frame, where a substitution is exactly
+// what a replay does -- reads from p_cp() and stops at p_src_end().
+uptr p_cp() { return cp; }
+
 // M31 (2.2): how many blocks are open in the function being parsed -- exactly
 // the number an on_jump handler receives as `depth`. A scope guard records it
 // when it opens its own body and compares: a jump reported at a GREATER depth is

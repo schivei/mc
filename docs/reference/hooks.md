@@ -802,7 +802,8 @@ instantiation needs.
 | `void p_push_source(uptr name, uptr text, i64 len)` | parse a second source with `#include`'s exact semantics: the lexer pops on its own at the end, and `name` is what `err_at` prints for everything inside |
 | `void p_resplit_punct(i64 n)` | the current punctuation token, of length > `n`, becomes the punctuation formed by its first `n` bytes; the cursor rewinds to just after them |
 | `void p_take_lit(uptr q)` | the current numeric token really ends at `q`: the cursor moves there, the token's length grows with it, and the next token is lexed from `q` (M24) |
-| `uptr p_src_end()` | where the source being lexed ends — what a handler scanning raw bytes forward from `p_start()` has to stop at (M24) |
+| `uptr p_src_end()` | where the source being lexed ends — what a handler scanning raw bytes forward has to stop at (M24) |
+| `uptr p_cp()` | the lexer's **cursor**: the first byte of the source that has not been lexed yet, i.e. just past the current token (M45) |
 
 `p_skip_balanced` counts depth over **real tokens**, which is what makes a `}` inside a string or
 a comment harmless — a byte scan could not do that. An unterminated region is reported at the
@@ -831,6 +832,17 @@ reason (`p_take_lit outside the source token`). The lexer stops a number where *
 — `1.5` is the token `1` with the cursor left on the `.` — so a handler that scanned further says
 where its literal really ended. `q` may not be before the cursor (a handler cannot un-read) and
 may not be past `p_src_end()`.
+
+**`p_cp()` and `p_start()` are not the same position, and the difference matters exactly once.**
+`p_start()` is where the CURRENT TOKEN starts. On a token `p_subst_name()` replaced, `subst_apply`
+swaps `tok_start`/`tok_len` for the **replacement string**, which lives in the arena — so inside a
+`p_push_source` frame a scan that begins at `p_start()` reads the arena lexeme and runs off the
+end of it, while the source the handler meant to read is somewhere else entirely. `p_cp()` is the
+lexer's cursor and still points into the pushed text, just past the token. A handler that scans
+raw source FORWARD from the token it was given — the `syntax_lit` shape — should read from
+`p_cp()` and stop at `p_src_end()`; `p_start()` is for a handler that wants the token's own
+lexeme, and for `p_skip_balanced`-style span recording, where the token is one the lexer really
+read. `scripts/check-surface.sh` asserts the four values a substituted frame produces.
 
 ### Hygienic substitution
 
