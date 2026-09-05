@@ -89,4 +89,23 @@
 #define SN_CONNECT                  58
 #define SN_BIND                     59
 
-#define SN_COUNT                    60
+// ---- step B: what building the box needs on top of step A's list ----
+// They are appended rather than filed under "what the box issues" above, so
+// that the fifty-nine indices step A measured keep their numbers and the four
+// tables stay row-for-row comparable with the diff that added them.
+//
+//   mkdirat        every directory of the tree in § 3 (there is no `mkdir` on
+//                  AArch64: the generic table has only the *at form)
+//   getuid/getgid  the two numbers P writes into /proc/<I>/uid_map and gid_map
+//   clock_gettime  the supervisor's deadline: ppoll returns early on every
+//                  status line, so the wall clock has to be recomputed against
+//                  a monotonic start rather than restarted
+//   getcwd         a mount source is an absolute path, and `mc sandbox run
+//                  tests/013-putnum.mc` is not one
+#define SN_MKDIRAT                  60
+#define SN_GETUID                   61
+#define SN_GETGID                   62
+#define SN_CLOCK_GETTIME            63
+#define SN_GETCWD                   64
+
+#define SN_COUNT                    65

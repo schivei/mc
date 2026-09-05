@@ -117,7 +117,12 @@ u16 sysno_tab[] = {
     158,        // SN_ARCH_PRCTL
      41,        // SN_SOCKET
      42,        // SN_CONNECT
-     49         // SN_BIND
+     49,        // SN_BIND
+    258,        // SN_MKDIRAT
+    102,        // SN_GETUID
+    104,        // SN_GETGID
+    228,        // SN_CLOCK_GETTIME
+     79         // SN_GETCWD
 };
 
 // the number of SN_*, or -1 when this architecture has no such call

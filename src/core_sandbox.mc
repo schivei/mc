@@ -1,8 +1,16 @@
 // core_sandbox.mc — `mc sandbox`: compile and run an arbitrary program in
 // isolation (M43, docs/specs/M43.md, docs/reference/sandbox.md).
 //
-//   sandbox.mc   the subcommand: `run`, `exec`, `check`, the option parser,
-//                and -- from step B -- the supervisor, the box and the report
+//   toml.mc      the TOML subset mc.toml is written in (M14). `mc sandbox run
+//                DIR` has to know which file `mc build` is about to write, and
+//                that is [project].out. The #include is once-only, so naming it
+//                here costs nothing when <mc/core_build> already brought it and
+//                makes this part stand on its own when it did not -- the same
+//                argument core_build.mc makes about sha256.mc.
+//   sandbox.mc   P: the subcommand `run`/`exec`/`check`, the option parser, the
+//                plan, the supervisor, the report and the exit codes
+//   sandbox_box.mc  I and C: the namespaces, the mount tree, the caps and the
+//                steps -- everything that runs inside the box
 //
 // This is the sixth part of the composable core (docs/reference/bundle.md
 // § The parts). It is the same shape <mc/core_build> has: one file, one
@@ -17,7 +25,9 @@
 // host_sysno() and host_sandbox_supported() (M37's rule -- the host layer is
 // where "can you issue system call N?" belongs).
 
+#include "toml.mc"
 #include "sandbox.mc"
+#include "sandbox_box.mc"
 
 void mc_sandbox_init() {
     subcommand("sandbox", &sandbox_cmd,
