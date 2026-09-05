@@ -1624,6 +1624,42 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `bb48b0b27df913fcaa54b60a59da3a0e9c3cf219d0f474f731adb7b9b7bf6075`, Linux `394ce144…34579` /
   `8c9c7fab…167c17`, Windows `f2d9b228…ad4ff6` / `3596c00b…15e98e`. Not yet: the CI job
   (acceptance 10) and `docs/guide/99-sandbox.md` (step D).
+- M43 step D ✔ (`docs/specs/M43.md` § Implementation notes -- step D): **the CI job, the guide,
+  the last acceptance items.** Two jobs in `.github/workflows/ci.yml`, `The sandbox (linux/arm64)`
+  (`ubuntu-24.04-arm`) and `The sandbox (linux/x86_64)` (`ubuntu-latest`), `needs: check`: the
+  macOS job cross-compiles FOUR executables (`mc-linux{,-x86_64}{,-gnu}`, `mc build` writes the
+  dynamic ELF itself since M42) into `mc-linux-sandbox`; each job flips
+  `kernel.apparmor_restrict_unprivileged_userns` both ways and asserts `mc sandbox check` in each
+  state, runs the unprivileged cell and the root cell (`scripts/ci-sandbox-cell.sh`, 70 lines: a
+  skip on a runner is a failure unless it is a test's own `// skip-linux:` header, and `0 failed`
+  is required), `scripts/sandbox-trace.sh --check` with `strace`, and `docker run` WITHOUT
+  `--privileged` (`userns: EPERM`, `run` -> `cannot unshare: EPERM`, exit 126). Both contexts go
+  into the required checks after the merge (`docs/ci.md` § Branch protection).
+  **The runners' answers** (kernel `6.17.0-1022-azure`, glibc 2.39, Landlock **abi 7**): sysctl = 1
+  -> `userns: restricted (apparmor)` exit 1; sysctl = 0 -> `userns: ok` **exit 0** -- the cell no
+  local oracle could measure. Suites 52/50 ok, 0 failed, per cell; box cost ~2.1-2.2 ms.
+  **Two defects only CI could find**, both fixed here: (1) a profile is a UNION over glibc versions
+  (2.39 needs `rt_sigaction` and `clone`) -- `sandbox-trace.sh` gained `--union`/`--strict`, and
+  `--check` fails only on "the trace has a call the table lacks", reporting the reverse as `note`;
+  (2) **`lex_readable` (`src/lex.mc`) was the one `open` in `src/` without `c_int()`** (an M45 D8
+  miss): on a glibc host a failing `open` returns `0x00000000ffffffff`, so every missing file was
+  "readable" and `mc build` on a fresh tree died with `cannot open: build/.mc-usage.toml`; it also
+  affected `[include].paths`. One line.
+  `docs/guide/99-sandbox.md` (205 lines, 2 samples compiled and not run, with the reason on the
+  page); `docs/reference/sandbox.md` complete (the four CI cells in § Hosts, the union rule, the
+  Docker-Desktop `fakeowner` finding); `check-parts` gained acceptance 9's second half (a compiler
+  without `<mc/core_sandbox>` prints no `sandbox` usage line and refuses `mc sandbox` as
+  `cannot open: sandbox`). Oracles cleaned (VPS `/root/m43`, `mcbox` user, Lima `/tmp`; sysctl
+  back to 1 on both).
+  -- `stage0/`, `lib/`, `tests/*.mc` untouched; bundle 86 files (blob 478867 B); `make check` RC 0
+  (`check-lex`/`ast`/`asm` 134/134, `check-obj` 32/32, fixed point 1100464 B, empty `--dump-asm`
+  diff, `check-limits` 17/17, `test-sandbox` 52 ok / 1 skipped, `check-docs` 192 symbols / 33 flags
+  / 50 samples / 318 links, site 87 pages); four Linux cells RC 0; `check-inert` against a `mc1`
+  from 3966268 identical everywhere. Goldens rewritten (twice in this step: the union, then the
+  `lex.mc` line), final: `mc2.sha256`
+  `f8b05c08c9f06a14ba17ae3f329f240396ff5dc2473c07c445a4013feba173e1`, Linux `d8bdbeeb…da6b59` /
+  `ed7c7f61…fd08dd`, Windows `4de1c3c9…d48cf3` / `7da0aa71…1c0d01`. Draft PR #23: three CI
+  rounds, the last two **14/14 green**.
 - Next: M18 or M24 (`docs/plan.md`); M40 (the word-size sweep AVR/PIC need) is
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
 - M24 step A ✔ (`docs/specs/M24.md` § M1-M6, M8 and decision D5): **Tier 4 -- the inert half.
