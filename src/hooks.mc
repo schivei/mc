@@ -26,6 +26,10 @@
 // node, ahead of every on_stmt hook, which is the only place a scope guard can
 // put code that must run on every edge out of a block.
 //
+// M41.5: `syntax_param(&f)` is the parameter position -- the one place on the
+// parse path that had no hook at all. It is keyed by nothing, like syntax_lit,
+// because the token it must beat is `i64`, a core word no keyed table may own.
+//
 // M21: two more grammar positions, same shape. `syntax_expr(word, &f)` says the
 // word opens an EXPRESSION (`parse_primary` consults it first) and
 // `syntax_infix(word, prec, &f)` teaches a binary operator — that one keeps no
@@ -351,6 +355,54 @@ i64 run_syntax_lit() {
     return 0;
 }
 
+// ---- M41.5: syntax_param, the parameter position ----
+// syntax_param(&f) registers `i64 f()`, consulted by parse_params at the HEAD
+// of its loop -- right after the `)` test and BEFORE type_of_token. The handler
+// returns the index of an N_PARAM it built, or 0 meaning "the core handles this
+// one", the same convention syntax_lit has.
+//
+// The placement is the whole point. A parameter that opens with a word a module
+// taught (`params i64 xs`) has to reach the handler before the core demands a
+// type, and a parameter that wants a trailer (`i64 y = 10`) has to be read as a
+// WHOLE by whoever records the trailer -- p_type(), p_ident(), then the `=` and
+// parse_expr(0) the module keeps for itself. Neither is reachable from the
+// hooks that existed: `syntax` sees only the declaration's first token, and
+// `word_add` refuses the core type words, so no keyed table can ever fire on
+// `i64`.
+//
+// Not keyed by a word, and not an `on_*` hook: the `on_*` family runs AFTER a
+// node exists and cannot consume tokens, which is exactly what a parameter with
+// a default has to do. Handlers run in registration order and the first
+// non-zero answer wins.
+//
+// Shaped like on_stmt and short-circuited by `nsynp == 0` in parse_params, so
+// an untaught compiler does not even make the callp.
+uptr synp_fn;
+i64  synpcap = 0;
+i64  nsynp = 0;
+
+uptr synp_fn_at(i64 i) { return ld64(synp_fn + i * 8); }
+
+void syntax_param(uptr fn) {
+    synp_fn = grow(T_SYNPARAM, synp_fn, nsynp, &synpcap, 8);
+    st64(synp_fn + nsynp * 8, fn);
+    nsynp = nsynp + 1;
+}
+
+// the handlers in registration order; the first non-zero node wins. The two
+// guards a returned node has to pass -- it advanced, and it is an N_PARAM --
+// live in parse.mc, next to the position they defend.
+i64 run_syntax_param() {
+    i64 i = 0;
+    loop {
+        if (i >= nsynp) break;
+        i64 p = callp(synp_fn_at(i));
+        if (p) return p;
+        i = i + 1;
+    }
+    return 0;
+}
+
 // M21. syntax_infix(".+", 9, &f): a binary operator taught by code. There is no
 // new table: the `#infix` entry gains one column (INF_FN), which is what puts a
 // taught operator and a `#infix` one in a SINGLE comparable precedence order.
@@ -364,8 +416,22 @@ i64 run_syntax_lit() {
 // not an override. `#infix` on the same token afterwards is not an error — it
 // goes through infix_set, which clears the handler (the template wins, and
 // docs/surface.md says so).
+//
+// M41.5: a CORE operator may be taught too. `word_add` refuses `if` and `i64`
+// but not `+` -- punctuation is outside K_U8..K_EXTERN -- so the registration
+// was already accepted; what it was not was EFFECTIVE, because ops_init() ran
+// later, as parse_unit's first statement, and rewrote the entry handler
+// included. ops_init() is now idempotent and is called from HERE, so the core
+// entry exists before the lookup below: the duplicate test sees it (a core
+// operator carries no handler, so the first registration is allowed and only a
+// second one is refused), and infix_set re-declares it with the module's
+// precedence. The module's `prec` wins, exactly as a `#infix` on the same token
+// would: this is a re-declaration of the operator, not a decoration of the
+// core's. docs/reference/hooks.md § syntax_infix lists the core precedences a
+// module has to repeat if it wants to keep them.
 void syntax_infix(uptr word, i64 prec, uptr fn) {
     if (prec < 1 || prec > 100) die2("precedence out of 1..100", word);
+    ops_init();                              // M41.5: the core table, before the lookup
     i64 tok = word_add(word);
     i64 i = infix_find(tok);
     if (i >= 0 && ie_fn(ie_at(i))) die2("operator already taught", word);

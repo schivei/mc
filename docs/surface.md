@@ -631,7 +631,7 @@ things a template can't express. Tier 3 is the answer, and it's the same idea as
 user writes a `.mc` module that runs inside the compiler**, this time during *parsing*, using the
 parser's public API.
 
-### The seven registrations
+### The eight registrations
 
 | registration | what you write | when it runs |
 |---|---|---|
@@ -642,10 +642,11 @@ parser's public API.
 | `type_alias("bool", TY_U8)` | — | `type_of_token`, after the core's own words |
 | `on_stmt(&f)` | `i64 f(i64 n)` — returns the node, a replacement, or 0 | `parse_stmt`, after **every** statement node exists (M21.5) |
 | `on_jump(&f)` | `i64 f(i64 n, i64 kind, i64 depth)` — same three answers | `parse_stmt_core`, as it builds a `return`/`break`/`continue` (M31) |
+| `syntax_param(&f)` | `i64 f()` — returns an `N_PARAM`, or 0 for "the core handles this one" | `parse_params`, at the head of its loop, **before** `type_of_token` (M41.5) |
 
 The first five register the word in the lexer (`tok_add`), the same as `#rule` does with its
-dispatch literal, and all five **refuse a core keyword** (`K_U8`..`K_EXTERN`); the last two claim
-no word at all — they observe nodes the parser has just built:
+dispatch literal, and all five **refuse a core keyword** (`K_U8`..`K_EXTERN`); the last three claim
+no word at all — they observe, replace or own nodes at a position the parser reaches on its own:
 
 ```
 $ build/mc1 --exe my_compiler.mc -o my-mc && ./my-mc x.mc -o x.o
@@ -1427,3 +1428,93 @@ under a recreated compiler would show up there as a changed byte in a flat image
 
 See `docs/guide/98-recreating-the-compiler.md`, `docs/reference/bundle.md` § The parts of the core
 and `docs/reference/hooks.md` § 7.
+
+
+## M41.5 — the parameter list
+
+The one position on the parse path with no hook at all was `parse_params`. `syntax` fires on a
+declaration's **first** token, and `word_add` refuses the core type words, so nothing keyed by a
+word could ever be reached from `i64`. A consumer porting a real language onto `mc`'s own function
+syntax hit it twice, on two features that are parameters and nothing else:
+
+```c
+i64 f(i64 x, i64 y = 10)     // a default parameter
+i64 g(params i64 xs)         // a typed variadic
+```
+
+`syntax_param(&f)` registers `i64 f()`, consulted at the head of `parse_params`'s loop — right
+after the `)` test and **before `type_of_token`**. The handler returns the `N_PARAM` it built, or
+**0**, "the core handles this one". Handlers run in registration order, the first non-zero answer
+wins, and with none registered the branch is not taken.
+
+Three guards, the same shape the other handler positions have: a handler that returns a node
+without consuming a token is refused (`syntax_param handler consumed no tokens: <word>`), and so is
+a node that is not an `N_PARAM` (`syntax_param handler did not return a parameter`) — that node
+goes straight into a list `gen_lower` walks by `nd_type`/`nd_name`, so anything else is a wrong
+frame layout later rather than a diagnostic here.
+
+The third came out of the review, and it is the one with teeth: **0 means the handler read
+nothing.** A handler that consumed tokens and *then* declined leaves `parse_params` in the middle
+of a parameter, and the core reads whatever is left as a whole one — a handler that ate `i64 x ,`
+turns `i64 f(i64 x, i64 y, i64 z)` into a two-parameter `f(y, z)` that compiles clean and runs with
+the wrong arity. That is now `syntax_param handler consumed tokens and returned 0: <word>`, and
+M24's literal position, which had the same latent shape, answers `syntax_lit handler consumed
+tokens and returned 0: <literal>`.
+
+`p_decl_name()` comes with it: the name of the declaration being parsed, 0 between declarations. A
+handler needs it to know *whose* parameter it is reading — in `lib/user_syntax_demo.mc`,
+`i64 f(i64 x, i64 y = 10)` and `i64 g(i64 x, i64 y = 30)` differ only in a default at the same
+parameter index, and the module keys its table by that name. The core sets it where the core reads
+the name: `parse_top`, `parse_extern`, and `parse_function` for the duration of the body. A handler
+that owns a container and declares its members itself reads those names itself, so it announces
+each one with **`p_set_decl_name(name)`** before calling `parse_params()` — the demo's
+`capsule Name { … }` is that shape, and without the announcement its two members cannot be told
+apart.
+
+**The core does nothing with what the handler recorded.** Filling `f(1)` in is the module's own
+half, done from a `pass()` with `decl_find` + `decl_nparams`, where the whole unit exists. That
+division is deliberate: `mc` does not grow default parameters or variadics — it grows the hook that
+lets a module have them.
+
+Inert by construction: `lib/user_param_nop.mc` registers `syntax_param` and answers 0 for every
+parameter of every function, and `scripts/check-surface.sh` checks that its `--dump-ast` and its
+objects are byte-identical to the untaught compiler's over the whole `tests/` corpus.
+
+See `docs/specs/M41.5.md` and `docs/reference/hooks.md` § 3.
+
+## M41.5 — and a core operator
+
+The second thing the same consumer hit. `syntax_infix("+", 9, &h)` was **accepted** — `word_add`
+refuses the core keywords, and `+` is punctuation, outside `K_U8..K_EXTERN` — and then silently
+undone: `ops_init()` filled the core precedence table as `parse_unit`'s first statement, after
+`user_init()`, and `infix_set` clears the handler column of the entry it writes. A handler with an
+unconditional `die()` in it never fired, and `1 + 2` compiled to `3`.
+
+The owner's decision was **permit**, not refuse: M24 already lets a module take the machine slot
+that lowers `+` (`lib/user_badmach.mc` makes an addition come out as a subtraction), so refusing
+the same thing one seam earlier, at the parser, would have been arbitrary. `ops_init()` is now
+idempotent and `syntax_infix` calls it, so the core table exists **before** a module reaches for
+one of its entries.
+
+```c
+// lib/user_coreop.mc — `a + b` becomes plus(a, b), a function the PROGRAM provides
+i64 co_plus(i64 left) {
+    i64 line = p_line(); uptr fl = p_file();
+    i64 right = parse_expr(10);              // prec 9, left-associative -> prec + 1
+    set_nd_next(left, right);
+    i64 n = node_new(N_CALL, line, fl);
+    set_nd_name(n, "plus"); set_nd_a(n, left); set_nd_type(n, TY_I64);
+    return n;
+}
+void user_init() { syntax_infix("+", 9, &co_plus); }
+```
+
+The rules that did **not** move: a `#infix "+"` in the source still drops the handler (M21), and a
+second `syntax_infix` on the same token is still `operator already taught: +`. The rule that had to
+be decided: **the module's `prec` wins** — `syntax_infix` re-declares the entry the way `#infix`
+does, so a module that wants the core's grouping repeats the core's number. The same demo teaches
+`*` at 3 instead of 10, and `55 - 6 * 7` parses as `star(55 - 6, 7)`.
+
+Inert by construction, as always: with nothing registered, `ops_init()` still runs from
+`parse_unit` and every object and every `--dump-ast` over `tests/` is byte-identical to the frozen
+seed's.

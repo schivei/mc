@@ -1852,6 +1852,235 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `src/mc.mc`, so `build/mc2.o` moves in each of them -- recorded in `docs/specs/M41.md`
   § Implementation notes 9, each rewrite after an empty `--dump-asm` diff and a passing
   `cmp build/mc2.o build/mc3.o`.
+- M41.5 done (`docs/specs/M41.5.md`, `docs/surface.md` § M41.5, `docs/reference/hooks.md` § 3):
+  **a module can participate in a function's parameter list.** `stage0/` untouched (2848/3000;
+  `git diff main -- stage0/` is empty). `parse_params` was the one position on the parse path with
+  no hook at all -- `syntax` fires on a declaration's FIRST token and `word_add` refuses the core
+  type words, so nothing keyed by a word can ever be reached from `i64`. The consumer (the `ngen`
+  port of teko, written against `docs/`) is blocked on two things that are parameters and nothing
+  else: `i64 f(i64 x, i64 y = 10)` and `i64 g(params i64 xs)`. The owner chose the HOOK over the
+  features: neither default parameters nor variadics are in the language.
+  * **`syntax_param(&f)`** (`src/hooks.mc` +52/-0, 19 code lines): `i64 f()` -> the index of an
+    `N_PARAM`, or **0 = "the core handles this one"**. Growable table (`grow`), arena tag
+    `T_SYNPARAM` inserted after `T_ONJUMP` (`src/arena.mc` +16/-13 -- one new `#define`, one name,
+    one seed, and the twelve renumbered tags; `T_COUNT` 38 -> 39, and `mc limits` gains a
+    `syntax_param` row). Handlers run in registration order, the first non-zero answer wins, and
+    `nsynp == 0` short-circuits the whole branch the way `nonstmt`/`nonjump`/`nonlit` do.
+    Consulted at the HEAD of `parse_params`'s loop, right after the `K_RPAR` test and **before
+    `type_of_token`** -- which is the entire point: a parameter opening with a taught word has to
+    get there before the core demands a type, and a parameter with a trailer has to be read WHOLE
+    (`p_type()`, `p_ident()`, then `p_accept(K_ASSIGN)` + `parse_expr(0)`) by whoever records the
+    trailer. Named `syntax_param` and not `on_param`: the `on_*` family runs after a node exists
+    and cannot consume tokens.
+    Two guards, both at the parameter's own position: `syntax_param handler consumed no tokens:
+    <word>` (the `stmt_syntax` precedent, cursor AND token start compared) and `syntax_param
+    handler did not return a parameter` (index out of range included) -- that node goes straight
+    into a list `gen_lower` walks by `nd_type`/`nd_name`, so anything else is a wrong frame layout
+    later rather than a diagnostic here. `MAXPARAMS` and `at most 12 parameters` still apply to
+    what the handler returns.
+  * **`p_decl_name()`** (`src/parse.mc` +64/-11, 33 code lines, with `param_syntax`): the name of
+    the top-level declaration being parsed, 0 outside one. Set by `parse_top` **and by
+    `parse_extern`** (a deviation from the design's literal text, on record in the spec § 6: an
+    `extern` is a top-level declaration and it calls `parse_params`) the moment the name is read,
+    cleared by `top_add`. The storage is called `cur_decl` because `decl_name(uptr msg)` is already
+    a function in `parse.mc`.
+  * Proofs, all in `lib/user_syntax_demo.mc` (707 -> 850) and `scripts/check-surface.sh`:
+    (a) `i64 f(i64 x, i64 y = 10)` with the module recording the default and completing `f(1)`
+    from a `pass()` with `decl_find`/`decl_nparams` -- exit 42; (b) `i64 sum2(params i64 xs)`,
+    the taught word lowering to `PARAM type=uptr name=xs`, exit 42, and the default compiler
+    refusing both sources (`expected ) in the parameter list`, `type expected in parameter`);
+    (c) `p_decl_name()` with teeth -- `f` and `g` differ ONLY in the default at the same parameter
+    index, and the tree shows `INT val=10` in one call and `INT val=30` in the other, which a
+    module ignoring `p_decl_name()` could not produce; (d) `tests/err/071-param-noadvance.mc` and
+    `072-param-nonparam.mc` with their exact messages and the two fixture handlers `sd_pnop`/
+    `sd_pbad` (the `sd_nop`/`sd_nil` shape); (e) inertness -- `lib/user_param_nop.mc` +
+    `lib/mc_param_nop.mc`, a module whose ONLY registration is `syntax_param` and whose handler
+    answers 0 for every parameter of every function: `--dump-ast` and objects byte-identical over
+    the whole `tests/` corpus.
+  * `examples/lang/README.md` said "At most 8 parameters"; `MAXPARAMS` has been 12 since M38 and
+    the example has no ceiling of its own (`lang_expr.mc`, `lang_stmt.mc` test against
+    `MAXPARAMS`). Corrected to 12 slots / at most 10 arguments besides `self`.
+  -- core cost: **132 added lines, 66 of them neither comment nor blank** (`parse.mc` +64/33,
+  `hooks.mc` +52/19, `arena.mc` +16/14, twelve of those last being the renumbered tags).
+  `make bundle` re-run BEFORE bootstrapping (`tools/bundle.list` gained `mc_param_nop` and
+  `user_param_nop`): **77 files, raw 789698 -> LZ 369888, blob 370822 B**, `<mc/bundle_data>` one
+  `#embed` node plus a 308-value index. `make check` green end to end (RC 0, zero FAIL):
+  `budget` 2848/3000, `test` 32/32, `check-lex` 122/122 (2 skipped), `check-ast` 122/122,
+  `check-asm` 122/122, `check-obj` **32/32 identical to the frozen seed**, `check-bundle`
+  (reproducible + fresh, lz round trip 101 cases), `bootstrap` at a fixed point (`mc2.o == mc3.o`,
+  857240 bytes; the `--dump-asm` diff between `mc1` and `mc2` is **empty**), `check-surface` 32/32
+  + every M41.5 case, `test-exe` 32/32, `check-mc` 7/7, `check-standalone`, `check-parts`,
+  `check-toml` 10/10, `check-build` 21/21, `check-stubs` 9/9, `check-limits` 17/17 under 90%,
+  `check-minimal`, `test-linux` 33/33, `test-linux-x86_64` 30/30, `test-windows` 35/35 +
+  `test-windows-x86_64` 33/33 cross-compiled, `check-examples`, `check-lang` 14, `check-conc` 21,
+  `check-desktop`, `check-float`, `check-wide`, `check-kernel` (QEMU 11.0.1, exit 0),
+  `check-docs` (**180 symbols**, 19 flags, 17 TOML keys, 10 directives, 47 samples, 243 links),
+  `site` 81 pages + `check-site` (0 link problems).
+  `scripts/check-inert.sh build/mc1.pre build/mc1` (pre = a `mc1` built from 752d385): **33
+  objects identical** (`tests/*.mc` and `src/mc.mc`) plus byte-identical artefacts for
+  `examples/api`, `examples/lang`, `examples/conc`, `examples/desktop` and `examples/kernel`
+  through the taught compiler each of them builds.
+  The five goldens rewritten **once**, only after the empty `--dump-asm` diff and
+  `cmp build/mc2.o build/mc3.o`: `mc2.sha256` `779f272d...31f9e` ->
+  `17adb08037b7afb30e31c81ed252a6bb6555ffc46831df54c7d5c0969f4d24ce`; the Linux pair deleted and
+  re-recorded by `make check-linux-host` (Docker, both arches, each after its own fixed point
+  `mc2l.o == mc3l.o` and with the cross proof green) --
+  `mc2-linux-arm64.sha256` `7fefed77dafb84ad04bdeee737cdfa5bc1df70112a685a1e1e52eac265b5bdff`,
+  `mc2-linux-x86_64.sha256` `912613369fedc29bd8c58c42ad973b1da08c0e9c06a828e4a6bed7d76689c05d`;
+  the Windows pair cross-computed per `tests/golden/README.md` --
+  `mc2-windows-arm64.sha256` `2aed564c9a9f37c891adb124b01c49d5a5f28abf02d3c69a937faae4142d32ce`
+  (872667 B), `mc2-windows-x86_64.sha256`
+  `a41a3c727bf13094f3a1907ce7592704e032aa12244339b964afccba4dec4784` (891291 B).
+- M41.5, second follow-up (`docs/specs/M41.5.md` §§ 8-11, `docs/reference/hooks.md` §
+  `syntax_infix`, `docs/surface.md` § "M41.5 -- and a core operator"): **a module may teach a CORE
+  operator.** `stage0/` untouched (2848/3000). The defect the same `ngen` consumer exposed:
+  `syntax_infix("+", 9, &h)` was ACCEPTED -- `word_add` refuses only `K_U8..K_EXTERN`, and `+` is
+  `K_ADD`, punctuation outside that range -- and then silently UNDONE, because `parse_unit()` ran
+  `ops_init()` as its first statement, after `user_init()`, and `infix_set`'s last line is
+  `set_ie_fn(e, 0)` (M21's rule that a `#infix` drops the handler). Reproduced with a handler whose
+  body is an unconditional `die()`: before, the compiler built fine and `i64 main() { return 1 + 2; }`
+  compiled and exited **3**; after, `mc: probe: the + handler fired`, exit 1.
+  * **The owner's decision was permit, not refuse**, consistent with M24 already letting a module
+    replace the machine slot that lowers `+` (`lib/user_badmach.mc`).
+  * **The fix is five code lines**: `i64 ops_ready = 0;` plus a two-line guard at the top of
+    `ops_init()` (`src/parse.mc`) and one `ops_init();` call at the head of `syntax_infix`
+    (`src/hooks.mc`) -- 30 added lines in `src/`, **4 of them neither comment nor blank**.
+    Placement: NOT `src/cli.mc` (another branch is editing it heavily, and "before `user_init()`"
+    is three call sites, not one -- `cli.mc`, `driver.mc`, `limits.mc`, with `astdump.mc` parsing
+    without one at all); the table is an initialisation, not a phase, so it is built ON FIRST USE
+    and the first consumer triggers it. The guard also removes a latent bug: `ops_init` used to
+    re-fill the table on every `parse_unit`, which would have undone a `#infix` and every
+    `syntax_infix` if any process ever parsed two units.
+  * **The precedence question, decided and tested: the module's `prec` wins.** `syntax_infix`
+    re-declares the entry exactly as `#infix` does, so a module that wants the core's grouping
+    repeats the core's number (`docs/reference/language.md` § 3). M21's rule is untouched (a
+    `#infix "+"` in the SOURCE still drops the handler) and the duplicate refusal stays -- the
+    FIRST registration on a core operator is allowed, because a core operator carries no handler
+    to override.
+  * Proofs, `lib/user_coreop.mc` + `lib/mc_coreop.mc` (the `user_badmach`/`mc_badmach` shape) and
+    `scripts/check-surface.sh` (+121/-20): the taught `+` lowers `a + b` to a call `plus(a, b)`
+    the PROGRAM provides -- `v(50) + v(8)` is **58** with `build/mc1` and **42** with
+    `build/mc-coreop`, and `--dump-ast` holds `CALL type=i64 name=plus` with no `op=+`; `*` taught
+    at **3** instead of the core's 10 makes `55 - 6 * 7` parse as `star(55 - 6, 7)` = **42**
+    against **13** for the stock compiler; `--dump-rules` prints `infix + prec 9 left handler`,
+    `infix * prec 3 left handler`, `infix - prec 9 left`; a `#infix "+" 9 left $1 - $2` in a source
+    that defines no `plus` compiles and exits 42 (the handler would have died with
+    `unknown function: plus`); and `lib/user_dupcoreop.mc` gives `mc: operator already taught: +`
+    at `user_init` time -- the old dupop block became a `dup_case` helper run for `.+` and for `+`.
+    No `tests/err/` case was added: the change introduces no new message, and
+    `066-infix-drops-handler.mc` passes unchanged with its exact text. The three new `lib/` files
+    are NOT in `tools/bundle.list`, following the M41 precedent for check-script-only modules
+    (`user_badwidth`, `user_uptr2`, `user_nou32`, `user_nold64`, `user_core_min`).
+  -- inertness: `scripts/check-inert.sh build/mc1.pre build/mc1` (pre = a `mc1` built from the
+  branch's HEAD before the edit) -- **33 objects identical** (`tests/*.mc` and `src/mc.mc`) plus
+  byte-identical artefacts for `examples/api`, `examples/lang`, `examples/conc`,
+  `examples/desktop` and `examples/kernel`. `make bundle` re-run BEFORE bootstrapping (77 files,
+  raw 791608 -> LZ 370822, blob 371756 B). `make check` green end to end (**RC 0, zero FAIL**):
+  `test` 32/32, `check-lex` 125/125 (2 skipped), `check-ast` 125/125, `check-asm` 125/125,
+  `check-obj` **32/32 identical to the frozen seed**, `check-bundle` (lz round trip 101 cases),
+  `bootstrap` at a fixed point (`mc2.o == mc3.o`, 858304 bytes; the `--dump-asm` diff between
+  `mc1` and `mc2` is **empty**), `check-surface` 32/32 + the five new core-operator cases + inert,
+  `test-exe` 32/32, `check-mc` 7/7, `check-standalone`, `check-parts`, `check-toml` 10/10,
+  `check-build` 21/21, `check-stubs` 9/9, `check-limits` 17/17 under 90%, `check-minimal`,
+  `test-linux` 33/33, `test-linux-x86_64` 30/30, `test-windows` 35/35 + `test-windows-x86_64`
+  33/33 cross-compiled, `check-examples`, `check-lang` 14, `check-conc` 21, `check-desktop`,
+  `check-float`, `check-wide`, `check-kernel` (QEMU 11.0.1, exit 0), `check-docs` (180 symbols,
+  19 flags, 17 TOML keys, 10 directives, 47 samples, 244 links), `site` 81 pages + `check-site`
+  (0 link problems). The five goldens rewritten once, only after the empty `--dump-asm` diff and
+  `cmp build/mc2.o build/mc3.o`: `mc2.sha256` `17adb080...4d24ce` ->
+  `0883ef0cedc2f388fa6937452e62d9c0deecbfa81e52b91b64d16526b930bae1`; the Linux pair deleted and
+  re-recorded by `make check-linux-host` -- `mc2-linux-arm64.sha256`
+  `58fef265ba539e386c114f427cc60fffb355b8fa390d38e1a89f85e73609ff2b`,
+  `mc2-linux-x86_64.sha256`
+  `6361d20d6e08e9b57e142dbadfed08e608a43147de324c563c45c2b944132eff` (each after its own
+  `mc2l.o == mc3l.o` and with the cross proof against the macOS `build/mc2.o` green); the Windows pair cross-computed per
+  `tests/golden/README.md` -- `mc2-windows-arm64.sha256`
+  `2ccfc7b850fcd7c17e88ec1b152aaaa399cc12ddc4c53445caf057fd9ef88ebe` (873735 B),
+  `mc2-windows-x86_64.sha256`
+  `bfe9e7540023050a1af5684f787f430f5e5faba36ce374a74f74f9b935d45477` (892351 B).
+- Post-M41.5 batch (review, `docs/specs/M41.5.md` § 12): the three findings the PR review raised.
+  The whole code change is `src/parse.mc` **+45/-2, 19 of the added lines neither comment nor
+  blank**; `stage0/` untouched (2848/3000, `git diff origin/main -- stage0/` empty). Rebased onto
+  `origin/main` 611671a first (PR #15 + #14): the only conflicts were generated or aggregated
+  files -- `src/bundle_data.mc` and the five goldens (regenerated/re-recorded below),
+  `examples/lang/README.md`, where main had made the same "8 parameters -> 12" correction, so this
+  branch's commit `f40fbab` became empty and was dropped. `CLAUDE.md`, `docs/surface.md`,
+  `docs/reference/hooks.md` and `docs/reference/diagnostics.md` auto-merged with both sides' text
+  (main added no § State entry of its own in those two PRs).
+  1. **A `syntax_param` handler that consumed tokens and then returned 0 was believed** (HIGH).
+     `param_syntax()` ran the "consumed no tokens" guard only on the non-zero answer, so 0 --
+     "the core handles this one" -- was taken at face value with the cursor already moved.
+     Reproduced with a handler that reads `peat i64 x` and the comma after it and answers 0:
+     `i64 f(peat i64 x, i64 y, i64 z)` came out of `--dump-ast` as a **two-parameter** `f(y, z)`,
+     compiled clean, linked, and returned 42 for `f(4, 2)` -- a three-parameter declaration
+     running with the wrong arity, no diagnostic anywhere. The guard now compares the cursor AND
+     the token start on **both** answers: `syntax_param handler consumed tokens and returned 0:
+     <word>`, at the parameter's own position, with the word copied from the token the handler was
+     GIVEN (`xstrdup(t0, l0)`) rather than from `cur_name()`, which by then names something else.
+     **`syntax_lit` had the same latent shape** (M24) and is fixed in the same commit: a handler
+     that moved the cursor with `p_take_lit` and then declined left `parse_primary` building its
+     `N_INT` out of a token whose span no longer covers what was read -- `return 7q;` compiled
+     clean and exited **7**, the `q` swallowed. Now `syntax_lit handler consumed tokens and
+     returned 0: <literal>`. Both checks are at the END of the handler chain, not per handler:
+     `run_syntax_param`/`run_syntax_lit` live in `src/hooks.mc`, which is included before
+     `src/parse.mc` and cannot see `cp` or `cur` -- so the two broken fixtures are registered LAST
+     in `lib/user_syntax_demo.mc` (`sd_peat`, `sd_leat`), and their headers say why.
+  2. **`p_decl_name()` was blind inside a handler that owns the declaration** (MEDIUM).
+     `cur_decl` was set only by `parse_top`/`parse_extern` -- the two places the CORE reads a
+     name -- so a `syntax` handler that parses a container and declares each member with the
+     public `parse_params()` + `parse_function()` got the enclosing declaration's name, or 0, for
+     every member, while `docs/reference/hooks.md` recommends keying `syntax_param` bookkeeping by
+     exactly that value. Two changes: `parse_function(ty, name, params)` sets `cur_decl = name`
+     for the duration of the body and **restores** the previous value (a module may nest a
+     declaration through `p_push_source`), and `void p_set_decl_name(uptr name)` joins the public
+     API for a handler that reads the member's name itself. Proof in the demo:
+     `capsule Name { ... }` (named `capsule` and not `box` because `lib/syntax_demo_test.mc`
+     already declares a global `box`, and a `syntax` registration reserves its word program-wide)
+     declares two members carrying a default at the **same** parameter index with different
+     values; `--dump-ast` shows `INT val=10` in one call and `INT val=30` in the other and the
+     program exits 42. With the `p_set_decl_name` line commented out, the same source dies with
+     the module's own `a default parameter needs a named declaration`.
+  3. **The documented message text was missing its detail** (LOW). All four
+     `consumed no tokens` messages are `err_at2` calls and print `: <word>`;
+     `docs/reference/diagnostics.md` wrote all four without it. The four rows -- plus
+     `syntax_expr handler produced no expression` and `syntax_infix handler produced no
+     expression`, `err_at2` too -- now carry the suffix, so the table matches the runtime.
+  New: `tests/err/073-param-consumed-zero.mc` (the arity repro itself: the source that used to
+  compile clean and exit 42) and `tests/err/074-lit-consumed-zero.mc`, each asserted with its
+  exact message in `scripts/check-surface.sh`, which also gained the `capsule` case and its two
+  `--dump-ast` assertions and now refuses all three `syntax_param` sources with the default
+  compiler. `lib/user_syntax_demo.mc` +79/-2: `sd_peat`, `sd_leat`, `sd_capsule`.
+  -- `make bundle` re-run BEFORE bootstrapping (77 files, raw 802395 -> LZ 375334, blob 376268 B).
+  `make check` green end to end (RC 0, zero FAIL): `budget` 2848/3000, `test` 32/32, `check-lex`
+  125/125 (2 skipped), `check-ast` 125/125, `check-bundle` (reproducible + fresh, lz round trip
+  101 cases), `check-asm` 125/125, `check-obj` **32/32 identical to the frozen seed**, `bootstrap`
+  at a fixed point (`mc2.o == mc3.o`, 864584 bytes; the `--dump-asm` diff between `mc1` and `mc2`
+  is **empty**), `check-surface` 32/32 + 109 ok lines (every M21/M24/M31/M41.5 case plus the four
+  new ones) + inert, `test-exe` 32/32, `check-mc` 7/7, `check-standalone`, `check-toml` 10/10,
+  `check-build` 29/29, `check-stubs` 9/9, `check-limits` 17/17 under 90%, `check-minimal`,
+  `test-linux` 33/33, `test-linux-x86_64` 30/30, `test-windows` 35/35 + `test-windows-x86_64`
+  33/33 objects cross-compiled, `check-examples`, `check-lang`, `check-conc`, `check-desktop`,
+  `check-float`, `check-wide`, `check-kernel` (QEMU 11.0.1, `build/kernel.bin` 3304 B),
+  `check-docs` (181 symbols, 19 flags, 17 TOML keys, 10 directives, 47 samples, 247 links),
+  `site` 81 pages + `check-site` (0 link problems). `scripts/check-inert.sh` between a `build/mc1`
+  built from the rebased HEAD before the edit and the one after: **33 objects identical**
+  (`tests/*.mc` + `src/mc.mc`) and the five taught examples identical too
+  (`examples/api`, `lang`, `conc`, `desktop`, `kernel`).
+  `make check-linux-host` green for both architectures (RC 0), each after its own
+  `mc2l.o == mc3l.o` and with the cross proof (`mc2l --backend=macho src/mc.mc` byte for byte the
+  macOS `build/mc2.o`) green on both.
+  The five goldens rewritten **once**, each only after its own criterion: `mc2.sha256`
+  `0883ef0c...30bae1` -> `6766ee56750f9a8f5337f8d901d4196e114477c0552812cc1d34694ab574a5a4`
+  (after the empty `--dump-asm` diff and `cmp build/mc2.o build/mc3.o`); the Linux pair deleted
+  and re-recorded by `make check-linux-host` -- `mc2-linux-arm64.sha256`
+  `eda566cd2559486324a5199e80e80f9770002ba556e4e657f11ab2ece07e5af9`,
+  `mc2-linux-x86_64.sha256`
+  `a95ec2516cffe9059456a3a1d0863ba91b5dda6efa435bd06016804b4023ea59`; the Windows pair
+  cross-computed per `tests/golden/README.md` -- `mc2-windows-arm64.sha256`
+  `96841b9071b542a8f7b5bd83106b8f7209a18dfc3fccbbf56718c23a665cf2d9` (880099 B),
+  `mc2-windows-x86_64.sha256`
+  `0163654105ea20cf13faf88203a7fecefa7ff41664f20ed5f0d5b8737fdd5e73` (898911 B), both also
+  produced byte for byte by `build/mc2`.
 - Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
   `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
   from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:

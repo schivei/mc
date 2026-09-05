@@ -242,7 +242,7 @@ system or architecture becomes reachable from `mc.toml` without editing the driv
 
 ---
 
-## 3. Tier 3 and Tier 4 — the six word registrations, and the three node hooks
+## 3. Tier 3 and Tier 4 — the six word registrations, and the four hooks that claim no word
 
 Each of the six claims a **word** in the lexer and a **grammar position**. All six refuse a core
 keyword (`cannot redefine core keyword`), and all six reserve the word for the *whole program*,
@@ -261,10 +261,10 @@ vocabulary, and the parser says so plainly —
 
 In every case the parse is stopped **on the registered word**; consuming it is the handler's job.
 
-`on_stmt(&f)` (M21.5), `on_jump(&f)` (M31) and `syntax_lit(&f)` (M24) are the three registrations
-that claim no word — and `intrinsic(name, …)` (M24) claims a *call name* rather than a lexeme, so
-none of the paragraph above applies to it either. They so none of the paragraph above applies to them — they observe or replace nodes
-at a position the grammar reaches on its own. Each has its own section below.
+`on_stmt(&f)` (M21.5), `on_jump(&f)` (M31), `syntax_lit(&f)` (M24) and `syntax_param(&f)` (M41.5)
+are the four registrations that claim no word — and `intrinsic(name, …)` (M24) claims a *call name*
+rather than a lexeme, so none of the paragraph above applies to it either. They observe, replace or
+own nodes at a position the grammar reaches on its own. Each has its own section below.
 
 ### `void syntax(uptr word, uptr fn)`
 
@@ -348,6 +348,37 @@ itself — the last one works precisely because `=` is not in the core's infix t
 Teaching the same token twice is `operator already taught` — a second registration is a mistake,
 not an override. A `#infix` on the same token afterwards is *not* an error: it goes through
 `infix_set`, which clears the handler column, and the template wins.
+
+**A core operator may be taught (M41.5).** `word_add` refuses the core *keywords* (`if`, `i64`,
+`extern` …), but `+`, `*`, `==` and the rest are punctuation and were never in that range, so
+`syntax_infix("+", 9, &f)` has always been accepted. Until M41.5 it was accepted and then silently
+undone: the core precedence table was filled by `ops_init()` as `parse_unit`'s first statement —
+*after* `user_init()` — and filling an entry clears its handler column, so the handler never fired
+and `1 + 2` still compiled to `3`. `ops_init()` is now built **on first use** and `syntax_infix`
+calls it before it looks the operator up, so the core entry is already there when a module reaches
+for it. This is the parser-level counterpart of what M24 already allowed one seam later, where a
+module replaces the machine slot that lowers `+` (`lib/user_badmach.mc`).
+
+Three consequences, all tested by `scripts/check-surface.sh` against `lib/mc_coreop.mc`:
+
+* **The module's `prec` wins.** `syntax_infix` *re-declares* the entry, exactly as a `#infix` on
+  the same token would: precedence, associativity (left) and template are rewritten and the
+  handler is installed. A module that wants to keep the core's grouping has to repeat the core's
+  number — they are in [language.md](language.md) § 3, and `--dump-rules` prints the table in
+  effect. Teaching `*` at 3 really does make `a - b * c` parse as `star(a - b, c)`.
+* **`#infix` in the source still drops it.** M21's rule is untouched: a `#infix "+"` written in a
+  program compiled by the taught compiler rewrites the whole entry, handler column included, and
+  the template wins from that point on.
+* **The first registration on a core operator is allowed, a second is not.** A core operator
+  carries no handler, so there is nothing to override; once one is installed,
+  `operator already taught: +`.
+
+A taught core operator is also a word the registration reserved, so `err_name` may now blame it
+(`name reserved by a syntax/type_alias registration: +`) where a name was expected — in that
+compiler, `+` really is taught. The rewrite is unconditional and program-wide: the handler sees
+every `+` in every source that compiler reads, including the ones inside the functions the rewrite
+calls. A module that wants an operator only for its own type has to look at the operands and
+rebuild the core's node when they are not its own.
 
 ### `void type_alias(uptr name, i64 base)`
 
@@ -455,6 +486,79 @@ it, `res_expr` keeps its type, `fold` leaves it alone, and `MTASK_CONST` carries
 A module that registers `syntax_lit` and answers 0 for every literal must produce byte-identical
 trees and objects to a compiler without the hook; `lib/user_lit_nop.mc` is that module, and
 `scripts/check-surface.sh` runs it over the whole `tests/` corpus.
+
+Declining has the same rule the parameter position has: **0 means the handler read nothing.** A
+handler that moved the cursor with `p_take_lit` and then answered 0 would leave the core building
+its `N_INT` out of a token whose span no longer covers what was read, and the bytes it swallowed
+would be gone with no diagnostic; that is `syntax_lit handler consumed tokens and returned 0:
+<literal>` (M41.5, from the review).
+
+### `void syntax_param(uptr fn)` — the parameter position (M41.5)
+
+Registers `i64 f()`, consulted by `parse_params` at the head of its loop — **right after the `)`
+test and before `type_of_token`**. The handler returns the index of an `N_PARAM` it built, or **0**
+meaning "the core handles this one". Handlers run in registration order and the first non-zero
+answer wins; with none registered the branch is not taken at all.
+
+That placement is the whole point, and it is what no existing hook could give:
+
+* a parameter that opens with a **word the module taught** (`params i64 xs`) has to reach the
+  handler before the core demands a type. `syntax` sees only the *declaration's first token*, and
+  `word_add` refuses the core type words, so no keyed table can ever fire on `i64`;
+* a parameter with a **trailer** (`i64 y = 10`) has to be read *whole* by whoever wants the
+  trailer: `p_type()`, `p_ident()`, then `p_accept(K_ASSIGN)` and `parse_expr(0)` for what the
+  module records privately.
+
+It is a `syntax_*` registration and not an `on_param`: the `on_*` family runs *after* a node exists
+and cannot consume tokens, which is exactly what a default parameter has to do.
+
+```c
+i64 my_param() {
+    if (type_of_token(p_id()) < 0) return 0;     // not ours: the core diagnoses it
+    i64 ty = p_type();
+    uptr nm = p_ident();
+    if (p_accept(K_ASSIGN)) {
+        i64 e = fold(parse_expr(0));             // the default: recorded by the MODULE
+        my_record(p_decl_name(), e);             // ...keyed by the function it belongs to
+    }
+    return param_new(ty, nm);
+}
+```
+
+The core does nothing with what the handler recorded: **completing the call is the module's own
+half**. `lib/user_syntax_demo.mc` does it from a `pass()`, where the whole unit exists, with
+`decl_find` + `decl_nparams` (§ 4).
+
+`p_decl_name()` is what makes that record belong to something. It is set by the core on the
+`parse_top` / `parse_extern` / `parse_function` path — the paths where the core reads the name
+itself. A `syntax` handler that owns a *container* and declares its members with the public
+`parse_params()` and `parse_function()` reads those names itself, so it has to announce each one
+with **`p_set_decl_name(name)` before calling `parse_params()`**; without it every member answers
+the enclosing declaration's name, or 0, and two members with a default at the same parameter index
+are indistinguishable. `lib/user_syntax_demo.mc`'s `capsule Name { … }` is that shape, and
+`scripts/check-surface.sh` compiles two members that differ only in the value of the default at
+the same index.
+
+**Declining is only sound from the position the handler was called at.** 0 means "I read nothing
+and the core reads this parameter", so a handler that consumed tokens and *then* answered 0 would
+leave `parse_params` in the middle of a parameter and the core would read whatever is left as a
+whole one — a handler that ate `i64 x ,` turns `i64 f(i64 x, i64 y, i64 z)` into a two-parameter
+`f(y, z)` that compiles clean and runs with the wrong arity. The core checks it.
+
+Three guards, all raised at the parameter's own position:
+
+| message | when |
+|---|---|
+| `syntax_param handler consumed no tokens: <word>` | the handler returned a node without advancing — `parse_params` would offer it the same token forever |
+| `syntax_param handler consumed tokens and returned 0: <word>` | the handler read part of the parameter and then declined (M41.5, from the review) |
+| `syntax_param handler did not return a parameter` | what came back is not an `N_PARAM`. That node goes straight into a list `gen_lower` walks by `nd_type`/`nd_name`, so anything else is a wrong frame layout later, not a diagnostic here |
+
+The `MAXPARAMS` count and the `at most 12 parameters` diagnostic apply to what the handler returns,
+exactly as they apply to what the core reads.
+
+A module that registers `syntax_param` and answers 0 for every parameter must produce
+byte-identical trees and objects to a compiler without the hook; `lib/user_param_nop.mc` is that
+module, and `scripts/check-surface.sh` runs it over the whole `tests/` corpus.
 
 ### The lookup side
 
@@ -574,6 +678,8 @@ nothing else.
 | `uptr p_start()` | where it starts in the source buffer being lexed |
 | `i64 p_depth()` | how many sources the lexer has pushed — used to notice that a pushed source has been exhausted |
 | `i64 p_blockdepth()` | how many blocks are open in the function being parsed — the same number an `on_jump` handler receives as `depth`, rebased to 0 by `parse_function` |
+| `uptr p_decl_name()` | the name of the top-level declaration being parsed, or 0 between declarations. Set the moment `parse_top`/`parse_extern` read the name — so it is already there in `parse_params` — by `parse_function` for the duration of the body, and cleared by `top_add`. The pointer does not move while the declaration is read, so a handler may compare it by identity to notice that a new parameter list has started (M41.5) |
+| `void p_set_decl_name(uptr name)` | say whose declaration is being read. **Required** of a handler that owns a declaration and calls `parse_params()` itself: `p_decl_name()` is trustworthy on the `parse_top`/`parse_extern`/`parse_function` path, and only there — the core never sees a member name a `syntax` handler read, so without this call `p_decl_name()` answers the enclosing declaration's name, or 0, for every member (M41.5) |
 
 ### Advancing
 
@@ -601,7 +707,7 @@ These four are the parser's own entry points, under stable names:
 
 | function | effect |
 |---|---|
-| `i64 parse_function(i64 ty, uptr name, i64 params)` | reads the body block and returns the assembled `N_FUNC`. The parameter list is passed in **already built**, which is how a `class` handler prepends `self` to every method |
+| `i64 parse_function(i64 ty, uptr name, i64 params)` | reads the body block and returns the assembled `N_FUNC`. The parameter list is passed in **already built**, which is how a `class` handler prepends `self` to every method. `p_decl_name()` answers `name` while the body is being read, and the previous value is restored on return (M41.5) |
 | `void top_add(i64 n)` | append an `N_FUNC`/`N_GLOBAL`/`N_EXTERN`/`N_PROTO` — or a list of them — to the unit, in order, tagged with the `#section` in effect. The only way out for a `syntax` handler |
 | `void def_add(uptr name, i64 val, i64 line, uptr fl)` | register a `#define`; refuses a repeated name |
 | `i64 param_new(i64 ty, uptr name)` | a standalone `N_PARAM`, to prepend to a list |
@@ -628,9 +734,17 @@ first declaration of a name answers, a prototype ahead of its definition carryin
 signature. The three readers answer -1 for anything that is not a declaration, so an unchecked
 `decl_ret(decl_find(f))` after a -1 gives -1 rather than reading the node table at random.
 
-**Only what has been parsed so far is visible.** The core resolves names at lowering time, which is
-how a call to a function declared further down works; a module that needs a callee declared *after*
-the use site asks again from a `pass()`, when the whole unit exists.
+**Only what has been parsed so far is visible** — that is, only declarations `top_add` has already
+appended. The core resolves names at lowering time, which is how a call to a function declared
+further down works; a module that needs a callee declared *after* the use site asks again from a
+`pass()`, when the whole unit exists.
+
+In particular **the enclosing function is not visible from its own body**: `parse_top` appends it
+only once `parse_function` has read the whole body, so `decl_find` called from a `syntax_stmt`
+handler inside `f` answers -1 for `f`, and a recursive call is *not* an error. Whatever a module
+wants to know about the function it is standing in, it either tracks itself — `p_decl_name()` is
+the name, and the parameter list is whatever its own `syntax_param` handler built — or asks for
+from a `pass()`.
 
 ```c
 // widen x = f(a);  ->  T x = f((P0) a);   with T and P0 from f's declaration
@@ -717,6 +831,8 @@ class system, so that the generality of the mechanism is demonstrated rather tha
 | `make slot<i64, 3>;` | `p_push_source` + `p_subst_name`/`p_subst_int` + `p_depth` |
 | `widen x = f(a);` | `decl_find` + `decl_ret` + `decl_nparams` + `decl_param_type` |
 | `guard tick() { … }` | `on_jump` + `p_blockdepth` |
+| `i64 f(i64 x, i64 y = 10)` | `syntax_param` + `p_decl_name` + `pass` + `decl_find` + `decl_nparams` |
+| `i64 g(params i64 xs)` | `syntax_param` — a parameter that opens with a taught word |
 
 `lib/mc_syntax_demo.mc` is the compiler that wires it in — two `#include`s and nothing else. The
 program below is compiled by *that* compiler; the default `mc` rejects its very first line with

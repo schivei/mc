@@ -140,6 +140,12 @@ i64 unit_tail = 0;
 // when it opened its own body.
 i64 blk_depth = 0;
 
+// M41.5: the name of the top-level declaration currently being read, or 0
+// between declarations. Read through p_decl_name(). Named cur_decl, like
+// cur_sect and cur_dylib, because decl_name() is already the reader of a name
+// in a declaration a few hundred lines below.
+uptr cur_decl = 0;
+
 // ---- table accessors ----
 uptr ie_at(i64 i)     { return infixes + i * INF_SIZE; }
 i64  ie_tok(uptr e)   { return ld64(e + INF_TOK); }
@@ -244,7 +250,9 @@ i64 infix_find(i64 tok) {
 }
 
 // M21. 1 if the operator carries a syntax_infix handler. The core operators live
-// in the same table and are NOT taught: `+` is never blamed by err_name.
+// in the same table and carry none, so `+` is not blamed by err_name -- unless
+// (M41.5) a module has taught `+` itself, in which case it IS one of the words
+// that registration reserved and saying so is the point.
 i64 infix_is_taught(i64 tok) {
     i64 i = infix_find(tok);
     if (i < 0) return 0;
@@ -289,8 +297,21 @@ void prefix_set(i64 tok, i64 tmpl) {
     set_pe_tmpl(e, tmpl);
 }
 
+// M41.5: the core table is built ON FIRST USE, not once per parse. syntax_infix()
+// calls ops_init() before it looks its operator up, so a module that teaches a
+// CORE operator (`+`) finds the core entry already there and re-declares it.
+// Without the guard the fill ran as parse_unit's first statement -- after
+// user_init() -- and infix_set's `set_ie_fn(e, 0)` wiped the module's handler in
+// silence: the operator looked taught and behaved core. The guard is what makes
+// two call sites one initialisation; the table is a set of process-lifetime
+// globals, and a second fill would undo whatever the first parse has since
+// learned (a `#infix` in the source, a syntax_infix from user_init).
+i64 ops_ready = 0;
+
 // core precedences: higher binds tighter
 void ops_init() {
+    if (ops_ready) return;
+    ops_ready = 1;
     infix_set(K_OROR,   1, 0, 0);
     infix_set(K_ANDAND, 2, 0, 0);
     infix_set(K_OR,     3, 0, 0);
@@ -719,8 +740,19 @@ i64 parse_primary() {
         // always did. nonlit == 0 short-circuits, so an untaught compiler does
         // not even make the callp.
         if (nonlit) {
+            uptr cp0 = cp;                   // lexer cursor before the handlers
+            uptr t0 = tok_start(cur);        // ... and the token they received
+            i64 l0 = tok_len(cur);           // ... and its length, for the message
             i64 t = run_syntax_lit();
             if (t) return t;
+            // the same rule the parameter position needs: a handler that scanned
+            // the literal, moved the cursor with p_take_lit and then declined
+            // would leave the core building an N_INT out of a token that no
+            // longer describes the source it covers, and the bytes it swallowed
+            // would vanish with no diagnostic at all
+            if (cp != cp0 || tok_start(cur) != t0)
+                err_at2(fl, line, "syntax_lit handler consumed tokens and returned 0",
+                        xstrdup(t0, l0));
         }
         i64 n = node_new(N_INT, line, fl);
         set_nd_val(n, tok_val(cur));
@@ -1753,6 +1785,7 @@ i64 list_append(i64 head, i64 n) {
 // arrives, already tagged with the #section in effect. This is how a `syntax`
 // handler delivers what it produced — parse_top returns 0 in that case.
 void top_add(i64 n) {
+    cur_decl = 0;                            // M41.5: the declaration is finished
     if (n == 0) return;
     if (unit_tail) set_nd_next(unit_tail, n); else unit_head = n;
     loop {
@@ -1776,6 +1809,29 @@ i64  p_depth() { return nopen; }
 // inside that body, and one at the same depth or less is not (a declaration the
 // module generated mid-body starts its own function back at 0).
 i64 p_blockdepth() { return blk_depth; }
+
+// M41.5: the name of the top-level declaration being parsed, or 0 outside one.
+// parse_top and parse_extern set it the moment the name is read -- so it is
+// already there when parse_params runs -- and top_add clears it when the
+// declaration reaches the unit. A syntax_param handler needs it to know which
+// function the parameter it is reading belongs to; without it a module could
+// record a per-parameter fact but never say whose it was.
+//
+// The pointer is the one cur_name() made for that declaration and it does not
+// move while the declaration is being read, so a handler may compare it by
+// identity to notice that a new parameter list has started.
+uptr p_decl_name() { return cur_decl; }
+
+// M41.5 (review): and the write side, which a handler that owns a declaration
+// needs. parse_top and parse_extern set cur_decl the moment they read the name,
+// but a `syntax` handler that parses a container and calls the PUBLIC
+// parse_params()/parse_function() per member reads those names itself -- the
+// core never sees them, so p_decl_name() would answer the enclosing
+// declaration's name, or 0. A handler in that position announces the member
+// BEFORE calling parse_params(), and every syntax_param handler that keys
+// anything by p_decl_name() then works inside the container exactly as it does
+// at the top level. Cleared by top_add, like the core's own.
+void p_set_decl_name(uptr name) { cur_decl = name; }
 
 // M21 (2.3): records a delimited region WITHOUT parsing it. Enter with `cur` on
 // the opening token; returns the source bytes of the whole span, delimiters
@@ -1952,7 +2008,15 @@ i64 parse_function(i64 ty, uptr name, i64 params) {
     // the depth of wherever it was standing.
     i64 d0 = blk_depth;
     blk_depth = 0;
+    // M41.5 (review): the body is part of the declaration, so p_decl_name()
+    // answers `name` while it is being read -- which is what a handler that
+    // owns a container and calls this per member needs. The previous value is
+    // restored rather than cleared: a module may generate a declaration from
+    // inside a body (p_push_source + top_add), and the outer one is not over.
+    uptr n0 = cur_decl;
+    cur_decl = name;
     i64 body = parse_block();
+    cur_decl = n0;
     blk_depth = d0;
     i64 f = node_new(N_FUNC, line, fl);
     set_nd_name(f, name);
@@ -1960,6 +2024,43 @@ i64 parse_function(i64 ty, uptr name, i64 params) {
     set_nd_a(f, params);
     set_nd_b(f, body);
     return f;
+}
+
+// M41.5: runs the syntax_param handlers over the parameter position and checks
+// the two things the core cannot let a handler get wrong. Returns the N_PARAM,
+// or 0 when every handler declined -- and then parse_params reads the parameter
+// itself, exactly as it always has.
+//
+// Guard one is the one every other handler position has: a handler that
+// returned a node without consuming a token would leave parse_params on the
+// same token forever. Guard two is this position's own: the node goes straight
+// into a parameter list that gen_lower walks by nd_type/nd_name, so anything
+// that is not an N_PARAM is a wrong frame layout later, not a diagnostic here.
+i64 param_syntax() {
+    i64 line = tok_line(cur);
+    uptr fl = tok_file(cur);
+    uptr cp0 = cp;                               // lexer cursor before the handler
+    uptr t0 = tok_start(cur);                    // ... and the token it received
+    i64 l0 = tok_len(cur);                       // ... and its length, for the message
+    i64 p = run_syntax_param();
+    // Both answers are checked, and the 0 half is the one that bites. A handler
+    // that read tokens and then declined leaves parse_params in the MIDDLE of a
+    // parameter, and the core then reads whatever is left as a whole parameter:
+    // a handler that ate `i64 x ,` turns f(i64 x, i64 y, i64 z) into f(y, z),
+    // which compiles clean and runs with the wrong arity. Declining is only
+    // sound from the position the handler was called at.
+    i64 moved = cp != cp0 || tok_start(cur) != t0;
+    if (p == 0) {
+        if (moved)
+            err_at2(fl, line, "syntax_param handler consumed tokens and returned 0",
+                    xstrdup(t0, l0));
+        return 0;                                // nobody claimed it: the core reads it
+    }
+    if (!moved)
+        err_at2(fl, line, "syntax_param handler consumed no tokens", cur_name());
+    if (p < 0 || p >= nnodes || nd_kind(p) != N_PARAM)
+        err_at(fl, line, "syntax_param handler did not return a parameter");
+    return p;
 }
 
 // parameter list, parentheses included; none of them go through the stack
@@ -1972,17 +2073,25 @@ i64 parse_params() {
         if (tok_id(cur) == K_RPAR) break;
         i64 line = tok_line(cur);
         uptr fl = tok_file(cur);
-        i64 pty = type_of_token(tok_id(cur));
-        if (pty < 0)        err_at(fl, line, "type expected in parameter");
-        if (pty == TY_VOID) err_at(fl, line, "parameter of type void");
-        next();
-        if (tok_id(cur) != T_IDENT) err_name("parameter name expected");
-        check_def();
-        uptr pname = cur_name();
-        next();
-        i64 p = node_new(N_PARAM, line, fl);
-        set_nd_type(p, pty);
-        set_nd_name(p, pname);
+        // M41.5: the taught parameter comes first -- BEFORE type_of_token, which
+        // is what lets a module own a parameter that opens with a word of its
+        // own and a module that wants a trailer read `type name = expr` whole.
+        // With nothing registered not even the call happens.
+        i64 p = 0;
+        if (nsynp) p = param_syntax();
+        if (p == 0) {
+            i64 pty = type_of_token(tok_id(cur));
+            if (pty < 0)        err_at(fl, line, "type expected in parameter");
+            if (pty == TY_VOID) err_at(fl, line, "parameter of type void");
+            next();
+            if (tok_id(cur) != T_IDENT) err_name("parameter name expected");
+            check_def();
+            uptr pname = cur_name();
+            next();
+            p = node_new(N_PARAM, line, fl);
+            set_nd_type(p, pty);
+            set_nd_name(p, pname);
+        }
         if (tail) set_nd_next(tail, p); else head = p;
         tail = p;
         n = n + 1;
@@ -2005,6 +2114,7 @@ i64 parse_extern() {
     if (tok_id(cur) != T_IDENT) err_at(tok_file(cur), tok_line(cur), "name expected in extern");
     check_def();
     uptr name = cur_name();
+    cur_decl = name;                         // M41.5: an extern is a declaration too
     next();
     i64 params = parse_params();
     expect(K_SEMI, "expected ; after extern");
@@ -2091,6 +2201,7 @@ i64 parse_top() {
     if (tok_id(cur) != T_IDENT) err_name("name expected at top level");
     check_def();
     uptr name = cur_name();
+    cur_decl = name;                         // M41.5: p_decl_name(), for parse_params
     next();
     if (tok_id(cur) != K_LPAR) return parse_global(line, fl, ty, name);
     i64 params = parse_params();

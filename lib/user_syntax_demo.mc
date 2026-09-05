@@ -32,6 +32,25 @@
 //   jumpdepth / retcount         the depth of the deepest jump, and the returns
 //                                that still LOOKED like returns to on_stmt
 //
+// M41.5 adds the one parse position that had no hook at all -- the parameter
+// list (docs/specs/M41.5.md):
+//
+//   i64 f(i64 x, i64 y = 10)     a DEFAULT parameter, recorded by      (syntax_param
+//                                the module and filled in at the        + p_decl_name
+//                                call site from a pass()                + decl_find
+//                                                                       + decl_nparams)
+//   i64 g(params i64 xs)         a parameter that opens with a TAUGHT
+//                                word, lowered to `uptr xs`
+//
+//   capsule Name { ... }         a container whose members the MODULE     (syntax
+//                                declares, with the public parse_params()  + p_set_decl_name
+//                                and parse_function(), announcing each      + parse_function)
+//                                member's name before its parameters
+//
+// Three more, `pnop`, `pbad` and `peat`, are broken on purpose the way
+// `nop`/`nil` are, and so is the syntax_lit handler `sd_leat` (a literal ending
+// in `q`): tests/err/071 to 074 are their whole reason to be here.
+//
 // Two more registrations, `nop` and `nil`, exist only to prove the two guards
 // the core puts around a syntax_expr handler; they are broken on purpose and
 // tests/err/064 and tests/err/065 are their whole reason to be here.
@@ -657,6 +676,26 @@ i64 sd_lit() {
     return n;
 }
 
+// broken on purpose, and the reason tests/err/074 exists: it scans a literal
+// that ends in `q`, moves the cursor past the whole thing with p_take_lit --
+// and then declines. Nothing downstream could recover: the core would build its
+// N_INT out of tok_val, a token whose span no longer covers what was read, and
+// the bytes the handler swallowed would be gone with no diagnostic. Registered
+// LAST, so that no later handler can claim the position it left in the middle.
+i64 sd_leat() {
+    uptr s = p_start();
+    uptr e = p_src_end();
+    if (s >= e || !sd_dig(ld8(s))) return 0;
+    uptr q = s;
+    loop {
+        if (q >= e || !sd_dig(ld8(q))) break;
+        q = q + 1;
+    }
+    if (q >= e || ld8(q) != 'q') return 0;       // only `123q` is ours
+    p_take_lit(q + 1);                           // consumed...
+    return 0;                                    // ...and then declined
+}
+
 // ---- M24 (M7): a NAMED HARDWARE INSTRUCTION, on values the allocator placed ----
 // `rbit(x)` is AArch64's bit-reversal, which the core's operator set does not
 // have and `#opcode` cannot reach for an arbitrary expression: #opcode folds
@@ -671,6 +710,189 @@ void sd_rbit(i64 d, i64 nargs) {
     i64 rd = dst_reg(d);
     ei(I_EMIT, 0, 0, 0xDAC00000 | (rn << 5) | rd);   // rbit xd, xn
     dst_done(d, rd);                             // ...and spills it back if it has to
+}
+
+// ---- M41.5: syntax_param, the parameter position ----
+// Two things the mc language does not have, neither of them added to it:
+//
+//   i64 f(i64 x, i64 y = 10)     a DEFAULT parameter
+//   i64 g(params i64 xs)         a typed variadic, C#-style
+//
+// Both are parameters, and until M41.5 a module could not see a parameter at
+// all: `syntax` fires on the declaration's FIRST token, and `word_add` refuses
+// the core type words, so no keyed table can ever be reached from `i64`.
+// syntax_param is consulted at the head of parse_params's loop, before
+// type_of_token, which is why `params` gets there first and why `i64 y = 10`
+// can be read as one whole parameter by whoever wants the trailer.
+//
+// The division of labour is the point: the HOOK lets the module record the
+// default; completing the call `f(1)` is the module's own job and is done from
+// a pass(), with decl_find + decl_nparams. The core does nothing with what the
+// handler recorded and does not know it exists.
+#define SD_MAXDEF 16
+
+uptr sd_dfn[SD_MAXDEF];                          // the declaration a default belongs to
+i64  sd_didx[SD_MAXDEF];                         // its parameter index inside that declaration
+i64  sd_dval[SD_MAXDEF];                         // the constant
+i64  sd_ndef = 0;
+
+i64 sd_tok_params = 0;                           // the taught word `params`
+i64 sd_tok_pnop   = 0;                           // broken on purpose: tests/err/071
+i64 sd_tok_pbad   = 0;                           // broken on purpose: tests/err/072
+i64 sd_tok_peat   = 0;                           // broken on purpose: tests/err/073
+
+// the parameter counter, and what makes p_decl_name() load-bearing: it is reset
+// whenever the declaration under the cursor changes. The pointer p_decl_name()
+// returns is the one cur_name() made for that declaration and does not move
+// while the declaration is read, so identity is the right comparison.
+uptr sd_pfn  = 0;
+i64  sd_ppos = 0;
+
+i64 sd_param() {
+    uptr owner = p_decl_name();
+    if (owner != sd_pfn) {                       // a new declaration: back to parameter 0
+        sd_pfn = owner;
+        sd_ppos = 0;
+    }
+    i64 line = p_line();
+    uptr fl = p_file();
+    // `params T name`: the taught word stands where the core demands a type.
+    // It lowers to `uptr name` -- an ordinary parameter the core understands --
+    // which is all this half is here to show.
+    if (p_id() == sd_tok_params) {
+        p_next();                                // the `params` word
+        p_type();                                // the element type
+        uptr vn = p_ident();
+        sd_ppos = sd_ppos + 1;
+        return param_new(TY_UPTR, vn);
+    }
+    i64 ty = type_of_token(p_id());
+    // not a type, or `void`: decline, so the core keeps its own two diagnostics
+    // (`type expected in parameter`, `parameter of type void`) word for word
+    if (ty < 0 || ty == TY_VOID) return 0;
+    p_next();
+    uptr pn = p_ident();
+    i64 idx = sd_ppos;
+    sd_ppos = sd_ppos + 1;
+    if (p_accept(K_ASSIGN)) {
+        i64 e = fold(parse_expr(0));
+        if (nd_kind(e) != N_INT)
+            err_at(fl, line, "a default parameter must be a constant");
+        if (owner == 0)
+            err_at(fl, line, "a default parameter needs a named declaration");
+        if (sd_ndef == SD_MAXDEF)
+            err_at(fl, line, "too many default parameters");
+        st64(sd_dfn + sd_ndef * 8, owner);
+        st64(sd_didx + sd_ndef * 8, idx);
+        st64(sd_dval + sd_ndef * 8, nd_val(e));
+        sd_ndef = sd_ndef + 1;
+    }
+    return param_new(ty, pn);
+}
+
+// the two broken handlers, exactly like sd_nop/sd_nil for syntax_expr: they
+// exist so tests/err/071 and tests/err/072 can assert the core's two guards
+i64 sd_pnop() {
+    if (p_id() != sd_tok_pnop) return 0;
+    return param_new(TY_I64, "x");               // a node, and not one token consumed
+}
+
+i64 sd_pbad() {
+    if (p_id() != sd_tok_pbad) return 0;
+    p_next();
+    return sd_int(0, p_line(), p_file());        // consumed, but it is not an N_PARAM
+}
+
+// the third broken one, and the reason tests/err/073 exists: it reads a WHOLE
+// parameter, comma included, and then declines. Before the review's fix the
+// core took `0` to mean "nothing happened here" and read the next parameter as
+// if it were this one, so `i64 f(peat i64 x, i64 y, i64 z)` became a
+// two-parameter f(y, z) that compiled clean and ran with the wrong arity.
+// Registered LAST, so nothing after it can claim the position it abandoned.
+i64 sd_peat() {
+    if (p_id() != sd_tok_peat) return 0;
+    p_next();                                    // the `peat` word
+    p_type();                                    // ... the type ...
+    p_ident();                                   // ... the name ...
+    p_accept(K_COMMA);                           // ... and the separator
+    return 0;                                    // consumed, and then declined
+}
+
+// ---- M41.5 (review): a container whose members the MODULE declares ----
+// capsule Name { i64 m(i64 x, i64 y = 10) { ... } }  ->  one ordinary top-level
+// function per member, read with the PUBLIC parse_params() and
+// parse_function(). It is here for exactly one reason: parse_top and
+// parse_extern set the declaration's name because they read it, and a handler
+// in this shape reads the member's name itself -- the core never sees it, so
+// p_decl_name() would answer the previous top-level name, or 0. The handler
+// announces the member with p_set_decl_name() BEFORE calling parse_params(),
+// and sd_param's per-declaration bookkeeping then works inside the container
+// exactly as it works at the top level: two members with a default at the SAME
+// parameter index keep their own.
+void sd_capsule() {
+    p_next();                                    // the `capsule` word
+    p_ident();                                   // the container's name
+    p_expect(K_LBRACE, "expected { after the capsule name");
+    loop {
+        if (p_id() == K_RBRACE) break;
+        i64 line = p_line();
+        uptr fl = p_file();
+        i64 ty = p_type();
+        uptr mname = p_ident();
+        p_set_decl_name(mname);                  // whose parameters these are
+        i64 params = parse_params();
+        i64 f = parse_function(ty, mname, params);
+        set_nd_line(f, line);                    // the member starts at its type
+        set_nd_file(f, fl);
+        top_add(f);                              // ... and top_add clears the name
+    }
+    p_expect(K_RBRACE, "expected } to close the capsule");
+}
+
+// which recorded default, if any, belongs to parameter `idx` of `fname`
+i64 sd_default_of(uptr fname, i64 idx) {
+    i64 i = 0;
+    loop {
+        if (i >= sd_ndef) break;
+        if (ld64(sd_didx + i * 8) == idx && str_eq(ld64(sd_dfn + i * 8), fname)) return i;
+        i = i + 1;
+    }
+    return -1;
+}
+
+// The half the hook does NOT do. A pass sees the whole unit, so decl_find here
+// answers about a callee declared below the call as well -- the honest
+// difference from asking during the parse, where only what is already appended
+// is visible.
+i64 sd_defaults(i64 root) {
+    if (sd_ndef == 0) return root;               // nothing recorded: the pass is a no-op
+    i64 top = nnodes;                            // nodes this pass appends are not calls
+    i64 n = 1;
+    loop {
+        if (n >= top) break;
+        if (nd_kind(n) == N_CALL) {
+            uptr fname = nd_name(n);
+            i64 d = decl_find(fname);
+            i64 np = decl_nparams(d);            // -1 when there is no declaration
+            i64 na = 0;
+            i64 a = nd_a(n);
+            loop {
+                if (a == 0) break;
+                na = na + 1;
+                a = nd_next(a);
+            }
+            loop {
+                if (na >= np) break;
+                i64 k = sd_default_of(fname, na);
+                if (k < 0) break;                // no default there: the arity error stands
+                set_nd_a(n, list_append(nd_a(n),
+                         sd_int(ld64(sd_dval + k * 8), nd_line(n), nd_file(n))));
+                na = na + 1;
+            }
+        }
+        n = n + 1;
+    }
+    return root;
 }
 
 void user_init() {
@@ -699,6 +921,17 @@ void user_init() {
     on_jump(&sd_on_jump);                        // M31: return / break / continue
     syntax_expr("jumpdepth", &sd_jumpdepth);     // the two M31 counters, readable
     syntax_expr("retcount",  &sd_retcount);
+    sd_tok_params = word_add("params");          // M41.5: the parameter position
+    sd_tok_pnop   = word_add("pnop");            // broken on purpose: tests/err/071
+    sd_tok_pbad   = word_add("pbad");            // broken on purpose: tests/err/072
+    sd_tok_peat   = word_add("peat");            // broken on purpose: tests/err/073
+    syntax_param(&sd_pnop);
+    syntax_param(&sd_pbad);
+    syntax_param(&sd_param);                     // the one that claims real parameters
+    syntax_param(&sd_peat);                      // LAST: it consumes and declines
+    syntax_lit(&sd_leat);                        // LAST, for the same reason
+    syntax("capsule", &sd_capsule);              // p_set_decl_name, per member
+    pass(&sd_defaults);                          // ...and completes the calls it enabled
     // the operator's runtime, as a second source: the same mechanism an
     // instantiation uses, at the simplest point there is — before the first
     // token of the real file has been read, so no lookahead is at stake
