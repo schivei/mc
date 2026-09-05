@@ -13,14 +13,18 @@
 #   for `mc.toml` first and then each entry of [package].files in the order the
 #   manifest writes them, one line
 #
-#       <64 hex of sha256(file bytes)><two spaces><path><LF>
+#       <64 hex of sha256(file bytes)><space><byte length><colon><path><LF>
 #
-#   and the tree hash is the sha256 of those lines, in plain hex. Content only:
+#   and the tree hash is the sha256 of those lines, in plain hex. The path is
+#   length-prefixed (post-M44 review, finding 3): the two-space form Go's
+#   dirhash.Hash1 uses is not injective once a path may carry a newline, and
+#   here the path list comes out of a downloaded mc.toml. Content only:
 #   no mtime, no mode, no directory listing, and the bytes exactly as they are on
 #   disk (which is why tests/pkg carries `-text` in .gitattributes).
 #
-# With --files it prints the per-file lines instead of the tree hash, which is
-# what the fixture cache manifests are made of.
+# With --files it prints `<hex> <path>` pairs instead of the tree hash, which is
+# what the fixture cache manifests are made of; with --lines it prints the
+# canonical hash lines themselves, which is how check-pkg reads the format.
 set -e
 
 sha() {
@@ -45,14 +49,31 @@ files_of() {
 
 mode=tree
 if [ "$1" = "--files" ]; then mode=files; shift; fi
+if [ "$1" = "--lines" ]; then mode=lines; shift; fi
 dir="${1:?usage: pkg-hash.sh [--files] DIR}"
 
+mctoml=mc.toml
+
+# the canonical hash lines
 lines() {
-    printf '%s  %s\n' "$(sha "$dir/mc.toml")" "mc.toml"
+    printf '%s %s:%s\n' "$(sha "$dir/mc.toml")" "${#mctoml}" "$mctoml"
     files_of "$dir" | while IFS= read -r f; do
         [ -f "$dir/$f" ] || { echo "pkg-hash: missing $dir/$f" >&2; exit 1; }
-        printf '%s  %s\n' "$(sha "$dir/$f")" "$f"
+        printf '%s %s:%s\n' "$(sha "$dir/$f")" "${#f}" "$f"
     done
 }
 
-if [ "$mode" = files ]; then lines; else lines | sha_stdin; fi
+# `<hex> <path>` pairs, which is what a [[file]] row of a cache manifest is made
+# of -- deliberately NOT the hash lines: those carry a length prefix now and
+# nothing but the hash reads them.
+pairs() {
+    printf '%s %s\n' "$(sha "$dir/mc.toml")" "mc.toml"
+    files_of "$dir" | while IFS= read -r f; do
+        printf '%s %s\n' "$(sha "$dir/$f")" "$f"
+    done
+}
+
+if [ "$mode" = files ]; then pairs
+elif [ "$mode" = lines ]; then lines
+else lines | sha_stdin
+fi

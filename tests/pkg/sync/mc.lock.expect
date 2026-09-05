@@ -4,12 +4,12 @@
 name    = "mathx"
 version = "1.1.0"
 lib     = "mathx.mc"
-sha256  = "1b8bcfa5e4f84af1492205747ce7c880067b1a2ace4133d06bdb86e97fef3cf2"
+sha256  = "c1e0f209f55425c721077e77b3eb3b2207fbbecd9712cbadd180073d5dbfb10b"
 deps    = []
 
 [[package]]
 name    = "plot"
 version = "1.0.0"
 lib     = "plot.mc"
-sha256  = "f5e0f0c64e854ba2b3b2ed4edfe3cadf3996c99fbabc29d8fc5fc4188f28c43b"
+sha256  = "a63db846079fd270e7d54ce3c8906e393d6c1f1873be8572e1de51faba1a0612"
 deps    = ["mathx"]

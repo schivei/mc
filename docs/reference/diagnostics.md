@@ -456,9 +456,9 @@ it means and what the two ways out are.
 ## 13. Packages
 
 Everything here comes from `src/deps.mc` and `src/lex.mc`; the model behind them is
-[packages.md](packages.md). Five of the messages are exit **2** -- "the environment is not ready",
-the same code and the same `run:` block as § 11 -- and four are exit 1, because they are about the
-source or about the config.
+[packages.md](packages.md). Most of the messages are exit **2** -- "the environment is not ready",
+the same code and the same `run:` block as § 11 -- and the rest are exit 1, because they are about
+the source or about the config.
 
 | message | exit | cause | fix |
 |---|---|---|---|
@@ -469,6 +469,7 @@ source or about the config.
 | `mc: geo 1.2.0 is not fetched` | 2 | the lock names a version that is neither vendored in `deps/geo/` nor installed under `<libs>/geo/v1.2.0/` with its manifest | `mc pkg sync --yes`, or vendor it, or point `--libs-dir` at an installation that has it |
 | `mc: geo 1.2.0: no mc.toml in the package tree` | 2 | the tree was found but carries no manifest at all | the directory is not a package; re-fetch it |
 | `mc: a file the package lists is missing: PATH` | 2 | `[package].files` names a file the tree does not hold, so the hash cannot be computed | the tree is incomplete; re-fetch it |
+| `mc: geo 1.2.0: files entry escapes the package: ../x` | 2 | a `[package].files` entry that is absolute, carries a `.`/`..` or an empty component, holds a backslash or a byte below `0x20`, or resolves outside the package. Raised wherever the list is used: the hash on every build, the cache manifest, `mc pkg vendor`, `mc pkg hash` | the package's bug, or an attack: `files` names files INSIDE the package and nothing else ([packages.md](packages.md) § 3) |
 | `geo/vec.mc:3: package geo reaches outside its tree: PATH` | 1 | a file under a package root tried to `#include` or `#embed` something that is not its own tree, not a library this binary ships and not a declared dependency ([packages.md](packages.md) § 5) | the package's bug: it must declare what it reads in its own `[deps]` |
 | `geo/extra.mc:1: not declared in geo's [package].files` | 1 | the build read a file inside a package that the package did not list | the package's bug, unless the file was planted: `files` is the boundary |
 | `mc.toml:8:6: reserved package name: deps.mc` | 1 | `mc`, `deps` or `build` in `[deps]` or `[replace]`. `mc` is the compiler's own package and can never be pinned | pick another name |
@@ -492,7 +493,14 @@ environment is not ready" -- a transfer that failed, a checksum that did not mat
 | `mc: the download failed (exit 22): URL` | 2 | the downloader ran and refused; the code is `curl`'s or `wget`'s | the URL, the network, the proxy |
 | `mc: no downloader on this PATH (tried curl, wget)` | 2 | neither program is installed | install one, or fetch by hand and use `--libs-dir` |
 | `mc: tar could not extract geo-1.2.0.tar.gz` | 2 | the archive is not what its name says | the row's `url` |
-| `mc: checksum mismatch for geo 1.2.0` + `expected`/`got` | 2 | the tree that arrived is not the tree the row pins. The extracted files are unlinked and no manifest is written | a moved tag, a wrong `sha256` in the index, or a tampered mirror. Never a reason to "just re-run" |
+| `mc: v1.2.0.tar.gz: archive member is a link: geo-1.2.0/x` | 2 | the archive carries a symbolic or hard link. Nothing is extracted and the archive is unlinked | a package tree is files and directories; a link is a way to read what is outside it |
+| `mc: v1.2.0.tar.gz: member escapes the archive: ../x` | 2 | an archive member that is absolute, carries a `.`/`..` component, or lands outside the destination after `--strip-components` | the row's `strip`, or the archive |
+| `mc: v1.2.0.tar.gz: cannot be listed: tar -t failed` | 2 | `tar` could not read the archive at all, before any extraction | the row's `url` |
+| `mc: v1.2.0.tar.gz: member missing after extraction: x` | 2 | `tar` returned success and did not write a member it listed | the archive, or the disk |
+| `mc: larger than the cap of 67108864 bytes: SOURCE` | 2 | an archive over 64 MiB, or a registry index file over 1 MiB. The downloaded file is unlinked | the row's `url`; the caps are constants in `src/fetch.mc` |
+| `mc: check needs --yes to compare against the published index: geo` | 2 | `mc pkg check` against a URL registry cannot read the published copy without downloading it, and refuses to answer "unchanged" by doing nothing | add `--yes`, or point `--registry` at a directory |
+| `mc: check: cannot read the published index for geo: exit status 7` | 2 | the published index could not be fetched for a reason that is not "there is no such file" (`curl -f` 22, `wget` 8, which mean a NEW package) | the network; a `check` that cannot read the index cannot enforce immutability |
+| `mc: checksum mismatch for geo 1.2.0` + `expected`/`got` | 2 | the tree that arrived is not the tree the row pins. The files THE EXTRACTION WROTE are unlinked -- never the list in the refused tree's own mc.toml -- and no manifest is written | a moved tag, a wrong `sha256` in the index, or a tampered mirror. Never a reason to "just re-run" |
 | `mc: geo 1.2.0: the archive carries no mc.toml at its root` | 2 | `strip` is wrong, or the tag is not a package | the row's `strip` |
 | `mc: nowhere to put a package: no --libs-dir and no HOME` | 2 | there is no `<libs>` to write into | `--libs-dir DIR` |
 | `mc: geo 1.9.0: no such version in the registry` | 1 | a `[deps]` minimum, or an `@VERSION`, that no index row carries | `mc pkg list`, or the index page |

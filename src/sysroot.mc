@@ -569,7 +569,15 @@ i64 sysroot_fetch(uptr name, i64 yes) {
     }
     drv_mkdirs(tm_cat(dest, "/x"));
     uptr file = tm_cat(tm_cat(dest, "/"), fetch_basename(ss_url_at(r)));
-    i64 rc = fetch_get(ss_url_at(r), file);
+    i64 rc = fetch_get(ss_url_at(r), file, FETCH_MAXARCHIVE);
+    if (rc == FETCH_TOOBIG) {
+        out_str(2, "mc: larger than the cap of ");
+        out_str(2, tm_num_str(FETCH_MAXARCHIVE));
+        out_str(2, " bytes: ");
+        out_str(2, ss_url_at(r));
+        out_str(2, "\n");
+        sysroot_fetch_failed(os, arch);
+    }
     if (rc < 0) {
         out_str(2, "mc: no downloader on this PATH (tried ");
         out_str(2, host_downloader());

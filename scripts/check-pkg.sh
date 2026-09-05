@@ -87,6 +87,8 @@ export PATH
 
 # `mc pkg ...` with the real tar and the refusing downloaders
 pkg() { PATH="$tmp/bin2:$realpath_env" "$mc" pkg "$@" > "$tmp/o" 2>&1; rc=$?; }
+# the script's own archive building, which the shim would otherwise refuse
+rtar() { PATH="$realpath_env" tar "$@"; }
 upd() { PATH="$tmp/bin2:$realpath_env" "$mc" update "$@" > "$tmp/o" 2>&1; rc=$?; }
 
 # ---- <libs>, populated by hand: this is what `mc pkg sync` will write ----
@@ -717,6 +719,167 @@ if "$mc" --exe tests/pkg/nopkg.mc -o "$nopkg" > "$tmp/o" 2>&1; then
     rm -rf tests/pkg/sync/deps tests/pkg/sync/mc.lock
 else
     fail "the pkg-less probe compiler" "$(cat "$tmp/o")"
+fi
+
+# ---- 29. the post-M44 supply-chain review ----
+# Six findings, each with the shape that reproduced it before the batch. The
+# common thread is that everything a package SAYS about itself -- the paths in
+# [package].files, the member names in its archive -- arrives from a registry
+# row and used to be handed straight to open(), write_file() and unlink().
+
+# 29a. a files entry that escapes, in the four shapes it can take. `$esc` holds
+# a canary the entry points at, so the assertion is not only "it refused" but
+# "the file outside was not touched".
+esc_setup() {                         # esc_setup FILES-ARRAY
+    rm -rf "$tmp/esc"
+    mkdir -p "$tmp/esc/libs/evil/v1.0.0" "$tmp/esc/a/b/proj"
+    echo CANARY > "$tmp/esc/canary.txt"
+    echo 'i64 evil_x() { return 1; }' > "$tmp/esc/libs/evil/v1.0.0/evil.mc"
+    printf '[package]\nname  = "evil"\nfiles = %s\nlib   = "evil.mc"\n' "$1" \
+        > "$tmp/esc/libs/evil/v1.0.0/mc.toml"
+    printf '[source]\nname = "evil"\nversion = "1.0.0"\nsha256 = "%064d"\n' 0 \
+        > "$tmp/esc/libs/evil/v1.0.0.toml"
+    printf '[project]\nname  = "p"\nentry = "main.mc"\nout   = "build/p.o"\nkind  = "obj"\n\n[deps]\nevil = "1.0.0"\n' \
+        > "$tmp/esc/a/b/proj/mc.toml"
+    printf '[[package]]\nname    = "evil"\nversion = "1.0.0"\nlib     = "evil.mc"\nsha256  = "%064d"\ndeps    = []\n' 0 \
+        > "$tmp/esc/a/b/proj/mc.lock"
+    printf '#include <sys>\ni64 main() { return 42; }\n' > "$tmp/esc/a/b/proj/main.mc"
+}
+esc_case() {                          # esc_case LABEL FILES-ARRAY ENTRY
+    esc_setup "$2"
+    build "$tmp/esc/a/b/proj" "" "$tmp/esc/libs"
+    want_exit "files escape ($1)" 2 \
+        && want_msg "files escape ($1)" "evil 1.0.0: files entry escapes the package: $3"
+}
+esc_case "..\/"          '["evil.mc", "../../../canary.txt"]'  '\.\./\.\./\.\./canary.txt'
+esc_case "absolute"      '["evil.mc", "/etc/passwd"]'          '/etc/passwd'
+esc_case "a\/..\/..\/x"  '["evil.mc", "a/../../canary.txt"]'   'a/\.\./\.\./canary.txt'
+esc_case "a newline"     '["evil.mc", "a.mc\\nx"]'             'a.mc'
+
+# the WRITE half: `mc pkg vendor` copied the entry out of the project entirely
+esc_setup '["evil.mc", "../../../canary.txt"]'
+pkg vendor "$tmp/esc/a/b/proj" --libs-dir "$tmp/esc/libs"
+if want_exit "vendor refuses an escaping files entry" 2; then
+    # deps/evil/../../../canary.txt is $tmp/esc/a/b/canary.txt, which the
+    # package's own tree resolves to $tmp/esc/canary.txt: two different files,
+    # so a copy that happened is a file that appeared
+    if [ -f "$tmp/esc/a/b/canary.txt" ]; then
+        fail "vendor refuses an escaping files entry" "a copy landed outside deps/"
+    else
+        ok "vendor refuses an escaping files entry: nothing was written outside deps/"
+    fi
+fi
+
+# 29b. the unbless-as-delete: a row whose sha256 is wrong made mc re-read the
+# just-extracted (untrusted) mc.toml and unlink everything it listed. The
+# attacker never needed a hash that passes.
+rm -rf "$tmp/del"
+mkdir -p "$tmp/del/libs" "$tmp/del/reg/index" "$tmp/del/stage/del-1.0.0" "$tmp/del/proj"
+echo IMPORTANT > "$tmp/del/canary.txt"
+echo 'i64 del_x() { return 1; }' > "$tmp/del/stage/del-1.0.0/del.mc"
+printf '[package]\nname  = "del"\nfiles = ["del.mc", "../../../canary.txt"]\nlib   = "del.mc"\n' \
+    > "$tmp/del/stage/del-1.0.0/mc.toml"
+(cd "$tmp/del/stage" && rtar -czf "$tmp/del/del-1.0.0.tar.gz" del-1.0.0)
+printf '[package]\nname = "del"\nrepo = "https://example.invalid/del"\n\n[[versions]]\nversion = "1.0.0"\nurl     = "%s"\nstrip   = 1\nsha256  = "%064d"\ndeps    = []\n' \
+    "$tmp/del/del-1.0.0.tar.gz" 0 > "$tmp/del/reg/index/del.toml"
+printf '[project]\nname  = "p"\nentry = "main.mc"\nout   = "build/p.o"\nkind  = "obj"\n\n[deps]\ndel = "1.0.0"\n' \
+    > "$tmp/del/proj/mc.toml"
+printf '#include <sys>\ni64 main() { return 42; }\n' > "$tmp/del/proj/main.mc"
+pkg sync "$tmp/del/proj" --registry "$tmp/del/reg" --libs-dir "$tmp/del/libs" --yes
+if want_exit "a fetched tree whose files escape" 2; then
+    if [ -f "$tmp/del/canary.txt" ]; then
+        ok "the refused tree did not delete the file its mc.toml pointed at"
+    else
+        fail "unbless" "the canary outside the tree was unlinked"
+    fi
+fi
+[ -f "$tmp/del/libs/del/v1.0.0.toml" ] \
+    && fail "unbless" "a manifest was written for a refused tree" \
+    || ok "the refused tree carries no manifest and no debris"
+
+# 29c. the archive itself: tar used to be trusted with a file somebody else
+# produced. The three member shapes, each crafted here.
+rm -rf "$tmp/arc"
+mkdir -p "$tmp/arc/libs" "$tmp/arc/reg/index" "$tmp/arc/stage/a-1.0.0" "$tmp/arc/proj"
+echo 'i64 a_x() { return 1; }' > "$tmp/arc/stage/a-1.0.0/a.mc"
+printf '[package]\nname  = "a"\nfiles = ["a.mc"]\nlib   = "a.mc"\n' > "$tmp/arc/stage/a-1.0.0/mc.toml"
+printf '[project]\nname  = "p"\nentry = "main.mc"\nout   = "build/p.o"\nkind  = "obj"\n\n[deps]\na = "1.0.0"\n' \
+    > "$tmp/arc/proj/mc.toml"
+printf '#include <sys>\ni64 main() { return 42; }\n' > "$tmp/arc/proj/main.mc"
+arc_row() {                           # arc_row ARCHIVE
+    printf '[package]\nname = "a"\nrepo = "https://example.invalid/a"\n\n[[versions]]\nversion = "1.0.0"\nurl     = "%s"\nstrip   = 1\nsha256  = "%064d"\ndeps    = []\n' \
+        "$1" 0 > "$tmp/arc/reg/index/a.toml"
+}
+arc_case() {                          # arc_case LABEL ARCHIVE TEXT
+    arc_row "$2"
+    rm -rf "$tmp/arc/libs" "$tmp/arc/proj/mc.lock"
+    mkdir -p "$tmp/arc/libs"
+    pkg sync "$tmp/arc/proj" --registry "$tmp/arc/reg" --libs-dir "$tmp/arc/libs" --yes
+    want_exit "archive member ($1)" 2 && want_msg "archive member ($1)" "$3"
+}
+if ln -s /etc/hosts "$tmp/arc/stage/a-1.0.0/link.mc" 2> /dev/null; then
+    (cd "$tmp/arc/stage" && rtar -czf "$tmp/arc/sym.tar.gz" a-1.0.0)
+    rm -f "$tmp/arc/stage/a-1.0.0/link.mc"
+    arc_case "a symlink" "$tmp/arc/sym.tar.gz" "archive member is a link"
+else
+    ok "SKIPPED archive member (a symlink): this filesystem has no ln -s"
+fi
+if ln "$tmp/arc/stage/a-1.0.0/a.mc" "$tmp/arc/stage/a-1.0.0/hard.mc" 2> /dev/null; then
+    (cd "$tmp/arc/stage" && rtar -czf "$tmp/arc/hard.tar.gz" a-1.0.0)
+    rm -f "$tmp/arc/stage/a-1.0.0/hard.mc"
+    arc_case "a hard link" "$tmp/arc/hard.tar.gz" "archive member is a link"
+else
+    ok "SKIPPED archive member (a hard link): this filesystem has no ln"
+fi
+# a member that leaves the destination once --strip-components=1 is applied
+(cd "$tmp/arc/stage/a-1.0.0" && rtar -czf "$tmp/arc/esc.tar.gz" ../a-1.0.0/mc.toml ../a-1.0.0/a.mc ../../stage/a-1.0.0/a.mc 2> /dev/null)
+if rtar -tzf "$tmp/arc/esc.tar.gz" 2> /dev/null | grep -q '\.\.'; then
+    arc_case "a .. member" "$tmp/arc/esc.tar.gz" "member escapes the archive"
+else
+    ok "SKIPPED archive member (a .. member): this tar will not store one"
+fi
+# and the archive a package is really made of still goes through
+(cd "$tmp/arc/stage" && rtar -czf "$tmp/arc/ok.tar.gz" a-1.0.0)
+arc_row "$tmp/arc/ok.tar.gz"
+rm -rf "$tmp/arc/libs" "$tmp/arc/proj/mc.lock"
+mkdir -p "$tmp/arc/libs"
+h=$(sh scripts/pkg-hash.sh "$tmp/arc/stage/a-1.0.0")
+sed "s/^sha256  = .*/sha256  = \"$h\"/" "$tmp/arc/reg/index/a.toml" > "$tmp/arc/reg/index/a.toml.new"
+mv "$tmp/arc/reg/index/a.toml.new" "$tmp/arc/reg/index/a.toml"
+pkg sync "$tmp/arc/proj" --registry "$tmp/arc/reg" --libs-dir "$tmp/arc/libs" --yes
+want_exit "an ordinary archive still extracts" 0 \
+    && ok "the member check passes an ordinary package archive"
+
+# 29d. `mc pkg check` used to answer "immutable" by doing nothing whenever it
+# could not read the published index -- without --yes, and on ANY failed fetch.
+pkg check "$tmp/registry/index/plot.toml" --registry https://example.invalid --libs-dir "$tmp/chk"
+want_exit "check without --yes against a URL registry" 2 \
+    && want_msg "check without --yes against a URL registry" "check needs --yes to compare against the published index"
+pkg check "$tmp/registry/index/plot.toml" --registry https://example.invalid --libs-dir "$tmp/chk" --yes
+want_exit "check with an unreadable published index" 2 \
+    && want_msg "check with an unreadable published index" "cannot read the published index for plot"
+
+# 29e. the size caps: neither a downloaded body nor a local path had one.
+rm -rf "$tmp/big"
+mkdir -p "$tmp/big/libs" "$tmp/big/reg/index" "$tmp/big/proj"
+dd if=/dev/zero of="$tmp/big/huge.tar.gz" bs=1 count=1 seek=68000000 > /dev/null 2>&1
+printf '[package]\nname = "a"\nrepo = "https://example.invalid/a"\n\n[[versions]]\nversion = "1.0.0"\nurl     = "%s"\nstrip   = 1\nsha256  = "%064d"\ndeps    = []\n' \
+    "$tmp/big/huge.tar.gz" 0 > "$tmp/big/reg/index/a.toml"
+printf '[project]\nname  = "p"\nentry = "main.mc"\nout   = "build/p.o"\nkind  = "obj"\n\n[deps]\na = "1.0.0"\n' \
+    > "$tmp/big/proj/mc.toml"
+printf '#include <sys>\ni64 main() { return 42; }\n' > "$tmp/big/proj/main.mc"
+pkg sync "$tmp/big/proj" --registry "$tmp/big/reg" --libs-dir "$tmp/big/libs" --yes
+want_exit "an archive over the 64 MiB cap" 2 \
+    && want_msg "an archive over the 64 MiB cap" "larger than the cap of 67108864 bytes"
+rm -f "$tmp/big/huge.tar.gz"
+
+# 29f. the hash lines are length-prefixed, and the two implementations still
+# agree on the new shape (the tree-hash cases above already compare them; this
+# is the format itself, read once).
+if sh scripts/pkg-hash.sh --lines tests/pkg/src/mathx-1.0.0 | grep -q '^[0-9a-f]\{64\} 8:mathx.mc$'; then
+    ok "the hash line is <hex> <byte length>:<path>, not <hex> two spaces <path>"
+else
+    fail "the hash line format" "$(sh scripts/pkg-hash.sh --lines tests/pkg/src/mathx-1.0.0 | tr '\n' '|')"
 fi
 
 cd "$here" || exit 1

@@ -150,13 +150,31 @@ void pkg_die1(uptr msg, uptr det) {
 // `geo 1.2.0`
 uptr pkg_what(uptr name, uptr ver) { return tm_cat(tm_cat(name, " "), ver); }
 
+// what fetch_get's answer means, in words: the one place a non-zero code
+// becomes a reason a message can carry (post-M44 review, finding 4).
+uptr pkg_fetch_reason(i64 rc) {
+    if (rc < 0) return "no downloader on this PATH";
+    if (rc == FETCH_TOOBIG) return "larger than the cap";
+    return tm_cat("exit status ", tm_num_str(rc));
+}
+
 // ---- getting a file, with the message the caller owes ----
 // fetch_get answers with a code and prints nothing (src/fetch.mc); this is the
 // one place `mc pkg` turns that code into words. A local path that does not
 // open is `cannot open`, a URL is M25's `the download failed`.
-void pkg_get(uptr src, uptr file) {
-    i64 rc = fetch_get(src, file);
+void pkg_get(uptr src, uptr file, i64 cap) {
+    i64 rc = fetch_get(src, file, cap);
     if (rc == 0) return;
+    // post-M44 review, finding 6: a body over the ceiling is a refusal of its
+    // own, before the shape of the source is even discussed
+    if (rc == FETCH_TOOBIG) {
+        out_str(2, "mc: larger than the cap of ");
+        out_str(2, tm_num_str(cap));
+        out_str(2, " bytes: ");
+        out_str(2, src);
+        out_str(2, "\n");
+        _exit(2);
+    }
     if (!fetch_is_url(src)) {
         out_str(2, "mc: cannot open: ");
         out_str(2, src);
@@ -245,7 +263,7 @@ uptr pkg_index_file(uptr name) {
         return 0;
     }
     drv_mkdirs(snap);
-    pkg_get(url, snap);
+    pkg_get(url, snap, FETCH_MAXINDEX);
     return snap;
 }
 
@@ -556,17 +574,9 @@ void pkg_write_manifest(uptr name, uptr ver, uptr url, uptr sha, uptr dir) {
     // one [[file]] per hashed file, in manifest order: this is what lets a
     // mismatch name the FILE that moved, since the lock pins one hash per
     // package (src/deps.mc, dep_manifest_bad)
-    uptr frame = toml_push();
-    toml_parse(tm_cat(dir, "mc.toml"));
-    i64 n = toml_count("package.files");
-    uptr names = xalloc(n * 8 + 8);
-    i64 i = 0;
-    while (i < n) {
-        st64(names + i * 8, toml_get_array("package.files", i));
-        i = i + 1;
-    }
-    toml_pop(frame);
-    i = -1;
+    uptr names = 0;
+    i64 n = dep_read_files(dir, pkg_what(name, ver), &names);
+    i64 i = -1;
     while (i < n) {
         uptr rel = "mc.toml";
         if (i >= 0) rel = ld64(names + i * 8);
@@ -583,26 +593,21 @@ void pkg_write_manifest(uptr name, uptr ver, uptr url, uptr sha, uptr dir) {
 // A refused tree must not go on looking like a package: every file it listed is
 // unlinked and no manifest is written, so the next `mc build` says `is not
 // fetched` instead of reading debris (§ 4, sysroot_unbless's idea).
+// Post-M44 review, finding 1: this used to re-read the just-extracted mc.toml
+// -- a file the registry wrote and mc has just REFUSED -- and unlink everything
+// it listed, which made a wrong `sha256` in an index row an arbitrary delete on
+// the developer's machine. It never needed that list: what is on the disk is
+// what the extraction put there, and src/fetch.mc now knows exactly what that
+// was. mc has no rmdir, so directories stay; a directory with no mc.toml is
+// `is not fetched`, which is the point.
 void pkg_unbless(uptr dir) {
-    uptr mt = tm_cat(dir, "mc.toml");
-    if (lex_readable(mt)) {
-        uptr frame = toml_push();
-        toml_parse(mt);
-        i64 n = toml_count("package.files");
-        uptr names = xalloc(n * 8 + 8);
-        i64 i = 0;
-        while (i < n) {
-            st64(names + i * 8, toml_get_array("package.files", i));
-            i = i + 1;
-        }
-        toml_pop(frame);
-        i = 0;
-        while (i < n) {
-            unlink(path_join(dir, ld64(names + i * 8)));
-            i = i + 1;
-        }
+    uptr base = tm_cat(path_norm(dir), "/");
+    i64 i = 0;
+    while (i < fetch_member_count()) {
+        if (!fetch_member_dir(i)) unlink(path_join(base, fetch_member_at(i)));
+        i = i + 1;
     }
-    unlink(mt);
+    unlink(tm_cat(base, "mc.toml"));
 }
 
 // ---- the fetch (§ 4) ----
@@ -617,7 +622,7 @@ void pkg_fetch_one(uptr name, uptr ver, uptr url, i64 strip, uptr want) {
                           tm_cat(tm_cat("/v", ver), ".tar.gz"));
     drv_mkdirs(archive);
     drv_mkdirs(tm_cat(dir, "x"));
-    pkg_get(url, archive);
+    pkg_get(url, archive, FETCH_MAXARCHIVE);
     if (fetch_extract(archive, dir, strip, 0) != 0) {
         unlink(archive);
         pkg_unbless(dir);
@@ -627,7 +632,21 @@ void pkg_fetch_one(uptr name, uptr ver, uptr url, i64 strip, uptr want) {
         _exit(2);
     }
     unlink(archive);
+    // Post-M44 review, finding 5: soft mode. A files entry that escapes, or one
+    // that names a file the archive does not carry, used to leave through
+    // _exit() from inside the hash with the extracted tree still on the disk.
+    // The hash answers 0 and hands the reason back instead, so the tree is
+    // unblessed first and the message is the same one either way.
+    dep_hash_soft(1);
+    dep_hash_label(pkg_what(name, ver));
     uptr got = dep_hash_tree(dir, -1);
+    uptr err = dep_hash_err();
+    uptr det = dep_hash_errdet();
+    dep_hash_soft(0);
+    if (err != 0) {
+        pkg_unbless(dir);
+        dep_die(err, det, 0);
+    }
     if (got == 0) {
         pkg_unbless(dir);
         dep_die(pkg_what(name, ver), "the archive carries no mc.toml at its root", 0);
@@ -920,17 +939,12 @@ void pkg_copy_file(uptr src, uptr dst) {
     write_file(dst, b);
 }
 
-i64 pkg_copy_tree(uptr src, uptr dst) {
-    uptr frame = toml_push();
-    toml_parse(tm_cat(src, "mc.toml"));
-    i64 n = toml_count("package.files");
-    uptr names = xalloc(n * 8 + 8);
+i64 pkg_copy_tree(uptr src, uptr dst, uptr what) {
+    uptr names = 0;
+    // dep_read_files checks every entry against `src` (post-M44 review): the
+    // copy is a WRITE, and `deps/<pack>/../../x` landed outside the project
+    i64 n = dep_read_files(src, what, &names);
     i64 i = 0;
-    while (i < n) {
-        st64(names + i * 8, toml_get_array("package.files", i));
-        i = i + 1;
-    }
-    toml_pop(frame);
     pkg_copy_file(tm_cat(src, "mc.toml"), tm_cat(dst, "mc.toml"));
     i = 0;
     while (i < n) {
@@ -949,7 +963,7 @@ i64 pkg_vendor() {
         uptr dst = pkg_vendor_dir(name);
         uptr src = dp_dir(i);
         if (!str_eq(src, dst)) {
-            i64 n = pkg_copy_tree(src, dst);
+            i64 n = pkg_copy_tree(src, dst, pkg_what(name, dp_ver(i)));
             drv_step("vendor", pkg_what(name, dp_ver(i)),
                      tm_cat(tm_cat("deps/", name), tm_cat("/ (", tm_cat(tm_num_str(n), " files)"))));
         }
@@ -1146,10 +1160,22 @@ void pkg_check_immutable(uptr name, uptr file) {
         if (!lex_readable(pub)) return;                 // a new package
         if (str_eq(path_norm(pub), path_norm(file))) return;  // it IS the file
     } else {
-        if (!pk_yes()) return;                          // nothing to compare to
+        // Post-M44 review, finding 4: this used to `return` -- silently
+        // answering "immutable" -- both without --yes and on ANY failed fetch,
+        // which turned the one rule the registry has (a published row never
+        // changes) into a check that a network hiccup switches off.
+        if (!pk_yes())
+            dep_die("check needs --yes to compare against the published index", name, 0);
         uptr snap = tm_cat(pkg_index_snapshot(name), ".published");
         drv_mkdirs(snap);
-        if (fetch_get(pub, snap) != 0) return;          // not published yet
+        i64 rc = fetch_get(pub, snap, FETCH_MAXINDEX);
+        // 22 is `curl -f` on an HTTP status >= 400 and 8 is wget's; either way
+        // the index file is not there, which is exactly "a new package". Any
+        // other code is a failure to READ the index and must not pass for one.
+        if (rc == 22 || rc == 8) return;
+        if (rc != 0)
+            dep_die(tm_cat("check: cannot read the published index for ", name),
+                    pkg_fetch_reason(rc), 0);
         pub = snap;
     }
     uptr frame = toml_push();

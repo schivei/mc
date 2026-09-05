@@ -132,7 +132,16 @@ i64 ver_major(uptr a) {
 #define DP_MCNAME   64                // uptr per entry
 #define DP_MCPATH   72                // uptr per entry
 #define DP_MCDIR    80                // <libs>/mc/v<version>/
-#define DP_SIZE     88
+// Post-M44 review, finding 5: a tree that is being FETCHED is refused with the
+// directory still on the disk, so the refusal has to come back to pkg_fetch_one
+// -- which unblesses first and dies afterwards -- instead of leaving through
+// _exit() from inside the hash. In soft mode dep_soft_die records the first
+// problem here and the hash answers 0; everywhere else it is dep_die, as it was.
+#define DP_SOFT     88
+#define DP_ERRMSG   96
+#define DP_ERRDET   104
+#define DP_LABEL    112               // what to call a tree nobody locked yet
+#define DP_SIZE     120
 
 #define PK_NAME 0
 #define PK_VER  8
@@ -230,11 +239,122 @@ i64 dp_has_file(i64 pk, uptr name) {
     return 0;
 }
 
+// ---- containment: what a package may name (post-M44 review, finding 1) ----
+// Every path in [package].files is attacker-controlled: it comes out of the
+// mc.toml of a tree that was downloaded from a registry row, and it is then
+// opened (the tree hash, on EVERY build), copied (`mc pkg vendor`), hashed into
+// a manifest and -- before this batch -- unlinked (`pkg_unbless`). Nothing
+// checked it, so `files = ["../../../../.ssh/id_rsa"]` read the developer's key
+// and `mc pkg vendor` wrote a payload outside the project.
+//
+// The rule, stated once and applied at every consumer: a files entry is a
+// RELATIVE path made of ordinary components. No leading `/`, no `.` and no `..`
+// component, no empty component, no backslash (a Windows separator is not a
+// component separator here, and letting one through would make the same name
+// mean two things on two hosts), and no byte below 0x20 -- which also removes
+// the newline that made the hash lines forgeable (finding 3).
+//
+// `dirok` allows the ONE extra shape an archive member has and a files entry
+// never does: a trailing `/`, which is how tar spells a directory.
+i64 dep_rel_ok(uptr rel, i64 dirok) {
+    i64 n = cstrlen(rel);
+    if (n == 0) return 0;
+    if (ld8(rel) == '/') return 0;                // absolute
+    i64 i = 0;
+    while (i < n) {
+        i64 c = ld8(rel + i);
+        if (c < 32) return 0;                     // control byte, LF included
+        if (c == 92) return 0;                    // backslash
+        i = i + 1;
+    }
+    i64 b = 0;
+    i = 0;
+    loop {
+        if (i > n) break;
+        if (i == n || ld8(rel + i) == '/') {
+            i64 l = i - b;
+            // an empty component is `//` or a trailing `/`; the second is a
+            // directory member and only an archive may have one
+            if (l == 0 && !(dirok && i == n && b > 0)) return 0;
+            if (l == 1 && ld8(rel + b) == '.') return 0;
+            if (l == 2 && ld8(rel + b) == '.' && ld8(rel + b + 1) == '.') return 0;
+            b = i + 1;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+// The same question asked of the filesystem's own arithmetic, so that a rule
+// the component walk somehow let through still cannot escape: the normalised
+// join has to start with the normalised directory plus a separator. Belt and
+// braces on purpose -- this is the check that would survive a future path_norm.
+i64 dep_under(uptr dir, uptr rel) {
+    uptr base = tm_cat(path_norm(dir), "/");
+    uptr p = path_join(base, rel);                // path_join normalises
+    i64 n = cstrlen(base);
+    if (cstrlen(p) <= n) return 0;
+    return mem_eq(p, base, n);
+}
+
+// `geo 1.2.0` for a locked package, the directory for a tree nobody locked
+// (`mc pkg hash DIR`, and every tree `mc pkg sync` unpacks).
+uptr dep_pkg_what(i64 pk, uptr dir) {
+    if (pk >= 0) return tm_cat(tm_cat(dp_name(pk), " "), dp_ver(pk));
+    uptr lab = ld64(dp_state() + DP_LABEL);
+    if (lab != 0) return lab;
+    return dir;
+}
+
+// `mc pkg sync` knows the name and version of the tree it has just unpacked
+// before any lock does; without this a refusal would name the cache directory.
+void dep_hash_label(uptr w) { st64(dp_state() + DP_LABEL, w); }
+
+// The refusal, or the recorded error in soft mode (finding 5).
+void dep_soft_die(uptr msg, uptr det) {
+    uptr s = dp_state();
+    if (ld64(s + DP_SOFT)) {
+        if (ld64(s + DP_ERRMSG) == 0) {
+            st64(s + DP_ERRMSG, msg);
+            st64(s + DP_ERRDET, det);
+        }
+        return;
+    }
+    dep_die(msg, det, 0);
+}
+
+void dep_hash_soft(i64 on) {
+    uptr s = dp_state();
+    st64(s + DP_SOFT, on);
+    st64(s + DP_ERRMSG, 0);
+    st64(s + DP_ERRDET, 0);
+    if (!on) st64(s + DP_LABEL, 0);
+}
+
+uptr dep_hash_err()    { return ld64(dp_state() + DP_ERRMSG); }
+uptr dep_hash_errdet() { return ld64(dp_state() + DP_ERRDET); }
+
+// `mc: geo 1.2.0: files entry escapes the package: ../../../../.ssh/id_rsa`
+void dep_file_check(uptr dir, uptr rel, uptr what) {
+    if (dep_rel_ok(rel, 0) && dep_under(dir, rel)) return;
+    dep_soft_die(tm_cat(what, ": files entry escapes the package"), rel);
+}
+
 // ---- the tree hash (D5) ----
 // Go's dirhash.Hash1 in plain hex: for `mc.toml` first and then each entry of
 // [package].files IN MANIFEST ORDER, one line
 //
-//     <64 hex of sha256(file bytes)><two spaces><path><LF>
+//     <64 hex of sha256(file bytes)><space><decimal length><colon><path><LF>
+//
+// The path is LENGTH-PREFIXED (post-M44 review, finding 3). The original shape
+// was `<hex><two spaces><path><LF>`, which is Go's dirhash.Hash1 verbatim and
+// is not injective: a path carrying a newline writes two lines and the hash
+// cannot tell which file list produced them. Go can afford it because its file
+// list comes out of a zip it built; here the list is an attacker-controlled
+// array in a downloaded mc.toml. A control byte in a files entry is refused
+// outright now (dep_rel_ok), so the primitive is gone either way -- the length
+// prefix is what makes the FORMAT unable to represent the ambiguity at all.
+// scripts/pkg-hash.sh writes the same lines; check-pkg compares the two.
 //
 // and the tree hash is sha256 of those lines. Content only: no mtime, no mode,
 // no directory listing (mc has no opendir -- the author lists the files, which
@@ -250,11 +370,46 @@ uptr dep_in(uptr dir, uptr rel) { return path_join(dir, rel); }
 
 void dep_line(uptr b, uptr dir, uptr rel) {
     uptr p = dep_in(dir, rel);
-    if (!lex_readable(p)) dep_die("a file the package lists is missing", p, 0);
+    if (!lex_readable(p)) {
+        dep_soft_die("a file the package lists is missing", p);
+        return;
+    }
+    uptr ln = tm_num_str(cstrlen(rel));
     buf_put(b, sha256_file(p), 64);
-    buf_put(b, "  ", 2);
+    buf_u8(b, ' ');
+    buf_put(b, ln, cstrlen(ln));
+    buf_u8(b, ':');
     buf_put(b, rel, cstrlen(rel));
     buf_u8(b, '\n');
+}
+
+// ---- reading [package].files, once, with every entry checked ----
+// The ONE reader of that array. Before this batch each consumer had its own
+// copy of the six lines and none of them checked anything, which is why one
+// hole was five holes (the hash, the manifest writer, the vendor copy, the
+// unbless and the per-file attribution). `what` names the package in a refusal;
+// the array comes back through `pnames` and the count is the answer.
+i64 dep_read_files(uptr dir, uptr what, uptr pnames) {
+    uptr frame = toml_push();
+    toml_parse(dep_in(dir, "mc.toml"));
+    i64 n = toml_count("package.files");
+    uptr names = xalloc(n * 8 + 8);
+    i64 i = 0;
+    while (i < n) {
+        st64(names + i * 8, toml_get_array("package.files", i));
+        i = i + 1;
+    }
+    toml_pop(frame);
+    // after the pop, so a refusal cannot leave the project's own table swapped
+    // out (M44 § Risks 6) -- it does not matter to _exit, and it does to a
+    // soft-mode caller that carries on to unbless the tree
+    i = 0;
+    while (i < n) {
+        dep_file_check(dir, ld64(names + i * 8), what);
+        i = i + 1;
+    }
+    st64(pnames, names);
+    return n;
 }
 
 // Reads <dir>/mc.toml inside a push/pop: records the package's [package].files
@@ -275,17 +430,18 @@ void dep_line(uptr b, uptr dir, uptr rel) {
 uptr dep_hash_tree(uptr dir, i64 pk) {
     uptr mt = dep_in(dir, "mc.toml");
     if (!lex_readable(mt)) return 0;
-    uptr frame = toml_push();
-    toml_parse(mt);
     uptr s = dp_state();
+    uptr names = 0;
+    i64 n = dep_read_files(dir, dep_pkg_what(pk, dir), &names);
+    // soft mode: an entry that escapes is reported by the caller, which
+    // unblesses the tree first. Nothing was added to the file table.
+    if (dep_hash_err() != 0) return 0;
     i64 start = ld64(s + DP_NFILE);
-    i64 n = toml_count("package.files");
     i64 i = 0;
     while (i < n) {
-        dp_add_file(pk, toml_get_array("package.files", i));
+        dp_add_file(pk, ld64(names + i * 8));
         i = i + 1;
     }
-    toml_pop(frame);
 
     u8 b[BUF_SIZE];
     buf_init(b);
@@ -296,6 +452,7 @@ uptr dep_hash_tree(uptr dir, i64 pk) {
         dep_line(b, dir, ld64(ld64(s + DP_FILE) + i * FL_SIZE + FL_NAME));
         i = i + 1;
     }
+    if (dep_hash_err() != 0) return 0;          // a listed file was missing
     u8 d[32];
     sha256(buf_p(b), buf_len(b), d);
     return hex64(d);
@@ -332,8 +489,15 @@ uptr dep_manifest_bad(i64 pk) {
         uptr rel = toml_get(tm_cat(key, "path"));
         uptr want = toml_get(tm_cat(key, "sha256"));
         if (rel != 0 && want != 0) {
+            // the manifest is mc's own file, but it lives next to a tree a
+            // registry wrote and it is read with the same arithmetic: check it
+            // with the same rule rather than trust it (post-M44 review)
+            if (!dep_rel_ok(rel, 0) || !dep_under(dp_dir(pk), rel)) {
+                bad = rel;
+                i = n;
+            }
             uptr p = dep_in(dp_dir(pk), rel);
-            if (!lex_readable(p) || !str_eq(sha256_file(p), want)) {
+            if (bad == 0 && (!lex_readable(p) || !str_eq(sha256_file(p), want))) {
                 bad = rel;
                 i = n;
             }

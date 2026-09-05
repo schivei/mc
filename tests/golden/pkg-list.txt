@@ -1,2 +1,2 @@
-mathx        1.1.0    1b8bcfa5e4f8 vendored
-plot         1.0.0    f5e0f0c64e85 vendored
+mathx        1.1.0    c1e0f209f554 vendored
+plot         1.0.0    a63db846079f vendored

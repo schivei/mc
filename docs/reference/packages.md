@@ -90,6 +90,20 @@ mathx = "1.0.0"
 § 5 enforces. It is written by hand because `mc` has no directory listing — the same reason
 `tools/bundle.list` exists.
 
+**Every entry is a relative path inside the package, and that is checked.** An entry may not
+
+* be empty, or start with `/`;
+* contain a `.` or a `..` component, or an empty one (`a//b`), or end with `/`;
+* contain a backslash, or any byte below `0x20`;
+* resolve, after normalisation, to anything outside the package's own directory.
+
+Anything else is `<pack> <ver>: files entry escapes the package: <entry>`, exit 2, at every place
+the list is used: the tree hash `mc build` recomputes, the cache manifest a fetch writes, the copy
+`mc pkg vendor` makes, and the per-file attribution of a mismatch. The reason is that the list
+arrives inside a downloaded tree and is then handed to `open`, to `write` and (before this rule)
+to `unlink`: `files = ["../../../../.ssh/id_rsa"]` used to be read on every build, and
+`mc pkg vendor` used to write it outside the project.
+
 **A package never defines `user_init`.** It exports `<name>_init()` and the project's own module
 calls it, because a compiler holds exactly one `user_init` and the order of initialisation is the
 project's decision:
@@ -134,11 +148,16 @@ and refuses on any disagreement. A dependency's source is about to be lexed anyw
 For `mc.toml` first and then each entry of `[package].files` **in manifest order**, one line
 
 ```text
-<64 hex of sha256(file bytes)><two spaces><path><LF>
+<64 hex of sha256(file bytes)><space><byte length of the path><colon><path><LF>
 ```
 
 and the tree hash is the `sha256` of those lines, in plain hex. This is the shape of Go's
-`dirhash.Hash1`, without its `h1:` base64 spelling.
+`dirhash.Hash1`, without its `h1:` base64 spelling — **and with the path length-prefixed**, which
+Go's is not. Go derives its file list from a zip it built; here the list is an array in an mc.toml
+that was downloaded, so a path is attacker-controlled and `<hex><two spaces><path><LF>` cannot say
+which file list produced a given stream of lines. A control byte in a `files` entry is refused
+outright (§ 3), so the ambiguity has no way in; the length prefix is what stops the *format* from
+being able to express it.
 
 What makes it stable across hosts: it is over **content**, never over an archive (GitHub
 regenerated its tag tarballs in 2023 and broke every archive-checksum consumer; a content hash did
@@ -249,6 +268,10 @@ the source, which are exit 1. See [diagnostics.md](diagnostics.md) § 13.
 | a package reads outside its tree | `geo/vec.mc:3: package geo reaches outside its tree: ...` | 1 |
 | a file the build read is not in that package's `files` | `geo/extra.mc:1: not declared in geo's [package].files` | 1 |
 | a reserved or malformed name in `[deps]`/`[replace]` | `mc.toml:8:6: reserved package name: deps.mc` | 1 |
+| a `[package].files` entry that leaves the package (§ 3) | `mc: geo 1.2.0: files entry escapes the package: ../x` | 2 |
+| an archive member that is a link | `mc: v1.2.0.tar.gz: archive member is a link: geo-1.2.0/x` | 2 |
+| an archive member that leaves the destination | `mc: v1.2.0.tar.gz: member escapes the archive: ../x` | 2 |
+| a body over its cap (64 MiB for an archive, 1 MiB for an index file) | `mc: larger than the cap of 67108864 bytes: <source>` | 2 |
 
 The exit-2 refusals carry the M25 `run:` line:
 
@@ -350,10 +373,13 @@ above.
 In `mc sysroot fetch`'s order of operations, and for the same reasons:
 
 1. download the archive to `<libs>/<pack>/v<version>.tar.gz` (an `https://` url through
-   `curl`/`wget` with the HTTPS-only flags; a source with no scheme is a local path, copied);
-2. `tar -xzf` it into `<libs>/<pack>/v<version>/` with the row's `strip`;
+   `curl`/`wget` with the HTTPS-only flags; a source with no scheme is a local path, copied).
+   **An archive is refused above 64 MiB and an index file above 1 MiB**, before either is read:
+   `mc: larger than the cap of 67108864 bytes: <source>`, exit 2;
+2. **list the archive and check every member** (below), then `tar -xzf` it into
+   `<libs>/<pack>/v<version>/` with the row's `strip`;
 3. **hash the tree and compare it to the row, before anything else.** On a mismatch every file the
-   package lists is unlinked and no manifest is written:
+   EXTRACTION wrote is unlinked and no manifest is written:
 
    ```text
    mc: checksum mismatch for geo 1.2.0
@@ -368,7 +394,28 @@ In `mc sysroot fetch`'s order of operations, and for the same reasons:
 
 A download that fails leaves no claim either: `mc: the download failed (exit 22): <url>` for a URL
 and `mc: cannot open: <path>` for a path, exit 2, and the next `mc build` says `is not fetched`
-rather than reading debris.
+rather than reading debris. So does a tree whose `mc.toml` is refused after extraction — an entry
+that escapes (§ 3), or one naming a file the archive does not carry: the tree is cleared first and
+the message comes second, and what is cleared is the member list from step 2, never the list in
+the mc.toml that has just been refused.
+
+#### The archive member rule
+
+`tar` is not trusted with a file somebody else produced. Before any extraction the archive is
+listed twice — `tar -t...f` for the names, one per line, and `tar -tv...f` for the ls-style type
+character — and a member is refused when it
+
+* is a symbolic link or a hard link (`mc: <archive>: archive member is a link: <member>`);
+* is absolute, or carries a `.`/`..` component, or lands outside the destination once
+  `--strip-components` has been applied
+  (`mc: <archive>: member escapes the archive: <member>`);
+* is one of more than 1 MiB of names, or the two listings disagree.
+
+Every refusal is exit 2 and unlinks the archive. After the extraction each listed member has to be
+there as a file `open` can read, which is what says tar wrote what tar said it would; that last
+check is skipped when the caller asked for a subset of members, which only `mc sysroot fetch`
+does. A member is never named back to `tar` on the extraction: an argument list is
+space-separated here and a member name may contain a space.
 
 Nothing downloads without `--yes`. Without it every verb that would fetch prints the plan and
 stops:
@@ -394,7 +441,8 @@ the build list and from nothing else.
 ### Vendoring
 
 `mc pkg vendor` copies each locked tree into `deps/<pack>/` — `mc.toml` plus `[package].files`,
-which is the same list the hash is over — and then verifies. `deps/` plus `mc.lock` in git is the
+which is the same list the hash is over, checked entry by entry against § 3 before a byte is
+written — and then verifies. `deps/` plus `mc.lock` in git is the
 fully offline project: a build with an empty `<libs>` produces a byte-identical object, and
 `make check-pkg` asserts exactly that.
 
@@ -413,6 +461,14 @@ the pull request. It refuses:
 
 Rows are immutable because that is the one property of a checksum database worth keeping when you
 have no server to run one on: the git history of the index IS the audit log.
+
+**The immutability check never passes by default.** Comparing needs the published copy, so with a
+URL registry it needs `--yes` — without it, `check` says so and stops
+(`mc: check needs --yes to compare against the published index: <name>`, exit 2) rather than
+answering "unchanged" by doing nothing. With `--yes`, only the downloader's own "no such file"
+(`curl -f` exits 22, `wget` 8) means *a new package*; any other failure is
+`mc: check: cannot read the published index for <name>: <reason>`, exit 2. With a directory
+registry the comparison is free and neither case arises.
 
 ## See also
 
