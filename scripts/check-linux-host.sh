@@ -119,7 +119,7 @@ for arch in $arches; do
     bin="build/mc-linux-$target-gnu"
 
     echo "=================================================================="
-    echo "== linux/$arch host, glibc (ubuntu:latest) ======================="
+    echo "== linux/$arch host, gnu (glibc, ubuntu:latest) ================="
     echo "=================================================================="
     echo "-- cross-build: $mc build src --config src/mc.linux-$arch-gnu.toml --"
     # the same config as the musl one with ONE key added, [target].libc = "gnu":
@@ -158,9 +158,9 @@ for arch in $arches; do
         echo '### cross proof: build/mc2l --backend=macho src/mc.mc == the macOS build/mc2.o'
         build/mc2l --backend=macho src/mc.mc -o build/x-cross.o
         cmp build/x-cross.o build/mc2-macos.o
-        echo 'ok: the Mach-O object written on glibc linux/$arch is byte for byte the one macOS writes'
+        echo 'ok: the Mach-O object written on gnu linux/$arch is byte for byte the one macOS writes'
     "
-    echo "== linux/$arch host, glibc: ok ==================================="
+    echo "== linux/$arch host, gnu: ok ====================================="
    fi
   done
 done
