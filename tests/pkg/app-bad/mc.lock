@@ -3,5 +3,5 @@
 name    = "bad"
 version = "1.0.0"
 lib     = "bad.mc"
-sha256  = "4c8e926d8b2f4c080b4221638a1d7a304c0f7fa44d954dc8a8058b450baf7778"
+sha256  = "98ca7f9866987bc5f053027053620ae1fd2fade72a7eeb94d1a49b0f5e01b9bc"
 deps    = []
