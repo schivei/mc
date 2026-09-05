@@ -1579,6 +1579,51 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `675d62a48b1ca5d1f04649a2b88aa151da8fec53654dcd5ea3e0790ffe1ef0fd`, Linux `bee69954…46dea4` /
   `97c888a8…7251ca`, Windows `edd2d619…e0776` / `08a6d675…6e0a`. Not yet: the CI job (acceptance
   10), exit 125 and every `refused:` line (step C).
+- M43 step C ✔ (`docs/specs/M43.md` § Implementation notes -- step C, fourteen kernel/libc facts):
+  **the two walls and the explain channel.** `src/seccomp.mc` (600): the BPF builder
+  (`ld[arch]`/`jeq host_audit_arch()` -- a new host-layer answer, not a constant -- `/ld[nr]/jge
+  0x40000000 -> KILL (x32)/one JEQ per profile entry/the clone flag block/ret USER_NOTIF`),
+  Landlock with the ABI probed at runtime (**abi 8** measured, floor 4; masks per level, 12-byte
+  packed `path_beneath`, O_PATH fds; a rule on a FILE may not carry `READ_DIR`, EINVAL), installed
+  by C in the marked spot: Landlock, the per-step rlimits, then seccomp with `NEW_LISTENER`.
+  **The listener road, decided by measurement**: two `pidfd_getfd` hops (C -> J -> P), because C's
+  pid is a number in the box's namespace that P only learns from the first notification; Yama
+  `ptrace_scope` = 1 on both hosts and both hops are parent -> descendant, same uid. The explain
+  channel in P (`src/sandbox.mc` +180): `ppoll` over status pipe + listener, `NOTIF_RECV`/`SEND`/
+  `ID_VALID`, `process_vm_readv` page by page; the § 4 table plus `fork`/`vfork` in the
+  process-creating set; `sn_names[]` in `src/sysno.mc` indexed by the same `SN_*` as the number
+  table (one table, two columns). **A refused call is killed and NOT answered** (deviation from
+  § 4): answering woke the step and `shadow errno=13`/`socket refused` appeared on some runs only.
+  **Profiles measured, not written**: `scripts/sandbox-trace.sh` (386) with `strace -fc` OUTSIDE the
+  box (tracing the box records `unshare`/`mount`/`pivot_root`, and once a filter exists the
+  measurement is circular), `tools/sandbox/*.list` (12), `src/sandbox_profiles.mc` (198, generated,
+  in `SN_*` terms): compile musl 18/19, glibc +8/+7; program musl 16/17, glibc +9/+9; threads
+  delta 5 (aarch64/x86_64). `--check` green on four cells both ways and exit 1 on a deliberate extra
+  entry. `strace -c` DROPS `exit_group` -- a profile without it refuses every program at its last
+  instruction. musl on x86_64 forks with `fork` (57). glibc's loader needs `/etc/ld.so.cache`
+  bound AND granted by Landlock, else its fallback path hits `madvise` (aarch64, 1 run in 12) or
+  `newfstatat` (x86_64, every dynamic program, probing `glibc-hwcaps/x86-64-v4/`). The process cap
+  needs `RLIMIT_NPROC` (128) looser than P's counter (64) or the kernel's EAGAIN wins. Unprivileged
+  copy-up needs owner AND group mapped.
+  Acceptance 2, every line, per cell (Lima aarch64 root+unprivileged, VPS x86_64 root+unprivileged,
+  x86_64 glibc by hand): `refused: open /etc/shadow` -- **before the kernel answers ENOENT**, the
+  notification fires on `openat` entry (the step-B compiler prints `shadow errno=2` on the same
+  source); `refused: syscall 198 (socket)` / `41`; `refused: syscall 220 (clone)` / `57 (fork)`
+  musl / `56 (clone)` glibc; `refused: process limit (64)` with `--allow=threads`; `refused: mmap
+  8589934592 bytes over the cap (268435456)`; all exit 125; `killed:` lines unchanged (124);
+  `clean.mc` byte-identical with the program profile installed. Host process count and available
+  memory unchanged, asserted by the script. Suites 31/31 and 29/29 through the box, `exec` 2/2
+  incl. a `PT_INTERP` binary, `examples/lang` inside with **`compile: execve 2`** (`mc build` execs
+  the compiler it wrote, which compiles the entry in-process; 3 kept as the ceiling). Five cells
+  **52/52/50/50/50 ok, 0 failed**. Overhead with the filter: 1916 us vs 1619 us per box on aarch64
+  (**+297 us, +21%**); on the VPS inside the noise.
+  -- `stage0/`, `lib/`, `tests/*.mc` untouched; bundle 86 files (blob 478358 B); `make check` RC 0
+  (`check-lex`/`ast`/`asm` 134/134, `check-obj` 32/32, fixed point 1099928 B, `check-limits` 17/17
+  with **globals 432/512**, `test-sandbox` 52 ok / 1 skipped); four Linux cells RC 0; `check-inert`
+  identical everywhere. Goldens rewritten once: `mc2.sha256`
+  `bb48b0b27df913fcaa54b60a59da3a0e9c3cf219d0f474f731adb7b9b7bf6075`, Linux `394ce144…34579` /
+  `8c9c7fab…167c17`, Windows `f2d9b228…ad4ff6` / `3596c00b…15e98e`. Not yet: the CI job
+  (acceptance 10) and `docs/guide/99-sandbox.md` (step D).
 - Next: M18 or M24 (`docs/plan.md`); M40 (the word-size sweep AVR/PIC need) is
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
 - M24 step A ✔ (`docs/specs/M24.md` § M1-M6, M8 and decision D5): **Tier 4 -- the inert half.
