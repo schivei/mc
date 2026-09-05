@@ -2684,6 +2684,78 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   (959407 B), `mc2-windows-x86_64.sha256`
   `af21fe6f17f6d0ca13554b122536178688284f759b990cc8ebb1ccb336ed947f` (978891 B), both also
   written byte for byte by `build/mc2`.
+- Post-M45 Windows batch (the four Windows CI legs, `docs/specs/M45.md` § Implementation notes 7):
+  the two findings only a Windows runner could see, and the local gate widened so the first of
+  them cannot hide again. `stage0/` untouched (2848/3000); nothing in `src/` changed except the
+  regenerated `src/bundle_data.mc`.
+  1. **`tests/windows/073-int-return.mc` was in the wrong link mode.** `scripts/test-windows.sh`
+     put it in the `self` list, and `self` means exactly one thing -- *the source includes
+     `<sys_windows>` and therefore must NOT have `winrt.obj` next to it*. 073 deliberately does
+     not include the layer (it declares the three kernel32 entry points it uses), but
+     `winstart.obj` is in EVERY link line (M20) and its `mc_start` calls `win_setup`/`win_argv`,
+     which live in `lib/sys_windows.mc` = `winrt.obj`: `lld-link: error: undefined symbol:
+     win_setup` / `win_argv`, on both architectures. It is now a `kernel32` link; its own
+     `extern`s resolve from the import library and none of its names (`wr`, `puti`, `nbuf`,
+     `nio`, `main`) collides with the layer's. One list, read by both halves of the split through
+     `$split/manifest`, so `--build-only` and `--run-only` moved together.
+  2. **`close(-1)` answered 0 on Windows and -1 everywhere else.** `lib/sys_windows.mc`'s `close`
+     handed anything outside 0..2 to `CloseHandle`, and `(HANDLE)-1` is not only
+     `INVALID_HANDLE_VALUE`: it is the **pseudo-handle** `GetCurrentProcess()` returns, and
+     `CloseHandle` on a pseudo-handle SUCCEEDS -- so `tests/mc/093-i32-return.mc` printed
+     `-1 44 -32768 1 0` where the four other targets print `-1 44 -32768 1 1`. A defect of the
+     LAYER, not of the test (a POSIX close of an invalid descriptor is -1/EBADF): `close` now
+     refuses a negative descriptor itself, with the pseudo-handle reason on the line.
+     `lib/sys_windows_host.mc` needed nothing -- it `#include`s `lib/sys_windows.mc` and has no
+     `close` of its own. 093's header carried the false claim in prose and was corrected with the
+     fix. **Only the Windows runners can prove the new behaviour**; here it is proved to compile,
+     to link in every mode, and to change nothing else.
+  3. **The gate.** The default mode of `scripts/test-windows.sh` linked THREE objects out of
+     forty -- one per mode -- so a test in the wrong mode was invisible locally. An undefined
+     symbol is a property of the pair `(object, mode)` and `lld-link` is on this machine, so the
+     default mode now links **every object in the manifest with its recorded mode**, keeps the
+     `IMAGE_FILE_MACHINE_*` assertion per linked `.exe` and reports the count: **40 executables
+     linked for windows/aarch64, 38 for windows/x86_64**, nothing executed. Proved to have teeth
+     by putting 073 back in the `self` list -- `make test-windows` then fails with the exact CI
+     message and passes with the classification fixed. The `--run-only` half is unchanged.
+     Widening it paid twice: it reported `undefined symbol: GetFileAttributesA` on a
+     `build/sysroot/windows-aarch64` populated BEFORE M45 added that name, so
+     `scripts/sysroot-windows.sh` now compares the generated `kernel32.def` with the one on disk
+     instead of caching on the mere existence of `kernel32.lib` (CI never saw it: it builds the
+     sysroot fresh every run).
+  -- `make bundle` re-run BEFORE bootstrapping (`lib/sys_windows.mc` is bundled as `sys_windows`):
+  78 files, raw 872055 -> LZ 407340, blob 408293 B. `make check` green end to end (**RC 0, zero
+  FAIL**): `budget` 2848/3000, `test` 32/32, `check-lex` 126/126 (2 skipped), `check-ast` 126/126,
+  `check-asm` 126/126, `check-obj` **32/32 identical to the frozen seed**, `check-bundle`,
+  `bootstrap` at a fixed point (`mc2.o == mc3.o`, 941880 B; the `--dump-asm` diff between `mc1`
+  and `mc2` is **empty**), `check-surface` 32/32 + 139 ok lines, `test-exe` 32/32, `check-mc`
+  11/11, `check-standalone`, `check-parts`, `check-toml` 10/10, `check-build` 53/53,
+  `check-sysroots` (13 rows), `check-stubs` 9/9, `check-limits` 17/17 under 90%, `check-minimal`,
+  `test-linux` 39/39, `test-linux-x86_64` 36/36, `test-linux-exe` 42/42 musl + 42/42 gnu,
+  `test-linux-x86_64-exe` 39/39 + 39/39, **`test-windows` 40/40 objects and 40 linked**,
+  **`test-windows-x86_64` 38/38 and 38 linked**, `check-examples`, `check-lang`, `check-conc`,
+  `check-desktop`, `check-float`, `check-wide`, `check-kernel` (`kernel.bin` 3304 B),
+  `check-avr`, `check-docs` (188 symbols, 22 flags, 20 TOML keys, 10 directives, 48 samples,
+  287 links), `site` 85 pages + `check-site` 0 link problems. `make check-linux-host` RC 0 over
+  all four cells (aarch64 musl 39/39 and gnu 40/40, x86_64 musl 36/36 and gnu 37/37), each after
+  its own `mc2l.o == mc3l.o` and with the cross proof green.
+  `scripts/check-inert.sh build/mc1.pre build/mc1` (pre = the branch's HEAD before this batch):
+  **33 objects identical** (`tests/*.mc` + `src/mc.mc`) and byte-identical artefacts for
+  `examples/api`, `lang`, `conc`, `desktop` and `kernel` -- the change is in `lib/` and in a
+  script, and the compiler emits exactly what it emitted.
+  The five goldens rewritten **once**, each only after its own criterion -- the blob is the only
+  thing that moved: `mc2.sha256` `90ce56dc...35ee38` ->
+  `922c9feea7b755c03dc06fbdb4bb8067d4badff87438956ef7319cd3c2e2a444` (empty `--dump-asm` diff +
+  `cmp build/mc2.o build/mc3.o`); the Linux pair deleted and re-recorded by
+  `make check-linux-host` -- `mc2-linux-arm64.sha256`
+  `957067bb9a8ca5d06c944f57b6a3944e43cf11077cc9e9597c0c8423e54fbd39`,
+  `mc2-linux-x86_64.sha256`
+  `26b1183013227288e1439cd2ada1a9c644fc729f7d453a5fd0e2a700725464aa`, each recorded in its musl
+  cell and re-verified by the gnu cell of the same architecture; the Windows pair cross-computed
+  per `tests/golden/README.md` -- `mc2-windows-arm64.sha256`
+  `979336224f09e50f1b3cae3deb38984897aea55451950dca91519b256fbfa728` (959711 B),
+  `mc2-windows-x86_64.sha256`
+  `e4aa4ebe060c4ad36f55af6c5e19257aa38fdca78e731da834d040f3ee74cdcb` (979195 B), both also
+  written byte for byte by `build/mc2`.
 - Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
   `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
   from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:

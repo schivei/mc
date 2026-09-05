@@ -1191,6 +1191,13 @@ boundary is `kernel32.dll` — so the layer is ordinary mc code over seven `exte
 `GetStdHandle`; `open`/`creat` hand back the `HANDLE` `CreateFileA` returned and the other
 wrappers take it back unchanged, which is safe because a real handle is never 0, 1 or 2.
 
+`close` refuses a **negative** descriptor itself (`-1`, like every POSIX `close` of an invalid
+descriptor) and never hands it to `CloseHandle`: `-1` is `INVALID_HANDLE_VALUE`, but it is also the
+pseudo-handle `GetCurrentProcess()` returns, and `CloseHandle` on a pseudo-handle **succeeds** — so
+without that guard `close(-1)` would answer 0 here and -1 on the four other targets. Found by the
+two Windows CI legs on `tests/mc/093-i32-return.mc` (M45), the one test that closes an invalid
+descriptor; nothing on the development machine can see it, because nothing Windows is executed here.
+
 It provides the two halves of the entry point that do not name `main`: `win_setup()` splits
 `GetCommandLineA()` into `argc`/`argv` (runs of spaces and tabs separate, a double quote toggles a
 region where they do not) and returns `argc`, and `win_argv()` hands back the vector.
@@ -1262,7 +1269,10 @@ per object, and **both** carry `winstart.obj`, because that is where `-entry:mc_
 
 The default mode is what `make test-windows` and `make test-windows-x86_64` run on the development
 machine: cross-compile everything, assert every object carries the right
-`IMAGE_FILE_MACHINE_*` with `TimeDateStamp` 0, and link three of them with `lld-link`. Nothing is
+`IMAGE_FILE_MACHINE_*` with `TimeDateStamp` 0, and link EVERY one of them with `lld-link`, each
+with the link mode the manifest recorded (M45: it used to be three, one per mode, and a test
+classified into the wrong mode reached CI before the local gate could see it -- an undefined
+symbol is a property of the pair `(object, mode)`). Nothing is
 executed here — there is no Windows host — and the `windows-11-arm` and `windows-2025` CI legs
 are the runtime oracles, which is what `docs/plan.md` § Rule for every new target requires.
 
@@ -1627,7 +1637,7 @@ make -C examples/api test        # test-oop + tests/lib_test.sh + test.sh
 | `check-standalone` | `scripts/check-standalone.sh`: `build/mc-exe` copied alone into a temporary directory, compiling `<sys>`/`<prelude>`, a taught compiler from `<mc/core>`, and the byte-for-byte comparison against `build/mc2.o` |
 | `test-linux` | `scripts/test-linux.sh`: every `tests/*.mc` without `// skip-linux` cross-compiled with `elf-obj`, linked by `ld.lld` against musl and run in `docker --platform linux/arm64`, plus the no-libc case. Guarded: skipped with a message when Docker or `ld.lld` is missing |
 | `test-linux-x86_64` | the same with `--arch x86_64`: the `elf-obj-x86_64` backend, an amd64 musl sysroot and `docker --platform linux/amd64`. Also skips the tests that carry `// skip-x86_64`. Guarded the same way |
-| `test-windows` | `scripts/test-windows.sh`: every `tests/*.mc` without `// skip-windows` cross-compiled with `coff-obj-arm64`, every object's COFF header checked with `llvm-readobj` and three of them linked with `lld-link`. Nothing is executed — the `windows-11-arm` CI leg runs them. Guarded: skipped when `lld-link` or `llvm-dlltool` is missing |
+| `test-windows` | `scripts/test-windows.sh`: every `tests/*.mc` without `// skip-windows` cross-compiled with `coff-obj-arm64`, every object's COFF header checked with `llvm-readobj` and every one of them linked with `lld-link` in its recorded mode. Nothing is executed — the `windows-11-arm` CI leg runs them. Guarded: skipped when `lld-link` or `llvm-dlltool` is missing |
 | `check-kernel` | `examples/kernel/test.sh`: the taught compiler out of `mc.toml`, the flat RISC-V image, both QEMU runs (transcript **and** exit code, 0 and 42), determinism, the two refusals by the default compiler, seven ABI assertions over `--dump-asm --machine=riscv64`, and the `llvm-mc` encoder sweep. Guarded: without `qemu-system-riscv64` the two runs are skipped, without `llvm-mc` the sweep is |
 | `check-avr` | `examples/avr/test.sh`: the RECREATED compiler out of `mc.toml` (`core = "<mc/core_min>"`), the ELF32 AVR firmware, both simulators (simavr for the transcript **and** the exit code, 0 and 1; `qemu-system-avr` for the same transcript on UART0), the two on-device sweeps under both, determinism, the three refusals by the default compiler, five ABI assertions over `--dump-asm --machine=avr`, four things the machine refuses rather than truncates, the `llvm-mc` encoder sweep and the field-by-field comparison against `avr-gcc`. Guarded: every external tool is optional and prints `SKIP` |
 | `check-limits` | `scripts/check-limits.sh`: `mc limits src/mc.mc` against the fixed `MAX*` constants still in `stage0/mc.h` and `stage0/*.c`, plus the seed's `HEAP_SIZE` against the max RSS of a real `build/mc0` run; fails when any of them is over 90% used |

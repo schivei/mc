@@ -17,9 +17,14 @@
 # `mc sysroot fetch windows-*` will be for; this is the toolchain the test suite
 # needs and nothing else.
 #
-# The directory is a CACHE: with kernel32.lib already there the script says so
-# and does nothing, so `make test-windows` does not rebuild it on every run.
-# Pass -f (or set FORCE=1) to repopulate it.
+# The directory is a CACHE: with kernel32.lib already there AND its kernel32.def
+# equal to the list below, the script says so and does nothing, so
+# `make test-windows` does not rebuild it on every run. The def is compared and
+# not just looked for, because a cache populated before a name was added to the
+# list is worse than no cache at all: the link fails with an "undefined symbol"
+# that names an entry point the script already knows about (M45 added
+# GetFileAttributesA and a stale cache was the first thing the widened
+# test-windows gate reported). Pass -f (or set FORCE=1) to repopulate it.
 arch="aarch64"
 dir=""
 while [ $# -gt 0 ]; do
@@ -39,27 +44,6 @@ case "$arch" in
 esac
 [ -n "$dir" ] || dir="build/sysroot/windows-$arch"
 
-if [ -z "$FORCE" ] && [ -f "$dir/kernel32.lib" ]; then
-    echo "sysroot already populated: $dir"
-    exit 0
-fi
-
-# Homebrew keeps llvm-dlltool out of the default PATH, the same place
-# llvm-readobj lives; look there before giving up.
-dlltool=$(command -v llvm-dlltool 2>/dev/null)
-if [ -z "$dlltool" ]; then
-    for cand in /opt/homebrew/opt/llvm/bin/llvm-dlltool /usr/local/opt/llvm/bin/llvm-dlltool \
-                /usr/lib/llvm-*/bin/llvm-dlltool; do
-        if [ -x "$cand" ]; then dlltool="$cand"; break; fi
-    done
-fi
-if [ -z "$dlltool" ]; then
-    echo "sysroot-windows: llvm-dlltool not found (brew install llvm)" >&2
-    exit 1
-fi
-
-mkdir -p "$dir" || exit 1
-
 # The kernel32 entry points the two layers declare, one per line: the seven of
 # lib/sys_windows.mc (M19) and the seven more lib/sys_windows_host.mc needs for
 # a HOSTED compiler (M38) -- spawning a tool, asking why a spawn failed, waiting
@@ -70,7 +54,8 @@ mkdir -p "$dir" || exit 1
 # this list and the `extern`s in those two files in step: a name here that no
 # layer uses costs nothing, a name a layer uses and this list does not have is
 # an "unresolved external symbol" at link time.
-cat > "$dir/kernel32.def" <<'DEF'
+deftmp="${TMPDIR:-/tmp}/kernel32.def.$$"
+cat > "$deftmp" <<'DEF'
 LIBRARY kernel32.dll
 EXPORTS
 CloseHandle
@@ -90,6 +75,31 @@ VirtualAlloc
 WaitForSingleObject
 WriteFile
 DEF
+
+if [ -z "$FORCE" ] && [ -f "$dir/kernel32.lib" ] && [ -f "$dir/kernel32.def" ] \
+   && cmp -s "$deftmp" "$dir/kernel32.def"; then
+    rm -f "$deftmp"
+    echo "sysroot already populated: $dir"
+    exit 0
+fi
+
+# Homebrew keeps llvm-dlltool out of the default PATH, the same place
+# llvm-readobj lives; look there before giving up.
+dlltool=$(command -v llvm-dlltool 2>/dev/null)
+if [ -z "$dlltool" ]; then
+    for cand in /opt/homebrew/opt/llvm/bin/llvm-dlltool /usr/local/opt/llvm/bin/llvm-dlltool \
+                /usr/lib/llvm-*/bin/llvm-dlltool; do
+        if [ -x "$cand" ]; then dlltool="$cand"; break; fi
+    done
+fi
+if [ -z "$dlltool" ]; then
+    rm -f "$deftmp"
+    echo "sysroot-windows: llvm-dlltool not found (brew install llvm)" >&2
+    exit 1
+fi
+
+mkdir -p "$dir" || { rm -f "$deftmp"; exit 1; }
+mv "$deftmp" "$dir/kernel32.def" || { rm -f "$deftmp"; exit 1; }
 
 "$dlltool" -m "$machine" -d "$dir/kernel32.def" -D kernel32.dll -l "$dir/kernel32.lib" \
     || { echo "sysroot-windows: llvm-dlltool failed" >&2; exit 1; }

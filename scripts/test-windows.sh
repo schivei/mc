@@ -34,10 +34,12 @@
 #
 # The default mode is what `make test-windows` runs on the development machine:
 # cross-compile everything, check every object's COFF header with `llvm-readobj`
-# when it is available, and LINK three of them with `lld-link` -- one per link
-# mode, plus the one that pulls the layer in through an extern -- to prove the
-# objects are linkable. It does not run anything -- there is no Windows host
-# here, and the CI leg is the runtime oracle.
+# when it is available, and LINK every one of them with `lld-link`, each with
+# the link mode the manifest recorded, to prove the objects are linkable. It
+# does not run anything -- there is no Windows host here, and the CI leg is the
+# runtime oracle for behaviour. Linking all of them and not a sample is what
+# makes a test classified into the wrong link mode fail HERE (M45: 073 was in
+# the `self` list and CI was the first to say so).
 #
 # Headers, the same ones scripts/test.sh and scripts/test-linux.sh read:
 #
@@ -393,27 +395,29 @@ else
         build_one "$f" "$name" kernel32
     done
 
-    # the default mode's own gate: the objects have to be LINKABLE. Two are
-    # enough to exercise both modes -- 001 is the smallest program there is and
-    # 013 pulls the layer in through an extern -- and neither is executed,
-    # because this is not a Windows machine.
+    # the default mode's own gate: EVERY object has to be LINKABLE, with the
+    # link mode the manifest recorded for it. It used to be three of them, one
+    # per mode, and that is how a test classified into the wrong mode reached
+    # CI: an undefined symbol is a property of the pair (object, mode), so only
+    # linking the pair can see it. The linker is here, so the rule applies --
+    # what can run locally runs locally, and the CI leg is left with the one
+    # thing it alone can do, which is EXECUTE.
     if [ "$mode" = "full" ] && [ -n "$linker" ]; then
         linked=0
-        for pair in "001-return42 kernel32" "013-putnum kernel32" "070-kernel32 self"; do
-            set -- $pair
-            [ -f "$split/$1.obj" ] || continue
-            if ! msg=$(link_one "$1" "$2"); then
-                echo "FAIL $1 (link: $msg)"; fails=$((fails + 1)); continue
+        while read -r lname lmode; do
+            [ -n "$lname" ] || continue
+            [ -f "$split/$lname.obj" ] || continue
+            if ! msg=$(link_one "$lname" "$lmode"); then
+                echo "FAIL $lname (link: $msg)"; fails=$((fails + 1)); continue
             fi
             if [ -n "$readobj" ]; then
-                case "$("$readobj" --file-headers "$split/$1.exe" 2>&1)" in
+                case "$("$readobj" --file-headers "$split/$lname.exe" 2>&1)" in
                     *"$cmachine"*) ;;
-                    *) echo "FAIL $1 (linked .exe is not $arch)"; fails=$((fails + 1)); continue ;;
+                    *) echo "FAIL $lname (linked .exe is not $arch)"; fails=$((fails + 1)); continue ;;
                 esac
             fi
             linked=$((linked + 1))
-            echo "linked $1.exe"
-        done
+        done < "$split/manifest"
         echo "$linked executables linked with lld-link (not executed: no Windows host)"
     fi
 fi
