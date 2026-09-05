@@ -18,8 +18,8 @@
 //
 //     flash 0x0000  the interrupt vector table, 26 x `jmp`, SYNTHESIZED here
 //     flash 0x0068  __TEXT,__text and every other instruction section
-//                   .mmcu, the simavr blob
 //                   the LOAD image of __TEXT,__cstring and __DATA,__data
+//                   .mmcu, the simavr blob -- LAST, and in no LOAD segment
 //     sram  0x0100  __TEXT,__cstring )  the RUN addresses: what a pointer
 //                   __DATA,__data    )  in the program actually holds
 //                   __DATA,__bss     )  zeroed by _start
@@ -46,6 +46,7 @@
 #define AVR_RAMEND 0x08ff             // the last one: SP starts here
 #define AVR_FLASH  0x8000             // 32 KiB, the whole program memory
 #define AVR_DATA_SEG 0x800000         // the AVR ELF convention for data space
+#define AVR_MMCU_ADDR 0x910000        // where simavr's own examples put .mmcu
 #define AVR_FREQ  16000000
 
 // the simavr .mmcu tags this image uses (avr_mcu_section.h, verified against a
@@ -93,8 +94,19 @@ void img_place() {
         i = i + 1;
     }
     img_text_end = img_align_up(cur, 2);
-    img_mmcu = img_text_end;
-    img_lma = img_mmcu + img_mmcu_size();
+    // The LOAD image of the data starts where the code ends, with NOTHING in
+    // between, and .mmcu goes after it. That order is not cosmetic: simavr
+    // 1.6 -- the version Debian and Ubuntu ship, and the one the CI leg runs --
+    // ignores every section address and builds its flash from the CONTENTS of
+    // `.text` immediately followed by the contents of `.data` (sim_elf.c:
+    // `flashsize = text + data`, two memcpy at offset 0 and offset sizeof
+    // .text). Anything ALLOC in between -- and avr-gcc itself puts .mmcu
+    // there -- makes that loader place the data image `sizeof(.mmcu)` bytes
+    // BELOW the address `_data_lma` names, so _start's startup copy reads
+    // unprogrammed flash (0xff) and every pointer in __data becomes 0xffff.
+    // Put the data first and both loaders agree byte for byte
+    // (docs/specs/M40.md finding 11).
+    img_lma = img_text_end;
     // the initialized data: one contiguous run, at its RUN address in SRAM and
     // at img_lma in flash, in the same order and with the same padding
     i64 ram = AVR_SRAM;
@@ -112,6 +124,7 @@ void img_place() {
         i = i + 1;
     }
     img_data_end = ram;
+    img_mmcu = img_lma + (img_data_end - img_data);
     img_bss_start = ram;
     i = 0;
     while (i < nsections) {
@@ -414,7 +427,7 @@ void avr_image_write(uptr path) {
     img_synth_syms();
     img_relocate();
 
-    // the flash image: vectors, code, .mmcu, then the LOAD copy of the data
+    // the flash image: vectors, code, the LOAD copy of the data, then .mmcu
     uptr flash = xalloc(BUF_SIZE);
     buf_init(flash);
     img_put_vectors(flash);
@@ -429,9 +442,7 @@ void avr_image_write(uptr path) {
         i = i + 1;
     }
     buf_pad(flash, 2);
-    if (buf_len(flash) != img_mmcu) die("avr: the code layout disagrees with the bytes");
-    img_put_mmcu(flash);
-    if (buf_len(flash) != img_lma) die("avr: the .mmcu layout disagrees with the bytes");
+    if (buf_len(flash) != img_lma) die("avr: the code layout disagrees with the bytes");
     i = 0;
     while (i < nsections) {
         uptr s = sec_at(i);
@@ -443,6 +454,8 @@ void avr_image_write(uptr path) {
         }
         i = i + 1;
     }
+    if (buf_len(flash) != img_mmcu) die("avr: the data layout disagrees with the bytes");
+    img_put_mmcu(flash);
     i64 datasz = img_data_end - img_data;
     i64 flashsz = buf_len(flash);
     // The other half of the part's size, and the one a linker script would
@@ -511,8 +524,14 @@ void avr_image_write(uptr path) {
     buf_put(b, buf_p(img_shstr), buf_len(img_shstr));
 
     img_shdr(b, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    img_shdr(b, img_shname_at(1), 1, 6, 0, off_flash, img_mmcu, 0, 0, 2, 0);
-    img_shdr(b, img_shname_at(2), 1, 2, img_mmcu, off_flash + img_mmcu,
+    img_shdr(b, img_shname_at(1), 1, 6, 0, off_flash, img_lma, 0, 0, 2, 0);
+    // .mmcu is metadata, not firmware: sh_flags 0, so it is in no LOAD segment
+    // and no loader can put it in the middle of the flash image. simavr finds
+    // it by NAME in the section table, which both versions do. The address is
+    // not decoration either: master warns `ELF .mmcu section at 0 may be
+    // loaded` for anything below 0x860000, and 0x910000 is what simavr's own
+    // examples link it at (--section-start=.mmcu=0x910000).
+    img_shdr(b, img_shname_at(2), 1, 0, AVR_MMCU_ADDR, off_flash + img_mmcu,
              img_mmcu_size(), 0, 0, 1, 0);
     img_shdr(b, img_shname_at(3), 1, 3, AVR_DATA_SEG + img_data,
              off_flash + img_lma, datasz, 0, 0, 1, 0);
