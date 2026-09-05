@@ -446,6 +446,13 @@ second form of `#include`:
 purpose: `<name>` means "the copy that shipped with this binary", and the answer must not depend
 on the working directory. An unknown name says so and lists nothing else:
 
+Since M44 that sentence has one more clause. `<name>` is served by the LOCK, then by the bundle,
+then by the installed `mc` package -- still never by the working directory, which is the property
+the rule was written for. A project with no `[deps]` reads no lock and behaves exactly as it did
+before; a project that pins a bundled name gets the tree its lock pins, hashed and re-checked on
+every build (`docs/reference/packages.md` § 2). The M15 promise becomes: **the binary alone is the
+toolchain, and a lock is how a project says otherwise, in writing.**
+
 ```
 $ mc prog.mc -o prog.o
 prog.mc:1: unknown bundled include: no/such/module

@@ -43,6 +43,15 @@ sqlite3 = "/usr/lib/libsqlite3.dylib"
 [include]
 paths = ["lib"]
 
+[deps]                     # optional: packages, resolved through mc.lock
+geo = "1.2.0"              # a MINIMUM version; the lock pins the exact one
+
+[replace]                  # optional: point a name at a local tree
+geo = "../geo"
+
+[registry]                 # optional: where `mc pkg` looks a package up
+url = "https://raw.githubusercontent.com/schivei/mc-registry/main"
+
 [limits]
 tolerance = 0.25
 ```
@@ -270,6 +279,47 @@ have.
 A project never shadows a relative include that already resolved; the roots only catch what would
 otherwise fail. With no root registered the lexer behaves exactly as it did before this key
 existed — not even an extra `open` happens.
+
+## `[deps]`, `[replace]` and `[registry]` — packages
+
+| key | type | meaning |
+|---|---|---|
+| `deps.<name>` | string | the MINIMUM version of a package this project needs |
+| `replace.<name>` | string | a directory to use for `<name>` instead of a locked tree, relative to the config |
+| `registry.url` | string | where `mc pkg` looks a package up; a URL or a directory |
+
+`[deps]` keys are package names: `[a-z][a-z0-9_]*`, at most 32 bytes, and `mc`, `deps` and
+`build` are reserved. A name that breaks either rule is refused at the key's own position
+(`reserved package name: deps.mc`, `invalid package name: deps.Geo`), exit 1.
+
+The value is a **minimum**, in Go's sense, not a pin. What is actually compiled is the row
+`mc.lock` carries — beside `mc.toml`, machine-written, one `[[package]]` per package with an exact
+version and a content hash — which `mc build` re-checks on every build. A `[deps]` minimum the
+lock cannot meet is `mc.lock is stale`, exit 2.
+
+`[deps]` is what turns on `#include <pack/file.mc>`; with no `[deps]` section `mc build` reads no
+lock at all and every `<name>` resolves exactly as it did before packages existed. `[registry]` is
+read but unused in this build: nothing in `mc build` reaches the network.
+
+A replaced package is not pinned and not hashed, and the build says so on stdout
+(`replaced geo: ../geo -- not pinned by mc.lock`).
+
+Everything else about packages — the resolution order, the lock format, the tree hash, the closure
+rule — is in [packages.md](packages.md).
+
+## `[package]` — this tree IS a package
+
+| key | type | meaning |
+|---|---|---|
+| `package.name` | string | the package's registry name |
+| `package.files` | array of strings | every file the package ships, in the order that fixes the hash |
+| `package.lib` | string | optional: the file a bare `#include <name>` means |
+| `package.module` | string | optional: the file a COMPILER includes; it exports `<name>_init()` |
+
+This table is read out of a DEPENDENCY's `mc.toml`, not out of your own — a project's `mc.toml`
+without `[package]` is not a package, and a package that is also a program simply carries both
+tables. `files` is the hash's input, the vendor-copy list and the boundary a package may not read
+outside of; see [packages.md](packages.md) § 3.
 
 ## `[limits]`
 

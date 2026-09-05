@@ -228,7 +228,7 @@ symbol name; the source file is required only because `user_init()` runs after `
 ## 2. `mc build` — the project driver
 
 ```
-mc build [DIR] [--config FILE] [--entry-only] [--compiler-only] [--limits | --fix-limits] [--sysroot-dir DIR]
+mc build [DIR] [--config FILE] [--entry-only] [--compiler-only] [--limits | --fix-limits] [--sysroot-dir DIR] [--libs-dir DIR]
 ```
 
 `DIR` defaults to `.`, the config to `DIR/mc.toml`. Every path inside the file is relative to the
@@ -242,6 +242,7 @@ thing as `mc build` from inside `examples/api`. Every key is in [toml.md](toml.m
 | `--compiler-only` | build the taught compiler from `[compiler].modules`, print its path on stdout and stop — no spawn, no entry. This is the flag a `test.sh` wants when it drives the taught compiler over its own suite, and the one an editor server needs. Without a `[compiler].modules` it is an error (`missing key: compiler.modules`), not a silent full build; together with `--entry-only` it is `mc: --entry-only and --compiler-only are exclusive`. |
 | `--limits` | after the build, print the table report and return a verdict (see below). |
 | `--fix-limits` | the same report, and rewrite **only** the `[limits]` section of `mc.toml` with the smallest tolerance that would have avoided `grew` and `tight`. |
+| `--libs-dir DIR` | where an installed package lives, instead of `$HOME/.mc/libs`. It is the second road a `#include <pack/file.mc>` takes, after a vendored `deps/<pack>/`, and it is also where the installed `mc` package is looked for. CI passes it so that no job depends on `HOME`, exactly as `--sysroot-dir` does. Missing argument: `mc: --libs-dir requires an argument`. See [packages.md](packages.md). |
 | `--sysroot-dir DIR` | DIR **is** the sysroot for `[target]`, ahead of `[sysroot].cache` and of `~/.mc/sysroots` in the resolution chain — but behind `[sysroot].path`, which still wins. CI passes it so that no job depends on `HOME`. Missing argument: `mc: --sysroot-dir requires an argument`. See [sysroot.md](sysroot.md). |
 
 A second bare argument is `mc: duplicate directory: <arg>`; any other `-flag` reprints the usage
@@ -387,7 +388,7 @@ sandbox: refused: open /etc/shadow
 |---|---|
 | `0` | success — and, under `--limits`, verdict `ok` |
 | `1` | any diagnostic: a compile error, a TOML error, a spawned tool that failed |
-| `2` | the environment is not ready: no sysroot for the target ([sysroot.md](sysroot.md) § 5) |
+| `2` | the environment is not ready: no sysroot for the target ([sysroot.md](sysroot.md) § 5), or a dependency that does not match `mc.lock`, is not fetched, or a lock that is stale ([packages.md](packages.md) § 8) |
 | `3` | verdict `tight` or `grew` (`--limits` / `mc limits` only) |
 | `124` | `mc sandbox`: a cap stopped the program (CPU or wall clock) |
 | `125` | `mc sandbox`: a refusal stopped it — a system call outside the profile, a path outside the box's roots, an `mmap` over `--mem`, a process over the cap, an `execve` too many ([sandbox.md](sandbox.md) § The explain channel) |
@@ -396,9 +397,11 @@ sandbox: refused: open /etc/shadow
 `--fix-limits` exits 0 when it managed to write a tolerance that fits, and 3 when even `1.0`
 would not have been enough (the file is left alone in that case).
 
-Code **2** is one message and nothing else — the `no sysroot for <os>-<arch>` block of
-[sysroot.md](sysroot.md) § 5. It is a separate code so that a script can tell "your machine is
-missing files" from "your program does not compile" without reading the text.
+Code **2** is always "your machine is not ready", never "your program does not compile", and that
+is why it is a separate code: a script can tell them apart without reading the text. Two families
+use it — the `no sysroot for <os>-<arch>` block of [sysroot.md](sysroot.md) § 5, and the package
+refusals of [packages.md](packages.md) § 8. Both carry a `run:` line naming the command that would
+fix it.
 
 ---
 

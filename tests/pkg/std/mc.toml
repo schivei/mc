@@ -1,0 +1,11 @@
+# tests/pkg/std -- one file, no dependencies, no [compiler]: everything it needs
+# comes from `<...>`. Run with a compiler that carries no blob and a --libs-dir,
+# it measures the third step of the resolution order and nothing else.
+[project]
+name  = "std"
+entry = "def.mc"
+out   = "build/def.o"
+kind  = "obj"
+
+[limits]
+tolerance = 1.0

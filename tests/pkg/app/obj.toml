@@ -1,0 +1,19 @@
+# the same project stopping at the relocatable object: what a byte-for-byte
+# comparison between two installations is made of.
+[project]
+name  = "app"
+entry = "main.mc"
+out   = "build/app.o"
+kind  = "obj"
+
+[deps]
+geo   = "1.2.0"
+mathx = "1.0.0"
+teach = "1.0.0"
+
+[compiler]
+out     = "build/mc-app"
+modules = ["<teach/mc_teach.mc>", "user.mc"]
+
+[limits]
+tolerance = 1.0

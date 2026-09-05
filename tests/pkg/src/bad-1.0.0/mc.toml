@@ -1,0 +1,5 @@
+# bad 1.0.0 -- the closure fixture: a package that reads outside its own tree.
+[package]
+name  = "bad"
+files = ["bad.mc", "embed.mc"]
+lib   = "bad.mc"

@@ -25,6 +25,7 @@ mc/core_machines	src/core_machines.mc
 mc/core_min	src/core_min.mc
 mc/core_sandbox	src/core_sandbox.mc
 mc/core_writers	src/core_writers.mc
+mc/deps	src/deps.mc
 mc/driver	src/driver.mc
 mc/gen_resolve	src/gen_resolve.mc
 mc/gen_walk	src/gen_walk.mc

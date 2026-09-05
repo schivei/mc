@@ -1,0 +1,5 @@
+# mathx 1.0.0 -- a fixture package: one function, no dependencies.
+[package]
+name  = "mathx"
+files = ["mathx.mc"]
+lib   = "mathx.mc"

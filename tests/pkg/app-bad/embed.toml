@@ -1,0 +1,12 @@
+# the same boundary reached with #embed instead of #include
+[project]
+name  = "app-bad"
+entry = "embed-main.mc"
+out   = "build/bad.o"
+kind  = "obj"
+
+[deps]
+bad = "1.0.0"
+
+[limits]
+tolerance = 1.0

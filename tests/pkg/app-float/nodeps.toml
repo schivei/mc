@@ -1,0 +1,14 @@
+# no [deps] at all: the bundle answers <float> and <float_rt>, and the presence
+# of a float package under <libs> cannot change a byte.
+[project]
+name  = "app-float"
+entry = "nodeps.mc"
+out   = "build/nodeps.o"
+kind  = "obj"
+
+[compiler]
+out     = "build/mc-nodeps"
+modules = ["<user_float>"]
+
+[limits]
+tolerance = 1.0

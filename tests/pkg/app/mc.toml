@@ -1,0 +1,19 @@
+# tests/pkg/app -- three packages, two of them libraries and one a compiler
+# module. Nothing here says where a package comes from: mc.lock does.
+[project]
+name  = "app"
+entry = "main.mc"
+out   = "build/app"
+kind  = "exe"
+
+[deps]
+geo   = "1.2.0"
+mathx = "1.0.0"
+teach = "1.0.0"
+
+[compiler]
+out     = "build/mc-app"
+modules = ["<teach/mc_teach.mc>", "user.mc"]
+
+[limits]
+tolerance = 1.0

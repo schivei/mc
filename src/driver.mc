@@ -344,8 +344,18 @@ i64 drv_parse(uptr src, i64 cfg, uptr label) {
     if (drv_bname == DRV_ROLE_OBJ || drv_bname == DRV_ROLE_EXE
         || drv_bname == DRV_ROLE_NONE)
         drv_bname = drv_backend_for(drv_bname);
+    // M44: BOTH halves. A compiler-module package has to reach the compilation
+    // of the taught compiler (cfg == 0) and a library package the compilation
+    // of the entry (cfg == 1), so the roots the lock names are registered here
+    // and not inside drv_apply_config. With no [deps] it returns having read
+    // nothing at all -- not even mc.lock -- which is what makes a project
+    // without dependencies byte for byte what it was (D24).
+    deps_apply(cfg_file);
     if (cfg) drv_apply_config();
     i64 unit = parse_unit();
+    // M44: the [package].files boundary, over the once-only list the lexer just
+    // built. After the parse, because that list is what the build actually READ.
+    deps_check_files();
     unit = run_passes(unit);
     unit = fold(unit);
     drv_unit = unit;
@@ -392,6 +402,16 @@ uptr drv_updots(uptr p) {
 }
 
 void drv_include(uptr b, uptr up, uptr rel) {
+    // M44 (A1): a value that starts with `<` is a LIBRARY name, not a path --
+    // the same rule M41 gave [compiler].core, now applied to each module, so
+    // `modules = ["<teach/mc_teach.mc>", "user.mc"]` puts a package's compiler
+    // module into the generated source with no `../` adjustment to make.
+    if (ld8(rel) == '<') {
+        drv_put(b, "#include ");
+        drv_put(b, rel);
+        drv_put(b, "\n");
+        return;
+    }
     drv_put(b, "#include \"");
     if (ld8(rel) != '/') drv_put(b, up);
     drv_put(b, rel);
@@ -645,7 +665,7 @@ i64 drv_teach(uptr cout, uptr dir, i64 compiler_only) {
         return rc;
     }
     uptr comp = drv_runnable(drv_path(cbin));
-    u8 av[8 * 8];
+    u8 av[10 * 8];
     st64(av + 0,  comp);
     st64(av + 8,  "build");
     st64(av + 16, dir);
@@ -653,8 +673,15 @@ i64 drv_teach(uptr cout, uptr dir, i64 compiler_only) {
     st64(av + 32, cfg_file);
     st64(av + 40, "--entry-only");
     i64 n = 6;
-    if (drv_lim_mode == 1) { st64(av + 48, "--limits"); n = 7; }
-    if (drv_lim_mode == 2) { st64(av + 48, "--fix-limits"); n = 7; }
+    // M44: --libs-dir has to reach the child, which re-reads the same TOML and
+    // the same lock and resolves the entry's dependencies for itself.
+    if (dp_libs_opt != 0) {
+        st64(av + n * 8, "--libs-dir");
+        st64(av + n * 8 + 8, dp_libs_opt);
+        n = n + 2;
+    }
+    if (drv_lim_mode == 1) { st64(av + n * 8, "--limits"); n = n + 1; }
+    if (drv_lim_mode == 2) { st64(av + n * 8, "--fix-limits"); n = n + 1; }
     st64(av + n * 8, 0);
     i64 crc = drv_spawn(comp, av, 0);
     if (crc != 0 && crc != 3) return 1;
@@ -784,6 +811,14 @@ i64 drv_build(i64 argc, uptr argv) {
             if (i + 1 >= argc) die("--sysroot-dir requires an argument");
             i = i + 1;
             sr_dir_opt = ld64(argv + i * 8);
+        }
+        else if (str_eq(a, "--libs-dir")) {
+            // M44 (A3): where an installed package lives, overriding
+            // ~/.mc/libs. Same shape and same reason as --sysroot-dir: no CI
+            // job should depend on HOME.
+            if (i + 1 >= argc) die("--libs-dir requires an argument");
+            i = i + 1;
+            deps_set_libs_dir(ld64(argv + i * 8));
         }
         else if (str_eq(a, "--entry-only"))    entry_only = 1;
         else if (str_eq(a, "--compiler-only")) compiler_only = 1;

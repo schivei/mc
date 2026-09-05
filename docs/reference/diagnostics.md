@@ -453,6 +453,33 @@ it means and what the two ways out are.
 | `mc: arena exhausted (R MiB reserved, E MiB estimated, asked N bytes) while parsing FILE:LINE -- raise [limits].tolerance or HEAP_SIZE` | the compiler's arena could not grow | the arena starts at a static 32 MiB and grows by `mmap`; this means the kernel refused. The numbers say what was already reserved, what the plan had estimated and what did not fit; `while parsing` is where the parser was, and appears only while it is parsing: the pre-scan, the passes, the codegen and the object writer report no position rather than the last line the lexer happened to reach. Raise `[limits].tolerance` so the estimate reserves more up front, or split the translation unit |
 | `mc: cannot reserve the arena (…) -- raise [limits].tolerance or HEAP_SIZE` | the initial reservation failed | same message, same numbers, at the first `mmap` |
 
+## 13. Packages
+
+Everything here comes from `src/deps.mc` and `src/lex.mc`; the model behind them is
+[packages.md](packages.md). Five of the messages are exit **2** -- "the environment is not ready",
+the same code and the same `run:` block as § 11 -- and four are exit 1, because they are about the
+source or about the config.
+
+| message | exit | cause | fix |
+|---|---|---|---|
+| `mc: geo 1.2.0: vec.mc does not match mc.lock` | 2 | the bytes of a file inside a locked package are not the ones the lock pins. The FILE is named when the installation carries a cache manifest (`<libs>/<pack>/v<version>.toml`) to attribute it to | `mc pkg verify`; if the change was yours, re-sync so the lock records it |
+| `mc: geo 1.2.0: mc.toml does not match mc.lock` | 2 | every file line still matches, so what moved is the package's own manifest -- its `[package].files` list | the same |
+| `mc: geo 1.2.0: the tree does not match mc.lock` | 2 | the same disagreement in a VENDORED tree, which has no manifest to attribute it to | the same |
+| `mc: mc.lock is stale: geo` | 2 | `[deps]` names a package the lock lacks, or asks a minimum above the version the lock pins. With no name after the colon, the lock file itself is missing | `mc pkg sync --yes` |
+| `mc: geo 1.2.0 is not fetched` | 2 | the lock names a version that is neither vendored in `deps/geo/` nor installed under `<libs>/geo/v1.2.0/` with its manifest | `mc pkg sync --yes`, or vendor it, or point `--libs-dir` at an installation that has it |
+| `mc: geo 1.2.0: no mc.toml in the package tree` | 2 | the tree was found but carries no manifest at all | the directory is not a package; re-fetch it |
+| `mc: a file the package lists is missing: PATH` | 2 | `[package].files` names a file the tree does not hold, so the hash cannot be computed | the tree is incomplete; re-fetch it |
+| `geo/vec.mc:3: package geo reaches outside its tree: PATH` | 1 | a file under a package root tried to `#include` or `#embed` something that is not its own tree, not a library this binary ships and not a declared dependency ([packages.md](packages.md) § 5) | the package's bug: it must declare what it reads in its own `[deps]` |
+| `geo/extra.mc:1: not declared in geo's [package].files` | 1 | the build read a file inside a package that the package did not list | the package's bug, unless the file was planted: `files` is the boundary |
+| `mc.toml:8:6: reserved package name: deps.mc` | 1 | `mc`, `deps` or `build` in `[deps]` or `[replace]`. `mc` is the compiler's own package and can never be pinned | pick another name |
+| `mc.toml:8:7: invalid package name: deps.Geo` | 1 | the name is not `[a-z][a-z0-9_]*` of at most 32 bytes | lower case, digits and `_` |
+| `prog.mc:1: unknown bundled include: geo/geo` | 1 | none of the three resolution steps had the name. In the single-file CLI there is no lock and therefore no step 1 at all | `mc build` with a `[deps]` entry, or `--include=DIR` and a quote include |
+| `mc: --libs-dir requires an argument` | 1 | the flag was last on the command line | give it a directory |
+
+Note the shape of the first three: `<name> <version>: <what> does not match mc.lock`. The middle
+field is a file inside the package, `mc.toml` when the manifest itself moved, and `the tree` when
+there is nothing to attribute it to.
+
 ---
 
 ## Reproducing them

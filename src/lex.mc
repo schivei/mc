@@ -93,6 +93,7 @@
 #define K_ASSIGN   298
 #define K_COLON    299       // only #rule uses this: `stmt:`
 #define K_ARROW    300       // only #rule uses this: `=>`
+#define K_DOT      301       // M44: only `#include <pack/file.mc>` uses this
 
 // ---- TokEnt: { text, len, word, id } ----
 #define TE_TEXT 0
@@ -289,6 +290,16 @@ void tok_init() {
     tok_add("=", 1);
     tok_add(":", 1);         // only #rule uses this; at the end so as not to renumber
     tok_add("=>", 2);
+    // M44: `.` exists only so that `#include <geo/geo.mc>` can be spelled. The
+    // lexer does not tokenize `<name>` -- do_directive reassembles the lexemes
+    // between `<` and `>` (src/parse.mc), and without this entry the `.` in a
+    // file name is `unexpected character`. Appended LAST, after every lexeme
+    // the frozen stage0/lex.c registers, so no existing id moves: K_U8..K_EXTERN
+    // stay 256..269 and every punctuation keeps the id it had. Nothing in the
+    // language uses it -- there is no member access -- so --dump-tokens is
+    // unchanged for every file that has no bare `.` outside a string, a comment
+    // or a number, which is every file check-lex compares.
+    tok_add(".", 1);
 }
 
 // identifier: only matches word=true entries
@@ -499,6 +510,153 @@ uptr bopen_fn = 0;
 
 void lex_set_bundle(uptr openfn) { bopen_fn = openfn; }
 
+// ---- M44: `<name>` is a LIBRARY, not only the bundle ----
+// The amendment's A1: `<name>` stops meaning "a name the binary ships" and
+// starts meaning "a library that is not in my tree" -- resolved from the lock,
+// from the bundle, or from the installed copy of the compiler's own package, in
+// that order (A3), and never from the working directory. Quotes are unchanged.
+//
+// The second pointer is registered by src/core_build.mc, exactly as the bundle's
+// is registered by src/core_bundle.mc, so the lexer still depends on nothing:
+// src/lexdump.mc and src/astdump.mc keep compiling with mc0.
+//
+//   uptr libs_open(uptr name, i64 stage, uptr pcanon, uptr plen)
+//     stage 0 = the LOCK road (a package mc.lock pins), stage 1 = the installed
+//     `mc` package under <libs>/mc/v<version>/. Returns the source or 0; on a
+//     hit *pcanon receives the once-only key -- for a file served from disk that
+//     is its normalised path, the same key lex_include would record for it.
+uptr lopen_fn = 0;
+
+void lex_set_libs(uptr openfn) { lopen_fn = openfn; }
+
+// ---- package roots and the closure rule (A6) ----
+// A file under a package root may include or #embed: its own tree (quotes),
+// `<...>` names the bundle or the installed `mc` package answers, and
+// `<dep/...>` for a dep the package's own lock row names. Everything else is
+// refused. Roots are registered from the lock by src/deps.mc, never from a
+// list a project writes.
+#define RT_NAME 0            // the package name, as the lock spells it
+#define RT_DIR  8            // its directory, normalised, with a trailing '/'
+#define RT_SIZE 16
+
+uptr pkg_roots = 0;
+i64  npkgroot = 0;
+uptr pkg_edges = 0;                   // pairs (from root, to root), two i64 each
+i64  npkgedge = 0;
+
+uptr rt_at(i64 i)   { return pkg_roots + i * RT_SIZE; }
+uptr rt_name(i64 i) { return ld64(rt_at(i) + RT_NAME); }
+uptr rt_dir(i64 i)  { return ld64(rt_at(i) + RT_DIR); }
+
+// Both tables are sized ONCE and never grow: a project's dependency graph is
+// known in full -- it is the lock -- before the first root is registered, so
+// there is nothing to double and no growth event to report. That is M17's
+// argument for MAXTARGETS with an exact count in place of a ceiling, which is
+// also why neither table needs an arena tag of its own.
+void lex_pkg_reserve(i64 nroots, i64 nedges) {
+    pkg_roots = xalloc(nroots * RT_SIZE + RT_SIZE);
+    pkg_edges = xalloc(nedges * 16 + 16);
+    npkgroot = 0;
+    npkgedge = 0;
+}
+
+void lex_add_root(uptr name, uptr dir) {
+    st64(rt_at(npkgroot) + RT_NAME, name);
+    st64(rt_at(npkgroot) + RT_DIR, dir);
+    npkgroot = npkgroot + 1;
+}
+
+void lex_add_edge(i64 from, i64 to) {
+    st64(pkg_edges + npkgedge * 16, from);
+    st64(pkg_edges + npkgedge * 16 + 8, to);
+    npkgedge = npkgedge + 1;
+}
+
+// A root is registered by NAME when the lock is read and given its DIRECTORY
+// when the tree it names has been found -- vendored, installed or replaced. The
+// edges are known from the lock alone, so they are complete before the first
+// directory exists, and nothing resolves an include in between.
+void lex_set_root_dir(i64 i, uptr dir) { st64(rt_at(i) + RT_DIR, dir); }
+
+i64  lex_root_count()      { return npkgroot; }
+uptr lex_root_name(i64 i)  { return rt_name(i); }
+uptr lex_root_dir(i64 i)   { return rt_dir(i); }
+
+// the longest registered root that is a string prefix of `path`, -1 if none.
+// Longest and not first, so a package vendored inside another package's tree
+// would still be attributed to itself.
+i64 lex_root_of(uptr path) {
+    i64 best = -1;
+    i64 bl = 0;
+    i64 pl = cstrlen(path);
+    i64 i = 0;
+    loop {
+        if (i >= npkgroot) break;
+        uptr d = rt_dir(i);
+        if (d != 0) {                  // 0 between the lock and the resolution
+            i64 n = cstrlen(d);
+            if (n > bl && pl >= n && mem_eq(path, d, n)) { best = i; bl = n; }
+        }
+        i = i + 1;
+    }
+    return best;
+}
+
+// the root whose name is the first path component of `name`, -1 if none
+i64 lex_root_first(uptr name) {
+    i64 n = 0;
+    loop {
+        i64 c = ld8(name + n);
+        if (c == 0 || c == '/') break;
+        n = n + 1;
+    }
+    i64 i = 0;
+    loop {
+        if (i >= npkgroot) break;
+        uptr r = rt_name(i);
+        if (cstrlen(r) == n && mem_eq(r, name, n)) return i;
+        i = i + 1;
+    }
+    return -1;
+}
+
+i64 lex_edge(i64 from, i64 to) {
+    i64 i = 0;
+    loop {
+        if (i >= npkgedge) break;
+        if (ld64(pkg_edges + i * 16) == from && ld64(pkg_edges + i * 16 + 8) == to) return 1;
+        i = i + 1;
+    }
+    return 0;
+}
+
+// `from` is the file that wrote the directive: 1 when it may reach root `to`
+i64 lex_may_reach(uptr from, i64 to) {
+    i64 r = lex_root_of(from);
+    if (r < 0) return 1;               // not inside a package: the project itself
+    if (r == to) return 1;             // its own tree
+    return lex_edge(r, to);
+}
+
+// `package geo reaches outside its tree: <what>`, at the offending line of the
+// file that wrote the directive. One text for #include and for #embed, and for
+// the quote form and the angle form: the rule is about what a package reads,
+// not about how it spelled it.
+void lex_pkg_refuse(uptr from, uptr what, i64 line) {
+    i64 r = lex_root_of(from);
+    err_at2(from, line,
+            tm_cat(tm_cat("package ", rt_name(r)), " reaches outside its tree"), what);
+}
+
+// the quote form: a resolved path a file under a package root may not read
+void lex_closed(uptr from, uptr path, i64 line) {
+    if (npkgroot == 0) return;
+    i64 r = lex_root_of(from);
+    if (r < 0) return;
+    if (lex_root_of(path) == r) return;
+    lex_pkg_refuse(from, path, line);
+}
+
 // ---- M14: extra search roots for #include "x" ([include].paths in mc.toml) ----
 // Each root is a DIRECTORY stored with a trailing '/', so path_join can treat it
 // as "a file inside it" and reuse the same normalization. They are tried in the
@@ -627,13 +785,57 @@ uptr lex_embed_bundled(uptr file, uptr rel, uptr plen, i64 line) {
     return src;
 }
 
-// M15: `#include <name>`. The name is served by the bundle or it is an error --
-// there is no filesystem fallback, on purpose: `<name>` means "the copy that
-// came with this binary".
+// M44: the same for a file served from DISK -- a locked package (stage 0) or
+// the installed `mc` package (stage 1). The frame is NOT virtual: what came off
+// the filesystem resolves its own relative includes as paths, which is what
+// makes an installed <mc/core> behave exactly like src/core.mc.
+i64 lex_include_libs(uptr name, i64 stage, i64 line) {
+    if (lopen_fn == 0) return -1;
+    u8 canon[8];
+    st64(canon, 0);
+    i64 len = 0;
+    uptr src = callp(lopen_fn, name, stage, canon, &len);
+    if (src == 0) return -1;
+    uptr key = ld64(canon);
+    if (lex_seen(key)) return 0;
+    lex_remember(key, line);
+    lex_push_mem(key, src, len, 0, line);
+    return 1;
+}
+
+// M15/M44: `#include <name>`. Three steps (M44 § A3), still with no fallback to
+// the working directory -- `<name>` means "a library that is not in my tree",
+// and which library that is depends only on (this binary, this lock, the
+// installed packages), never on where `mc` was run from.
+//
+//   1. the LOCK: a package mc.lock pins. Skipped when the file asking is itself
+//      inside a package that did not declare this one as a dependency -- so a
+//      package that includes <float> gets the bundle's, not a project's
+//      override it never asked for.
+//   2. the BUNDLE, unchanged. A full binary answers here for every name it
+//      ships, which is what makes a project with no lock byte for byte what it
+//      was before this milestone.
+//   3. the installed `mc` package, reached only on a bundle miss -- which for a
+//      binary that carries the blob means a name nobody ships.
+//
+// A trailing `.mc` is dropped first, so `<geo/geo.mc>` and `<geo/geo>` are one
+// name, exactly as `<mc/core>` and a relative "core.mc" inside the bundle are.
 i64 lex_include_name(uptr name, i64 line) {
-    i64 r = lex_include_bundled(name, 0, line);
-    if (r < 0) err_at2(lex_file(), line, "unknown bundled include", name);
-    return r;
+    name = lex_strip_mc(name);
+    i64 t = lex_root_first(name);
+    uptr from = lex_file();
+    i64 r = -1;
+    if (t >= 0 && lex_may_reach(from, t)) r = lex_include_libs(name, 0, line);
+    if (r >= 0) return r;
+    r = lex_include_bundled(name, 0, line);
+    if (r >= 0) return r;
+    r = lex_include_libs(name, 1, line);
+    if (r >= 0) return r;
+    // The name IS a locked package and nothing answered: say why, instead of
+    // reporting a bundled name that was never going to be there.
+    if (t >= 0 && !lex_may_reach(from, t)) lex_pkg_refuse(from, name, line);
+    err_at2(from, line, "unknown bundled include", name);
+    return -1;
 }
 
 // #include "x": resolves rel against the current file's directory and, if that
@@ -649,12 +851,21 @@ i64 lex_include(uptr rel, i64 line) {
         i64 r = lex_include_bundled(bn, 1, line);
         if (r >= 0) return r;
     }
+    uptr from = of_name(of_at(nopen - 1));
     uptr path = lex_find_path(rel);
+    lex_closed(from, path, line);      // M44: a package reads its own tree only
     if (lex_seen(path)) return 0;
     lex_remember(path, line);
     lex_push(path, line);
     return 1;
 }
+
+// M44: the once-only list, read after the parse -- that is what turns a
+// package's [package].files into a real boundary instead of documentation
+// (src/deps.mc, deps_check_files). It holds paths and bundled names in the
+// order they were first seen; the entry point is index 0.
+i64  lex_inc_count()   { return ninc; }
+uptr lex_inc_at(i64 i) { return inc_at(i); }
 
 // ---- lexer ----
 

@@ -19,9 +19,9 @@ i64 main() {
 }
 ```
 
-`<name>` is served by the bundle **or it is an error** — there is no filesystem fallback, on
-purpose: `<name>` means "the copy that shipped with this binary", and the answer must not depend
-on the working directory.
+`<name>` is served by the bundle **or it is an error** — there is no fallback to the working
+directory, on purpose: `<name>` means "a library that is not in my tree", and the answer must be a
+function of *(this binary, this project's lock, the installed packages)* and of nothing else.
 
 ```
 $ mc prog.mc -o prog.o
@@ -29,7 +29,14 @@ prog.mc:1: unknown bundled include: no/such/module
 ```
 
 `#include "path"` is unchanged: the includer's own directory first, then each `[include].paths`
-root in order.
+root in order. **Angle brackets are libraries, quotes are my files.**
+
+Since M44 the bundle is the SECOND of three places a `<name>` can come from. Before it comes a
+package `mc.lock` pins, which is why a project may override a bundled name — `[deps] float =
+"1.3.0"` makes `<float>` that tree instead of this blob, pinned by a content hash and re-checked on
+every build. After it comes the installed copy of the compiler's own package, which a binary that
+carries the blob never reaches. A project with no `[deps]` never leaves the blob, and its output is
+byte for byte what it was. See [packages.md](packages.md) § 2.
 
 ---
 
