@@ -90,6 +90,32 @@ of them run twice); "the suite" is every `tests/*.mc` compiled *and* run inside 
 | linux/x86_64, musl, unprivileged | 10/10 | 29/29 (3 skipped) | 2/2 | ok | 3.7 ms |
 | linux/aarch64, musl, `alpine:3` under `docker run --privileged` | 10/10 | 31/31 | 2/2 | ok | not measurable (busybox `date` has no `%N`) |
 
+And the four cells CI runs on every pull request — GitHub's `ubuntu-24.04-arm` and
+`ubuntu-latest`, both **kernel 6.17.0-1022-azure, glibc 2.39, Landlock abi 7**, each as an
+ordinary user and under `sudo` ([ci.md](../ci.md) § the sandbox jobs). These are the only cells
+where the unprivileged path runs with the AppArmor restriction *off*:
+
+| cell | isolation | the suite | `exec` | a project | overhead per box |
+|---|---|---|---|---|---|
+| linux/arm64 runner, unprivileged (sysctl 0) | 10/10 | 31/31 (1 skipped) | 2/2 | ok | 2.21 ms |
+| linux/arm64 runner, root | 10/10 | 31/31 (1 skipped) | 2/2 | ok | 2.11 ms |
+| linux/x86_64 runner, unprivileged (sysctl 0) | 10/10 | 29/29 (3 skipped) | 2/2 | ok | 2.17 ms |
+| linux/x86_64 runner, root | 10/10 | 29/29 (3 skipped) | 2/2 | ok | 2.11 ms |
+
+What each runner answers, in both states of the sysctl, is printed by the job before the cells
+run:
+
+```
+kernel.apparmor_restrict_unprivileged_userns = 1     as the runner ships
+  userns: restricted (apparmor)                      mc sandbox check exits 1
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+  userns: ok                                         mc sandbox check exits 0
+```
+
+and inside `docker run` on the same runner **without** `--privileged`, `check` says
+`userns: EPERM` and a run is `sandbox: cannot unshare: EPERM`, exit **126** — the third refusal
+of the acceptance list, asserted rather than described.
+
 **One thing a container adds, measured in step D:** under Docker Desktop on macOS a checkout
 *bind-mounted from the Mac* is a `fakeowner` mount, and `execve` of a file on it **inside** the
 box answers `EACCES` — `sandbox: cannot execute the step`, exit 126 — while the very same image,
