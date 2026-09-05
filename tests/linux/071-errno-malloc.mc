@@ -14,12 +14,15 @@
 // macOS -- is the right include: the names are the same.
 //
 // The failing call is `fopen` and not `open` on purpose. `open` returns an
-// `int`, and AAPCS64 leaves the top 32 bits of x0 unspecified for a 32-bit
-// return: glibc's `open` hands back 0x00000000ffffffff for -1, so `fd >= 0`
-// would be TRUE. That is a pre-existing mc-wide question about narrow return
-// values, not something this milestone decides, so this test does not depend
-// on it -- `fopen` returns a pointer, all 64 bits of it. It also drags in
-// stdio, which is more start-up state than `open` needs.
+// `int`, and both AAPCS64 and the SysV x86-64 ABI leave the upper 32 bits of
+// the result register unspecified for a 32-bit return -- an `extern i64 open`
+// reads all 64, so `fd >= 0` is allowed to be TRUE for a -1. (Measured on the
+// day this landed, musl and glibc both happened to sign-extend, so the hazard
+// is latent: docs/specs/M42.md note 10, and M45 is the fix.) It is a
+// pre-existing mc-wide question about narrow return values, not something
+// this milestone decides, so this test does not depend on it -- `fopen`
+// returns a pointer, all 64 bits of it. It also drags in stdio, which is more
+// start-up state than `open` needs.
 #include "../../lib/sys.mc"
 
 extern uptr fopen(uptr path, uptr mode);
