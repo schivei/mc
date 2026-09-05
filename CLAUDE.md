@@ -2756,6 +2756,45 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `mc2-windows-x86_64.sha256`
   `e4aa4ebe060c4ad36f55af6c5e19257aa38fdca78e731da834d040f3ee74cdcb` (979195 B), both also
   written byte for byte by `build/mc2`.
+- M43 step A ✔ (`docs/specs/M43.md` § Implementation notes -- step A): **the syscall shim, the
+  number tables and `<mc/core_sandbox>`**, proved before anything uses them (the M39/M42 probe
+  discipline). `src/sysno.mc` (the `SN_*` enum, 60 names + `SN_ABSENT`) shared by the four host
+  files -- ONE file, not four copies (deviation 1); `src/sysno_linux_aarch64.mc` (`sys6` as eight
+  `#opcode` words, `mov x8,x0` first so the number is read before x0 moves) and
+  `src/sysno_linux_x86_64.mc` (six `emit()` words = the 24 bytes `llvm-mc` assembles for
+  `mov rax,rdi ... mov r9,[rbp+16]; syscall`, verified BEFORE the file was written); the host layer
+  gained `host_syscall6`, `host_sysno(sn)` (the per-architecture table read, so `sandbox.mc` names
+  no number and does no offset access) and `host_sandbox_supported()` (macOS/Windows answer -38 /
+  an all-absent table / 0). `src/core_sandbox.mc` is the sixth part; `src/sandbox.mc` holds the
+  option parser, `check` and the refusals (macOS/Windows: the Lima command, exit 126 for all three
+  verbs; Linux `run`/`exec`: `not in this step`, exit 126). `scripts/check-shim.sh`
+  (`make check-shim`): `getpid` through the shim == libc's, `openat` of a missing file == -2, a
+  `write`, and a six-argument `mmap` at offset 4096 -- the only proof that parameter 7 reaches the
+  kernel -- **rc 0 on linux/aarch64 (Lima mc-k7) and linux/x86_64 (the VPS), root and unprivileged**.
+  `check-surface` asserts the eight AArch64 words, `check-parts` the six x86-64 words and that
+  `<mc/core_min>` + `<mc/core_sandbox>` stands alone.
+  **What did not survive contact with the kernel** (Ubuntu 26.04, 7.0.0-30, both arches):
+  (1) with `kernel.apparmor_restrict_unprivileged_userns = 1` an unconfined process's
+  `unshare(NEWUSER|NEWNS|NEWPID|NEWNET|NEWIPC|NEWUTS)` SUCCEEDS -- the kernel transitions it into
+  the `unprivileged_userns` profile and the denial comes at the box's first `mount` (EACCES,
+  `capable sys_admin` in dmesg) and at `sethostname` (EPERM); so `userns:` is a TWO-stage probe
+  (unshare, then a mount in the child's private namespace), the step-B supervisor's first
+  diagnostic is `cannot mount: EACCES`, and a deployment's AppArmor profile must grant `userns,`
+  AND `mount,`. The sysctl = 0 cell is unmeasured here (the CI cell will close it).
+  (2) `/proc/filesystems` lists only LOADED filesystems: the VPS has `overlay.ko.zst` and no engine
+  that loaded it, and a child user namespace cannot `request_module`, so `check` says
+  `overlay: not loaded (modprobe overlay)`. (3) Landlock is ABI 8 on this baseline (floor 4).
+  (4) `check` exits 126, not 1, where the sandbox is refused outright. (5) **`MAXGLOBALS` of the
+  frozen seed is the tight row: 420/512 -> 437/512 (85%)**, `check-limits` fails at 90% (460), and
+  step B adds the BPF builder, the notif records and the profiles -- so the sandbox state lives in
+  ONE arena record with accessors, at most 12 new globals, and the two ELF writers (87 globals
+  between `backend_elf_exe`/`backend_exe`/`backend_elf`) are the global diet to take when needed.
+  -- `stage0/`, `lib/`, `tests/*.mc` untouched; `make bundle` re-run (83 entries); `make check`
+  RC 0 (`check-lex`/`ast`/`asm` 131/131, `check-obj` 32/32, fixed point 976696 B, `check-limits`
+  17/17, four Linux cells RC 0, `check-docs` 191 symbols / 32 flags); `check-inert` identical
+  everywhere (a registered subcommand emits nothing). Goldens rewritten once: `mc2.sha256`
+  `aab9ae12a7ba7904f6667f45fe63460974295a12d0dd5f21c359b3ed6b97bd79`, Linux
+  `57a959a5…28b613` / `ae26b4cb…224555`, Windows `938c4e93…568a25` / `04642639…4860d2`.
 - Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
   `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
   from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:
