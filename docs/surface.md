@@ -800,6 +800,12 @@ void p_subst_int(from, v)         identifier `from` becomes a T_INT token with t
 void p_resplit_punct(n)           the current punctuation becomes its first n bytes (`>>` -> `>`)
 ```
 
+This snapshot stops at M21; `docs/reference/hooks.md` § 4 is the current, complete table —
+including four fixed names added since without a table entry here: `parse_unary()` (the taught
+route for a PREFIX operator), `parse_top()` (one top-level declaration, the way a `namespace`/
+`capsule` container reads its members), `lex_include()` and `do_directive()` (letting a
+container's own body forward an `#include`/`#define` it does not want to interpret itself).
+
 `parse_function` takes the parameter list **already built** — that's how a `class` handler
 manages to prepend `self` to every method before reading its body. `top_add` is the only way out
 for a `syntax` handler: it produces zero, one, or many declarations, and `parse_top` returns 0.

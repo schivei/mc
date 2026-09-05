@@ -166,7 +166,10 @@ array element, `p_type()`), because they all end in the same lookup.
 
 Higher binds tighter. This is the Pratt table `--dump-rules` prints; `#infix` and
 `syntax_infix` add rows to the same table, so a taught operator sits in one comparable order with
-the core's.
+the core's. A **prefix** operator has no table to grow — `- ~ ! &` are fixed — so a module adds
+one through `syntax_expr` instead: the handler reads the operator with `p_next()` and returns
+`parse_unary()` for its operand, which is what makes `+x` bind the way `-x`/`!x` already do
+(`docs/reference/hooks.md` § 4).
 
 | prec | operators | associativity | notes |
 |---|---|---|---|

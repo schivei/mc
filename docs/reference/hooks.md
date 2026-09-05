@@ -699,7 +699,7 @@ what the parser calls.
 
 ## 4. The parser's public API
 
-Fixed names, in `src/parse.mc` (and three in `src/lex.mc`). A module that teaches syntax depends
+Fixed names, in `src/parse.mc` (and four in `src/lex.mc`). A module that teaches syntax depends
 on these, on `node_new`/`nd_*`/`set_nd_*` from `src/ast.mc`, and on the registrations above —
 nothing else.
 
@@ -731,14 +731,41 @@ nothing else.
 
 ### Descending into the grammar
 
-These four are the parser's own entry points, under stable names:
+These five are the parser's own entry points, under stable names:
 
 | function | reads |
 |---|---|
 | `i64 parse_expr(i64 minprec)` | an expression. Pass `0` for a full expression |
+| `i64 parse_unary()` | one operand at unary precedence: the registered prefix operator on the current token, if any (§ 3's `#prefix`/`prefix_set`), else `parse_postfix()` straight into `parse_primary()`. This is what a `#prefix` template parses on the operator's right, and it is also the route a taught PREFIX operator uses: `syntax_expr` dispatches inside `parse_primary()`, exactly where control lands for a token with no core prefix meaning, so a handler that wants `+x` to bind the way `-x`/`!x` do reads the operator with `p_next()` and returns `parse_unary()` for the operand |
 | `i64 parse_stmt()` | one statement |
 | `i64 parse_block()` | a `{ … }` block — routed through the `syntax_stmt("{")` handler when one is registered (M21.5), so a handler for `{` must never call it |
 | `i64 parse_params()` | a parameter list including the parentheses, returning the `N_PARAM` list |
+| `i64 parse_top()` | one top-level declaration: consults `syntax_find` first (§ 3's `syntax`) and, when a handler fired, returns 0 — it already delivered through `top_add`. Otherwise reads a type, a name (`p_decl_name()` starts answering it right there), and a global, prototype or function, and **returns the node without adding it** — the caller does that with `top_add` |
+
+```mc taught=lib/mc_prefix_plus.mc
+// expect-exit: 42
+i64 main() {
+    return +42;
+}
+```
+
+The taught compiler above registers `syntax_expr("+", &h)` with `h` reading
+`p_next(); return parse_unary();` — a prefix `+` that is otherwise a no-op, proven by running the
+sample instead of just describing it (`lib/mc_prefix_plus.mc` is the same two-`#include` shape as
+`lib/mc_syntax_demo.mc`, kept out of `tools/bundle.list` because nothing in the repository includes
+it by name — the M41 precedent for a check-script-only module). The default compiler refuses the
+same source (`+42` has no core meaning: `expression expected`).
+
+Registering an operator position through `syntax_expr` has one side effect worth knowing:
+`word_is_taught("+")` now answers 1 for that token (`syntax_expr_find` is one of its five checks),
+which is what makes `err_name` blame the registration — `name reserved by a syntax/type_alias
+registration` — instead of a plain "name expected" if `+` ever turns up where an identifier was
+expected. It does **not** refuse a later `syntax_infix("+", …)` on the same token by itself: that
+guard is `syntax_infix`'s own (§ 3), and it only refuses a *second* handler on the operator —
+measured by registering both `syntax_expr("+", &h1)` and `syntax_infix("+", 9, &h2)` in the same
+`user_init()`: the compiler builds and runs, the infix handler firing for `1 + 2` and the prefix
+one for `+3`. A `#rule` naming `+` is unaffected for the same reason: its only refusal is the core
+keyword range `K_U8..K_EXTERN`, which punctuation was never inside.
 
 ### Building declarations
 
@@ -750,6 +777,50 @@ These four are the parser's own entry points, under stable names:
 | `i64 param_new(i64 ty, uptr name)` | a standalone `N_PARAM`, to prepend to a list |
 | `i64 list_append(i64 head, i64 n)` | append `n` to the end of the `nd_next` list and return the head |
 | `uptr p_cat(uptr name, uptr sfx, i64 off, i64 len)` | `name` followed by `len` bytes of `sfx` starting at `off`, fresh in the arena. Two suffixes out of one literal — how the compiler builds `NAME_size` and `NAME_raw` from a single `"_size_raw"` |
+
+**A container of declarations** — `namespace A.B { … }`, `capsule Name { … }` — reads its own
+head, then drives `parse_top()` in a loop until `}`, handing each result to `top_add` itself
+(`parse_unit` does exactly this at the very top of the file, which is why a member inside the
+container gets every core declaration form for free — a global, a prototype, a function — with no
+extra code):
+
+```c
+p_expect(K_LBRACE, "expected { in the namespace body");
+loop {
+    if (p_id() == K_RBRACE) break;
+    if (p_id() == T_EOF) err_at(fl, line, "unterminated namespace");
+    top_add(parse_top());
+}
+p_next();                                        // }
+```
+
+(`examples/lang/lang_class.mc`'s `namespace` handler, the real recipe this shape is taken from.)
+Because `parse_top()` sets `p_decl_name()` itself the moment it reads each member's name, the
+container above needs no `p_set_decl_name()` of its own — that call is for a handler that reads a
+member's name and parameter list *itself* instead of delegating to `parse_top()` (M41.5's other
+worked example, `sd_capsule` in `lib/user_syntax_demo.mc`, which calls `p_type()`/`p_ident()`
+directly and must call `p_set_decl_name(mname)` before `parse_params()` for the same reason
+`p_decl_name()`'s own row gives).
+
+### Directives, from inside a handler
+
+Two functions let a handler that owns a body — the container above, or anything reading raw text
+with `p_push_source` — forward what it does not want to interpret itself to the machinery
+`#include`/`#define`/… already have.
+
+| function | effect |
+|---|---|
+| `void do_directive()` | consumes ONE whole directive, starting at the current `T_DIR` token (`#include`, `#define`, …) through whatever terminates it, and leaves the cursor just past it. It is `parse_unit`'s own dispatch (`if (tok_id(cur) == T_DIR) { do_directive(); continue; }`) pulled out under a name a handler can call: a container that wants `#include`/`#define` to work inside its `{ … }` adds the same test to its own loop, right beside the `parse_top()` call above |
+| `i64 lex_include(uptr rel, i64 line)` | what `#include "rel"` does: resolve `rel` against the including file's own directory, then — only if that fails — against each `[include].paths` root in order (`lex_find_path`); once the path has already been seen (`lex_seen`/`lex_remember`, the same once-only list `#include` itself uses) return `0` and do nothing; otherwise push the file as a new lexer frame and return `1`. The bundled `<name>` form is a different function, `lex_include_name`, reached through `do_directive` when the token after `#include` is `<` rather than a string |
+
+`lex_include` only pushes a lexer frame — the same one `#include` at the top of a file pushes —
+it parses nothing: whoever called it (`do_directive`, or a handler calling `lex_include` directly)
+has to keep reading tokens itself for the included file's declarations to reach `parse_top()` at
+all, exactly as `parse_unit`'s own loop does after `do_directive()` returns. The pushed frame
+**pops on its own** — inside `lex_next`, before it produces the next token, once the pushed source
+is exhausted (`if (cp < cend) break; if (nopen <= 1) break; lex_pop();`). That is the same fact
+`p_push_source` (below) relies on, and it is why `p_skip_balanced` has to compare `#include`
+FRAMES and not just cursor positions at its two delimiters (M45).
 
 ### Asking about a declaration the core already parsed
 
