@@ -1719,6 +1719,39 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `[deps]`, no change). Goldens rewritten once (after the rebase onto 167d540 re-recorded step 1's):
   `mc2.sha256` `9e00398d7338ad9b53654c7f07e0d16ff21319e79c915b2ac473d20e1411420a`, Linux
   `67f062a4…7a02fd` / `3c93e81f…debe70`, Windows `2858b236…3f5959` / `c75e23fd…b909322`.
+- M44 step 3 ✔ (`docs/specs/M44.md` § Implementation notes -- step 3; draft § 4-§ 8, D21): **the
+  write and network side.** `src/fetch.mc` (169): `fetch_get` (an `https://` source spawns the
+  host downloader with M25's flags, anything else is a LOCAL PATH copied -- what makes the suite
+  need no network and prices a private registry at zero), `fetch_extract`, `fetch_sha256_line`;
+  `src/sysroot.mc` lost 122 lines and delegates (`check-sysroots`/`check-stubs` unchanged).
+  `hex64` could NOT live in `fetch.mc` (`deps.mc` prints a hash before `driver.mc`, which
+  `fetch.mc` needs): `hex64`/`sha256_file` moved to `src/sha256.mc`, one spelling of a digest
+  instead of three. `src/pkg.mc` (1387) in the new part `<mc/core_pkg>` (`src/core_pkg.mc`):
+  the index reader (`<registry>/index/<name>.toml`, `--registry URL|DIR`, `[registry].url`,
+  default `https://minicompiler.dev/registry` -- **the owner decided the same day that a package
+  SERVER at minicompiler.dev, in the private `schivei/mc-registry`, PRODUCES this exact layout
+  from public git URLs validated in the sandbox; the compiler gains no client code**), MVS with
+  the two-majors refusal and yanked rows skipped, the lock WRITER (sorted, `lib`/`deps` from the
+  archive's own `mc.toml`, `sha256` the tree hash), the archive fetch in M25's order (download,
+  extract, HASH AND COMPARE, manifest last, unlink on refusal), `vendor`, `add` (one `[deps]` line
+  by `lim_fix_write`'s method), `list`, `verify`, `hash`, `check`, and top-level `mc update`
+  (D21: inside its major -- `go get -u` does not cross one; `mc pkg add NAME` with no `@` takes
+  the newest non-yanked of any major). `dep_hash_tree(dir, pk)` is the ONE definition of D5's
+  hash for `mc build`, `mc pkg hash|sync|vendor|check`. `sync` with nothing to download
+  completes without `--yes`; `check` compares against the registry's published copy for
+  immutability. Cost **1673 added lines in `src/`, 1268 code** (spec ~880; the cache-manifest
+  writer, `check`'s immutability half, `vendor`, the plan table); **globals 440/512**.
+  `scripts/check-pkg.sh` 31 -> **63/63**, all offline: a DIRECTORY registry the script builds
+  (tarballs from `tests/pkg/src`, `url` = local file, `sha256` from `scripts/pkg-hash.sh` -- so the
+  two hash implementations cross-check), fixtures `mathx-1.1.0/2.0.0/2.0.1 (yanked)`, `plot`,
+  `heavy` (the other major), `sync/`, `major/`, `add/`; goldens `tests/golden/pkg-list.txt`,
+  `tests/pkg/sync/mc.lock.expect`; `check-parts` covers `<mc/core_pkg>`. Rebased onto 8c31a0e
+  (#26): no code overlap. `make check` RC 0 (`check-obj` 32/32, fixed point 1228304 B, empty
+  `--dump-asm` diff, `check-docs` 197 symbols / 36 flags / 27 TOML keys / 358 links, site 89
+  pages), four Linux cells RC 0, `check-inert` identical. Goldens rewritten once: `mc2.sha256`
+  `cede0b38…07284`, Linux `e4c876dd…dbc02` / `3f036b4d…d2012`, Windows `70a2259d…68309` /
+  `98cf8605…4fde5`. Steps 4-5 (the slim binary, `mc install`, `mc upgrade`) follow the site, per
+  the owner's sequencing of 2026-09-05.
 - Next: M18 or M24 (`docs/plan.md`); M40 (the word-size sweep AVR/PIC need) is
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
 - M24 step A ✔ (`docs/specs/M24.md` § M1-M6, M8 and decision D5): **Tier 4 -- the inert half.
