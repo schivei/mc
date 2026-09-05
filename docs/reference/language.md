@@ -245,7 +245,7 @@ behaves differently on the two shipped targets, deliberately — see
 stmt := "if" "(" expr ")" stmt [ "else" stmt ]
       | "loop" block
       | "break" [ INT ] ";"
-      | "continue" ";"
+      | "continue" [ INT ] ";"
       | "return" [ expr ] ";"
       | type IDENT [ "[" INT "]" ] [ "=" expr ] ";"
       | IDENT "=" expr ";"
@@ -258,7 +258,10 @@ block := "{" stmt* "}"
 - `break N;` leaves N enclosing loops; `break;` is `break 1;`. `N` beyond the current depth is
   `break out of range`, and `break 0;` is `break expects a positive level`. No labels are needed
   because a level count says everything a label would.
-- `continue;` restarts the innermost `loop`. Inside a prelude `for`, that means the step is
+- `continue N;` restarts the N-th enclosing `loop`, counted the way `break N` counts; `continue;`
+  is `continue 1;` and restarts the innermost one. `N` beyond the current depth is `continue out of
+  range`, `continue 0;` is `continue expects a positive level`, and a `continue` with no enclosing
+  loop at all is `continue outside loop`. Inside a prelude `for`, restarting means the step is
   skipped — the step lives at the end of the generated body (§ 8).
 - The assignment statement's left side must be a plain name (`left side of assignment must be a
   name`); assigning to an array name is `assignment to array`.

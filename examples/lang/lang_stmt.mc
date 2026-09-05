@@ -366,8 +366,13 @@ void lg_lower_return(i64 n) {
 // README.md lists as a known limit.
 void lg_lower_jump(i64 n) {
     if (lg_nlp == 0) return;
-    i64 lvl = 1;
-    if (nd_kind(n) == N_BREAK) lvl = nd_val(n);
+    // The level is on the node for BOTH jumps: `break N` stores N (a bare
+    // `break;` stores 1) and `continue N` stores N, while a bare `continue;`
+    // stores 0 -- which is why the clamp below is what reads "no level, i.e.
+    // the innermost loop". Before `continue N` existed this line tested for
+    // N_BREAK; reading the value for both is inert for every source that
+    // writes no level, and releases the right scopes for one that does.
+    i64 lvl = nd_val(n);
     if (lvl < 1) lvl = 1;
     i64 idx = lg_nlp - lvl;
     if (idx < 0) return;

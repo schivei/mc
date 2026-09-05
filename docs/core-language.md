@@ -195,7 +195,8 @@ u8 big[4090];   // frame too large (rounding to 16 overflows the sub-immediate)
   implemented** — `lib/prelude.mc`, § Prelude below).
 - `break;` / `break N;` (exits N levels, no labels needed; N greater than the current loop depth
   is an error).
-- `continue;`.
+- `continue;` / `continue N;` (restarts the N-th enclosing loop, N counted like `break N`;
+  `continue;` is `continue 1;`).
 - `return [e];`.
 
 ## Functions
@@ -352,6 +353,8 @@ for (k = 0; k < 10; k = k + 1) {
 
 `tests/051-for.mc` covers both cases (the normal `for` and the `continue` that advances by hand).
 `break` inside `while`/`for` is the core's `break` and exits the generated `loop`, as expected.
+So is `continue N`: the level counts the **generated** loops, so a `continue 2` inside a `for`
+nested in a `for` restarts the outer `for` — skipping its step for the same reason.
 
 ## Mandatory style in `mc.mc`
 
@@ -421,7 +424,7 @@ runs into C features the `.mc` core doesn't have. Each item below is a real case
 - **`?:`** — doesn't exist. Becomes an explicit `if` assigning the same variable on both branches:
   `size_t cap = b->cap ? b->cap : 64;` (`stage0/arena.c`) became
   `i64 cap = buf_cap(b); if (cap == 0) cap = 64;` (`src/arena.mc`).
-- **`for`** — doesn't exist, only `loop { }` + `break N`/`continue`. `for (init; cond; step) body`
+- **`for`** — doesn't exist, only `loop { }` + `break N`/`continue N`. `for (init; cond; step) body`
   becomes `init; loop { if (!cond) break; body; step; }`, with the "step" hand-written at the end
   of the body.
 - **`static`** (internal linkage + forward declaration) — `.mc` has no translation units:

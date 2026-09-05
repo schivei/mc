@@ -939,8 +939,15 @@ void gen_stmt(i64 n, i64 lepi) {
         return;
     }
     if (k == N_CONTINUE) {
+        i64 lv = nd_val(n);                      // 0 = no level written, i.e. 1
+        if (lv == 0) lv = 1;
+        // depth 0 keeps its own message, which predates the level and says
+        // the more useful thing when there is no loop at all
         if (nloops == 0) err_node(n, "continue outside loop");
-        callp(mach(MTASK_JUMP), lcont_at(nloops - 1));
+        // lv < 1 is unreachable from the parser (it refuses 0 and there is no
+        // negative literal); it catches a node a module built by hand
+        if (lv < 1 || lv > nloops) err_node(n, "continue out of range");
+        callp(mach(MTASK_JUMP), lcont_at(nloops - lv));
         return;
     }
     if (k == N_RETURN) {

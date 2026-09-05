@@ -84,7 +84,8 @@ thousand call sites.
 ## Control flow
 
 `if`/`else` and `loop { }`. `break;` leaves one loop, `break N;` leaves N — no labels needed
-because a count says everything a label would. `continue;` restarts the innermost loop.
+because a count says everything a label would. `continue;` restarts the innermost loop and
+`continue N;` restarts the N-th enclosing one, counted the same way.
 
 ```mc
 // expect-exit: 21

@@ -76,10 +76,15 @@ for f in tests/mc/*.mc; do
     echo "ok $name"
 done
 
-# the seed has to REFUSE these sources: the directives are Phase 2 surface that
-# only lives in src/*.mc (docs/surface.md § Tier 1, M15)
+# the seed has to REFUSE these sources: `#embed` and `#include <name>` are
+# Phase 2 surface that only lives in src/*.mc (docs/surface.md § Tier 1, M15),
+# and `continue N;` is core surface the frozen stage0/parse.c predates -- it
+# reads `continue` and then demands a semicolon. That refusal is the reason
+# 094/095 live in tests/mc/ rather than in tests/, so it is asserted and not
+# assumed.
 if [ -x build/mc0 ]; then
-    for f in tests/mc/070-embed.mc tests/mc/072-include-bundle.mc; do
+    for f in tests/mc/070-embed.mc tests/mc/072-include-bundle.mc \
+             tests/mc/094-continue-level.mc tests/mc/095-continue-one.mc; do
         total=$((total + 1))
         if msg=$(build/mc0 "$f" -o build/tests-mc/seed.o 2>&1); then
             echo "FAIL: build/mc0 accepted $f"; fails=$((fails + 1))

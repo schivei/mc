@@ -257,8 +257,12 @@ i64 cc_lock() {
 // the next call hangs forever.
 i64 cc_on_jump(i64 n, i64 kind, i64 depth) {
     if (cc_nlk == 0) return n;
+    // Both jumps carry their level in nd_val: `break N` stores N and a bare
+    // `break;` stores 1, `continue N` stores N and a bare `continue;` stores
+    // 0 -- so the clamp is what reads "no level, i.e. the innermost loop".
+    // An N_RETURN leaves every lock and never consults this.
     i64 lvl = 1;
-    if (kind == N_BREAK) {
+    if (kind != N_RETURN) {
         lvl = nd_val(n);
         if (lvl < 1) lvl = 1;
     }

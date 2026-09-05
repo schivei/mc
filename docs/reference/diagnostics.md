@@ -138,11 +138,12 @@ notatype main() { return 0; }
 | `expected ; after expression` | an expression statement without its semicolon | add it |
 | `expected ; after return` | `return` without its semicolon | add it |
 | `expected ; after break` | `break` or `break N` without its semicolon | add it |
-| `expected ; after continue` | `continue` without its semicolon | add it |
+| `expected ; after continue` | `continue` or `continue N` without its semicolon | add it |
 | `expected ; after extern` | an `extern` declaration without its semicolon | add it |
 | `expected ; after the global` | a global declaration without its semicolon | add it |
 | `left side of assignment must be a name` | assigning to something that is not a plain name | use `st8`/`st64` for memory, or a taught `syntax_infix` for members |
 | `break expects a positive level` | `break 0;` or a negative level | `break;` is `break 1;` |
+| `continue expects a positive level` | `continue 0;` or a negative level | `continue;` is `continue 1;` |
 | `expected ] in the array size` | an array declaration's bracket | close it |
 | `array size must be a positive constant` | `N` in `type x[N]` does not fold to a positive integer | use a literal or a `#define` |
 | `expected { in the array initializer` / `expected } in the array initializer` | the braces of `= { … }` | close them |
@@ -204,6 +205,7 @@ notatype main() { return 0; }
 | `value of type void` | a `void` call used where a value is needed | `void` produces no value |
 | `assignment to array` | assigning to an array name | an array name is an address; write through `st*` |
 | `break out of range` | `break N;` with N greater than the enclosing loop depth | count the loops again |
+| `continue out of range` | `continue N;` with N greater than the enclosing loop depth | count the loops again |
 | `continue outside loop` | `continue;` with no enclosing `loop` | remove it, or add the loop |
 | `expression too deep` | more than 64 levels of expression nesting | split into statements |
 | `frame too large` | locals + spill area exceed 4095 bytes | `sub sp, sp, #imm` carries only 12 bits; move data into a global |

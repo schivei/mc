@@ -2943,13 +2943,81 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   everywhere (a registered subcommand emits nothing). Goldens rewritten once: `mc2.sha256`
   `aab9ae12a7ba7904f6667f45fe63460974295a12d0dd5f21c359b3ed6b97bd79`, Linux
   `57a959a5…28b613` / `ae26b4cb…224555`, Windows `938c4e93…568a25` / `04642639…4860d2`.
-- Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
-  `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
-  from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:
-  M24 gave it the depth type for narrow `u8`/`u16` arithmetic and M41 gave it
-  `type_set_width(TY_UPTR, w)` plus the five parts. M18 (Linux x86 32-bit) stays optional; M13
-  stays in the backlog (`docs/specs/M13.md`: sizing a program's memory at compile time -- the
-  fixed 4 MiB arena in `examples/api/lib/rt.mc` is one more motivating case).
+- `continue N` done (coop patch for teko/ngen, owner-approved): **the mirror of `break N`.**
+  `stage0/` untouched (2848/3000). `continue;` has meant "the innermost loop" since the core had
+  loops and `break N;` has had a level since M2; the consumer lowers a switch as a ONE-ITERATION
+  `loop` whose arms leave it, so an arm that wants the enclosing loop's next round had no way to
+  say it -- `break` falls into the code after the switch, `continue` restarts the switch itself.
+  * **The level is stored only when it was written.** `src/parse.mc` reads an optional `T_INT`
+    after `continue` and leaves `nd_val` at **0** when there is none, so a plain `continue;`
+    builds the node the pre-level compiler built, byte for byte, and `dump_node` (which prints
+    `val=` only when it is non-zero) prints nothing for it. `src/gen_walk.mc` reads 0 as 1. That
+    is the whole inertness argument: `break;` defaults to 1 in the parser and can, `continue;`
+    cannot, because 0 is what "absent" has to mean on a node the seed also builds.
+  * Diagnostics: `continue expects a positive level` from the parser (`continue 0;`, at the
+    statement's position, the `break 0;` message mirrored) and `continue out of range` from the
+    walker (the depth is only known while lowering, like `break out of range`).
+    `continue outside loop` is untouched and still comes FIRST, because it says the more useful
+    thing when there is no loop at all.
+  * **Cost: 23 added lines in `src/`, 11 of them neither comment nor blank** (`parse.mc` +15/7,
+    `gen_walk.mc` +8/4, one of those four being the changed `lcont_at(nloops - lv)`).
+  * Two modules read a jump's level to decide how many scopes to release and both tested for
+    `N_BREAK` before reading `nd_val`, so a `continue N` would have released one loop's worth
+    instead of N: `examples/lang/lang_stmt.mc` and `examples/conc/conc_stmt.mc` now read the value
+    for either jump and clamp it, which is inert for every source that writes no level (0 clamps
+    to 1, exactly what the old code hardcoded) -- `check-inert` proves it on both examples.
+  Proofs: `tests/mc/094-continue-level.mc` (the consumer's shape: a one-iteration inner loop used
+  as a switch, `continue 2` from an arm, the outer loop advancing and the statement after the
+  switch skipped) and `tests/mc/095-continue-one.mc` (`continue 1;` == `continue;`, and a level
+  counts enclosing LOOPS and not enclosing blocks -- `continue 3` from inside two `if` blocks).
+  Both are portable to all five targets, picked up by the `tests/mc/0[89]*` globs in
+  `scripts/test-linux.sh` and `scripts/test-windows.sh` and by `scripts/check-mc.sh`, which also
+  asserts that the frozen seed REFUSES them (`expected ; after continue`) -- the reason they live
+  in `tests/mc/`. `tests/err/075-continue-zero.mc` and `076-continue-range.mc` are asserted with
+  their exact message in `scripts/check-surface.sh`, with the DEFAULT compiler (the feature is
+  core, not taught, so `err_case` gained an optional third argument).
+  -- `make bundle` re-run before bootstrapping (86 files, raw 1028411 -> LZ 482665, blob 483745 B).
+  `make check` green end to end (**RC 0, zero FAIL**): `test` 32/32, `check-lex`/`check-ast`/
+  `check-asm` 135/135 (2 skipped), `check-obj` **32/32 identical to the frozen seed**,
+  `check-bundle`, `bootstrap` at a fixed point (`mc2.o == mc3.o`, 1108184 bytes; the `--dump-asm`
+  diff between `mc1` and `mc2` is **empty**), `check-surface` 32/32 + the two new `err_case` rows,
+  `test-exe` 32/32, `check-mc` **15/15** (11 tests + 4 seed refusals), `check-standalone`,
+  `check-parts`, `check-toml`, `check-build` 53/53, `check-stubs` 9/9, `check-limits` 17/17 under
+  90%, `check-minimal`, `test-linux` 41/41 and `test-linux-exe` 44/44 musl + 44/44 gnu,
+  `test-linux-x86_64` 38/38 and 41/41 + 41/41, `test-windows` **42/42** and
+  `test-windows-x86_64` **40/40** objects cross-compiled (094/095 among them), `check-examples`,
+  `check-lang`, `check-conc`, `check-desktop`, `check-float`, `check-wide`, `check-kernel`,
+  `check-avr`, `check-sandbox` 55 ok, `check-docs` (196 symbols, 33 flags, 20 TOML keys, 10
+  directives, 51 samples, 320 links), `site` + `check-site`. `make check-linux-host` RC 0 over all
+  four cells (fixed point `mc2l.o == mc3l.o`, 1394856 B on aarch64 and 1303384 B on x86_64; suites
+  41/41 and 38/38 musl, 42/42 and 39/39 gnu native; the cross proof green on all four).
+  `scripts/check-inert.sh build/mc1.pre build/mc1` (pre = a `mc1` built from `origin/main`):
+  **33 objects identical** (`tests/*.mc` and `src/mc.mc`) plus byte-identical artefacts for
+  `examples/api`, `lang`, `conc`, `desktop` and `kernel` -- the corpus writes no level, so nothing
+  it emits could move.
+  The five goldens rewritten **once**, each only after its own criterion: `mc2.sha256`
+  `aab9ae12...b97bd79` -> `897b18875ff43f3baee95036db3651269ed2dba4c764185a12882b43c5fcdf7d`
+  (after the empty `--dump-asm` diff and `cmp build/mc2.o build/mc3.o`); the Linux pair deleted and
+  re-recorded by `make check-linux-host` -- `mc2-linux-arm64.sha256`
+  `3544cfff8f7fa37710ccd65e76d952d4e3dfdbbc753706e301d02f83a6199e31`,
+  `mc2-linux-x86_64.sha256`
+  `0888bb6627ca2e778e54522794337bc6c0ec842decbb07f156fa3976ee41cef2`; the Windows pair
+  cross-computed per `tests/golden/README.md` -- `mc2-windows-arm64.sha256`
+  `b4b7bbc873f4a28865492c44a9992e09d279191bddb3f348c5a8fb78523b44f0` (1129998 B),
+  `mc2-windows-x86_64.sha256`
+  `7fe8f0832ebe7cc3a037d76e142c20435e015fe109edf2de51bb01cb51923e06` (1158890 B), both also
+  written byte for byte by `build/mc2`.
+  Docs: `docs/reference/language.md` § 3 (the grammar and the three messages),
+  `docs/reference/diagnostics.md` (two new rows), `docs/core-language.md` (including what a level
+  means inside a prelude `for`, whose step it skips for the same reason a bare `continue` does --
+  measured, not assumed), `docs/guide/10-single-file.md`, `docs/reference/objects.md`, and
+  `docs/reference/hooks.md` § `on_jump`, which is where the 0 matters to somebody else: the hook
+  sees the `N_CONTINUE` **before** any level check, so a handler reading its level must read 0 as 1
+  and may see a level the function's loop depth does not support.
+- Next: **M44** (packages, `docs/specs/M44.md`), then **M42 step 2** (PE `--exe`, CI-gated on the
+  Windows runners). **M46** only on the owner's request; **M43 Layer 2** after 1.0.0. M13 and M18
+  stay in the backlog (`docs/specs/M13.md`: sizing a program's memory at compile time -- the fixed
+  4 MiB arena in `examples/api/lib/rt.mc` is one more motivating case; M18 is Linux x86 32-bit).
   Update this section when each milestone closes.
 - i18n done (2026-09-03): the repository is fully in English — diagnostics, program/script
   output, identifiers, comments, and docs (`docs/*.md`, `docs/specs/*.md`, `CLAUDE.md`,

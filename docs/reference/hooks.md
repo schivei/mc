@@ -660,6 +660,15 @@ handler returns the same node, a replacement, or 0 to drop the jump — in which
 `N_BLOCK` takes its place, the same convention `syntax_stmt` and `on_stmt` already had. A 0
 short-circuits the hooks behind it.
 
+**The level, and when it is 0.** A jump's level is on the node, in `nd_val`: `break N;` stores `N`
+(a plain `break;` stores 1), and `continue N;` stores `N` while a plain `continue;` stores **0** —
+the node a `continue;` builds is the one the pre-level compiler built, byte for byte, so that
+nothing an untaught compiler emits moved. A handler that reads the level of an `N_CONTINUE` must
+therefore treat 0 as 1, which is what the walker does. The hook runs **before** any level check:
+`continue 0;` is refused by the parser before the node exists and never reaches a handler, but
+`continue 7;` inside two loops does reach it — `continue out of range` is raised much later, while
+lowering — so a handler sees a level the function's loop depth may not support.
+
 Why `on_stmt` is not a substitute: the first module to see a `return` normally *rewrites* it —
 `examples/lang` turns it into an `N_BLOCK` of reference releases — so a module registered behind it
 can no longer recognise the jump, let alone place code on that edge. A scope guard (`lock (m) { … }`,

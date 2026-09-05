@@ -38,6 +38,9 @@
 # contract of docs/reference/objects.md § 4 -- every claim on that page asserted
 # instruction by instruction against `--dump-asm`, so that a change to the code
 # generator is a change to a documented, tested contract.
+#
+# `continue N` (the coop patch): two tests/err/ cases asserted with the DEFAULT
+# compiler -- the feature is core, and its positive half lives in tests/mc/.
 mc0="${1:-build/mc0}"
 mc1="${2:-build/mc1}"
 
@@ -443,10 +446,10 @@ for f in syntax_param-default syntax_param-params syntax_param-capsule; do
 done
 
 # ---- M21: the tests/err/ cases, with their exact message ----
-err_case() {                        # err_case FILE EXPECTED-MESSAGE
-    f="$1"; want="$2"
-    if msg=$("$demo" "$f" -o "$tmp/err.o" 2>&1); then
-        echo "FAIL $f (the taught compiler accepted it)"; fails=$((fails + 1)); return
+err_case() {                        # err_case FILE EXPECTED-MESSAGE [COMPILER]
+    f="$1"; want="$2"; cc="${3:-$demo}"
+    if msg=$("$cc" "$f" -o "$tmp/err.o" 2>&1); then
+        echo "FAIL $f (the compiler accepted it)"; fails=$((fails + 1)); return
     fi
     if [ "$msg" != "$want" ]; then
         echo "FAIL $f"
@@ -491,6 +494,16 @@ err_case tests/err/073-param-consumed-zero.mc \
 # fix this compiled to `return 7;` with the `q` swallowed.
 err_case tests/err/074-lit-consumed-zero.mc \
     "tests/err/074-lit-consumed-zero.mc:14: syntax_lit handler consumed tokens and returned 0: 7"
+
+# ---- `continue N`: the two level diagnostics, from the DEFAULT compiler ----
+# The feature is core, not taught, so these two are asserted with $mc1: nothing
+# the demo registers is involved. The first comes from the parser (the level is
+# written down), the second from the walker (the depth is only known while
+# lowering) -- the same split `break 0;` and `break N;` have.
+err_case tests/err/075-continue-zero.mc \
+    "tests/err/075-continue-zero.mc:8: continue expects a positive level" "$mc1"
+err_case tests/err/076-continue-range.mc \
+    "tests/err/076-continue-range.mc:9: continue out of range" "$mc1"
 
 # ---- M31 (2.3): the ABI contract, asserted instruction by instruction ----
 # docs/reference/objects.md § 4 writes down what a TAUGHT RUNTIME relies on -- a

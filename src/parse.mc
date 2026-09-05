@@ -1249,8 +1249,23 @@ i64 parse_stmt_core() {
     }
     if (tok_id(cur) == K_CONTINUE) {
         next();
+        // `continue N;` is the mirror of `break N;`: N counted the same way,
+        // the innermost loop being 1. The level is only STORED when it was
+        // written -- an absent one leaves nd_val at 0, so the node a plain
+        // `continue;` builds is byte for byte the one the frozen seed builds
+        // and --dump-ast prints no `val=` for it (src/ast.mc's dump_node
+        // prints val= only when it is non-zero). The walker reads 0 as 1.
+        // The level check lives here and not after the `if`, because 0 is
+        // what "no level" means -- unlike break, whose default is 1.
+        i64 lv = 0;
+        if (tok_id(cur) == T_INT) {
+            lv = tok_val(cur);
+            next();
+            if (lv < 1) err_at(fl, line, "continue expects a positive level");
+        }
         expect(K_SEMI, "expected ; after continue");
         i64 n = node_new(N_CONTINUE, line, fl);
+        set_nd_val(n, lv);
         return jump_hook(n, N_CONTINUE, line, fl);
     }
     if (tok_id(cur) == K_RETURN) {

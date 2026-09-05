@@ -180,7 +180,7 @@ are AArch64 and live in `src/machine_arm64.mc`.
 | `gen_var(n)` | a local declaration |
 | `gen_assign(n)` | an assignment statement |
 | `gen_if(n, lepi)` | `if` / `else` |
-| `gen_loop(n, lepi)` | `loop`, `break N` and `continue` |
+| `gen_loop(n, lepi)` | `loop`, `break N` and `continue N` |
 | `gen_func(f, text)` | one function: prologue, body, epilogue, frame fixup |
 | `gen_globals(unit)` | places every global, writes its initializer and fills in its symbol |
 | `gen_sections(unit)` | creates the sections the `#section` directives asked for |
