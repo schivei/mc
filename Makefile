@@ -155,6 +155,21 @@ test-sandbox: build/mc1
 	sh scripts/test-sandbox.sh
 endif
 
+# M43 step C: the seccomp profiles, MEASURED (docs/specs/M43.md § 4,
+# acceptance 5). `sandbox-trace` re-traces this host with strace and rewrites
+# tools/sandbox/*.list and the generated src/sandbox_profiles.mc;
+# `sandbox-trace-check` traces and compares instead, in both directions, and
+# fails when the compiler has gained a system call the table does not have or
+# kept one nothing uses any more. Neither is in `make check`: the first WRITES
+# generated source, and the second is a full corpus run per libc that belongs
+# in the sandbox CI job. Both print one SKIPPED line without strace, and on
+# macOS, where there are no Linux system calls to count.
+sandbox-trace:
+	sh scripts/sandbox-trace.sh
+
+sandbox-trace-check:
+	sh scripts/sandbox-trace.sh --check
+
 # M11: the whole suite via the direct executable (--exe), no ld. Only the
 # .mc compiler has this backend, so the target depends on $(MC) -- which is
 # build/mc1 on macOS and, since M42, the bootstrapped build/mc2l on a Linux
@@ -562,7 +577,7 @@ clean:
 	rm -rf build
 
 .PHONY: bootstrap-linux mc-linux mc-linux-x86_64 mc-linux-obj mc-linux-x86_64-obj
-.PHONY: check-linux-host check-skipped check-shim test-sandbox mc-linux-gnu mc-linux-x86_64-gnu
+.PHONY: check-linux-host check-skipped check-shim test-sandbox sandbox-trace sandbox-trace-check mc-linux-gnu mc-linux-x86_64-gnu
 .PHONY: bootstrap-windows mc-windows mc-windows-x86_64 mc-windows-obj mc-windows-x86_64-obj
 .PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-parts check-toml check-build check-sysroots check-stubs check-limits sysroot-linux sysroot-linux-x86_64 sysroot-windows sysroot-windows-x86_64 test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal mcrt-windows mcrt-windows-x86_64 check-float check-wide check-kernel check-avr test-linux-exe test-linux-x86_64-exe
 
