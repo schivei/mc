@@ -755,6 +755,8 @@ esc_case "..\/"          '["evil.mc", "../../../canary.txt"]'  '\.\./\.\./\.\./c
 esc_case "absolute"      '["evil.mc", "/etc/passwd"]'          '/etc/passwd'
 esc_case "a\/..\/..\/x"  '["evil.mc", "a/../../canary.txt"]'   'a/\.\./\.\./canary.txt'
 esc_case "a newline"     '["evil.mc", "a.mc\\nx"]'             'a.mc'
+esc_case "a drive letter" '["evil.mc", "C:/canary.txt"]'        'C:/canary.txt'
+esc_case "a reserved char" '["evil.mc", "a<b.mc"]'              'a<b.mc'
 
 # the WRITE half: `mc pkg vendor` copied the entry out of the project entirely
 esc_setup '["evil.mc", "../../../canary.txt"]'

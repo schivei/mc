@@ -265,6 +265,11 @@ i64 dep_rel_ok(uptr rel, i64 dirok) {
         i64 c = ld8(rel + i);
         if (c < 32) return 0;                     // control byte, LF included
         if (c == 92) return 0;                    // backslash
+        // the characters Windows reserves in a name: `:` (a drive letter, an
+        // NTFS stream), `<`, `>`, `"`, `|`, `?`, `*` -- a tar member `C:/x` is
+        // absolute to a Windows extractor, and the rule is one rule for the
+        // three hosts (Copilot's review of #27)
+        if (c == ':' || c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*') return 0;
         i = i + 1;
     }
     i64 b = 0;

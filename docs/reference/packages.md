@@ -94,7 +94,9 @@ mathx = "1.0.0"
 
 * be empty, or start with `/`;
 * contain a `.` or a `..` component, or an empty one (`a//b`), or end with `/`;
-* contain a backslash, or any byte below `0x20`;
+* contain a backslash, any byte below `0x20`, or one of the characters Windows reserves in a
+  name -- `:` (a drive letter, an NTFS stream), `<`, `>`, `"`, `|`, `?`, `*` -- because the rule is one
+  rule for the three hosts and `C:/x` is absolute to a Windows extractor;
 * resolve, after normalisation, to anything outside the package's own directory.
 
 Anything else is `<pack> <ver>: files entry escapes the package: <entry>`, exit 2, at every place
