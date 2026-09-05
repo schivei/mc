@@ -38,6 +38,12 @@
 # honour) and mc-noobjhost.mc (the object slot at 0, refused with the advice
 # `--exe`, which the same compiler then carries out).
 #
+# The post-M42 patch adds THE LINUX MATRIX, both roads (`mc build` keys and the
+# single-file CLI's flags), over tests/proj/lin.mc (imports nothing) and
+# tests/proj/lin-libc.mc (imports `write`): libc gnu/musl/none against link
+# dynamic/static, each cell either built and inspected or refused with the exact
+# message. It needs no Docker -- nothing here is executed, only read.
+#
 # The last section checks the diagnostics: a foreign [target].os, os = "windows"
 # with no [linker] (M19), a missing key and a bad [project].kind have to come
 # out with file:line:col and exit 1 -- and the same two [target] messages,
@@ -403,6 +409,161 @@ else
     ok "linux-exe.toml twice -> byte for byte the same executable"
 fi
 
+# ---- the Linux matrix: libc (gnu | musl | none) x link (dynamic | static) ----
+# The two axes of a Linux target, in the one vocabulary both roads speak
+# (docs/build.md § Linux targets). Nothing is executed here -- these are
+# cross-built images and this machine may be neither Linux nor this
+# architecture -- so every cell is read out of the file.
+#
+# llvm-readelf is how a program header is read; without it the three assertions
+# that need one say so and are skipped, exactly as scripts/test-linux.sh does
+# with its stack checks. They are properties of the file, not of the program's
+# behaviour, and must not turn a green suite red on a machine with no LLVM.
+findtool() {
+    t=$(command -v "$1" 2>/dev/null)
+    if [ -z "$t" ]; then
+        for cand in /opt/homebrew/opt/llvm/bin/"$1" /usr/local/opt/llvm/bin/"$1" \
+                    /usr/lib/llvm-*/bin/"$1"; do
+            if [ -x "$cand" ]; then t="$cand"; break; fi
+        done
+    fi
+    echo "$t"
+}
+readelf=$(findtool llvm-readelf)
+[ -n "$readelf" ] || readelf=$(command -v readelf 2>/dev/null)
+
+# builds one cell and checks the loader path and the DT_NEEDED soname in it
+# name, config, output, interpreter, soname
+dyn_cell() {
+    total=$((total + 1))
+    rm -f "$dir/$3"
+    if ! "$mc" build "$dir" --config "$dir/$2" > "$tmp/o" 2>&1; then
+        fail "$1" "$(cat "$tmp/o")"
+        return
+    fi
+    if [ -z "$readelf" ]; then
+        ok "$1 (built; no llvm-readelf here, headers not read)"
+        return
+    fi
+    "$readelf" -l -d "$dir/$3" > "$tmp/e" 2>&1
+    if ! grep -q "Requesting program interpreter: $4" "$tmp/e"; then
+        fail "$1" "PT_INTERP is not $4: $(grep -i interpreter "$tmp/e")"
+    elif ! grep -qF "Shared library: [$5]" "$tmp/e"; then
+        fail "$1" "DT_NEEDED is not $5: $(grep -i 'Shared library' "$tmp/e")"
+    else
+        ok "$1 -> PT_INTERP $4, DT_NEEDED $5"
+    fi
+}
+
+dyn_cell "matrix musl/dynamic (the default, no key)" linux-musl.toml \
+    build/lin-musl /lib/ld-musl-aarch64.so.1 libc.so
+dyn_cell "matrix gnu/dynamic (libc = \"gnu\")" linux-gnu.toml \
+    build/lin-gnu /lib/ld-linux-aarch64.so.1 libc.so.6
+
+# the static cell: a program that imports nothing, asked for explicitly. No
+# PT_INTERP, no PT_DYNAMIC, no loader involved at run time at all.
+total=$((total + 1))
+rm -f "$dir/build/lin-static"
+if ! "$mc" build "$dir" --config "$dir/linux-static.toml" > "$tmp/o" 2>&1; then
+    fail "matrix none/static (link = \"static\")" "$(cat "$tmp/o")"
+elif [ -z "$readelf" ]; then
+    ok "matrix none/static (built; no llvm-readelf here, headers not read)"
+else
+    "$readelf" -l "$dir/build/lin-static" > "$tmp/e" 2>&1
+    if grep -q "INTERP" "$tmp/e"; then
+        fail "matrix none/static" "the image has a PT_INTERP"
+    elif grep -q "DYNAMIC" "$tmp/e"; then
+        fail "matrix none/static" "the image has a PT_DYNAMIC"
+    else
+        ok "matrix none/static -> no PT_INTERP and no PT_DYNAMIC"
+    fi
+fi
+
+# the fourth cell: static WITH a libc, which is the one mc cannot write and the
+# one [linker] is still here for. The key does not refuse there -- it describes
+# the link the external linker is asked to make, and the driver takes the object
+# road it has always taken. `echo` stands in for ld.lld, so this needs nothing
+# installed; the object is what is being checked, and the spawn.
+total=$((total + 1))
+rm -f "$dir/build/lin-static-linked.o"
+if ! "$mc" build "$dir" --config "$dir/linux-static-linker.toml" > "$tmp/o" 2>&1; then
+    fail "matrix gnu|musl/static through [linker]" "$(cat "$tmp/o")"
+elif [ ! -f "$dir/build/lin-static-linked.o" ]; then
+    fail "matrix gnu|musl/static through [linker]" "no object was written"
+elif ! grep -q -- "-static -o " "$tmp/o"; then
+    fail "matrix gnu|musl/static through [linker]" "the linker was not spawned: $(cat "$tmp/o")"
+else
+    ok "matrix gnu|musl/static through [linker] -> object + linker, no refusal"
+    sed 's|^|  |' "$tmp/o"
+fi
+
+# ---- the same two axes from the single-file CLI ----
+# --libc=, --interp= and --link= mirror the three keys exactly, so that a source
+# does not have to become a project to say which libc it is for. --backend= is
+# what makes this reachable from a macOS host: it names the writer, and the
+# flags then describe the image that writer produces.
+cli_case() {                             # name, flags, output, pattern
+    total=$((total + 1))
+    rm -f "$tmp/$3"
+    if ! "$mc" --backend=elf-exe $2 "$dir/lin-libc.mc" -o "$tmp/$3" > "$tmp/o" 2>&1; then
+        fail "$1" "$(cat "$tmp/o")"
+    elif [ -z "$readelf" ]; then
+        ok "$1 (built; no llvm-readelf here, headers not read)"
+    elif ! "$readelf" -l -d "$tmp/$3" 2>&1 | grep -qF "$4"; then
+        fail "$1" "no '$4' in the image"
+    else
+        ok "$1 -> $4"
+    fi
+}
+
+cli_case "cli --libc=gnu" --libc=gnu cli-gnu "Shared library: [libc.so.6]"
+cli_case "cli --libc=musl" --libc=musl cli-musl "Shared library: [libc.so]"
+cli_case "cli --interp=/opt/ld.so overrides the family" \
+    "--libc=gnu --interp=/opt/ld.so" cli-ov "interpreter: /opt/ld.so"
+cli_case "cli --libc=gnu --libc=musl (the last one wins)" \
+    "--libc=gnu --libc=musl" cli-last "Shared library: [libc.so]"
+
+# the refusals, on the CLI road: no config, so no file:line:col -- the same
+# message with `mc: ` in front, which is what die() writes.
+cli_refuse() {                           # name, flags, expected last line
+    total=$((total + 1))
+    "$mc" --backend=elf-exe $2 "$dir/lin-libc.mc" -o "$tmp/refused" > "$tmp/o" 2>&1
+    rc=$?
+    got=$(tail -1 "$tmp/o")
+    if [ "$rc" != "1" ]; then
+        fail "$1" "exit $rc, expected 1"
+    elif [ "$got" != "$3" ]; then
+        fail "$1" "got '$got', expected '$3'"
+    else
+        ok "$1"
+        echo "  $got"
+    fi
+}
+
+cli_refuse "cli --link=static with an import" --link=static \
+    "mc: static link with a libc needs [linker]: see docs/build.md -- static linking (M46)"
+cli_refuse "cli --libc=uclibc" --libc=uclibc "mc: --libc must be gnu or musl: uclibc"
+cli_refuse "cli --link=half" --link=half "mc: --link must be dynamic or static: half"
+
+# and the flag on a host that is not Linux, with no --backend= to say otherwise:
+# the single-file CLI writes for the HOST there, and a --libc it would then
+# ignore is worse than a --libc it refuses. On a Linux host the flag is exactly
+# what it is for, so the case only exists off Linux.
+if [ "$("$mc" --host | sed -n 's|^os ||p')" != "linux" ]; then
+    total=$((total + 1))
+    "$mc" --exe --libc=gnu "$dir/lin-libc.mc" -o "$tmp/refused" > "$tmp/o" 2>&1
+    rc=$?
+    got=$(tail -1 "$tmp/o")
+    if [ "$rc" != "1" ]; then
+        fail "cli --libc on a non-linux host" "exit $rc, expected 1"
+    elif [ "$got" != "mc: --libc applies to a linux target" ]; then
+        fail "cli --libc on a non-linux host" "got '$got'"
+    else
+        ok "cli --libc on a non-linux host"
+        echo "  $got"
+    fi
+fi
+
 # ---- diagnostics ----
 # name, config path, config body, expected LAST line of output (CFG = config path).
 # The error is always the last thing printed: a step line may come first.
@@ -471,6 +632,62 @@ out   = "build/x"
 os = "windows"
 ' \
     'CFG:6:6: windows requires [linker]: there is no direct executable: target.os'
+
+# post-M42 patch: the refused cells of the matrix. `link = "static"` against a
+# program that imports a libc symbol is the important one -- it is the cell mc
+# cannot write, and the message names the road (an external linker) and the
+# milestone that would remove the need for it. The position is the KEY's, and
+# the check that it is the key's is that the refusal comes from the WRITER,
+# which has never heard of TOML (src/objmodel.mc, dyn_die).
+diag "diag [target].link static with an import" "$dir/build/d.toml" \
+    '[project]
+entry = "../lin-libc.mc"
+out   = "build/x"
+
+[target]
+os   = "linux"
+arch = "aarch64"
+link = "static"
+' \
+    'CFG:8:8: static link with a libc needs [linker]: see docs/build.md -- static linking (M46): target.link'
+
+# a soname where a family belongs -- the shape M42 accepted, refused now, with
+# the migration in the message itself
+diag "diag [target].libc as a soname" "$dir/build/d.toml" \
+    '[project]
+entry = "../lin-libc.mc"
+out   = "build/x"
+
+[target]
+os   = "linux"
+libc = "libc.so.6"
+' \
+    'CFG:7:8: libc must be gnu or musl (a soname is not a value: gnu is libc.so.6, musl is libc.so): target.libc'
+
+diag "diag [target].link bad value" "$dir/build/d.toml" \
+    '[project]
+entry = "../lin-libc.mc"
+out   = "build/x"
+
+[target]
+os   = "linux"
+link = "half"
+' \
+    'CFG:7:8: link must be dynamic or static: target.link'
+
+# the three keys describe a Linux dynamic image and there is no such thing on
+# another target: a Mach-O names /usr/lib/dyld and libSystem and reads none of
+# them. Ignored would be worse than refused.
+diag "diag [target].libc off linux" "$dir/build/d.toml" \
+    '[project]
+entry = "../lin-libc.mc"
+out   = "build/x"
+
+[target]
+os   = "macos"
+libc = "gnu"
+' \
+    'CFG:7:8: libc applies to a linux target: target.libc'
 
 diag "diag missing project.entry" "$tmp/d.toml" \
     '[project]

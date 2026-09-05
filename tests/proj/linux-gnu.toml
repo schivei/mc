@@ -1,0 +1,14 @@
+# linux-gnu.toml — the glibc DYNAMIC cell of the Linux matrix
+# (docs/build.md § Linux targets, scripts/check-build.sh).
+#
+# ONE key against linux-musl.toml, and it decides BOTH per-libc names: the
+# loader `/lib/ld-linux-aarch64.so.1` in PT_INTERP and the soname `libc.so.6` in
+# DT_NEEDED. That is what `libc` being a family and not a soname buys.
+[project]
+entry = "lin-libc.mc"
+out   = "build/lin-gnu"
+
+[target]
+os   = "linux"
+arch = "aarch64"
+libc = "gnu"

@@ -35,18 +35,22 @@
 #   --exe            each stage's executable is written by the PREVIOUS compiler
 #                    (`elf-exe` / `elf-exe-x86_64`), so there is no ld.lld and no
 #                    sysroot in the chain at all
-#   --libc musl|glibc  which loader that executable asks for; glibc implies --exe,
-#                    because the sysroot road has musl files and nothing else
+#   --libc musl|gnu  which libc that executable is linked against, in the
+#                    compiler's own vocabulary ([target].libc); gnu implies
+#                    --exe, because the sysroot road has musl files and nothing
+#                    else
 #
 # The default is unchanged on purpose: the SEED may be a published release older
 # than M42, which has no `--exe` on Linux to offer.
 #
-# The `--exe` road goes through `mc build` and a generated four-line config
-# rather than through `mc --exe`, because the two per-libc names are TOML keys
-# ([target].interp and [target].libc) and the single-file CLI has no flag for
-# them. The OBJECT each stage writes is the same either way -- an ELF object
-# records no interpreter -- so the fixed point and the golden are the same
-# values on both roads, which is what makes them comparable.
+# The `--exe` road goes through `mc build` and a generated config rather than
+# through `mc --exe --libc=`, which the post-M42 patch made possible: what the
+# config still carries and a command line cannot is `[limits] tolerance = 1.0`,
+# and the compiler compiling itself is the one source in this repository where
+# that matters (every table is sized for it in one go instead of doubling
+# mid-build). The OBJECT each stage writes is the same either way -- an ELF
+# object records no interpreter -- so the fixed point and the golden are the
+# same values on both roads, which is what makes them comparable.
 #
 # No "set -e": every step checks its own exit code and says what failed.
 
@@ -59,17 +63,24 @@ while [ $# -gt 0 ]; do
         --exe) use_exe=1; shift ;;
         --libc)
             [ -n "$2" ] && [ "${2#-}" = "$2" ] \
-                || { echo "FAIL: --libc needs a value (musl | glibc)" >&2; exit 1; }
+                || { echo "FAIL: --libc needs a value (musl | gnu)" >&2; exit 1; }
             libc="$2"; shift 2
             ;;
         --libc=*) libc="${1#--libc=}"; shift ;;
         *) seed="$1"; shift ;;
     esac
 done
+# one key, one family: `libc = "gnu"` names both the loader path and the
+# DT_NEEDED soname (the post-M42 patch, docs/reference/toml.md § [target]).
+# There is no glibc sysroot here and no reason for one, so gnu implies --exe.
 case "$libc" in
-    musl)  interp=""; soname="" ;;
-    glibc) use_exe=1; soname="libc.so.6" ;;
-    *) echo "FAIL: unknown --libc $libc (musl | glibc)" >&2; exit 1 ;;
+    musl) libckey="" ;;
+    gnu)  libckey="gnu"; use_exe=1 ;;
+    glibc)
+        echo "FAIL: --libc glibc was renamed to --libc gnu (the compiler's own vocabulary: [target].libc = \"gnu\")" >&2
+        exit 1
+        ;;
+    *) echo "FAIL: unknown --libc $libc (musl | gnu)" >&2; exit 1 ;;
 esac
 
 case "$(uname -s)" in
@@ -79,10 +90,8 @@ case "$(uname -s)" in
 esac
 
 case "$(uname -m)" in
-    aarch64|arm64) target="arm64";  entry="src/mc_linux.mc";        larch="aarch64"
-                   [ "$libc" = "glibc" ] && interp="/lib/ld-linux-aarch64.so.1" ;;
-    x86_64|amd64)  target="x86_64"; entry="src/mc_linux_x86_64.mc"; larch="x86_64"
-                   [ "$libc" = "glibc" ] && interp="/lib64/ld-linux-x86-64.so.2" ;;
+    aarch64|arm64) target="arm64";  entry="src/mc_linux.mc";        larch="aarch64" ;;
+    x86_64|amd64)  target="x86_64"; entry="src/mc_linux_x86_64.mc"; larch="x86_64" ;;
     *) echo "bootstrap-linux: unsupported machine $(uname -m) (aarch64 | x86_64)" >&2
        exit 1 ;;
 esac
@@ -154,10 +163,6 @@ if [ -z "$seed" ] && [ "$libc" != "musl" ] && [ -x "build/mc-linux-$target-$libc
     seed="build/mc-linux-$target-$libc"
     echo "seed: $seed (cross-built, $libc)"
 fi
-if [ -z "$seed" ] && [ "$libc" = "glibc" ] && [ -x "build/mc-linux-$target-gnu" ]; then
-    seed="build/mc-linux-$target-gnu"
-    echo "seed: $seed (cross-built, glibc)"
-fi
 if [ -z "$seed" ] && [ -x "build/mc-linux-$target" ]; then
     seed="build/mc-linux-$target"
     echo "seed: $seed (cross-built)"
@@ -215,8 +220,7 @@ link_exe() {
         echo '[target]'
         echo 'os   = "linux"'
         echo "arch = \"$larch\""
-        [ -n "$interp" ] && echo "interp = \"$interp\""
-        [ -n "$soname" ] && echo "libc   = \"$soname\""
+        [ -n "$libckey" ] && echo "libc = \"$libckey\""
         echo ''
         echo '[limits]'
         echo 'tolerance = 1.0'

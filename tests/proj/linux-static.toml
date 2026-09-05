@@ -1,0 +1,16 @@
+# linux-static.toml — the STATIC cell of the Linux matrix, the one road there
+# is to it without an external linker (docs/build.md § Linux targets).
+#
+# The entry imports nothing, so the writer has nothing to resolve at load time
+# and the image has no PT_INTERP, no PT_DYNAMIC and no PLT. `link = "static"` is
+# what turns that from an accident into a REQUIREMENT: the same key against a
+# program that does import a libc symbol is refused, because mc has no archive
+# linker (scripts/check-build.sh asserts both halves).
+[project]
+entry = "lin.mc"
+out   = "build/lin-static"
+
+[target]
+os   = "linux"
+arch = "aarch64"
+link = "static"

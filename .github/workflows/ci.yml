@@ -108,13 +108,13 @@ jobs:
         run: scripts/test-linux.sh --exe --build-only build/linux-exes build/mc1
 
       - name: Cross-compile the suite as linux/arm64 executables (--exe, glibc)
-        run: scripts/test-linux.sh --exe --libc glibc --build-only build/linux-exes-glibc build/mc1
+        run: scripts/test-linux.sh --exe --libc gnu --build-only build/linux-exes-glibc build/mc1
 
       - name: Cross-compile the suite as linux/x86_64 executables (--exe, musl)
         run: scripts/test-linux.sh --arch x86_64 --exe --build-only build/linux-exes-x86_64 build/mc1
 
       - name: Cross-compile the suite as linux/x86_64 executables (--exe, glibc)
-        run: scripts/test-linux.sh --arch x86_64 --exe --libc glibc --build-only build/linux-exes-x86_64-glibc build/mc1
+        run: scripts/test-linux.sh --arch x86_64 --exe --libc gnu --build-only build/linux-exes-x86_64-glibc build/mc1
 
       # M24 step 1: the float suite goes into the SAME artifact, in the same
       # shape, so the `--run-only` half of test-linux.sh links and runs it with
@@ -471,7 +471,7 @@ jobs:
       - name: Run the --exe suite natively (glibc, no linker)
         run: |
           chmod +x build/linux-exes-glibc/* 2>/dev/null || true
-          scripts/test-linux.sh --exe --libc glibc --run-only build/linux-exes-glibc
+          scripts/test-linux.sh --exe --libc gnu --run-only build/linux-exes-glibc
 
       # and the musl set in alpine, which is where its PT_INTERP points. The
       # script chooses Docker by itself here: the requested libc is not this
@@ -537,7 +537,7 @@ jobs:
       - name: Run the --exe suite natively (glibc, no linker)
         run: |
           chmod +x build/linux-exes-x86_64-glibc/* 2>/dev/null || true
-          scripts/test-linux.sh --arch x86_64 --exe --libc glibc --run-only build/linux-exes-x86_64-glibc
+          scripts/test-linux.sh --arch x86_64 --exe --libc gnu --run-only build/linux-exes-x86_64-glibc
 
       - name: Run the --exe suite in alpine (musl, no linker)
         run: |
