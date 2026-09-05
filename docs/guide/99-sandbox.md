@@ -107,7 +107,8 @@ The same shape covers the other four ways out. Each is one of `tests/sandbox/`:
 |---|---|---|
 | `open("/etc/shadow")` | `refused: open /etc/shadow` | 125 |
 | `socket(AF_INET, ...)` | `refused: syscall 198 (socket)` (41 on x86-64) | 125 |
-| `clone`/`fork` in a loop | `refused: syscall 220 (clone)` | 125 |
+| `clone`/`fork` in a loop | `refused: process limit (0)` | 125 |
+| `clone(CLONE_NEWUSER)` | `refused: clone with namespace flags` | 125 |
 | `mmap` of 8 GiB | `refused: mmap 8589934592 bytes over the cap (268435456)` | 125 |
 | a loop that never ends | `killed: cpu limit (2 s)` | 124 |
 | a sleep longer than the box | `killed: wall clock (5 s)` | 124 |
@@ -127,7 +128,12 @@ me", not for a build. Two more you will want:
 
 * `--stdin FILE` gives the program an input; without it, `read` sees EOF at once.
 * `--allow=threads` lets it make real threads. Every *other* way of making a process is then
-  counted rather than refused outright, up to 64 — `refused: process limit (64)`.
+  counted up to 64 instead of 0 — `refused: process limit (64)`. A thread is free; a process is
+  counted; a clone asking for a namespace is refused whatever you pass.
+
+The four caps have maxima as well as defaults — a day for `--time` and `--wall`, 1 TiB for
+`--mem`, 64 GiB for `--out` — and none of them takes a zero
+([../reference/cli.md](../reference/cli.md) § 3c).
 
 ## 5. A binary you already have
 
@@ -174,7 +180,8 @@ $ sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 ```
 
 or give the `mc` binary an AppArmor profile granting `userns,` and `mount,`. Running the whole
-thing as **root** works too and is the worse answer: with a root box `RLIMIT_NPROC` stops binding
+thing as **root** works too and is still the worse answer: a root box maps `0 0 65536`, so
+`RLIMIT_NPROC` -- the wall *behind* the supervisor's process counter -- stops binding
 ([../reference/sandbox.md](../reference/sandbox.md#what-is-not-isolated)). Inside a container the
 box needs `--privileged`, for the same reason: the default seccomp profile keeps `unshare`,
 `mount` and `pivot_root` behind `CAP_SYS_ADMIN`.

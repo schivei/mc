@@ -11,8 +11,8 @@ named and the box stops:
 sandbox: refused: open /etc/shadow
 sandbox: refused: syscall 198 (socket)
 sandbox: refused: mmap 8589934592 bytes over the cap (268435456)
-sandbox: refused: syscall 220 (clone)
-sandbox: refused: process limit (64)
+sandbox: refused: clone with namespace flags
+sandbox: refused: process limit (16)
 ```
 
 each with exit code **125**. Every measured number below gives the host it came from.
@@ -39,19 +39,17 @@ residual is accepted, and it is written down rather than papered over. For anyth
 public, the answer is policy: a disposable machine that holds nothing, snapshotted, rebuilt from
 a script.
 
-**The compile step's own forks, when P is root.** The *run* step is covered by the filter: no
-profile contains `clone`, `clone3`, `fork` or `vfork`, so a fork bomb is refused at its first
-attempt whoever started the box, and `RLIMIT_NPROC` is only the wall behind it. The *compile*
-step is not: `mc build` writes a compiler and then runs it, so its profile does contain them
-(measured — `clone3` under glibc, `clone` under musl), and what bounds it is `RLIMIT_NPROC` 16.
-That limit is real for an ordinary user and **not** for root, because `copy_process` skips the
-check outright for `INIT_USER` and root's box is mapped `0 0 65536`. So a source written to make
-the *compiler* fork is bounded by the machine when the box was started by root. Nothing escapes —
-the children are inside the pid namespace and die with it, and the host's process count is the
-same before and after, which `scripts/test-sandbox.sh` asserts — but the count is not bounded.
-The answer is the one this page gives everywhere: run `mc sandbox` as an ordinary user.
+**Not the compile step's forks — not any more.** This section used to say that the *compile*
+step's process count was unbounded for a box started by root: `mc build` writes a compiler and
+runs it, so `clone` was measured into the compile profile as a plain ALLOW, and the only thing
+behind it was `RLIMIT_NPROC`, which `copy_process` skips outright for `INIT_USER`. The post-M43
+review took that apart with `mc build`'s own `[linker].cmd` (§ The explain channel), and the fix
+is above: no profile allows a process-creating call, every one of the four is counted by the
+supervisor against a per-step limit, and a namespace flag is refused by name. Measured on both
+architectures and both privileges: `refused: process limit (16)`, exit 125, and the host's
+process count is the same before and after.
 
-Three smaller things are also outside the wall, and each is a deliberate choice:
+Four smaller things are outside the wall, and each is a deliberate choice:
 
 * **the compiler itself** runs inside the box for `mc sandbox run`, under the compile profile —
   so a malicious source is contained the same way a malicious program is, but a bug in `mc` that
@@ -65,7 +63,16 @@ Three smaller things are also outside the wall, and each is a deliberate choice:
   a step is single-threaded and there is no race at all — the filter refuses every way of making
   a thread;
 * **timing** is not isolated at all. The box has no clock policy; a program can measure how long
-  things take and so can anything sharing the machine.
+  things take and so can anything sharing the machine;
+* **below Landlock ABI 6 the scoped restrictions do not exist.** ABI 6 (kernel 6.12) added the
+  `scoped` field — abstract unix sockets and signals confined to the Landlock domain — and the
+  floor this sandbox accepts is 4. On a kernel between them the ruleset simply does not carry
+  that word, and the box loses one wall: nothing in it makes another process or an abstract
+  socket *reachable* (the pid namespace hides every process, the network namespace is empty), but
+  the second wall is absent. It is not silent: `mc sandbox check` prints
+  `landlock: abi N (no scoped signals below 6)` and still exits 0. Both measured hosts report
+  abi 8 and the GitHub runners abi 7, so the line is proved by building with the constant raised,
+  not by a host that shows it.
 
 ---
 
@@ -180,7 +187,7 @@ pidfd: ok
 |---|---|---|
 | `kernel` | `uname(2)`, the `release` field | the string, or `unknown` |
 | `userns` | in a forked child: `unshare(CLONE_NEWUSER\|NEWNS\|NEWPID\|NEWNET\|NEWIPC\|NEWUTS)`, then the box's own first mount, `mount(0, "/", 0, MS_PRIVATE\|MS_REC, 0)` | `ok`, `restricted (apparmor)`, `EPERM`, `EACCES`, `errno N`, `cannot fork`, `cannot wait`, `child killed` |
-| `landlock` | `landlock_create_ruleset(0, 0, LANDLOCK_CREATE_RULESET_VERSION)`, which creates nothing and returns the ABI | `abi N`, `abi N (below the minimum 4)`, `absent` |
+| `landlock` | `landlock_create_ruleset(0, 0, LANDLOCK_CREATE_RULESET_VERSION)`, which creates nothing and returns the ABI | `abi N`, `abi N (no scoped signals below 6)`, `abi N (below the minimum 4)`, `absent` |
 | `seccomp` | `seccomp(SECCOMP_GET_ACTION_AVAIL, 0, &SECCOMP_RET_USER_NOTIF)`, which installs nothing | `notif ok`, `notif absent` |
 | `overlay` | `overlay` appears in `/proc/filesystems` | `ok`, `not loaded (modprobe overlay)`, `unknown` |
 | `pidfd` | `pidfd_open(getpid(), 0)`, then `close` | `ok`, `absent` |
@@ -354,11 +361,14 @@ arena, and `RLIMIT_NPROC` is checked by `fork` and I still has to fork the steps
 | `RLIMIT_NOFILE` | 32 | |
 | `RLIMIT_CORE` | 0 | |
 | `RLIMIT_STACK` | 8 MiB | |
-| `RLIMIT_NPROC` | 0, or 64 with `--allow=threads`, or **16 for the compile step** | the process wall |
+| `RLIMIT_NPROC` | 0, **32 for the compile step**, or 128 with `--allow=threads` | the process wall behind the supervisor's counter |
 
-The compile step's 16 is not a loophole: `mc build` *writes* a compiler and then runs it, so a
-project needs a handful of processes to build at all. Sixteen is more than the three execs a
-taught build takes and far less than a bomb.
+The process wall is two walls, and the rlimit is the second one. The named wall is P's counter on
+the notifications — 16 for a compile, 0 for a run, 64 with `--allow=threads` (§ The explain
+channel) — and it only produces a sentence if it is reached first, so every rlimit above it is
+deliberately looser. The compile step's allowance is not a loophole either: `mc build` *writes* a
+compiler and then runs it, and may run `[linker].cmd`, so a project needs a handful of processes
+to build at all. Sixteen is more than a taught build takes and far less than a bomb.
 
 ### The report
 
@@ -504,7 +514,14 @@ jset CLONE_NEW*        set     -> the default,  else ALLOW
 so a real thread is allowed without asking and everything else — a `fork`, a `vfork`, a
 `clone3`, a namespace — becomes a question. `clone3` cannot be flag-tested at all: its flags live
 in a struct in the caller's memory, which BPF cannot read, so it stays a notification and the
-supervisor counts it.
+supervisor reads the struct.
+
+What the block does **not** do is decide whether a process may be created. `clone` is never one
+of the `m` allowed numbers either — `sb_notified()` keeps all four process-creating calls out of
+every profile — so without `--allow=threads` there is no block and every one of them falls
+through to the supervisor, and with it the block is a *fast path for a real thread* and nothing
+else. A filter cannot name a refusal (its only verdicts are ALLOW, a `KILL` with no explanation,
+an errno, and the question), which is why the namespace decision is P's and not the BPF's.
 
 ---
 
@@ -578,7 +595,7 @@ The sizes, measured (aarch64 first, x86-64 second):
 |---|---|---|
 | compile | 18 / 19 | +9 / +7 |
 | program | 16 / 17 | +9 / +9 |
-| `--allow=threads` delta | 5 shared entries, `clone` excluded (it has the flag test) | |
+| `--allow=threads` delta | 7 shared entries; `clone` and `clone3` appear as comments, never as rows | |
 
 The glibc compile delta on AArch64 is nine and not eight because of the 2.39 row above:
 `rt_sigaction` is in the list and no 2.43 host asks for it.
@@ -612,8 +629,33 @@ P then polls the listener beside the status pipe, and answers by table:
 |---|---|
 | `openat`, `open` | reads the path with `process_vm_readv`; under one of the box's roots (or relative, or one of the loader's two configuration files) → `SECCOMP_USER_NOTIF_FLAG_CONTINUE`, after `SECCOMP_IOCTL_NOTIF_ID_VALID` says the notification is still live. Otherwise `refused: open PATH` |
 | `mmap` | adds the length to a running total (`munmap` subtracts); over `--mem` → `refused: mmap N bytes over the cap (M)`, else CONTINUE |
-| `clone`, `clone3`, `fork`, `vfork` | without `--allow=threads`, `refused: syscall N (name)` at the first one. With it, counted: the sixty-fifth is `refused: process limit (64)` |
+| `clone`, `fork`, `vfork` | any `CLONE_NEW*` bit in the flags → `refused: clone with namespace flags`. Otherwise counted against the step's process limit: the one past it is `refused: process limit (N)` |
+| `clone3` | the same two decisions, but the flags live in a `struct clone_args` the caller owns, so P reads its first eight bytes with `process_vm_readv` (the size is `args[1]`). A struct it cannot read is `refused: clone3 with unreadable arguments` |
 | `execve` | counted per step — three for a compile, one for a run — then `refused: execve` |
+
+**No profile allows a call that makes a process.** `clone`, `clone3`, `fork` and `vfork` are
+dropped from every allowlist before the filter is built (`sb_notified`, `src/seccomp.mc`), so all
+four always arrive here. They used to be left to the measurement: `mc build` really does fork, so
+`clone` was traced into the *compile* profile and written there as a plain ALLOW — a call the
+supervisor never sees. `mc build` also runs whatever `[linker].cmd` the source tree's own
+`mc.toml` names, so a hostile tree chose which binary the compile step executed, and that binary
+forked in a loop with nothing in the report but `compile: exit 1` (measured: twelve children
+unprivileged, **two hundred** as root, where `RLIMIT_NPROC` does not bind at all). A
+`clone(CLONE_NEWUSER|SIGCHLD)` in the same position simply succeeded. That is
+`tests/sandbox/linkbomb/`, and the answer is the table above.
+
+The process limits are per step, and they are P's counters, not the kernel's:
+
+| step | processes | why |
+|---|---|---|
+| compile | **16** | `mc build` writes a compiler, spawns it, and may spawn `[linker].cmd`; two or three is what a taught build costs |
+| run | **0** | a program in the box does not fork |
+| run, `--allow=threads` | **64** | a *thread* never reaches P (the filter's flag test allows it); what is counted is a new process |
+
+Behind each counter is an `RLIMIT_NPROC` that is deliberately **looser** — 32 for a compile, 128
+with `--allow=threads` — because the two walls race and the named one has to win: with both at
+the same number the kernel's `EAGAIN` arrives first and the program sees a failed fork instead of
+a sentence.
 | anything else | `refused: syscall N (name)`, the number this architecture uses and the name from the one table that carries both columns |
 
 Every refusal is one line, exit code **125**, and the end of the box.
@@ -630,7 +672,8 @@ where the refusal happened, which is what makes an `.expect` file possible at al
 `clone` (220 / 56) under glibc, and `fork` (57) under musl on x86-64, where that system call
 exists and the generic table has no such thing. `tests/sandbox/` carries one expectation per
 (architecture, libc) where they differ, which is why the headers read
-`sandbox-report-x86_64-musl:`.
+`sandbox-report-x86_64-musl:`. A refused *fork* no longer needs one: it is counted, not named, so
+`refused: process limit (0)` is the same line on every host.
 
 **What `--verbose` adds here**: one line per step with the execve count. It is not noise —
 measured, `mc sandbox run --config examples/lang/mc.linux-gnu.toml .` prints `compile: execve 2`

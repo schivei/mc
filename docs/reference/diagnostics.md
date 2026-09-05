@@ -408,6 +408,9 @@ up ([cli.md](cli.md) § 3c) — and 2 stays the option errors' code, as everywhe
 | `mc: unknown sandbox option: --x` | an option `mc sandbox` does not take. Exit 2 | the list is in [cli.md](cli.md) § 3c |
 | `mc: option requires an argument: --time` | `--time`, `--wall`, `--mem`, `--out`, `--stdin`, `--ro`, `--cwd`, `--root`, `--config` or `--report` was last on the line. Exit 2 | give it its value |
 | `mc: not a number: abc` | a non-decimal value for `--time`/`--wall`/`--mem`/`--out`. Exit 2 | a non-negative decimal |
+| `mc: --mem: number too large` | the value has more digits than any cap can have (the accumulation stops at 10^12). Exit 2 | a real number: the maxima are in [cli.md](cli.md) § 3c |
+| `mc: --mem: at most 1048576` | past the option's maximum — 86400 for `--time` and `--wall`, 1048576 MiB for `--mem`, 65536 MiB for `--out`. Exit 2 | a value inside the range |
+| `mc: --time: must be at least 1` | zero, for any of the four caps. Exit 2 | one or more. A cap of zero is a box that cannot start |
 | `mc: unknown --allow value: X` | only `threads` exists today. Exit 2 | `--allow=threads` |
 | `mc: unknown --libc value: X` | `--libc` takes `musl` or `gnu`. Exit 2 | one of the two, or leave it out and let `PT_INTERP` decide |
 | `mc: too many --ro directories` | more than 16. Exit 2 | the box mounts one bind per `--ro`; group them under a common parent |
@@ -422,10 +425,12 @@ to read, so they are here too:
 
 | line | cause | fix |
 |---|---|---|
-| `sandbox: refused: syscall N (name)` | the step made a call that is in no profile for its step, architecture and C library. The number is this architecture's | if the call is legitimate for the corpus, re-measure: `make sandbox-trace` ([sandbox.md](sandbox.md) § The profiles). `socket`, `connect`, `bind`, `clone` and `fork` are refused on purpose |
+| `sandbox: refused: syscall N (name)` | the step made a call that is in no profile for its step, architecture and C library. The number is this architecture's | if the call is legitimate for the corpus, re-measure: `make sandbox-trace` ([sandbox.md](sandbox.md) § The profiles). `socket`, `connect` and `bind` are refused on purpose; `clone`, `clone3`, `fork` and `vfork` never reach this row at all -- they have two of their own below |
 | `sandbox: refused: open PATH` | an `openat`/`open` of a path under none of the box's roots (`/src`, `/out`, `/mc`, `/lib`, `/lib64`, `/usr/lib`, `/roN`) | `--ro DIR` puts one more tree in the box, at `/ro0`, `/ro1`, … A program that probes for a file it does not expect to find is stopped just the same: the box does not answer ENOENT for a path it will not look at |
 | `sandbox: refused: mmap N bytes over the cap (M)` | the running total of what the step has mapped went past `--mem` | raise `--mem`; `RLIMIT_AS` is the same number and the kernel's own wall behind it |
-| `sandbox: refused: process limit (64)` | with `--allow=threads`, the sixty-fifth process | threads are free; processes are counted |
+| `sandbox: refused: process limit (N)` | the step created one process more than it may: **16** in a compile step, **0** in a run step, **64** with `--allow=threads`. Every `clone`, `clone3`, `fork` and `vfork` is counted — no profile allows one | with `--allow=threads` a real *thread* is free and never counted. A compile that legitimately needs more processes than sixteen is a project this box will not build |
+| `sandbox: refused: clone with namespace flags` | a `clone` or `clone3` whose flags carry a `CLONE_NEW*` bit: a program in the box asking for a namespace of its own | there is no option for it. The box is a set of namespaces and one made inside it is where an unprivileged process starts collecting capabilities |
+| `sandbox: refused: clone3 with unreadable arguments` | a `clone3` whose `struct clone_args` could not be read out of the step with `process_vm_readv` (the flags live there and BPF cannot follow a pointer) | a process-creating call whose flags cannot be inspected is not one to let through |
 | `sandbox: refused: execve` | a step exec'd more times than its budget — three for a compile step, one for a run step | a program that re-execs itself is out of scope for the box |
 
 `mc sandbox check` is not a diagnostic: it writes its six lines to **stdout** and exits 1 when a

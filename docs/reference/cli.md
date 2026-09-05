@@ -304,10 +304,10 @@ report grammar and what is **not** isolated are in [sandbox.md](sandbox.md).
 
 | flag | meaning |
 |---|---|
-| `--time S` | CPU seconds (`RLIMIT_CPU`), default 2 |
-| `--wall S` | wall-clock seconds before the box is killed, default 5 |
-| `--mem MiB` | address space (`RLIMIT_AS`), default 256 |
-| `--out MiB` | how much the program may write (the box tmpfs and `RLIMIT_FSIZE`), default 64 |
+| `--time S` | CPU seconds (`RLIMIT_CPU`), default 2, at most 86400 |
+| `--wall S` | wall-clock seconds before the box is killed, default 5, at most 86400 |
+| `--mem MiB` | address space (`RLIMIT_AS`), default 256, at most 1048576 (1 TiB) |
+| `--out MiB` | how much the program may write (the box tmpfs and `RLIMIT_FSIZE`), default 64, at most 65536 (64 GiB) |
 | `--allow=threads` | let the filter allow a `clone` that is a real thread (`CLONE_THREAD` set, no `CLONE_NEW*`) and the system calls a thread needs; every other way of making a process is then COUNTED, up to 64 ([sandbox.md](sandbox.md) § The explain channel) |
 | `--libc=musl\|gnu` | which family the program compiled inside the box is linked against; by default, whichever loader this host has on disk |
 | `--stdin FILE` | the program's standard input; without it, immediate EOF |
@@ -317,6 +317,16 @@ report grammar and what is **not** isolated are in [sandbox.md](sandbox.md).
 | `--config NAME` | for `run DIR`: the project file to build, relative to `DIR`. `[project].out` stays relative to that file's directory |
 | `--report FILE` | write the report to this file **as well as** to stderr |
 | `--verbose` | add one `rusage: cpu N ms, maxrss N kb` line to the report — not deterministic, and the only line that is not — and one `execve N` line per step, which is |
+
+The four caps each have a **maximum** and a minimum of one. The maxima are not the kernel's
+limits; they are the largest values that still mean something here, and a number past one of them
+is a typo or an attack, never a request: `mc: --mem: at most 1048576`, exit 2. A value too long to
+be a number at all is `mc: --mem: number too large` — before the post-M43 review the accumulation
+was unbounded, so `--mem 999999999999999999999999` wrapped and the box ran with a negative cap
+(measured: `refused: mmap 8192 bytes over the cap (-3541500564788477952)`). Zero is refused for
+all four: `--time 0` and `--wall 0` kill the box before it runs, `--mem 0` is an `RLIMIT_AS`
+nothing can start under (measured: the compile step died of `SIGSEGV`), and `--out 0` is a tmpfs
+the mount refuses.
 
 `mc sandbox check` prints six lines on stdout and exits 0 when every one of the five capabilities
 the box needs is there, 1 otherwise:
