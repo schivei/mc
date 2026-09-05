@@ -843,7 +843,9 @@ i64 sd_param() {
     // not a type, or `void`: decline, so the core keeps its own two diagnostics
     // (`type expected in parameter`, `parameter of type void`) word for word
     if (ty < 0 || ty == TY_VOID) return 0;
-    p_next();
+    ty = p_type();                               // and NOT p_next(): p_type() is
+    // the public way to read a type word, so a suffix a syntax_type handler owns
+    // (`i64[]`, below) is read here too, for free
     uptr pn = p_ident();
     i64 idx = sd_ppos;
     sd_ppos = sd_ppos + 1;
@@ -889,6 +891,54 @@ i64 sd_peat() {
     p_ident();                                   // ... the name ...
     p_accept(K_COMMA);                           // ... and the separator
     return 0;                                    // consumed, and then declined
+}
+
+// ---- syntax_type: a SUFFIX on a type word the core owns ----
+// `i64[] xs` -- the element type spelled by the core, the container spelled by
+// the module. type_new buys a new NAME (`f64 x`, `fix v`); it cannot buy this,
+// because the word that opens the type is `i64` and word_add refuses the core
+// type words. syntax_type is consulted at every one of the six places the core
+// reads a type word, right after it read one, and may consume a suffix and
+// answer another id.
+//
+// The type is a pointer-sized HANDLE -- 8 bytes, TK_INT -- so the core's own
+// operators fit it and `ld64(xs)` needs nothing: what a module would add on top
+// (bounds, a length header, an element type table) is the module's business and
+// none of it is in this demo. The name carries the brackets, so --dump-ast
+// prints `type=i64[]`; the word `i64[]` that type_new reserves is a lexeme the
+// lexer can never form, which is exactly why the spelling is free.
+i64 sd_ty_arr = 0;
+
+i64 sd_type(i64 ty) {
+    if (ty != TY_I64) return 0;                  // only i64 has an array form here
+    if (p_id() != K_LBRACK) return 0;            // no suffix: not ours, `ty` stands
+    p_next();
+    p_expect(K_RBRACK, "expected ] after i64[");
+    return sd_ty_arr;
+}
+
+// the three broken handlers, exactly like sd_pnop/sd_pbad/sd_peat one position
+// over: they exist so tests/err/077, 078 and 079 can assert the core's three
+// guards. Each keys on a type word `i64[]` does not use, followed by the same
+// `[` -- a shape no ordinary source has, so the whole tests/ corpus goes
+// through this module untouched.
+i64 sd_teat(i64 ty) {                            // consumes, and then declines
+    if (ty != TY_U8 || p_id() != K_LBRACK) return 0;
+    p_next();
+    p_expect(K_RBRACK, "expected ] after u8[");
+    return 0;
+}
+
+i64 sd_tnop(i64 ty) {                            // a type, and not one token read
+    if (ty != TY_U16 || p_id() != K_LBRACK) return 0;
+    return sd_ty_arr;
+}
+
+i64 sd_tbad(i64 ty) {                            // consumed, but 9999 is no type
+    if (ty != TY_U32 || p_id() != K_LBRACK) return 0;
+    p_next();
+    p_expect(K_RBRACK, "expected ] after u32[");
+    return 9999;
 }
 
 // ---- M41.5 (review): a container whose members the MODULE declares ----
@@ -1007,6 +1057,11 @@ void user_init() {
     syntax_param(&sd_param);                     // the one that claims real parameters
     syntax_param(&sd_peat);                      // LAST: it consumes and declines
     syntax_lit(&sd_leat);                        // LAST, for the same reason
+    sd_ty_arr = type_new("i64[]", 8, 8, TK_INT); // the type position: a suffix
+    syntax_type(&sd_type);                       // ... on a word the core owns
+    syntax_type(&sd_teat);                       // broken on purpose: tests/err/077
+    syntax_type(&sd_tnop);                       // broken on purpose: tests/err/078
+    syntax_type(&sd_tbad);                       // broken on purpose: tests/err/079
     syntax("capsule", &sd_capsule);              // p_set_decl_name, per member
     pass(&sd_defaults);                          // ...and completes the calls it enabled
     // the operator's runtime, as a second source: the same mechanism an

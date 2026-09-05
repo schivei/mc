@@ -716,6 +716,59 @@ i64 type_of_token(i64 id) {
     return t;
 }
 
+// The type word, and whatever a module owns after it. Every position that
+// names a type comes through here -- p_type(), a local (parse_var), a cast, a
+// parameter, an `extern` and a top-level declaration -- so this is the one
+// place that has to know about syntax_type, exactly as type_of_token above is
+// the one place that has to know about type_disable.
+//
+// `cur` is still ON the type word: take_type consumes it (the next() every one
+// of the six sites used to make for itself) and then offers the position to the
+// registered handlers, which may read a suffix -- `[]`, `?`, `*` -- and answer
+// another type id. 0 is "not mine" and `ty` stands. With nothing registered
+// there is not even a call.
+//
+// Three guards, all raised at the TYPE WORD's own position, which is why the
+// word is copied out of the token before next() moves off it:
+//
+//   * consumed tokens and returned 0 -- the guard the M41.5 review found
+//     missing at the parameter position. 0 means "I read nothing"; a handler
+//     that scanned a suffix, moved the cursor and then declined would leave the
+//     core reading the rest of the declaration from the middle of a type, and
+//     `i64[] xs;` would become a declaration of something else with no
+//     diagnostic at all;
+//   * returned a type without consuming anything -- there is no suffix then,
+//     so the answer cannot be about this position;
+//   * returned something that is not a type id. That id goes straight into
+//     type_width / type_align / type_kind, so a bad one is a wrong frame layout
+//     later, not a diagnostic here.
+//
+// The checks run once, after the whole chain, and not per handler: a broken
+// handler that a later one masks is a broken handler, and a module that
+// registers one puts it LAST (lib/user_syntax_demo.mc).
+i64 take_type(i64 ty) {
+    i64 line = tok_line(cur);
+    uptr fl = tok_file(cur);
+    uptr w = 0;
+    if (nsyntype) w = xstrdup(tok_start(cur), tok_len(cur));   // the type word
+    next();                                  // the core's own step, always
+    if (nsyntype == 0) return ty;
+    uptr cp0 = cp;                           // lexer cursor before the handlers
+    uptr t0 = tok_start(cur);                // ... and the token they received
+    i64 t = run_syntax_type(ty);
+    i64 moved = cp != cp0 || tok_start(cur) != t0;
+    if (t == 0) {
+        if (moved)
+            err_at2(fl, line, "syntax_type handler consumed tokens and returned 0", w);
+        return ty;                           // nobody claimed it: the core's type
+    }
+    if (!moved)
+        err_at2(fl, line, "syntax_type handler consumed no tokens", w);
+    if (t < 0 || t >= type_count())
+        err_at2(fl, line, "syntax_type handler returned an invalid type", w);
+    return t;
+}
+
 i64 parse_primary() {
     i64 line = tok_line(cur);
     uptr fl = tok_file(cur);
@@ -822,7 +875,7 @@ i64 parse_primary() {
         i64 ty = type_of_token(tok_id(cur));
         if (ty >= 0) {                       // cast: a type word came right after (
             if (ty == TY_VOID) err_at(fl, line, "cast to void");
-            next();
+            ty = take_type(ty);              // the word, and a suffix a module owns
             expect(K_RPAR, "expected ) in cast");
             i64 e = parse_unary();
             i64 n = node_new(N_CAST, line, fl);
@@ -1118,7 +1171,7 @@ uptr decl_name(uptr msg) {
 // local declaration: type name = expr; | type name; | type name[CONST];
 i64 parse_var(i64 line, uptr fl, i64 ty) {
     if (ty == TY_VOID) err_at(fl, line, "local of type void");
-    next();                                  // type
+    ty = take_type(ty);                      // the type word, suffix included
     uptr name = decl_name("variable name expected");
     i64 nel = 0;
     i64 init = 0;
@@ -1788,8 +1841,7 @@ uptr p_ident() {
 i64 p_type() {
     i64 ty = type_of_token(tok_id(cur));
     if (ty < 0) err_at(tok_file(cur), tok_line(cur), "type expected");
-    next();
-    return ty;
+    return take_type(ty);
 }
 
 // a loose N_PARAM, for a handler that needs to prepend `self` to a list
@@ -2138,7 +2190,7 @@ i64 parse_params() {
             i64 pty = type_of_token(tok_id(cur));
             if (pty < 0)        err_at(fl, line, "type expected in parameter");
             if (pty == TY_VOID) err_at(fl, line, "parameter of type void");
-            next();
+            pty = take_type(pty);
             if (tok_id(cur) != T_IDENT) err_name("parameter name expected");
             check_def();
             uptr pname = cur_name();
@@ -2165,7 +2217,7 @@ i64 parse_extern() {
     next();                                  // extern
     i64 ty = type_of_token(tok_id(cur));
     if (ty < 0) err_at(tok_file(cur), tok_line(cur), "type expected in extern");
-    next();
+    ty = take_type(ty);
     if (tok_id(cur) != T_IDENT) err_at(tok_file(cur), tok_line(cur), "name expected in extern");
     check_def();
     uptr name = cur_name();
@@ -2252,7 +2304,7 @@ i64 parse_top() {
     }
     i64 ty = type_of_token(tok_id(cur));
     if (ty < 0) err_at(fl, line, "type expected at top level");
-    next();
+    ty = take_type(ty);
     if (tok_id(cur) != T_IDENT) err_name("name expected at top level");
     check_def();
     uptr name = cur_name();

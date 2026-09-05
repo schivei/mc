@@ -118,33 +118,38 @@ i64 c_int(i64 v) {
 // M41.5: syntax_param, the parameter-position hook (src/hooks.mc). Like every
 // other registry here it scales with what a module teaches.
 #define T_SYNPARAM 30
-#define T_BACKENDS 31
-#define T_SYNTAX   32
-#define T_ALIAS    33
-#define T_TOMLENT  34
-#define T_TOMLAOT  35
+// syntax_type, the type-position hook (src/hooks.mc). Same rule again: it holds
+// what a module taught and nothing the source can make grow on its own.
+#define T_SYNTYPE  31
+#define T_BACKENDS 32
+#define T_SYNTAX   33
+#define T_ALIAS    34
+#define T_TOMLENT  35
+#define T_TOMLAOT  36
 // M24: the type registry (src/ast.mc). It scales with what a module teaches,
 // so it obeys the same rule as every other table here.
-#define T_TYPES    36
+#define T_TYPES    37
 // M24 (M7): the intrinsics a module registered. Same rule: it scales with what
 // a module teaches.
-#define T_INTRIN   37
-#define T_HEAP     38
-#define T_COUNT    39
+#define T_INTRIN   38
+#define T_HEAP     39
+#define T_COUNT    40
 
 uptr lim_names[] = {
     "tokens", "includes", "opens", "incpath", "nodes", "defines", "infix",
     "prefix", "opcodes", "sections", "dylibs", "extlib", "extpat", "rules",
     "funcs", "lowered", "globals", "strings", "locals", "loops", "prel",
     "ins", "symbols", "msecs", "xsecs", "xsegs", "undef", "passes",
-    "on_stmt", "on_jump", "syntax_param", "backends", "syntax", "alias",
-    "tomlent", "tomlaot", "types", "intrin", "heap"
+    "on_stmt", "on_jump", "syntax_param", "syntax_type", "backends", "syntax",
+    "alias", "tomlent", "tomlaot", "types", "intrin", "heap"
 };
 
 // cold-start capacity: what a table gets when the pre-scan said nothing about
 // it. Never a ceiling -- doubling takes over from here.
-// M42: the value at T_BACKENDS (index 31, the fourth entry of the row that
-// starts at T_ONSTMT) is 16 and not 8. The backend table is the one table that
+// M42: the value at T_BACKENDS (index 32, the fifth entry of the row that
+// starts at T_ONSTMT) is 16 and not 8. Read this list BY NAME when it moves:
+// syntax_type was inserted before T_BACKENDS and its seed had to travel with
+// it. The backend table is the one table that
 // is FULL before the pre-scan can size it -- mc_writers_init() registers every
 // built-in from main(), before mc_main() runs on_plan -- so it only ever gets
 // its cold-start seed, and <mc/core_writers> now registers eight (the two
@@ -155,8 +160,8 @@ i64 lim_seeds[] = {
     32, 32, 16, 8, 32, 16, 32,
     64, 64, 32, 64, 128, 16, 64,
     256, 64, 16, 32, 8, 64, 8,
-    8, 8, 8, 16, 16, 16, 128,
-    8, 8, 8, 0
+    8, 8, 8, 8, 16, 16, 16,
+    128, 8, 8, 8, 0
 };
 
 i64 lim_est[T_COUNT];                 // estimate, in elements

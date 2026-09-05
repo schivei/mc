@@ -3014,6 +3014,88 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `docs/reference/hooks.md` § `on_jump`, which is where the 0 matters to somebody else: the hook
   sees the `N_CONTINUE` **before** any level check, so a handler reading its level must read 0 as 1
   and may see a level the function's loop depth does not support.
+- `syntax_type` done (coop patch for teko/ngen, owner-approved): **a module participates in the
+  TYPE position.** `stage0/` untouched (2848/3000). The sibling of M41.5's `syntax_param`, and it
+  comes from the same consumer: `T[]`, an element type spelled by the CORE and a container spelled
+  by the module. `type_new` cannot buy it -- the word that opens the type is `i64`, and `word_add`
+  refuses the core type words, so no keyed table can ever fire there.
+  * **`void syntax_type(uptr fn)`** (`src/hooks.mc` +47/19 code, arena tag `T_SYNTYPE` after
+    `T_SYNPARAM` -- `T_COUNT` 39 -> 40, `lim_names`/`lim_seeds` reconciled BY NAME, the M42
+    lesson, and `mc limits` gains a `syntax_type` row). Handler `i64 f(i64 ty)`: it receives the id
+    the core just read, may consume a SUFFIX it owns (`[]`, `?`, `*`) and answers another type id,
+    typically one of its own `type_new`; **0 = "not mine"** and the core keeps `ty`. Registration
+    order, first non-zero wins, and `nsyntype == 0` short-circuits the whole thing.
+  * **One helper, six call sites** (`src/parse.mc` +59/28 code): `take_type(ty)` consumes the type
+    word -- the `next()` each site used to make for itself -- and then offers the position to the
+    chain, so `p_type()`, a local (`parse_var`), a cast, a parameter (`parse_params`), an `extern`
+    and a top-level declaration are one line each and cannot drift apart.
+  * **Three guards**, at the TYPE WORD's own position (the word is copied out before `next()`
+    moves off it) and run ONCE after the whole chain, not per handler -- the post-M41.5 review's
+    rule, which is why the broken fixtures are registered LAST:
+    `syntax_type handler consumed tokens and returned 0: <word>` (declining is only sound from
+    where the handler was called; otherwise the core reads the rest of the declaration from the
+    middle of a type), `syntax_type handler consumed no tokens: <word>` and `syntax_type handler
+    returned an invalid type: <word>` (`< 0` or `>= type_count()`; that id goes straight into
+    `type_width`/`type_align`/`type_kind`).
+  * **Cost: 126 added lines in `src/`, 61 of them neither comment nor blank** (`parse.mc` +59/28,
+    `hooks.mc` +47/19, `arena.mc` +20/14, twelve of those last being the renumbered tags and the
+    two seed rows). Three new globals -- the seed's `MAXGLOBALS` goes from 432/512 to **435/512
+    (84%)**.
+  * **The contract the teko session asked about, now written down** (`docs/reference/hooks.md`
+    § 3): `type_new(w)` and `syntax_expr(w)` on the same word coexist BY CONSTRUCTION -- `tok_add`
+    is idempotent, the two tables are consulted at disjoint grammar positions, and the one place
+    they meet (the cast `(w)`) resolves to the type because `parse_primary` tests `type_of_token`
+    first.
+  Proofs: `lib/user_syntax_demo.mc` teaches `i64[]` (`type_new("i64[]", 8, 8, TK_INT)` -- a
+  pointer-sized handle, and a lexeme the lexer can never form, which is why the spelling is free)
+  and `scripts/check-surface.sh` compiles one source that uses it in ALL SIX source positions --
+  a global, an `extern`, a return type, a parameter, a local and a cast -- runs it (`40 + 2`
+  through `memcpy`, exit 42) and counts the nine `type=i64[]` nodes in `--dump-ast`. `sd_param`
+  now reads its type with `p_type()` instead of `p_next()`, which is what puts the parameter
+  position on the same path; and because that handler claims every typed parameter, the CORE's own
+  `parse_params` site is proved by a second module, `lib/user_typearr.mc` (12 lines, `syntax_type`
+  and nothing else), which compiles the same source to the same 42 and the same nine nodes. The
+  default compiler refuses both halves (`name expected at top level`, and `variable name expected`
+  for `i64[] xs;` in a local). `tests/err/077-type-consumed-zero.mc`, `078-type-noadvance.mc` and
+  `079-type-badid.mc` are asserted with their exact message (fixtures `sd_teat`/`sd_tnop`/`sd_tbad`,
+  each keyed on a `u8`/`u16`/`u32` followed by `[`, a shape no ordinary source has).
+  **Inert by construction**: `lib/user_type_nop.mc` + `lib/mc_type_nop.mc` -- a module whose ONLY
+  registration is `syntax_type` and whose handler answers 0 for every type word -- produce
+  byte-identical `--dump-ast` and objects over the whole `tests/` corpus.
+  -- `make bundle` re-run before bootstrapping (86 files, raw 1036368 -> LZ 485658, blob 486738 B;
+  the four new `lib/` fixtures are deliberately NOT in `tools/bundle.list`, the M41 precedent for
+  check-script-only modules). `make check` green end to end (**RC 0, zero FAIL**): `test` 32/32,
+  `check-lex`/`check-ast`/`check-asm` 139/139 (2 skipped), `check-obj` **32/32 identical to the
+  frozen seed**, `check-bundle`, `bootstrap` at a fixed point (`mc2.o == mc3.o`, 1113264 bytes;
+  the `--dump-asm` diff between `mc1` and `mc2` is **empty**), `check-surface` 32/32 + the six new
+  `syntax_type` cases, `test-exe` 32/32, `check-mc` 15/15, `check-standalone`, `check-parts`,
+  `check-toml` 10/10, `check-build` 53/53, `check-stubs` 9/9, `check-limits` **17/17 under 90%**,
+  `check-minimal`, `test-linux` 41/41 and `test-linux-exe` 44/44 musl + 44/44 gnu,
+  `test-linux-x86_64` 38/38 and 41/41 + 41/41, `test-windows` 42/42 and `test-windows-x86_64`
+  40/40 objects cross-compiled, `check-examples`, `check-lang`, `check-conc`, `check-desktop`,
+  `check-float`, `check-wide`, `check-kernel`, `check-avr`, `check-sandbox` 55 ok, `check-docs`
+  (**197 symbols**, 33 flags, 20 TOML keys, 10 directives, 51 samples, 321 links), `site` 87 pages
+  + `check-site` (0 link problems). `make check-linux-host` RC 0 over all four cells.
+  `scripts/check-inert.sh build/mc1.pre build/mc1` (pre = a `mc1` built from `origin/main`):
+  **33 objects identical** (`tests/*.mc` and `src/mc.mc`) plus byte-identical artefacts for
+  `examples/api`, `lang`, `conc`, `desktop` and `kernel`.
+  The five goldens rewritten **once**, each only after its own criterion: `mc2.sha256`
+  `897b1887...5fcdf7d` -> `8a84d434a26ff6163149645b4390107543ae1e4b9c515ac84b001b1b868b918f`
+  (after the empty `--dump-asm` diff and `cmp build/mc2.o build/mc3.o`); the Linux pair deleted and
+  re-recorded by `make check-linux-host` -- `mc2-linux-arm64.sha256`
+  `df620903bd5cd48a69c586d2583cdf04a7eae0cb92598b9a9a71e91b470053f6`,
+  `mc2-linux-x86_64.sha256`
+  `14dc5fc814f1c82a59561b99b91313473032194aa976a75e003a649266d0c793`; the Windows pair
+  cross-computed per `tests/golden/README.md` -- `mc2-windows-arm64.sha256`
+  `7711f4866bda984f75029f0bcafa0c24b7b9ba729ae781e1956616604704263b` (1135198 B),
+  `mc2-windows-x86_64.sha256`
+  `d733d2aa7f07fda9fb551384a80084e8da2870c70b01a540fe7c5bde609f2b08` (1163986 B), both also
+  written byte for byte by `build/mc2`.
+  Docs: `docs/reference/hooks.md` (§ 3 is now six word registrations + **five** hooks that claim
+  none, the `syntax_type` section with the six sites and the three guards, and the coexistence
+  contract), `docs/reference/diagnostics.md` (three rows), `docs/surface.md` (the nine
+  registrations, and a § "The type position"), `docs/reference/language.md` § 2 ("A suffix on a
+  type word the core owns").
 - Next: **M44** (packages, `docs/specs/M44.md`), then **M42 step 2** (PE `--exe`, CI-gated on the
   Windows runners). **M46** only on the owner's request; **M43 Layer 2** after 1.0.0. M13 and M18
   stay in the backlog (`docs/specs/M13.md`: sizing a program's memory at compile time -- the fixed
