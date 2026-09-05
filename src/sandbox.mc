@@ -35,6 +35,8 @@
 // hands back reaches the report through sb_errname().
 #define E_PERM     1
 #define E_INTR     4
+#define E_NOENT    2
+#define E_AGAIN   11
 #define E_NOMEM   12
 #define E_ACCES   13
 #define E_NOSYS   38
@@ -92,6 +94,8 @@
 #define SB_CLOSE_RANGE_UNSHARE         2
 #define SB_FD_MAX             0xFFFFFFFF
 #define SB_POLLIN                      1
+#define SB_POLLERR                     8
+#define SB_POLLHUP                  0x10
 #define SB_CLOCK_MONOTONIC             1
 
 // getrlimit(2) resources. The struct is two u64 (soft, hard), written byte by
@@ -105,7 +109,15 @@
 #define SB_RLIMIT_AS                   9
 #define SB_NOFILE                     32
 #define SB_NPROC_COMPILE              16
+// The process cap with --allow=threads is counted by P, on the clone
+// notifications, so that the refusal has a NAME (`refused: process limit
+// (64)`). RLIMIT_NPROC is the backstop behind it and is deliberately looser:
+// with both at 64 the kernel's EAGAIN would arrive first -- the box already
+// holds I, J and C against the same user -- and the program would see a failed
+// fork instead of the supervisor's sentence. Measured: at 64/64 the fork bomb
+// printed `forked 60` and was never refused.
 #define SB_NPROC_THREADS              64
+#define SB_NPROC_BACKSTOP            128
 #define SB_STACK_MIB                   8
 
 // `struct utsname`: six NUL-terminated fields of _UTSNAME_LENGTH (65) bytes --
@@ -147,6 +159,9 @@
 #define SBE_EXEC        17
 #define SBE_STDIN       18
 #define SBE_PROJECT     19
+#define SBE_LANDLOCK    20               // step C: the two walls, and the one
+#define SBE_SECCOMP     21               // way P can fail to reach the listener
+#define SBE_LISTENER    22
 
 // ---- the record (§ B3) ----
 // Every piece of sandbox state lives here, in ONE arena block, and is reached
@@ -214,7 +229,31 @@
 #define SB_OPTS     1872    // 512: a mount option string being built
 #define SB_BUF      2384    // 4096: what a /proc probe reads
 #define SB_RBUF     6480    // 24: the report, a BUF record
-#define SB_SIZE     6504
+
+// ---- step C: the two walls and the explain channel -------------------------
+// Everything the filter, the notification and the report of a refusal need.
+// It is in the same record for the same reason the rest is (§ B3): the frozen
+// seed's MAXGLOBALS is 512 and `mc limits src/mc.mc` has to stay under 460.
+#define SB_LFD      6504    // the seccomp listener P holds, -1 when none
+#define SB_SYNCR    6512    // the sync pipe: C reads one byte, P writes it
+#define SB_SYNCW    6520
+#define SB_MMTOT    6528    // the running total of what the step has mapped
+#define SB_NCLONE   6536    // clone/clone3 notifications counted for this step
+#define SB_NEXEC    6544    // execve notifications counted for this step
+#define SB_EXECMAX  6552    // how many this step is allowed
+#define SB_NPROF    6560    // how many numbers the profile resolved to
+#define SB_NOTIF    6568    // 80: struct seccomp_notif
+#define SB_RESP     6648    // 24: struct seccomp_notif_resp
+#define SB_IOV      6672    // 32: two struct iovec, local then remote
+#define SB_LLATTR   6704    // 24: struct landlock_ruleset_attr
+#define SB_PBATTR   6728    // 16: struct landlock_path_beneath_attr (12 used)
+#define SB_FPROG    6744    // 16: struct sock_fprog
+#define SB_PROF     6760    // SB_MAXPROF * 8: the profile, as kernel numbers
+#define SB_BPF      7784    // 2048: the filter, 256 struct sock_filter
+#define SB_RPATH    9832    // 4104: a path read out of the step
+#define SB_SIZE    13936
+
+#define SB_MAXPROF 128
 
 uptr sb_state = 0;                          // the one global of the milestone
 
@@ -230,6 +269,7 @@ uptr sb_rec() {
         st64(sb_state + SB_OUT, 64);
         st64(sb_state + SB_OUTDIR, "/src");
         st64(sb_state + SB_INFD, -1);
+        st64(sb_state + SB_LFD, -1);
         st64(sb_state + SB_KIND, "exe");
     }
     return sb_state;
@@ -280,6 +320,14 @@ i64  sb_linelen()  { return ld64(sb_rec() + SB_LINELEN); }
 uptr sb_kind()     { return ld64(sb_rec() + SB_KIND); }
 uptr sb_conf()     { return ld64(sb_rec() + SB_CONF); }
 uptr sb_root()     { return ld64(sb_rec() + SB_ROOT); }
+i64  sb_lfd()      { return ld64(sb_rec() + SB_LFD); }
+i64  sb_syncr()    { return ld64(sb_rec() + SB_SYNCR); }
+i64  sb_syncw()    { return ld64(sb_rec() + SB_SYNCW); }
+i64  sb_mmtot()    { return ld64(sb_rec() + SB_MMTOT); }
+i64  sb_nclone()   { return ld64(sb_rec() + SB_NCLONE); }
+i64  sb_nexec()    { return ld64(sb_rec() + SB_NEXEC); }
+i64  sb_execmax()  { return ld64(sb_rec() + SB_EXECMAX); }
+i64  sb_nprof()    { return ld64(sb_rec() + SB_NPROF); }
 
 void set_sb_time(i64 v)    { st64(sb_rec() + SB_TIME, v); }
 void set_sb_wall(i64 v)    { st64(sb_rec() + SB_WALL, v); }
@@ -326,6 +374,14 @@ void set_sb_linelen(i64 v) { st64(sb_rec() + SB_LINELEN, v); }
 void set_sb_kind(uptr v)   { st64(sb_rec() + SB_KIND, v); }
 void set_sb_conf(uptr v)   { st64(sb_rec() + SB_CONF, v); }
 void set_sb_root(uptr v)   { st64(sb_rec() + SB_ROOT, v); }
+void set_sb_lfd(i64 v)     { st64(sb_rec() + SB_LFD, v); }
+void set_sb_syncr(i64 v)   { st64(sb_rec() + SB_SYNCR, v); }
+void set_sb_syncw(i64 v)   { st64(sb_rec() + SB_SYNCW, v); }
+void set_sb_mmtot(i64 v)   { st64(sb_rec() + SB_MMTOT, v); }
+void set_sb_nclone(i64 v)  { st64(sb_rec() + SB_NCLONE, v); }
+void set_sb_nexec(i64 v)   { st64(sb_rec() + SB_NEXEC, v); }
+void set_sb_execmax(i64 v) { st64(sb_rec() + SB_EXECMAX, v); }
+void set_sb_nprof(i64 v)   { st64(sb_rec() + SB_NPROF, v); }
 
 // the buffers, by address
 uptr sb_env()   { return sb_rec() + SB_ENV; }
@@ -340,6 +396,15 @@ uptr sb_path()  { return sb_rec() + SB_PATH; }
 uptr sb_optsb() { return sb_rec() + SB_OPTS; }
 uptr sb_buf()   { return sb_rec() + SB_BUF; }
 uptr sb_rbuf()  { return sb_rec() + SB_RBUF; }
+uptr sb_notifp(){ return sb_rec() + SB_NOTIF; }
+uptr sb_respp() { return sb_rec() + SB_RESP; }
+uptr sb_iovp()  { return sb_rec() + SB_IOV; }
+uptr sb_llattr(){ return sb_rec() + SB_LLATTR; }
+uptr sb_pbattr(){ return sb_rec() + SB_PBATTR; }
+uptr sb_fprogp(){ return sb_rec() + SB_FPROG; }
+uptr sb_profp() { return sb_rec() + SB_PROF; }
+uptr sb_bpfp()  { return sb_rec() + SB_BPF; }
+uptr sb_rpath() { return sb_rec() + SB_RPATH; }
 
 uptr sb_ro_at(i64 i) { return ld64(sb_rec() + SB_RO + i * 8); }
 
@@ -525,6 +590,10 @@ i64 sb_now_ms() {
     if (sb_sys(SN_CLOCK_GETTIME, SB_CLOCK_MONOTONIC, sb_ts(), 0, 0, 0, 0) < 0) return 0;
     return ld64(sb_ts()) * 1000 + ld64(sb_ts() + 8) / 1000000;
 }
+
+void sb_kill_box();                              // defined below, with the supervisor
+void sb_note_setup(i64 site, i64 err);
+void sb_notif_pump();                            // src/seccomp.mc: the policy
 
 // ---- the report (§ 6) ----
 // One line per event, each starting with `sandbox: `, fixed vocabulary, no
@@ -861,13 +930,20 @@ i64 sb_plan(i64 argc, uptr argv) {
 // The compile step needs to know which libc family the box will offer it: the
 // binary it writes names its own loader BY PATH (M42), and /lib comes from this
 // host. --libc= wins; otherwise it is whichever loader is on this host's disk.
+// It is RESOLVED, not asked twice: step C's filter is built inside the box,
+// where /lib is a read-only bind and the question "is there a musl loader on
+// this disk" would be answered by the box's own tree. So P settles it here,
+// before any fork, and every later reader -- the compile step's flag, the
+// profile the filter is built from -- reads the same word.
+void sb_resolve_libc() {
+    if (sb_libc()) return;
+    uptr l = "musl";
+    if (!sb_exists(tm_cat(tm_cat("/lib/ld-musl-", host_arch()), ".so.1"))) l = "gnu";
+    set_sb_libc(l);
+}
+
 uptr sb_libc_flag() {
-    uptr l = sb_libc();
-    if (l == 0) {
-        l = "musl";
-        if (!sb_exists(tm_cat(tm_cat("/lib/ld-musl-", host_arch()), ".so.1"))) l = "gnu";
-    }
-    if (str_eq(l, "musl")) return 0;             // the compiler's own default
+    if (str_eq(sb_libc(), "musl")) return 0;     // the compiler's own default
     return "--libc=gnu";
 }
 
@@ -1007,8 +1083,21 @@ i64 sb_field(uptr s, i64 k) {
     }
 }
 
+// What the explain channel saw, under --verbose only. The execve count is not
+// noise -- it is exactly the number § 5 predicts, one for a run step and three
+// for a taught build (/mc, the compiler `mc build` writes, and that compiler's
+// --entry-only child) -- but it is a fact about the STEP and not an event of
+// the box, so it stays out of the fixed vocabulary of the report.
+void sb_note_counts(i64 step) {
+    if (!sb_verbose()) return;
+    uptr pre = "";
+    if (step == SB_STEP_COMPILE) pre = "compile: ";
+    sb_say(tm_cat(pre, tm_cat("execve ", tm_num_str(sb_nexec()))));
+}
+
 void sb_note_exit(i64 step, i64 code) {
     if (sb_done()) return;                       // a terminal event is final
+    sb_note_counts(step);
     if (step == SB_STEP_COMPILE) {
         sb_say(tm_cat("compile: exit ", tm_num_str(code)));
         if (code != 0) { set_sb_rc(code); set_sb_done(1); }
@@ -1060,6 +1149,7 @@ void sb_line_do(uptr s) {
     if (c == 'B') { set_sb_step(sb_field(s + 1, 0)); return; }
     if (c == 'E') { sb_note_setup(sb_field(s + 1, 0), sb_field(s + 1, 1)); return; }
     if (c == 'P') { set_sb_pidc(sb_field(s + 1, 0)); return; }
+    if (c == 'L') { sb_fetch_listener(sb_field(s + 1, 0)); return; }
     if (c == 'X') { sb_note_exit(sb_field(s + 1, 0), sb_field(s + 1, 1)); return; }
     if (c == 'S') { sb_note_signal(sb_field(s + 1, 0), sb_field(s + 1, 1), sb_field(s + 1, 2)); return; }
 }
@@ -1083,6 +1173,48 @@ void sb_pump(i64 n) {
     }
 }
 
+// ---- the listener (§ 4) ----------------------------------------------------
+// P has to hold the seccomp listener before C runs a single instruction of the
+// program, and it cannot open it directly: the listener is a descriptor in C,
+// and C lives in a pid namespace whose numbers mean nothing here -- P cannot
+// even NAME C until the first notification arrives, which is exactly what it
+// needs the listener for. So the fd travels in two hops of pidfd_getfd(2),
+// each one between a process and one of its own descendants:
+//
+//   J  pidfd_open(C) + pidfd_getfd(fd, <the number C reported>)   -> L in J
+//   P  pidfd_open(J) + pidfd_getfd(fd, L)                         -> the listener
+//
+// Both hops need PTRACE_MODE_ATTACH_REALCREDS on the target, and both have it
+// for the same two reasons: same real uid (the user namespace remaps, it does
+// not change the credentials), and a descendant, which is what Yama's
+// ptrace_scope = 1 -- the value measured on both hosts -- allows.
+//
+// P is the one that then releases C, by writing the sync byte. Until it does,
+// C is blocked on a read and has issued nothing.
+void sb_fetch_listener(i64 jfd) {
+    if (sb_lfd() >= 0) { sb_sys(SN_CLOSE, sb_lfd(), 0, 0, 0, 0, 0); set_sb_lfd(-1); }
+    i64 pf = sb_sys(SN_PIDFD_OPEN, sb_pidc(), 0, 0, 0, 0, 0);
+    if (pf < 0) { sb_note_setup(SBE_LISTENER, 0 - pf); sb_kill_box(); return; }
+    i64 l = sb_sys(SN_PIDFD_GETFD, pf, jfd, 0, 0, 0, 0);
+    sb_sys(SN_CLOSE, pf, 0, 0, 0, 0, 0);
+    if (l < 0) { sb_note_setup(SBE_LISTENER, 0 - l); sb_kill_box(); return; }
+    set_sb_lfd(l);
+
+    // the counters are per step: a compile that mapped 40 MiB says nothing
+    // about what the program it wrote may map.
+    set_sb_mmtot(0);
+    set_sb_nclone(0);
+    set_sb_nexec(0);
+    // How many execve's this step may make. The compile step is allowed three
+    // -- /mc itself, the compiler `mc build` teaches, and that compiler's own
+    // --entry-only child (§ 5) -- and the run step exactly one, its own.
+    i64 mx = 1;
+    if (sb_step() == SB_STEP_COMPILE) mx = 3;
+    set_sb_execmax(mx);
+
+    sb_sys(SN_WRITE, sb_syncw(), "1", 1, 0, 0, 0);
+}
+
 // SIGKILL to the step child is the wall-clock mechanism: C is pid 1 of its own
 // pid namespace, so the kernel takes every descendant with it (§ Risks 6).
 void sb_kill_box() {
@@ -1101,7 +1233,17 @@ void sb_supervise() {
         st32(sb_pollp(), sb_spr());
         st16(sb_pollp() + 4, SB_POLLIN);
         st16(sb_pollp() + 6, 0);
-        i64 n = sb_sys(SN_PPOLL, sb_pollp(), 1, sb_ts(), 0, 8, 0);
+        // and the seccomp listener, once a step has one: a notification is a
+        // step waiting for an answer, so it is polled beside the status pipe
+        // and never with a blocking read of its own (§ 4).
+        i64 nfd = 1;
+        if (sb_lfd() >= 0) {
+            st32(sb_pollp() + 8, sb_lfd());
+            st16(sb_pollp() + 12, SB_POLLIN);
+            st16(sb_pollp() + 14, 0);
+            nfd = 2;
+        }
+        i64 n = sb_sys(SN_PPOLL, sb_pollp(), nfd, sb_ts(), 0, 8, 0);
         if (n == 0 - E_INTR) continue;
         if (n < 0) break;
         if (n == 0) {
@@ -1117,6 +1259,19 @@ void sb_supervise() {
             set_sb_dead(sb_now_ms() + 2000);
             continue;
         }
+        // the notification first: a step blocked on one cannot make progress,
+        // and its answer may be what ends the box.
+        if (nfd == 2) {
+            i64 rev = ld16(sb_pollp() + 14);
+            if (rev & SB_POLLIN) sb_notif_pump();
+            else if (rev & (SB_POLLHUP | SB_POLLERR)) {
+                // every process under that filter is gone: the listener is a
+                // dead descriptor and polling it again would spin.
+                sb_sys(SN_CLOSE, sb_lfd(), 0, 0, 0, 0, 0);
+                set_sb_lfd(-1);
+            }
+        }
+        if (!(ld16(sb_pollp() + 6) & (SB_POLLIN | SB_POLLHUP))) continue;
         i64 r = sb_sys(SN_READ, sb_spr(), sb_buf(), 4095, 0, 0, 0);
         if (r == 0 - E_INTR) continue;
         if (r <= 0) break;                        // the box is gone
@@ -1154,6 +1309,9 @@ uptr sb_site_msg(i64 site) {
     if (site == SBE_EXEC)       return "cannot execute the step";
     if (site == SBE_STDIN)      return "cannot open the --stdin file";
     if (site == SBE_PROJECT)    return "cannot build a project without an overlay";
+    if (site == SBE_LANDLOCK)   return "cannot install the Landlock ruleset";
+    if (site == SBE_SECCOMP)    return "cannot install the seccomp filter";
+    if (site == SBE_LISTENER)   return "cannot fetch the seccomp listener";
     return "cannot set up the box";
 }
 
@@ -1199,6 +1357,16 @@ i64 sb_go() {
     set_sb_mpr(ld32(sb_word()));
     set_sb_mpw(ld32(sb_word() + 4));
 
+    // The sync pipe of step C, and the reason it is made HERE rather than per
+    // step inside the box: the byte on it means "P is holding your listener",
+    // so P has to be the one that writes it, and C -- which is three forks
+    // away and closes every other descriptor -- has to inherit the read end.
+    // Its number is P's own, which is what makes it nameable on both sides.
+    if (sb_sys(SN_PIPE2, sb_word(), 0, 0, 0, 0, 0) < 0) { sb_err("cannot create a pipe"); return SB_EXIT_SETUP; }
+    set_sb_syncr(ld32(sb_word()));
+    set_sb_syncw(ld32(sb_word() + 4));
+    sb_resolve_libc();
+
     // the environment every step gets: fixed, three entries, no leak of the
     // host's (§ 3). HOME is /src so that anything the compiler caches lands in
     // the box and dies with it.
@@ -1211,15 +1379,19 @@ i64 sb_go() {
     if (pid == 0) {
         sb_sys(SN_CLOSE, sb_spr(), 0, 0, 0, 0, 0);
         sb_sys(SN_CLOSE, sb_mpw(), 0, 0, 0, 0, 0);
+        sb_sys(SN_CLOSE, sb_syncw(), 0, 0, 0, 0, 0);
         sb_box_main();                           // never returns
     }
     set_sb_pidi(pid);
     set_sb_boxdir(tm_cat("/tmp/.mc-box", tm_num_str(pid)));   // the box names it after its own pid
     sb_sys(SN_CLOSE, sb_spw(), 0, 0, 0, 0, 0);
     sb_sys(SN_CLOSE, sb_mpr(), 0, 0, 0, 0, 0);
+    sb_sys(SN_CLOSE, sb_syncr(), 0, 0, 0, 0, 0);
     sb_sys(SN_CLOSE, sb_infd(), 0, 0, 0, 0, 0);
 
     sb_supervise();
+    if (sb_lfd() >= 0) { sb_sys(SN_CLOSE, sb_lfd(), 0, 0, 0, 0, 0); set_sb_lfd(-1); }
+    sb_sys(SN_CLOSE, sb_syncw(), 0, 0, 0, 0, 0);
     sb_cleanup();
 
     // --verbose is the one line that is not deterministic, and it says so in

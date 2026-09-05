@@ -7,10 +7,15 @@
 //                here costs nothing when <mc/core_build> already brought it and
 //                makes this part stand on its own when it did not -- the same
 //                argument core_build.mc makes about sha256.mc.
+//   sandbox_profiles.mc  GENERATED (scripts/sandbox-trace.sh): the system calls
+//                each step is allowed to make, measured with strace on every
+//                architecture and every C library
 //   sandbox.mc   P: the subcommand `run`/`exec`/`check`, the option parser, the
 //                plan, the supervisor, the report and the exit codes
-//   sandbox_box.mc  I and C: the namespaces, the mount tree, the caps and the
-//                steps -- everything that runs inside the box
+//   seccomp.mc   the two walls: the Landlock ruleset and the seccomp filter C
+//                installs, and the notification channel P answers on
+//   sandbox_box.mc  I, J and C: the namespaces, the mount tree, the caps and
+//                the steps -- everything that runs inside the box
 //
 // This is the sixth part of the composable core (docs/reference/bundle.md
 // § The parts). It is the same shape <mc/core_build> has: one file, one
@@ -26,7 +31,9 @@
 // where "can you issue system call N?" belongs).
 
 #include "toml.mc"
+#include "sandbox_profiles.mc"
 #include "sandbox.mc"
+#include "seccomp.mc"
 #include "sandbox_box.mc"
 
 void mc_sandbox_init() {

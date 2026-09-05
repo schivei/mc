@@ -110,7 +110,23 @@ u16 sysno_tab[] = {
     174,        // SN_GETUID
     176,        // SN_GETGID
     113,        // SN_CLOCK_GETTIME
-     17         // SN_GETCWD
+     17,        // SN_GETCWD
+    SN_ABSENT,  // SN_OPEN        -- the generic table has only openat
+     80,        // SN_FSTAT
+     48,        // SN_FACCESSAT
+     53,        // SN_FCHMODAT
+     95,        // SN_WAITID
+    SN_ABSENT,  // SN_CREAT       -- openat(O_CREAT) is the only form
+    SN_ABSENT,  // SN_CHMOD       -- fchmodat only
+    SN_ABSENT,  // SN_MKDIR       -- mkdirat only
+    SN_ABSENT,  // SN_UNLINK      -- unlinkat only
+    134,        // SN_RT_SIGACTION
+     25,        // SN_FCNTL
+     61,        // SN_GETDENTS64
+    216,        // SN_MREMAP
+     65,        // SN_READV
+    SN_ABSENT,  // SN_FORK       -- clone(SIGCHLD) is the only form
+    SN_ABSENT   // SN_VFORK
 };
 
 // the number of SN_*, or -1 when this architecture has no such call
@@ -120,3 +136,10 @@ i64 host_sysno(i64 sn) {
     if (v == SN_ABSENT) return -1;
     return v;
 }
+
+// AUDIT_ARCH_AARCH64 (linux/audit.h): EM_AARCH64 183 | __AUDIT_ARCH_64BIT |
+// __AUDIT_ARCH_LE. It is the first thing the seccomp filter of M43 step C
+// tests, and it belongs here rather than in src/seccomp.mc for the reason the
+// number table does: a value that changes with the architecture is the host
+// layer's answer, not a constant in a file that compiles for both.
+i64 host_audit_arch() { return 0xC00000B7; }

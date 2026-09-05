@@ -122,7 +122,23 @@ u16 sysno_tab[] = {
     102,        // SN_GETUID
     104,        // SN_GETGID
     228,        // SN_CLOCK_GETTIME
-     79         // SN_GETCWD
+     79,        // SN_GETCWD
+      2,        // SN_OPEN
+      5,        // SN_FSTAT
+    269,        // SN_FACCESSAT
+    268,        // SN_FCHMODAT
+    247,        // SN_WAITID
+     85,        // SN_CREAT
+     90,        // SN_CHMOD
+     83,        // SN_MKDIR
+     87,        // SN_UNLINK
+     13,        // SN_RT_SIGACTION
+     72,        // SN_FCNTL
+    217,        // SN_GETDENTS64
+     25,        // SN_MREMAP
+     19,        // SN_READV
+     57,        // SN_FORK
+     58         // SN_VFORK
 };
 
 // the number of SN_*, or -1 when this architecture has no such call
@@ -132,3 +148,7 @@ i64 host_sysno(i64 sn) {
     if (v == SN_ABSENT) return -1;
     return v;
 }
+
+// AUDIT_ARCH_X86_64 (linux/audit.h): EM_X86_64 62 | __AUDIT_ARCH_64BIT |
+// __AUDIT_ARCH_LE. See the AArch64 sibling for why it lives here.
+i64 host_audit_arch() { return 0xC000003E; }

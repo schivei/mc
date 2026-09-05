@@ -108,4 +108,58 @@
 #define SN_CLOCK_GETTIME            63
 #define SN_GETCWD                   64
 
-#define SN_COUNT                    65
+// ---- step C: what the MEASURED profiles named (scripts/sandbox-trace.sh) ----
+// The two C libraries do not agree on which form of a call they issue, and the
+// two architectures do not agree on which forms exist: glibc on x86-64 issues
+// `open`, `creat`, `chmod`, `mkdir` and `unlink`, glibc on AArch64 issues
+// `openat`, `fchmodat`, `mkdirat` and `unlinkat` because the generic table has
+// nothing else. Every row below was measured with `strace -n` on Ubuntu 26.04
+// (kernel 7.0.0-30) and cross-checked against musl's bits/syscall.h for the
+// architecture, not remembered.
+#define SN_OPEN                     65
+#define SN_FSTAT                    66
+#define SN_FACCESSAT                67
+#define SN_FCHMODAT                 68
+#define SN_WAITID                   69
+#define SN_CREAT                    70
+#define SN_CHMOD                    71
+#define SN_MKDIR                    72
+#define SN_UNLINK                   73
+#define SN_RT_SIGACTION             74
+#define SN_FCNTL                    75
+#define SN_GETDENTS64               76
+#define SN_MREMAP                   77
+#define SN_READV                    78
+// x86-64 has a `fork` and a `vfork` of its own, and musl uses them where glibc
+// uses clone: measured, `tests/sandbox/forkbomb.mc` under musl on x86-64 is
+// refused at syscall 57 and under glibc at syscall 56. The generic table has
+// neither, so on AArch64 both are absent and every fork is a clone.
+#define SN_FORK                     79
+#define SN_VFORK                    80
+
+#define SN_COUNT                    81
+
+// ---- the second column: the NAME of each index ----
+// `refused: syscall 198 (socket)` needs a name for a number, and the number is
+// what the per-architecture table above answers -- so a table of names indexed
+// by the SAME SN_* is the only shape in which the two cannot drift apart. A
+// name is looked up by walking this table and asking host_sysno() for each
+// row, which is why an index absent on this architecture can never be named by
+// accident: it has no number to match.
+uptr sn_names[] = {
+    "unshare", "mount", "pivot_root", "umount2",
+    "landlock_create_ruleset", "landlock_add_rule", "landlock_restrict_self",
+    "prctl", "seccomp", "ioctl", "pidfd_open", "pidfd_getfd",
+    "process_vm_readv", "prlimit64", "ppoll", "kill", "clone", "clone3",
+    "close_range", "openat", "read", "write", "close", "exit_group", "wait4",
+    "pipe2", "dup3", "getpid", "execve", "chdir", "sethostname", "mmap",
+    "munmap", "readlinkat", "uname", "brk", "mprotect", "set_tid_address",
+    "rt_sigprocmask", "unlinkat", "newfstatat", "lseek", "exit", "fchmod",
+    "pread64", "futex", "set_robust_list", "rseq", "sched_yield", "madvise",
+    "clock_nanosleep", "nanosleep", "tgkill", "membarrier", "access",
+    "getrandom", "arch_prctl", "socket", "connect", "bind", "mkdirat",
+    "getuid", "getgid", "clock_gettime", "getcwd", "open", "fstat",
+    "faccessat", "fchmodat", "waitid", "creat", "chmod", "mkdir", "unlink",
+    "rt_sigaction", "fcntl", "getdents64", "mremap",
+    "readv", "fork", "vfork"
+};

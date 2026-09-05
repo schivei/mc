@@ -46,6 +46,8 @@ mc/objmodel	src/objmodel.mc
 mc/parse	src/parse.mc
 mc/sandbox	src/sandbox.mc
 mc/sandbox_box	src/sandbox_box.mc
+mc/sandbox_profiles	src/sandbox_profiles.mc
+mc/seccomp	src/seccomp.mc
 mc/sha256	src/sha256.mc
 mc/stubs	src/stubs.mc
 mc/sysno	src/sysno.mc

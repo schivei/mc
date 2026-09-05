@@ -140,6 +140,31 @@ void sb_bind_libs() {
     }
 }
 
+// /etc/ld.so.cache, when the host has one, as a read-only bind of the FILE and
+// nothing else of /etc.
+//
+// This is a step-C correction to § 3's "no /etc", and it was measured: glibc's
+// loader opens the cache at every start, and when it is missing it falls back
+// to searching the default directories -- a DIFFERENT code path that issues
+// calls the same binary never issues on the host (`madvise`, measured on
+// aarch64/glibc, which made `tests/sandbox/shadow.mc` answer `refused: syscall
+// 233 (madvise)` instead of naming the file it opened). The seccomp profiles
+// are measured outside the box (scripts/sandbox-trace.sh), so the box has to
+// load a program the way the host does or the measurement is not about it.
+// The cache is world-readable, it is a list of library names, and it comes in
+// read-only; /etc/shadow is still absent, and still refused BY NAME before the
+// kernel is asked (docs/reference/sandbox.md § The filter).
+void sb_bind_ldcache() {
+    if (!sb_exists("/etc/ld.so.cache")) return;
+    sb_mkdir_or_die(sb_bp("etc"));
+    i64 fd = sb_sys(SN_OPENAT, SB_AT_FDCWD, sb_bp("etc/ld.so.cache"),
+                    SB_O_WRONLY | SB_O_CREAT, SB_MODE_600, 0, 0);
+    if (fd < 0) sb_die_box(SBE_LIB, fd);
+    sb_sys(SN_CLOSE, fd, 0, 0, 0, 0, 0);
+    i64 rc = sb_bind_ro("/etc/ld.so.cache", sb_bp("etc/ld.so.cache"));
+    if (rc < 0) sb_die_box(SBE_LIB, rc);
+}
+
 // --ro DIR, repeatable: each one is bound read-only at /ro0, /ro1, ... in the
 // order it was given. The numbering is the interface -- a program that has to
 // read a tree next to its own source is told where it is, and the box never
@@ -183,6 +208,7 @@ void sb_build_tree() {
     sb_mount_src();
     sb_bind_ro_dirs();
     sb_bind_libs();
+    sb_bind_ldcache();
 
     // pivot_root(".", ".old") from inside the new root is the documented
     // recipe: put_old has to be under new_root, and new_root has to be a mount
@@ -266,7 +292,7 @@ void sb_caps_step(i64 step) {
     // less than a bomb.
     i64 np = 0;
     if (step == SB_STEP_COMPILE) np = SB_NPROC_COMPILE;
-    if (sb_threads()) np = SB_NPROC_THREADS;
+    if (sb_threads()) np = SB_NPROC_BACKSTOP;
     sb_rlimit(SB_RLIMIT_NPROC, np);
 }
 
@@ -276,6 +302,22 @@ void sb_caps_step(i64 step) {
 // numbers I did not choose, so instead of moving them to fixed slots the close
 // sweeps AROUND them -- three ranges, no dup3 dance, and nothing but 0, 1, 2
 // and those two survives into the program.
+// A message from C to J, two eight-byte words on the error pipe: either
+// [SBM_READY, <the listener's descriptor number>] once the walls are up, or
+// [<site>, <errno>] when one of them could not be built -- and, after the
+// execve, [SBE_EXEC, <errno>] if even that failed. Sixteen bytes either way,
+// so J never has to guess how much to read.
+void sb_step_msg(i64 ew, i64 a, i64 b) {
+    st64(sb_word(), a);
+    st64(sb_word() + 8, b);
+    sb_sys(SN_WRITE, ew, sb_word(), 16, 0, 0, 0);
+}
+
+void sb_step_fail(i64 ew, i64 site, i64 rc) {
+    sb_step_msg(ew, site, 0 - rc);
+    sb_sys(SN_EXIT_GROUP, SB_EXIT_SETUP, 0, 0, 0, 0, 0);
+}
+
 void sb_step_child(i64 step, i64 sr, i64 ew) {
     if (sb_infd() >= 0 && sb_infd() != 0) sb_sys(SN_DUP3, sb_infd(), 0, 0, 0, 0, 0);
 
@@ -288,31 +330,39 @@ void sb_step_child(i64 step, i64 sr, i64 ew) {
 
     sb_sys(SN_PRCTL, SB_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0, 0);
 
-    // ---- STEP C GOES HERE ----------------------------------------------
-    // Landlock (a ruleset over /src, /out, /mc, /lib, /lib64, /usr/lib and the
-    // --ro roots) and then seccomp(SECCOMP_SET_MODE_FILTER,
-    // SECCOMP_FILTER_FLAG_NEW_LISTENER, &prog), whose result is the listener
-    // fd P fetches with pidfd_open + pidfd_getfd. Both must be installed by the
-    // process that execve's, both are irrevocable, and both must come AFTER
-    // no_new_privs and BEFORE the sync read -- the byte below is what tells C
-    // that P already holds the listener. Nothing above or below has to change.
-    // --------------------------------------------------------------------
+    // ---- the two walls (§ 3, § 4) --------------------------------------
+    // Landlock first: it needs to OPEN each root to name it, and after the
+    // seccomp filter is in, an openat of a directory the profile does not
+    // expect would be a notification P has no reason to answer. Then the
+    // caps -- so that prlimit64 need not be in any profile -- and only then
+    // the filter, whose result is the listener P is about to fetch.
+    i64 rc = sb_landlock_apply();
+    if (rc < 0) sb_step_fail(ew, SBE_LANDLOCK, rc);
+
+    sb_caps_step(step);
+
+    i64 lfd = sb_filter_apply(step);
+    if (lfd < 0) sb_step_fail(ew, SBE_SECCOMP, lfd);
+
+    // From here every system call this process makes is either in the profile
+    // or a question for P: the read below, the close, and the execve.
+    sb_step_msg(ew, SBM_READY, lfd);
 
     st8(sb_word(), 0);
     sb_sys(SN_READ, sr, sb_word(), 1, 0, 0, 0);
     sb_sys(SN_CLOSE, sr, 0, 0, 0, 0, 0);
-
-    sb_caps_step(step);
+    // P has its own copy now, so the program does not carry a descriptor onto
+    // its own listener.
+    sb_sys(SN_CLOSE, lfd, 0, 0, 0, 0, 0);
 
     uptr bin = sb_bin0();
     uptr av = sb_av0();
     if (step == SB_STEP_RUN) { bin = sb_bin1(); av = sb_av1(); }
-    i64 rc = sb_sys(SN_EXECVE, bin, av, sb_env(), 0, 0, 0);
+    rc = sb_sys(SN_EXECVE, bin, av, sb_env(), 0, 0, 0);
 
     // only reachable when execve failed: the errno goes back to I over the
     // CLOEXEC pipe, which a successful execve would have closed for us.
-    st64(sb_word(), 0 - rc);
-    sb_sys(SN_WRITE, ew, sb_word(), 8, 0, 0, 0);
+    sb_step_msg(ew, SBE_EXEC, 0 - rc);
     sb_sys(SN_EXIT_GROUP, 127, 0, 0, 0, 0, 0);
 }
 
@@ -324,9 +374,6 @@ i64 sb_run_step(i64 step) {
     // is one it composes itself and it needs the step for the `compile: `
     // prefix.
     sb_say_box(tm_cat("B ", tm_cat(tm_num_str(step), "\n")));
-    if (sb_sys(SN_PIPE2, sb_word(), 0, 0, 0, 0, 0) < 0) sb_die_box(SBE_PIPE, 0 - E_NOMEM);
-    i64 sr = ld32(sb_word());
-    i64 sw = ld32(sb_word() + 4);
     if (sb_sys(SN_PIPE2, sb_word(), SB_O_CLOEXEC, 0, 0, 0, 0) < 0) sb_die_box(SBE_PIPE, 0 - E_NOMEM);
     i64 er = ld32(sb_word());
     i64 ew = ld32(sb_word() + 4);
@@ -334,27 +381,45 @@ i64 sb_run_step(i64 step) {
     i64 pid = sb_sys(SN_CLONE, SB_SIGCHLD, 0, 0, 0, 0, 0);
     if (pid < 0) sb_die_box(SBE_FORK, pid);
     if (pid == 0) {
-        sb_sys(SN_CLOSE, sw, 0, 0, 0, 0, 0);
         sb_sys(SN_CLOSE, er, 0, 0, 0, 0, 0);
-        sb_step_child(step, sr, ew);             // never returns
+        sb_step_child(step, sb_syncr(), ew);     // never returns
     }
-    sb_sys(SN_CLOSE, sr, 0, 0, 0, 0, 0);
     sb_sys(SN_CLOSE, ew, 0, 0, 0, 0, 0);
-    // Step C fetches the seccomp listener out of C here, with pidfd_open on
-    // this pid and pidfd_getfd, before the sync byte lets C go on to execve.
-    sb_sys(SN_WRITE, sw, "1", 1, 0, 0, 0);       // C may go
-    sb_sys(SN_CLOSE, sw, 0, 0, 0, 0, 0);
+
+    // The first message from C: the walls are up and the listener is at this
+    // descriptor number. J is the only process that can reach into C -- it is
+    // its parent, and C's pid is a number in THIS namespace and nowhere else --
+    // so J takes the descriptor and hands the number on to P, which takes it
+    // from J the same way (src/sandbox.mc, sb_fetch_listener).
+    st64(sb_word() + 16, 0);
+    st64(sb_word() + 24, 0);
+    i64 n = sb_sys(SN_READ, er, sb_word() + 16, 16, 0, 0, 0);
+    i64 lj = -1;
+    if (n == 16) {
+        i64 kind = ld64(sb_word() + 16);
+        if (kind != SBM_READY) sb_die_box(kind, 0 - ld64(sb_word() + 24));
+        i64 pf = sb_sys(SN_PIDFD_OPEN, pid, 0, 0, 0, 0, 0);
+        if (pf < 0) sb_die_box(SBE_LISTENER, pf);
+        lj = sb_sys(SN_PIDFD_GETFD, pf, ld64(sb_word() + 24), 0, 0, 0, 0);
+        sb_sys(SN_CLOSE, pf, 0, 0, 0, 0, 0);
+        if (lj < 0) sb_die_box(SBE_LISTENER, lj);
+        sb_say_box(tm_cat("L ", tm_cat(tm_num_str(lj), "\n")));
+    }
 
     st64(sb_word(), 0);
     mem_zero(sb_ru(), 144);
     sb_sys(SN_WAIT4, pid, sb_word(), 0, sb_ru(), 0, 0);
     i64 st = ld32(sb_word());
 
-    // did execve itself fail? The pipe holds eight bytes only in that case.
-    st64(sb_word() + 8, 0);
-    i64 n = sb_sys(SN_READ, er, sb_word() + 8, 8, 0, 0, 0);
+    // did execve itself fail? The pipe holds a second message only in that
+    // case: a successful execve closed C's end (it is CLOEXEC) and this read
+    // sees the end of the file.
+    st64(sb_word() + 16, 0);
+    st64(sb_word() + 24, 0);
+    n = sb_sys(SN_READ, er, sb_word() + 16, 16, 0, 0, 0);
     sb_sys(SN_CLOSE, er, 0, 0, 0, 0, 0);
-    if (n == 8) { sb_die_box(SBE_EXEC, 0 - ld64(sb_word() + 8)); }
+    if (lj >= 0) sb_sys(SN_CLOSE, lj, 0, 0, 0, 0, 0);
+    if (n == 16) { sb_die_box(ld64(sb_word() + 16), 0 - ld64(sb_word() + 24)); }
 
     if (st & 0x7f) {
         // the cpu decision is made HERE, where the rusage of this step alone is
@@ -430,10 +495,28 @@ void sb_box_main() {
 
     // J: the first child of a process that unshared CLONE_NEWPID is pid 1 of
     // the new namespace, and everything the box runs is under it.
+    //
+    // It waits for one byte before it does anything, and that is not caution:
+    // J's first line and I's `P <pid>` line go down the SAME pipe, and P
+    // cannot act on the listener J offers it until it knows the pid to fetch
+    // it from. I is the only process that knows that number, so I announces it
+    // and then lets J start.
+    if (sb_sys(SN_PIPE2, sb_word(), 0, 0, 0, 0, 0) < 0) sb_die_box(SBE_PIPE, 0 - E_NOMEM);
+    i64 gr = ld32(sb_word());
+    i64 gw = ld32(sb_word() + 4);
     i64 jpid = sb_sys(SN_CLONE, SB_SIGCHLD, 0, 0, 0, 0, 0);
     if (jpid < 0) sb_die_box(SBE_FORK, jpid);
-    if (jpid == 0) sb_steps_main();              // never returns
+    if (jpid == 0) {
+        sb_sys(SN_CLOSE, gw, 0, 0, 0, 0, 0);
+        st8(sb_word(), 0);
+        sb_sys(SN_READ, gr, sb_word(), 1, 0, 0, 0);
+        sb_sys(SN_CLOSE, gr, 0, 0, 0, 0, 0);
+        sb_steps_main();                         // never returns
+    }
+    sb_sys(SN_CLOSE, gr, 0, 0, 0, 0, 0);
     sb_say_box(tm_cat("P ", tm_cat(tm_num_str(jpid), "\n")));
+    sb_sys(SN_WRITE, gw, "1", 1, 0, 0, 0);
+    sb_sys(SN_CLOSE, gw, 0, 0, 0, 0, 0);
     st64(sb_word(), 0);
     sb_sys(SN_WAIT4, jpid, sb_word(), 0, 0, 0, 0);
     sb_sys(SN_EXIT_GROUP, 0, 0, 0, 0, 0, 0);

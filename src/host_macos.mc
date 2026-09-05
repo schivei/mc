@@ -120,4 +120,6 @@ i64 host_syscall6(i64 n, i64 a, i64 b, i64 c, i64 d, i64 e, i64 f) { return -38;
 
 i64 host_sysno(i64 sn) { return -1; }
 
+i64 host_audit_arch() { return 0; }       // no seccomp: no AUDIT_ARCH_* to name
+
 i64 host_sandbox_supported() { return 0; }
