@@ -28,7 +28,7 @@ nothing to a running signed binary in about two minutes.
 | [A new primitive](guide/96-a-new-primitive.md) | teaching `mc` a value type it has never heard of: `type_new`, `syntax_lit`, a derived machine, `intrinsic` |
 | [`mc` on a Windows host](guide/95-windows-host.md) | the same for Windows: no C runtime at all, the kernel32 runtime object, the `.exe` suffix, CRLF, and the Windows `make check` subset |
 | [Recreating the compiler](guide/98-recreating-the-compiler.md) | "I want a compiler for X and nothing else": the five parts of `<mc/core>`, what each omitted one costs in bytes and in capability, removing a type or an intrinsic, and declaring the width of `uptr` |
-| [A new architecture](guide/97-a-new-architecture.md) | adding an instruction set and an output format from OUTSIDE the compiler: the three registrations, how to prove the encoder, and which families the data model excludes today |
+| [A new architecture](guide/97-a-new-architecture.md) | adding an instruction set and an output format from OUTSIDE the compiler: the three registrations, how to prove the encoder, which families it reaches (including 8-bit parts, since M40) and which one it excludes permanently |
 
 ## The reference — exhaustive, read by lookup
 

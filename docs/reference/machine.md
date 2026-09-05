@@ -6,7 +6,9 @@
 > compiler -- `arm64`, `x86_64`, `x86_64-win` -- and `machine(name, tab)` in `src/hooks.mc` is
 > the seam. Since M39 there is a fourth, and it is **not** in the compiler:
 > `examples/kernel/machine_riscv64.mc` registers `riscv64` from a module under `examples/`,
-> which is the proof that the seam is real from outside. Since M24 a machine also reads the
+> which is the proof that the seam is real from outside; since M40 there is a fifth,
+> `examples/avr/machine_avr.mc`, which is the proof that an 8-bit part with a two-byte pointer
+> is one too (§ The AVR implementation). M40 appends no slot and changes no signature. Since M24 a machine also reads the
 > TYPE of a depth (`walk_depth_type`), which is how `lib/machine_arm64_float.mc` answers `fadd`
 > where the built-in answers `add`, and how a module derives a machine with `machine_tab` /
 > `machine_slot`; `#machine` was dropped (`docs/specs/M24.md` § M9).
@@ -204,7 +206,9 @@ small must **say so with a diagnostic**, never mask the displacement into it —
 gives an image that builds, boots and lands in the middle of an instruction, which no later gate
 catches. `src/machine_arm64.mc` does it in `br_off` (`branch too far`, checked against the
 smallest of its three fields), and `examples/kernel/machine_riscv64.mc` in `rv_jal_off`
-(`riscv jal out of range`). Both check on the ENCODE pass only: `MTASK_INS_SIZE` runs before any
+(`riscv jal out of range`), and `examples/avr/machine_avr.mc` in `avr_rjmp_off`
+(`avr rjmp out of range`, at ±4 KiB — the smallest reach of any machine here, and the one where a
+real program can hit it). All three check on the ENCODE pass only: `MTASK_INS_SIZE` runs before any
 label address exists, and both machines' jump forms are fixed width, so the size does not depend
 on the answer.
 
@@ -350,6 +354,81 @@ pc-relative displacements — 58, 34 and 34 fused pairs plus 51, 53 and 3253 bra
 against a placement of the sections recomputed independently from `--dump-syms`. And the image
 boots: `examples/kernel/test.sh` asserts the transcript *and* the exit code under QEMU, on the
 owner's machine and on the `baremetal-riscv64` CI leg.
+
+### The AVR implementation (M40) — the first narrow word
+
+`examples/avr/machine_avr.mc` fills the same thirty-one slots from a module under `examples/`, and
+`examples/avr/image_avr.mc` is the ELF32 writer that consumes it. **Nothing in `src/` changed to
+make it possible either** — but one thing the compiler that carries it DECLARES did not exist
+before M41: `type_set_width(TY_UPTR, 2)`, called from `user_init`, which is what makes a pointer
+two bytes in a frame slot, in a global and in a `uptr[]` initializer (`docs/specs/M41.md` § 4a).
+The machine does not read that width for its own decisions; the walker does.
+
+| | AArch64 | RISC-V 64 | AVR (ATmega328P) |
+|---|---|---|---|
+| machine name | `arm64` | `riscv64` | `avr` |
+| register width | 64 bits | 64 bits | **8 bits**, 32 of them |
+| depth registers | `x9..x15` (0..6) | `t3..t6` (0..3) | **none**: every depth is an 8-byte frame slot |
+| why | caller-saved, not argument registers | the same rule | one 64-bit value costs eight registers; four depths is not reachable |
+| accumulator | — | — | `r16..r23` (ACC), `r8..r15` (TMP) |
+| scratch | `x16`, `x17`, `x8` | `t0`, `t1`, `t2` | `r0`, `r24`, and `X` (`r26:r27`) for a far frame access |
+| locals | `[sp, #k]`, fixed at the end | `[s0 - k]`, at once | `[Y + q]`, `q` patched by `MTASK_FRAME_FIX` |
+| frame | `stp x29, x30` + `sub sp` | `addi sp,sp,-16` + `mv s0,sp` | `push YH; push YL; in Y,SP` + `sbiw Y` + `out SP,Y` |
+| arguments | `x0..x7`, then the stack | `a0..a7`, then the stack | **all of them** in the caller's frame, 8 bytes each, at `[Y+1+8i]` |
+| stack parameters | `[x29+16]`, … | `[s0+16]`, … | `base + 4 + 8i` (the return address is 2 bytes, plus the pushed Y) |
+| outgoing area | the bottom of the frame | the bottom of the frame | the bottom of the frame, and SP never moves in the body |
+| result | `x0` | `a0` | `r16..r23`, zero-extended to 8 bytes by the callee |
+| callee-saved, never touched | `x18..x28` | `s1..s11`, `gp`, `tp` | `r2..r7` |
+| `callp` pointer | `x16`, moved first | `t0`, moved last | `Z`, moved last, **halved**: `icall` takes a word address and `&f` is a byte address |
+| instruction width | 4 bytes | 4 bytes | **2 bytes, except `jmp`/`call`/`lds`/`sts`, which are 4** |
+| variable-length `Ins` | no | `li`, the frame reserve, the offset fallbacks | almost every one: a task is a byte chain of `w` instructions |
+| local displacement | 4095 (unsigned 12-bit) | 2047 (signed 12-bit), `t2` past it | **63** (`ldd Y+q`, 6 bits), `X` + post-increment past it |
+| jump range, and who checks it | 128 MiB (`b`), `br_off` | 1 MiB (`jal`), `rv_jal_off` | **±4 KiB** (`rjmp`, signed 12-bit words), `avr_rjmp_off` |
+| frame cap | 4095, the walker's | 4095, the walker's | **1024**, the machine's: the part has 2 KiB of SRAM |
+| `x / 0`, `x % 0` | `0`, `x`, no trap | `-1`, `x`, no trap | `0`, `x`, no trap — `examples/avr/lib/rt_avr.mc` decides, because the part has no divide |
+| `*`, `/`, `%` | one instruction each | one instruction each | **a call** into a helper the module ships, written in the language |
+| relocations | `BRANCH26` `PAGE21` `PAGEOFF12` `UNSIGNED` | two module-private kinds, 32 and 33 | two module-private kinds, 34 and 35, plus `UNSIGNED` at **2 bytes** |
+
+Four things are worth reading it for.
+
+**A depth is memory, and that is a design and not a shortcut.** Every task loads its operands from
+frame slots into `r16..r23`, computes, and stores back. The win is that `MTASK_CALL` needs no
+`save_live`/`restore_live` at all — a callee cannot clobber a frame slot — and the cost is size:
+about 500 bytes of flash for a statement like `check(11, a * 3, 0x0369d0369d0369cd)`. On a part
+with 32 KiB that is the binding constraint, and it is why `examples/avr/tests/` is two programs.
+
+**Arithmetic happens at the depth's declared width, and it diverges.** `walk_depth_type(d)` (M24)
+is what makes `u16 + u16` two `add`s instead of eight, and `docs/specs/M40.md` D4 accepted the
+consequence rather than discovering it:
+
+```
+i64 narrow3(u8 a, u16 b, u32 c) { return a + b + c; }
+narrow3(200, 40000, 3000000000)      // 8 on avr, 3000040200 on arm64
+```
+
+`res_binary` types a sum from its LEFT operand and nothing re-widens it, so the addition is done in
+eight bits here and in sixty-four there. A source that wants the portable answer casts:
+`(i64) a + (i64) b + (i64) c`. `examples/avr/tests/sweep_b.mc` asserts **both** answers, checks 52
+and 56, so the divergence cannot drift unnoticed.
+
+**Comparison is the one place narrow arithmetic cannot be narrow.** `MTASK_CMP` carries no
+signedness and comparison in this language is signed, while `u8`/`u16`/`u32` are unsigned — so
+comparing two zero-extended `u16`s at two bytes would answer `-25536 < 1` for 40000. The machine
+compares at `max(w1, w2) + 1` bytes when neither operand is `i64`, and at all eight when one is:
+the extra byte is zero by the slot invariant, which turns the signed comparison into the unsigned
+one. `avr_cmp_width` is the whole rule.
+
+**Every slot holds eight valid bytes.** A value of a type of width `w` has its bytes above `w`
+zeroed (every core type but `i64` is unsigned), which is what lets a consumer read a depth at a
+width the producer did not use — `i64 x = u8v;` stores one byte and reads eight, and both are
+right. Without that invariant every task would need to know what the next one intends.
+
+**Verification.** Every distinct instruction the machine emits over the firmware (570) and the two
+sweeps (675 and 735) re-assembles byte-identically under `llvm-mc -triple=avr -mcpu=atmega328p`;
+the 337 relative and 226 absolute targets are recomputed against the section bounds; the ELF is
+compared field by field with the same program built by `avr-gcc -mmcu=atmega328p`; and the image
+runs under **both** simavr and `qemu-system-avr`, with the two sweeps checking their own answers
+on the device. `examples/avr/test.sh` and the `baremetal-avr` CI leg.
 
 `#opcode`, `emit()` and `reloc()` are architecture-specific by nature — a source full of
 hand-encoded AArch64 words is portable to Linux arm64 and nowhere else — so the tests that use them

@@ -237,6 +237,46 @@ The macOS job's `make check` runs `check-kernel` too, but that runner has no QEM
 self-skips the two runs there and everything else in it — the build, determinism, the refusals,
 the nine ABI assertions and the `llvm-mc` encoder sweep — still runs.
 
+### Job `baremetal-avr` — `ubuntu-latest`
+
+M40's runtime oracle, and the first job in this file with **two** simulators, because neither is
+enough on its own. `examples/avr`'s four images are cross-built on the macOS job — `mc` is all it
+takes — travel as the `avr-images` artifact, and run here under both:
+
+* **simavr** gives a verdict. An AVR has no exit device, so the firmware writes
+  `SIMAVR_CMD_EXIT_CODE_0` (or `_1`) to the command register the image's own `.mmcu` section
+  points at. That is the only channel a verdict can travel on, which is why `avr1.elf` — the same
+  firmware with `halt(1)` — has to be distinguishable from `avr.elf` at all.
+* **`qemu-system-avr -machine arduino-uno`** gives the transcript a real board would give, on
+  UART0, on an independent model of the part. It has no exit device at all, so `timeout` is what
+  ends that run and the transcript is the whole assertion.
+
+Both come from `apt-get install simavr qemu-system-misc`. The two on-device sweeps
+(`sweep_a.elf`, `sweep_b.elf`) run under simavr as well: forty checks the programs make about
+their own answers, over every task of the machine, because a wrong encoding usually still
+assembles.
+
+**Nothing in this job compares raw output.** `apt` ships simavr **1.6**, not the master build a
+developer installs by hand, and the two differ in ways a firmware trips over
+(`docs/specs/M40.md` finding 11): 1.6 writes the transcript to **stderr**, draws the newline the
+firmware wrote as a trailing `.`, has no `SIMAVR_CMD_EXIT_CODE_*` in its enum — the write is
+logged as `code 0x05 has no handler` and the process exits 0 regardless — and it loads an ELF by
+copying the contents of `.text` and then `.data`, ignoring addresses. So every run goes through
+`examples/avr/oracle/simavr-run.sh`, the same script `examples/avr/test.sh` calls (which is why
+this job checks the repository out): it separates the firmware's bytes from the simulator's log by
+the ANSI colour neither version puts on its own lines, reads the verdict off the command register
+at `-v -v -v` (`0x04` / `0x05`, logged by both versions), requires the process status to match on
+the version that implements the command — detected, not assumed — and fails on any `Invalid read`,
+`Invalid write` or `avr_sadly_crashed` line. Its own 60-second watchdog is what keeps a bad access
+from becoming a fifteen-minute hang: 1.6 answers one by starting a GDB stub and waiting.
+
+The macOS job's `make check` runs `check-avr` too, but that runner has neither simulator and no
+Docker, so `test.sh` self-skips the runs there and everything else in it — the build, determinism,
+the three refusals, the five ABI assertions, the four things the machine refuses rather than
+truncates, the `llvm-mc` encoder sweep and the field-by-field comparison against `avr-gcc` — still
+runs. On a developer machine with Docker, `make check-avr` runs the 1.6 oracle too, out of
+`examples/avr/oracle/Dockerfile`, so a green CI leg follows from a green local run.
+
 ### Job `windows-arm64` — `windows-11-arm`
 
 The same shape once more, for M19. It downloads `windows-arm64-objects` and runs
@@ -543,8 +583,8 @@ directly. Four decisions:
   `Link and run the suite (linux/x86_64)`, `Link and run the suite (windows/arm64)`, since M20
   `Link and run the suite (windows/x86_64)`, since M37 `mc on linux/arm64 host` and
   `mc on linux/x86_64 host`, since M38 `mc on windows/arm64 host` and
-  `mc on windows/x86_64 host`, and since M39 `Boot the kernel (bare-metal riscv64)` — ten of the
-  job names in `ci.yml`;
+  `mc on windows/x86_64 host`, since M39 `Boot the kernel (bare-metal riscv64)` and since M40
+  `Run the firmware (bare-metal avr)` — eleven of the job names in `ci.yml`;
 - **strict (up to date before merging) is off**: `mc` builds are minutes long and the project is
   one person's; requiring every pull request to re-run against a moved `main` buys little and
   costs a rebase loop. `release.yml` rebuilds and re-runs the whole suite from the tag anyway;
@@ -573,7 +613,8 @@ gh api -X PUT repos/schivei/mc/branches/main/protection --input - <<'JSON'
                  "Link and run the suite (windows/x86_64)",
                  "mc on linux/arm64 host", "mc on linux/x86_64 host",
                  "mc on windows/arm64 host", "mc on windows/x86_64 host",
-                 "Boot the kernel (bare-metal riscv64)"]
+                 "Boot the kernel (bare-metal riscv64)",
+                 "Run the firmware (bare-metal avr)"]
   },
   "enforce_admins": false,
   "required_pull_request_reviews": {

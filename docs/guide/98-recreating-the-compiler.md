@@ -22,6 +22,13 @@ bundled name you include or leave out:
 | `<mc/core_build>` | `toml` `driver` `sysroots` `sysroot` `stubs` `limits` | you want `mc build`, `mc limits`, `mc sysroot` |
 | `<mc/core_bundle>` | the LZ-compressed standard library | you want `#include <name>` |
 
+[`examples/avr`](../../examples/avr/README.md) is this page done for real, and the
+numbers in it are measured: `<mc/core_min>` + `<mc/core_build>` + an AVR machine
++ an ELF32 writer + four taught words is **339 187 bytes against `mc`'s 776 467**
+(the same `macho-exe` backend building both), and
+because it leaves `<mc/core_bundle>` out, every `#include` in that project is a
+relative path.
+
 `src/core.mc` is literally those five plus `main.mc`, and
 `scripts/check-parts.sh` compiles both spellings and `cmp`s the two objects —
 so the table above cannot drift from the code.
@@ -47,6 +54,17 @@ void user_init() {
     intrinsic_disable("ld64");             // ... so the wide pair is unreachable
 }
 ```
+
+**`backend_default()` did not always work, and the fix is worth knowing about.**
+Until the post-M41 review batch, `mc_main` resolved the default backend BEFORE
+it called `user_init()`, so a compiler whose only backend is registered there
+still needed `--backend=NAME` on the command line -- and needed it even for
+`--dump-ast` and `--dump-asm`, which never reach a backend at all. The
+resolution now happens after `user_init()` and after the dump modes have
+returned (`src/cli.mc`), which is the same rule M39.5 wrote for `[target]` in
+`mc build`. `examples/avr` was written while the old order was still in place
+and still passes `--backend=avr-image` on every single-file command; it does not
+have to any more.
 
 Six lines of `user_init` and a `main` that names the parts. That is the whole
 mechanism; everything else on this page is what each of those lines buys and

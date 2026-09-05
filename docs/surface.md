@@ -549,6 +549,18 @@ the milestone's headline. Two ways in and out of the compiler — a machine and 
 of. [`docs/guide/97-a-new-architecture.md`](guide/97-a-new-architecture.md) is the path for
 somebody doing it again.
 
+**M40 takes it one step further down, to eight bits.** `examples/avr/machine_avr.mc` registers
+`avr` and `examples/avr/image_avr.mc` an ELF32 `EM_AVR` writer, the same way — but the compiler
+that carries them is not `mc` plus a module: it is ASSEMBLED out of M41's parts
+(`<mc/core_min>` + `<mc/core_build>`, no host machine, no object writer, no bundle) and it
+DECLARES its own pointer width with `type_set_width(TY_UPTR, 2)`. A `uptr` is two bytes in a
+frame slot, in a global and in a `uptr[]` initializer; everything else about an ATmega328P — a
+64-bit ALU out of 8-bit operations, multiply and divide as helper routines written in the
+language, the Harvard flash-to-SRAM copy through an `lpm8` the machine registers with
+`intrinsic()`, an interrupt frame in `#opcode` — is the module's business. `src/`, `stage0/`,
+`lib/` and `tests/` gained **zero lines** again, and the firmware runs under two independent
+simulators. [`examples/avr/README.md`](../examples/avr/README.md).
+
 ### The six built-in backends: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64`, `coff-obj-arm64` and `coff-obj-x86_64`
 
 `src/core_writers.mc` (`mc_writers_init`) registers six backends before `user_init()` runs:

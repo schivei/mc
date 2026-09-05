@@ -303,6 +303,18 @@ check-conc: build/mc1
 check-kernel: build/mc1
 	sh examples/kernel/test.sh
 
+# M40: examples/avr -- a bare-metal ATmega328P firmware built by a RECREATED
+# compiler: <mc/core_min> + <mc/core_build> plus an AVR machine and an ELF32
+# writer, with no arm64, no x86-64, no Mach-O/ELF64/COFF, no bundle, and `uptr`
+# declared to be two bytes. Zero lines in src/. Two oracles: simavr (the exact
+# transcript AND the exit code its .mmcu command register passes through) and
+# qemu-system-avr (the same transcript on UART0). Self-skipping -- without a
+# simulator the images are still built and everything but the runs is still
+# checked, and without llvm-mc/avr-binutils the encoder sweep and the toolchain
+# comparison are skipped.
+check-avr: build/mc1
+	sh examples/avr/test.sh
+
 # M26: docs/guide + docs/reference against the real compiler -- no undocumented
 # public symbol, CLI flag, TOML key or directive; every fenced ```mc sample
 # compiled (and run when it declares an expectation); every relative link
@@ -467,7 +479,7 @@ else ifneq (,$(WINHOST))
 # Docker or python3 -- and `check-skipped` prints the reason for each one.
 check: budget bootstrap-windows check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-sysroots check-limits check-skipped
 else
-check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-parts check-toml check-build check-sysroots check-stubs check-limits check-minimal test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-desktop check-float check-wide check-kernel check-docs site check-site
+check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-parts check-toml check-build check-sysroots check-stubs check-limits check-minimal test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-desktop check-float check-wide check-kernel check-avr check-docs site check-site
 endif
 
 budget:
@@ -479,7 +491,7 @@ clean:
 .PHONY: bootstrap-linux mc-linux mc-linux-x86_64 mc-linux-obj mc-linux-x86_64-obj
 .PHONY: check-linux-host check-skipped
 .PHONY: bootstrap-windows mc-windows mc-windows-x86_64 mc-windows-obj mc-windows-x86_64-obj
-.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-parts check-toml check-build check-sysroots check-stubs check-limits sysroot-linux sysroot-linux-x86_64 sysroot-windows sysroot-windows-x86_64 test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal mcrt-windows mcrt-windows-x86_64 check-float check-wide check-kernel
+.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-parts check-toml check-build check-sysroots check-stubs check-limits sysroot-linux sysroot-linux-x86_64 sysroot-windows sysroot-windows-x86_64 test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal mcrt-windows mcrt-windows-x86_64 check-float check-wide check-kernel check-avr
 
 # M32: examples/desktop -- a GTK4 application written in mc, and the same
 # application with its widget tree written in a UI language taught by ui.mc.

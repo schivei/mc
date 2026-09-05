@@ -61,6 +61,16 @@ jobs:
           else
             echo "qemu-system-riscv64: absent -- check-kernel self-skips the two runs"
           fi
+          # M40: examples/avr's two oracles. Neither is on a GitHub macOS
+          # runner either; check-avr builds the images and skips the runs, and
+          # the baremetal-avr job below is where they run.
+          for t in simavr qemu-system-avr; do
+            if command -v "$t" >/dev/null 2>&1; then
+              echo "$t: present"
+            else
+              echo "$t: absent -- check-avr self-skips that oracle"
+            fi
+          done
 
       # budget, test, check-lex, check-ast, check-bundle, check-asm, check-obj,
       # bootstrap (fixed point + golden), check-surface, test-exe, check-mc,
@@ -234,6 +244,36 @@ jobs:
           path: |
             examples/kernel/build/kernel.bin
             examples/kernel/build/kernel42.bin
+          if-no-files-found: error
+          retention-days: 7
+
+      # M40: examples/avr -- the bare-metal ATmega328P images, built by a
+      # RECREATED compiler (<mc/core_min> + <mc/core_build> + an AVR machine and
+      # an ELF32 writer, with `uptr` declared to be two bytes). `mc build` does
+      # both halves for the firmware; the halt(1) variant and the two sweeps are
+      # not [project].entry, so they go through the single-file CLI. All four
+      # travel to the baremetal-avr job below, which is where the simulators are.
+      - name: Build the bare-metal AVR images
+        run: |
+          set -eu
+          build/mc1 build examples/avr
+          cd examples/avr
+          sed 's/    halt(0);/    halt(1);/' main.mc > build/main1.mc
+          ./build/mc-avr --backend=avr-image --include=lib build/main1.mc -o build/avr1.elf
+          rm -f build/main1.mc
+          ./build/mc-avr --backend=avr-image --include=lib tests/sweep_a.mc -o build/sweep_a.elf
+          ./build/mc-avr --backend=avr-image --include=lib tests/sweep_b.mc -o build/sweep_b.elf
+          ls -l build/avr.elf build/avr1.elf build/sweep_a.elf build/sweep_b.elf
+
+      - name: Upload the bare-metal AVR images
+        uses: actions/upload-artifact@v4
+        with:
+          name: avr-images
+          path: |
+            examples/avr/build/avr.elf
+            examples/avr/build/avr1.elf
+            examples/avr/build/sweep_a.elf
+            examples/avr/build/sweep_b.elf
           if-no-files-found: error
           retention-days: 7
 
@@ -1118,6 +1158,99 @@ jobs:
           st=$(run kernel/kernel42.bin)
           if [ "$st" != "42" ]; then echo "::error::exit $st, expected 42"; exit 1; fi
           echo "ok: transcript, exit 0, and halt(42) -> exit 42"
+
+  # M40: the runtime oracle for examples/avr, and there are TWO of them because
+  # neither is enough on its own -- simavr gives a process exit code through the
+  # .mmcu command register and no board does, `qemu-system-avr` gives the UART
+  # transcript a real Arduino Uno would give and has no exit device. Ubuntu
+  # carries both (`simavr` in universe, `qemu-system-avr` in qemu-system-misc,
+  # the same package the RISC-V job already installs). Nothing is compiled here:
+  # the four images travel as an artifact from the macOS job.
+  #
+  # The apt package is simavr 1.6, which is NOT the simavr a developer installs
+  # by hand (Homebrew builds master): it writes the firmware's transcript to
+  # stderr with the newline rendered as a trailing `.`, and its command enum has
+  # no exit code at all. So nothing here compares raw output. Every run goes
+  # through `examples/avr/oracle/simavr-run.sh`, the same script
+  # `examples/avr/test.sh` calls -- and `make check-avr` runs that script
+  # against THIS version too, in Docker, so a green run here follows from a
+  # green run there. See the script's header, and docs/specs/M40.md finding 11.
+  baremetal-avr:
+    name: Run the firmware (bare-metal avr)
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 15
+    steps:
+      # for examples/avr/oracle/simavr-run.sh; the images themselves are the
+      # artifact, nothing is compiled here
+      - uses: actions/checkout@v4
+
+      - name: Download the images
+        uses: actions/download-artifact@v4
+        with:
+          name: avr-images
+          path: avr
+
+      - name: Install simavr and qemu-system-avr
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends simavr qemu-system-misc
+          dpkg-query -W -f '${Package} ${Version}\n' simavr
+          qemu-system-avr --version | head -1
+
+      # The exact transcript and the verdict the firmware halted with. On this
+      # simavr the verdict is the byte the firmware wrote to the .mmcu command
+      # register (0x04 for halt(0), 0x05 for halt(1)), because 1.6 answers that
+      # register with `has no handler` and exits 0 whatever was asked; where the
+      # command IS implemented -- a developer's simavr -- the script requires
+      # the process status to match as well. It also fails on any `Invalid
+      # read`/`Invalid write`/`avr_sadly_crashed` line, which is the class of
+      # failure that used to show up here as a fifteen minute hang.
+      - name: simavr -- the transcript and the verdict
+        run: |
+          set -u
+          T=$(printf 'boot\nblink\ntick\nsum 352\nok')
+          bad=0
+          sh examples/avr/oracle/simavr-run.sh simavr avr/avr.elf work/a exact "$T" 0 || bad=1
+          echo "--- transcript ---"; cat work/a/transcript
+          sh examples/avr/oracle/simavr-run.sh simavr avr/avr1.elf work/b exact "$T" 1 || bad=1
+          if [ "$bad" != "0" ]; then echo "::error::the simavr oracle disagreed"; exit 1; fi
+
+      # The two sweeps check their own answers on the device: 40 of them, over
+      # every task of the machine. A wrong encoding usually still assembles.
+      - name: simavr -- the two on-device sweeps
+        run: |
+          set -u
+          bad=0
+          for s in sweep_a sweep_b; do
+            sh examples/avr/oracle/simavr-run.sh simavr "avr/$s.elf" "work/$s" sweep "$s" || bad=1
+            cat "work/$s/transcript"
+          done
+          if [ "$bad" != "0" ]; then echo "::error::a sweep disagreed"; exit 1; fi
+
+      # qemu-system-avr, the second oracle: the same five lines out of UART0 on
+      # an independent model of the part. An arduino-uno has no exit device, so
+      # the run is ENDED by the timeout and 124 is the expected status here --
+      # what is asserted is the transcript.
+      - name: qemu-system-avr -- the same transcript on UART0
+        run: |
+          set -u
+          # An arduino-uno has no exit device: the firmware ends in the watchdog and
+          # QEMU never exits on its own, so `timeout`'s 124 is the DESIGNED end of the
+          # run (examples/avr/test.sh's run_guarded treats it the same way). The
+          # `|| st=$?` keeps `set -e` from aborting before the transcript is judged.
+          st=0
+          timeout 30 qemu-system-avr -machine arduino-uno -bios avr/avr.elf -nographic \
+              < /dev/null > out.txt 2> err.txt || st=$?
+          echo "--- transcript ---"; cat out.txt; echo "--- exit $st ---"
+          if [ "$st" != "0" ] && [ "$st" != "124" ]; then
+            echo "::error::qemu exited with $st"; cat err.txt; exit 1
+          fi
+          expected=$(printf 'boot\nblink\ntick\nsum 352\nok')
+          if [ "$(tr -d '\r' < out.txt)" != "$expected" ]; then
+            echo "::error::wrong transcript on UART0"; cat err.txt; exit 1
+          fi
+          echo "ok: the same transcript on a second simulator"
 
   docs-updated:
     name: Docs updated

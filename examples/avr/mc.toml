@@ -1,0 +1,73 @@
+# mc.toml — the taught compiler for examples/avr and the firmware it writes,
+# both driven by `mc build`:
+#
+#   ../../build/mc1 build examples/avr            # from the repository root
+#   ../../build/mc1 build                         # from inside here
+#
+# That is two processes, the shape `mc build` has had since M14: the parent
+# assembles build/mc-avr out of the parts named in mc-avr.mc, then spawns it as
+# `mc-avr build DIR --config FILE --entry-only`, and the CHILD compiles main.mc
+# into build/avr.elf. `--compiler-only` stops after the first half and prints the
+# compiler's path; the single-file CLI
+#
+#   build/mc-avr --backend=avr-image --include=lib main.mc -o build/avr.elf
+#
+# still does the second half on its own, and is what examples/avr/test.sh uses
+# for the sources that are not [project].entry.
+#
+# `[target] none/avr` is not a pair the running `mc` knows: mc-avr.mc registers
+# it with target("none", "avr", "avr-image", "avr-image"), and `mc build`
+# resolves [target] AFTER user_init() has run (M39.5, docs/specs/M39.md § G1).
+
+[project]
+name  = "avr"
+entry = "main.mc"
+out   = "build/avr.elf"
+kind  = "exe"
+
+# The compiler that compiles the firmware is not the one running, and it is not
+# `mc` plus a module either: mc-avr.mc names the PARTS it is made of
+# (<mc/core_min> + <mc/core_build>), leaves out the two host machines, the four
+# object writers and the bundle, adds an AVR machine and an ELF32 writer, and
+# declares uptr to be two bytes. docs/specs/M41.md § 3 and
+# docs/guide/98-recreating-the-compiler.md.
+# `core` is the PART, not the whole: with no key at all `mc build` writes
+# `#include <mc/core>` above the module (M15), and that is precisely the pile
+# this compiler exists to not be. M41 made the value emit verbatim when it
+# starts with `<`, which is what this line uses; mc-avr.mc names the same part
+# again for the single-file road, and `#include` is once-only.
+[compiler]
+core    = "<mc/core_min>"
+modules = ["mc-avr.mc"]
+out     = "build/mc-avr"
+
+# A bare part is not an operating system, and `none` says exactly that.
+# `avr-image` sits in both roles: the flash image IS the artefact, so there is
+# no object step and no [linker] -- `kind = "exe"` above writes build/avr.elf
+# directly, the way `macho-exe` writes a signed binary on macOS.
+[target]
+os   = "none"
+arch = "avr"
+
+# The reserve `mc build` takes from the estimate, before any table exists. The
+# static estimate is a function of source BYTES and a taught compiler this size
+# lands about twice its prediction, so the default 0.25 makes the `nodes` and
+# `ins` tables double mid-build. At 1.0 nothing grows in THAT half -- `mc limits
+# examples/avr` is what reports it.
+#
+# The entry half is a different story and it is not a defect, exactly as
+# examples/kernel records: main.mc is 90 lines whose taught words expand into
+# several times the nodes those bytes predict, which no tolerance in [0, 1] can
+# cover. So a COLD `mc limits examples/avr` may report `grew` for the entry and
+# exit 3, and the usage `mc build` remembers in build/.mc-usage.toml is what
+# makes the next one exit 0 with grow 0 everywhere. examples/avr/test.sh asserts
+# both phases.
+[limits]
+tolerance = 1.0
+
+# The bare-metal layer lives in lib/. `#include "sys_avr.mc"` already resolves
+# against main.mc's own directory; this root is what lets the same three files
+# be included by bare name from anywhere in the project, and it is the
+# `--include=lib` of the direct CLI above.
+[include]
+paths = ["lib"]

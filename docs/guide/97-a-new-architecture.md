@@ -165,21 +165,40 @@ synthesize the reset stub and by calling `kmain` as an ordinary call.
 gap in the compiler. If you came here from that question, the answer is yes, and
 `examples/kernel/machine_riscv64.mc` is the file to copy.
 
-**AVR and PIC do not, and the blocker is not the instruction set.** It is the data model. `mc` has
-one integer width: `type_width` returns 8 for every type that reaches a frame slot, and
-`slot_new(8)` is unconditional. So a ten-local function costs an 80-byte frame on a chip with
-2048 bytes of SRAM, and a 4096-byte array does not fit at all. Everything *else* about AVR is
-reachable from inside a machine with no core change — a 64-bit ALU synthesised from 8-bit
-operations, multiply and divide through helper routines the module ships, the Harvard
-flash-to-SRAM startup copy, 6-bit `ldd Y+q` displacements, mixed 16- and 32-bit instruction
-words. It is the word size that is out of reach, and changing what a word means is a milestone of
-its own, not a module.
+**AVR reaches it too, and it took one more mechanism.** When this page was first written the
+blocker was not the instruction set but the data model: `type_width` answered 8 for everything
+that reached a frame slot, so a ten-local function cost an 80-byte frame on a part with 2048 bytes
+of SRAM. M41 made that one decision overridable -- `type_set_width(TY_UPTR, 2)`, declared from
+`user_init` and followed by the slot granule, the frame alignment, the local-array bound and the
+size of a pointer in a `uptr[]` initializer -- and M40 is the caller.
+[`examples/avr`](../../examples/avr/README.md) is an ATmega328P firmware built by a compiler that
+declares it: a blink, a UART transcript, a TIMER1 interrupt and an exit code, running under both
+simavr and `qemu-system-avr`, with `git diff --stat src/ stage0/ lib/ tests/` empty.
 
-PIC is further still: banked memory and a hardware call stack of 8 to 31 levels have no cheap
-lowering for an unconditional frame record and arbitrary recursion.
+Everything else about that part is a machine's own business and needs no core change: a 64-bit ALU
+synthesised from 8-bit operations, multiply and divide through helper routines the module ships in
+the language itself, the Harvard flash-to-SRAM startup copy (through an `lpm8` the machine
+registers with `intrinsic()`), 6-bit `ldd Y+q` displacements with a fallback past them, mixed 16-
+and 32-bit instruction words, and an interrupt frame written with `#opcode`. Two of its answers
+are worth reading before you copy it: **a depth is a frame slot and not a register** (32 eight-bit
+registers cannot hold four 64-bit depths, so the machine is an accumulator machine and
+`save_live`/`restore_live` do not exist in it), and **arithmetic happens at the depth's declared
+width**, which is what M24's `walk_depth_type` is for and what makes `u16 + u16` two instructions
+instead of eight. The second one diverges from the 64-bit machines on purpose, it is written down
+in [`reference/machine.md`](../reference/machine.md), and `examples/avr/tests/sweep_b.mc` asserts
+both answers.
 
-So: a 32-bit or 64-bit load/store architecture with a flat register file is a module. A small
-microcontroller is a conversation about the data model first.
+**PIC does not, and it is excluded permanently.** Not "future work": the frame model in
+`src/gen_walk.mc` is one contiguous byte-addressed frame handed out by `slot_new`, addressed by a
+displacement off a frame pointer, plus arbitrary recursion on a software stack. A PIC's data
+memory is BANKED -- an address means nothing without a bank-select register, so a single
+displacement does not name a slot -- and its call stack is HARDWARE, 8 to 31 levels deep and not
+addressable, so a return address cannot be pushed to a frame and recursion is bounded by silicon.
+There is no lowering of `MTASK_PROLOGUE` and `MTASK_LOCAL_LOAD` that is both correct and cheap.
+That is a different frame model, not a machine (`docs/specs/M40.md` D9).
+
+So: a load/store architecture with a flat register file is a module, an 8-bit part with a narrow
+pointer is a module plus one declared width, and a banked machine with a hardware stack is neither.
 
 ---
 
@@ -188,3 +207,5 @@ microcontroller is a conversation about the data model first.
 * [`reference/hooks.md`](../reference/hooks.md) — `machine`, `backend`, `target`, and the rest of the surface
 * [`40-backends.md`](40-backends.md) — replacing the writer without replacing the machine
 * [`../../examples/kernel/README.md`](../../examples/kernel/README.md) — the worked case, with its limits on the record
+* [`../../examples/avr/README.md`](../../examples/avr/README.md) — the second one: 8 bits, a two-byte word, and a compiler recreated for it
+* [`98-recreating-the-compiler.md`](98-recreating-the-compiler.md) — assembling a compiler out of the parts, which is how that one is built

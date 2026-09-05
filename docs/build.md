@@ -1517,6 +1517,7 @@ make -C examples/api test        # test-oop + tests/lib_test.sh + test.sh
 | `test-linux-x86_64` | the same with `--arch x86_64`: the `elf-obj-x86_64` backend, an amd64 musl sysroot and `docker --platform linux/amd64`. Also skips the tests that carry `// skip-x86_64`. Guarded the same way |
 | `test-windows` | `scripts/test-windows.sh`: every `tests/*.mc` without `// skip-windows` cross-compiled with `coff-obj-arm64`, every object's COFF header checked with `llvm-readobj` and three of them linked with `lld-link`. Nothing is executed — the `windows-11-arm` CI leg runs them. Guarded: skipped when `lld-link` or `llvm-dlltool` is missing |
 | `check-kernel` | `examples/kernel/test.sh`: the taught compiler out of `mc.toml`, the flat RISC-V image, both QEMU runs (transcript **and** exit code, 0 and 42), determinism, the two refusals by the default compiler, seven ABI assertions over `--dump-asm --machine=riscv64`, and the `llvm-mc` encoder sweep. Guarded: without `qemu-system-riscv64` the two runs are skipped, without `llvm-mc` the sweep is |
+| `check-avr` | `examples/avr/test.sh`: the RECREATED compiler out of `mc.toml` (`core = "<mc/core_min>"`), the ELF32 AVR firmware, both simulators (simavr for the transcript **and** the exit code, 0 and 1; `qemu-system-avr` for the same transcript on UART0), the two on-device sweeps under both, determinism, the three refusals by the default compiler, five ABI assertions over `--dump-asm --machine=avr`, four things the machine refuses rather than truncates, the `llvm-mc` encoder sweep and the field-by-field comparison against `avr-gcc`. Guarded: every external tool is optional and prints `SKIP` |
 | `check-limits` | `scripts/check-limits.sh`: `mc limits src/mc.mc` against the fixed `MAX*` constants still in `stage0/mc.h` and `stage0/*.c`, plus the seed's `HEAP_SIZE` against the max RSS of a real `build/mc0` run; fails when any of them is over 90% used |
 
 ```
@@ -1619,6 +1620,50 @@ the nodes a byte-count estimate predicts (401 estimated, 1914 used), so it grows
 usage remembered in `build/.mc-usage.toml` is what makes the next run exit 0.
 `examples/kernel/test.sh` step 8 asserts both phases, and fails on a `grew` line in the compiler
 half or on anything but exit 0 remembered.
+
+---
+
+## M40 — a narrow word, and a compiler recreated for it
+
+`examples/avr` is the second bare target and the first one whose *word* is not the language's.
+It is built exactly like `examples/kernel` — `[target] os = "none" / arch = "avr"`, a pair
+`examples/avr/mc-avr.mc` registers, resolved after `user_init()` since M39.5 — with two
+differences that are the milestone.
+
+**The compiler is assembled, not extended.** `[compiler].core = "<mc/core_min>"` (M41), and
+`mc-avr.mc` names `<mc/core_build>` and its own three modules and nothing else: no
+`<mc/core_machines>`, no `<mc/core_writers>`, no `<mc/core_bundle>`. What that leaves out is
+two host machines, four object writers and a 350 KB bundle — **339 187 bytes against `mc`'s
+776 467**, the same `macho-exe` backend building both —
+and what it means for the sources is that `#include <name>` does not exist in this project, so
+every include in it is a relative path.
+
+**The compiler declares its own pointer width.** `user_init` calls `type_set_width(TY_UPTR, 2)`,
+which is M41 § 4a and the reason that registration exists at all. From there the core follows:
+a `uptr` local occupies two bytes of frame, `slot_new`'s granule is two, a frame aligns to four,
+`uptr lines[2]` is four bytes of `__DATA` and the string pointers inside it are two-byte
+`R_UNSIGNED` relocations. The same source compiled by `mc` would use eight bytes for each of
+those, which is the trade `docs/specs/M40.md` § 2B priced and the Amendment took: a dialect the
+project chose, stated in one line at the top of it.
+
+`mc limits examples/avr` behaves as `examples/kernel` does — exit 3 cold with `tolerance = 1.0`
+keeping the compiler half at `grow 0`, exit 0 and `grow 0` everywhere once `mc build` has
+remembered the usage — and `examples/avr/test.sh` asserts both phases.
+
+The machine's own limits are the part's, not the language's, and each is a diagnostic:
+`avr frame too large for 2 KiB of SRAM` at 1024 bytes of frame,
+`avr: the image does not fit in 32 KiB of flash`, and
+`avr rjmp out of range` past ±4 KiB of code in one function.
+
+**The image is laid out for the older simavr as well as the newer one**: the load image of the
+data follows the code immediately and `.mmcu` goes last, outside every `PT_LOAD`, because simavr
+1.6 — the version Debian and Ubuntu ship, and therefore the one CI runs — builds its flash from
+the contents of `.text` followed by the contents of `.data` and ignores every address in the file
+(`docs/specs/M40.md` finding 11). `make check-avr` runs both simavr versions, the older one in
+Docker through `examples/avr/oracle/`, using the same script the CI leg calls.
+[`examples/avr/README.md`](../examples/avr/README.md) has the whole list, and
+[`reference/machine.md`](reference/machine.md) § The AVR implementation the ABI beside the other
+three.
 
 ---
 
