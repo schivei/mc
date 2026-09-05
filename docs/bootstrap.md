@@ -254,7 +254,7 @@ true on macOS. Where it holds today:
 | host | source → executable | needs |
 |---|---|---|
 | macOS arm64 | `mc --exe` (`macho-exe`, M11) | nothing |
-| Linux aarch64 / x86_64 | `mc --exe` (`elf-exe`, M42) | nothing to build it; the machine that RUNS it needs the loader `[target].interp` names (see below) |
+| Linux aarch64 / x86_64 | `mc --exe` (`elf-exe`, M42) | nothing to build it; the machine that RUNS it needs the loader `[target].libc` / `--libc=` names (see below) |
 | Windows arm64 / x86_64 | `mc` writes a `.obj`, `lld-link` finishes | `lld-link` + `kernel32.lib` (a name list, `scripts/sysroot-windows.sh`) |
 
 On Linux the M42 executable is **dynamic** and therefore names a libc rather than containing one:
@@ -264,20 +264,27 @@ binary. **That is a choice, not a constant** — the writer's default is musl's
 nothing else. A glibc system (Debian, Ubuntu, Fedora, Arch — the majority) has
 `/lib/ld-linux-aarch64.so.1` or `/lib64/ld-linux-x86-64.so.2` instead, and a musl-linked binary
 there does not start at all: the kernel cannot find the interpreter and reports
-`no such file or directory` about a file that is plainly present. Two keys pick the other one:
+`no such file or directory` about a file that is plainly present. One word picks the other one,
+in an `mc.toml` or on the command line:
 
 ```toml
 [target]
-os     = "linux"
-arch   = "aarch64"
-interp = "/lib/ld-linux-aarch64.so.1"   # /lib64/ld-linux-x86-64.so.2 on x86_64
-libc   = "libc.so.6"
+os   = "linux"
+arch = "aarch64"
+libc = "gnu"                            # or "musl", the default
+```
+
+```
+$ mc --exe --libc=gnu hello.mc -o hello
 ```
 
 Both libcs are exercised: `make test-linux-exe` and `make test-linux-x86_64-exe` run the whole
-corpus twice per architecture, musl in `alpine:3` and glibc in `ubuntu:latest`, and the CI legs
-run the glibc set natively on the Ubuntu runners and the musl set in a container. A **static**
-binary still goes through `[linker]` and a sysroot, and that road is unchanged.
+corpus twice per architecture, musl in `alpine:3` and gnu in `ubuntu:latest`, and the CI legs
+run the gnu set natively on the Ubuntu runners and the musl set in a container. A **static**
+binary against a real libc still goes through `[linker]` and a sysroot, and that road is
+unchanged; `[target].link = "static"` (`--link=static`) is how a program that imports nothing
+*requires* the static image it already gets
+([build.md § The matrix](build.md#the-matrix-libc-x-link)).
 
 ## Binaries are not versioned
 

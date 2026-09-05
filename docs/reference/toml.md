@@ -67,8 +67,9 @@ A missing `entry` or `out` is `<file>: missing key: project.entry`. A `kind` tha
 |---|---|---|---|
 | `target.os` | string | the host's | a pair the compiler or one of its modules registered |
 | `target.arch` | string | the host's | likewise |
-| `target.interp` | string | musl's `/lib/ld-musl-<arch>.so.1` | the program interpreter a **dynamic ELF executable** asks for (`PT_INTERP`) |
-| `target.libc` | string | `libc.so` (musl) | the `DT_NEEDED` soname every import that no `#dylib` and no `[externs]` pattern claims comes from |
+| `target.libc` | string | `"musl"` | `"gnu"` or `"musl"` — the C library **family** a dynamic Linux executable is linked against |
+| `target.link` | string | `"dynamic"` | `"dynamic"` or `"static"` |
+| `target.interp` | string | the family's | the program interpreter a **dynamic ELF executable** asks for (`PT_INTERP`), when it is neither standard path |
 
 The accepted set is the `(os, arch)` pairs the `target()` registry holds
 ([hooks.md](hooks.md)) — `macos/aarch64`, `linux/aarch64`, `linux/x86_64`,
@@ -94,28 +95,56 @@ then decides the instruction set inside either one. `[linker]` is still accepted
 only route to a **static** libc link — when it is present the driver writes the object and hands it
 over, exactly as before.
 
-### `target.interp` and `target.libc` — the two per-libc names
+### `target.libc` and `target.link` — the two axes of a Linux target
 
-A dynamic executable needs no libc *files*, only two *names*, and they are the one thing that
-differs between the C libraries. They are keys and not constants for exactly that reason:
+A dynamic executable needs no libc *files*, only *names*: the interpreter path, the `DT_NEEDED`
+soname and the symbol names. Two of those differ between the C libraries, and `libc` is one word
+that decides both — a **family**, never a soname:
 
-| libc | `interp` (aarch64) | `interp` (x86_64) | `libc` |
+| `libc` | `PT_INTERP` (aarch64) | `PT_INTERP` (x86_64) | `DT_NEEDED` |
 |---|---|---|---|
-| musl (the default) | `/lib/ld-musl-aarch64.so.1` | `/lib/ld-musl-x86_64.so.1` | `libc.so` |
-| glibc | `/lib/ld-linux-aarch64.so.1` | `/lib64/ld-linux-x86-64.so.2` | `libc.so.6` |
+| `"musl"` (the default) | `/lib/ld-musl-aarch64.so.1` | `/lib/ld-musl-x86_64.so.1` | `libc.so` |
+| `"gnu"` | `/lib/ld-linux-aarch64.so.1` | `/lib64/ld-linux-x86-64.so.2` | `libc.so.6` |
 
 ```toml
 [target]
-os     = "linux"
-arch   = "aarch64"
-interp = "/lib/ld-linux-aarch64.so.1"
-libc   = "libc.so.6"
+os   = "linux"
+arch = "aarch64"
+libc = "gnu"
+link = "dynamic"
 ```
 
-Both are ignored by every other target and by every object backend: only
-[`elf-exe`](objects.md#8b-the-elf-executable-elf-exe-and-elf-exe-x86_64) reads them. The
-single-file CLI (`mc --exe`) has no config and always takes the musl defaults; a glibc host is one
-`mc.toml` away.
+Anything else is refused at the value's own position, with the migration in the message —
+`libc = "libc.so.6"` was the M42 spelling and is not a value any more:
+
+```
+mc.toml:8:8: libc must be gnu or musl (a soname is not a value: gnu is libc.so.6, musl is libc.so): target.libc
+mc.toml:9:8: link must be dynamic or static: target.link
+```
+
+`link = "static"` is an **assertion**, not a switch. The executable writer takes the static path by
+counting imports — a program on `<sys_linux>` imports nothing and gets an image with no
+`PT_INTERP`, no `PT_DYNAMIC` and no PLT — and the key makes that a requirement: with an import in
+the set the build stops rather than quietly producing a dynamic binary.
+
+```
+mc.toml:10:8: static link with a libc needs [linker]: see docs/build.md -- static linking (M46): target.link
+```
+
+A static link against a real `libc.a` is the `[linker]` road ([../build.md](../build.md#the-linker-road-which-is-still-there)):
+with that table present the driver writes the object and hands it over, and `link` never reaches
+the executable writer at all.
+
+`interp` overrides the loader path alone, for a system whose loader is at neither standard place;
+the soname still comes from `libc`.
+
+All three describe a Linux dynamic image, so all three are **refused when this build writes none**
+(`interp applies to a linux target`) instead of being read and ignored, and every object backend
+ignores them: only [`elf-exe`](objects.md#8b-the-elf-executable-elf-exe-and-elf-exe-x86_64) reads
+them. "This build" and not "this `[target]`", because a taught compiler is a binary for the
+**host**: on a Linux host the three keys still describe the compiler `mc build` writes, even when
+`[target]` is macOS. The single-file CLI says the same three things with
+[`--libc=`, `--link=` and `--interp=`](cli.md), in the same words.
 
 `os = "windows"` still says both things: the object is an
 `IMAGE_FILE_MACHINE_ARM64` `.obj` (`coff-obj-arm64`) and `[linker]` is required

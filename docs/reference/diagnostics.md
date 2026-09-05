@@ -277,6 +277,10 @@ notatype main() { return 0; }
 | `posix_spawn_file_actions_init failed` | the spawn could not be set up | same |
 | `xcrun --show-sdk-path failed` | `{sdk}` was used and `xcrun` failed | install the command line tools, or write the SDK path literally |
 | `too many arguments in [linker].args` | more than 64 arguments after `{libs}` expansion | shorten the list |
+| `--libc must be gnu or musl: <value>` | post-M42 patch: `--libc=` with anything else. `libc` names a **family**, not a soname | `gnu` or `musl` ([cli.md](cli.md)) |
+| `--link must be dynamic or static: <value>` | post-M42 patch: `--link=` with anything else | those are the two values |
+| `--libc applies to a linux target` (also `--interp`, `--link`) | post-M42 patch: one of the three Linux flags on a host that is not Linux, with no `--backend=` naming a writer — so the flag would describe an image this command is not going to write. Ignored would be worse than refused | drop the flag, or name the writer: `mc --backend=elf-exe --libc=gnu prog.mc -o prog` cross-builds from any host |
+| `static link with a libc needs [linker]: see docs/build.md -- static linking (M46)` | post-M42 patch: `--link=static` (or `[target].link = "static"`, § 10) on a program that imports a libc symbol. `mc` has no archive linker; the static image it writes is the one for a program that imports **nothing** | either drop the imports (`<sys_linux>` is raw syscalls and imports nothing), or take the `[linker]` road with `ld.lld` and a sysroot ([../build.md](../build.md#the-matrix-libc-x-link)). M46 is the milestone that would remove the need for it |
 
 ## 10. `mc.toml`
 
@@ -308,6 +312,10 @@ does not:
 | `only aarch64 and x86_64 (see docs/build.md)` | `target.arch` | the architectures that operating system was registered with (macOS and Windows have only `aarch64`) |
 | `linux requires [linker]: there is no direct executable` | `target.os` | add a `[linker]` section: there is no `--exe` equivalent for ELF |
 | `<os>/<arch> has no object backend: use kind = "exe"` | `target.os` | the mirror of the row above: the pair is registered, its **object** slot is 0. Only a module can register that — `target(os, arch, 0, exe)` is what a board whose flat image is the whole artefact writes — so it is reached by asking such a target for `kind = "obj"`, or for an `exe` through a `[linker]` (which goes through the object step). Drop the `[linker]` and use `kind = "exe"` |
+| `libc must be gnu or musl (a soname is not a value: gnu is libc.so.6, musl is libc.so)` | `target.libc` | post-M42 patch: the key names a **family**. `libc = "libc.so.6"` was the M42 spelling and the message carries the migration |
+| `link must be dynamic or static` | `target.link` | those are the two values |
+| `libc applies to a linux target` (also `interp`, `link`) | `target.libc`, `target.interp`, `target.link` | post-M42 patch: the three keys describe a Linux dynamic image, which no other target has. Delete the key, or set `os = "linux"` |
+| `static link with a libc needs [linker]: see docs/build.md -- static linking (M46)` | `target.link` | post-M42 patch: `link = "static"` on a program that imports a libc symbol. Raised by the executable **writer**, which counts imports, and reported at the key's own position through the reporter the driver installs (`dyn_die`, `src/objmodel.mc`). Add a `[linker]` — with one present the driver writes the object and hands it over, and the key never reaches the writer |
 
 | `must be a relative path` | `compiler.out` | the generated compiler source lives next to it and includes by relative path |
 | `must not contain ..` | `compiler.out` | same reason; the `..` check runs on the string as written |

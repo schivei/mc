@@ -19,7 +19,8 @@ usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits] 
 ## 1. The single-file compiler
 
 ```
-mc [MODE] [--backend=NAME | --exe] SOURCE [-o OUT]
+mc [MODE] [--backend=NAME | --exe] [--libc=gnu|musl] [--link=dynamic|static]
+   [--interp=PATH] SOURCE [-o OUT]
 ```
 
 Arguments are read left to right. The first non-flag argument is the source; a second one is
@@ -29,7 +30,10 @@ Arguments are read left to right. The first non-flag argument is the source; a s
 | flag | meaning |
 |---|---|
 | `-o OUT` | output path. Default `out.o`. `-o` with nothing after it is `mc: -o requires an argument`. |
-| `--exe` | write a direct executable for the HOST, no linker. The backend is the exe slot of the host's `target()` registration, resolved after `user_init()` (post-M41 review) — `macho-exe` on macOS, a signed Mach-O binary, and `elf-exe` / `elf-exe-x86_64` on Linux, a dynamic ELF64 `ET_EXEC` (M42) whose `PT_INTERP` names **musl's** loader — the two per-libc names are `[target].interp` and `[target].libc`, TOML keys with no command-line form, so a glibc host goes through `mc build` ([`toml.md`](toml.md#target-interp-and-target-libc-the-two-per-libc-names)). A host registered with 0 in that slot has no direct executable at all, and the flag is refused with `<os> requires a linker: there is no direct executable` instead of writing a binary for another operating system; that is the case on Windows, where the road is an object plus `[linker]`. `--exe` and `--backend=` write the same decision, so the last one on the command line wins. |
+| `--exe` | write a direct executable for the HOST, no linker. The backend is the exe slot of the host's `target()` registration, resolved after `user_init()` (post-M41 review) — `macho-exe` on macOS, a signed Mach-O binary, and `elf-exe` / `elf-exe-x86_64` on Linux, a dynamic ELF64 `ET_EXEC` (M42) whose `PT_INTERP` names **musl's** loader unless `--libc=gnu` says otherwise. A host registered with 0 in that slot has no direct executable at all, and the flag is refused with `<os> requires a linker: there is no direct executable` instead of writing a binary for another operating system; that is the case on Windows, where the road is an object plus `[linker]`. `--exe` and `--backend=` write the same decision, so the last one on the command line wins. |
+| `--libc=gnu\|musl` | which C library **family** a dynamic Linux executable is linked against — the command-line form of [`[target].libc`](toml.md#target-libc-and-target-link-the-two-axes-of-a-linux-target), and the same two words. It picks the `PT_INTERP` path and the `DT_NEEDED` soname together (`gnu`: `/lib/ld-linux-aarch64.so.1` or `/lib64/ld-linux-x86-64.so.2` + `libc.so.6`; `musl`, the default: `/lib/ld-musl-<arch>.so.1` + `libc.so`). Anything else is `mc: --libc must be gnu or musl: <value>`. |
+| `--link=dynamic\|static` | the command-line form of [`[target].link`](toml.md#target-libc-and-target-link-the-two-axes-of-a-linux-target). `static` is an **assertion**: the writer already takes the static path for a program that imports nothing, and the flag makes that a requirement — with an import in the set it refuses with `mc: static link with a libc needs [linker]: see docs/build.md -- static linking (M46)` instead of writing a dynamic binary. Anything else is `mc: --link must be dynamic or static: <value>`. |
+| `--interp=PATH` | the loader path alone, overriding the family's — the command-line form of `[target].interp`, for a system whose loader is at neither standard place. The soname still comes from `--libc=`. |
 | `--backend=NAME` | pick a registered backend. Built in: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64`, `elf-exe`, `elf-exe-x86_64`, `coff-obj-arm64`, `coff-obj-x86_64`. The default is the HOST's object backend — the object slot of the host's `target()` registration, `macho` on macOS and `elf-obj`/`elf-obj-x86_64` on Linux (M37) — resolved after `user_init()` like `--exe`'s (post-M41 review), so a module that re-registers the host pair is honoured here too. A host registered with 0 in that slot has no object step at all, and the default is refused with `<os>/<arch> has no object backend: use --exe`. A taught compiler adds its own with `backend("name", &f)`. An unknown name lists what exists and exits 1. |
 | `--include=DIR` | add one `#include "…"` search root, exactly like a `[include].paths` entry does for `mc build`. Repeatable; roots are tried in the order given, after the includer's own directory. It is what lets one source tree carry two platform layers in different directories and pick one without a `mc.toml` (`examples/conc/lib/macos`, `lib/linux`). |
 | `--host` | print what this binary is and exit 0 — three lines, no source needed. |
@@ -64,9 +68,20 @@ $ llvm-readelf -h hello | grep Type
   Type:                              EXEC (Executable file)
 ```
 
-The single-file CLI has no config, so those two always take the musl defaults for the interpreter
-path and the `DT_NEEDED` soname; glibc is `[target].interp` / `[target].libc` in an `mc.toml`
-([toml.md](toml.md#target-interp-and-target-libc-the-two-per-libc-names)).
+The three flags above say the rest, so a source never has to become a project to name its libc:
+
+```
+$ mc --backend=elf-exe --libc=gnu hello.mc -o hello
+$ llvm-readelf -l -d hello | grep -E 'interpreter|NEEDED'
+      [Requesting program interpreter: /lib/ld-linux-aarch64.so.1]
+ 0x0000000000000001 (NEEDED)   Shared library: [libc.so.6]
+```
+
+The compiler **never probes the host** for its libc — one source, one answer on every machine
+([../determinism.md](../determinism.md)) — so the default is the constant `musl` and `--libc=gnu`
+is how a glibc host says so. All three describe a Linux dynamic image: with no `--backend=` naming
+a writer and a host that is not Linux, they are refused (`mc: --libc applies to a linux target`)
+rather than read and ignored. The last one on the command line wins, like every other flag here.
 
 ### Modes: the six dumps
 

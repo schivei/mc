@@ -2241,6 +2241,75 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   (e), the compiler itself built dynamically against glibc and taken to its own fixed point (f),
   note 5's unreachable `uptr p[] = { &write }` corrected (g), and note 10's `open` claim
   re-measured and **not reproduced** (h).
+- Post-M42 patch (owner's two decisions, 2026-09-04; `docs/specs/M42.md` note 12 CLOSED,
+  `docs/build.md` § Linux targets): **the target belongs to the developer -- one vocabulary for
+  the Linux matrix, and `mc --exe` can say it.** `stage0/` untouched (2848/3000, `git diff main --
+  stage0/` empty).
+  1. **`[target].libc` stopped being a soname and became a FAMILY**: `gnu` or `musl`, and the
+     family names the `PT_INTERP` path and the `DT_NEEDED` soname TOGETHER (`gnu` ->
+     `/lib/ld-linux-aarch64.so.1` or `/lib64/ld-linux-x86-64.so.2` + `libc.so.6`; `musl`, the
+     default -> `/lib/ld-musl-<arch>.so.1` + `libc.so`). They always travel together and a file
+     that names them one at a time is a file that can name half a libc. The M42 spelling is
+     refused WITH the migration in the message -- `libc must be gnu or musl (a soname is not a
+     value: gnu is libc.so.6, musl is libc.so)` -- and the two configs that used it,
+     `src/mc.linux-<arch>-gnu.toml`, each lost a key. `[target].interp` stays as the explicit
+     loader-path override.
+  2. **`[target].link = "dynamic" | "static"`** is new. `static` does NOT select the static image
+     -- the import count still does, exactly as M42 wrote it -- it **asserts** it: a program that
+     imports a libc symbol is refused with `static link with a libc needs [linker]: see
+     docs/build.md -- static linking (M46)` instead of being handed a dynamic binary it did not
+     ask for. With a `[linker]` present the driver takes the object+linker road as before and the
+     key never reaches the writer.
+     The refusal is raised by the WRITER (only the import set answers it) and reported at the
+     KEY's `file:line:col` -- `dyn_die(key, msg)` in `src/objmodel.mc` calls a reporter the
+     driver installs (`dyn_err_fn = &toml_err_key`) and falls back to `die()` on the CLI road.
+     A writer must not know what TOML is and a `mc.toml` diagnostic must not lose its position;
+     this is the one line that satisfies both.
+  3. **Three CLI flags mirror the three keys**: `--libc=gnu|musl`, `--link=dynamic|static`,
+     `--interp=PATH` (`src/cli.mc`), last one wins. **No probe of the host, ever** -- the default
+     stays the constant musl, because one source must give one answer on every machine
+     (`docs/determinism.md`); the probing belongs to the SCRIPTS. Off Linux, with no `--backend=`
+     naming a writer, each is refused (`mc: --libc applies to a linux target`) rather than
+     ignored. The TOML refusal uses the same condition, `[target].os != linux && host != linux`
+     -- not `[target]` alone -- because a taught compiler is a binary for the HOST, so on a Linux
+     host the keys still describe the compiler `mc build` writes.
+  4. **One vocabulary everywhere.** `scripts/test-linux.sh`, `scripts/bootstrap-linux.sh` and
+     `scripts/check-linux-host.sh` take `--libc musl|gnu`; the value `glibc` is refused with the
+     rename spelled out. `scripts/test-exe.sh` and `scripts/build-exe.sh` LOST their `mc build`
+     detour entirely (-46 lines between them): they are `mc --exe --libc=$(probe)` now, which is
+     what decision (1) was for. The Makefile and `.github/workflows/ci.yml` pass `--libc gnu`.
+  -- core cost: `src/objmodel.mc` +48/-11 (24 code), `src/driver.mc` +40/-10 (19 code),
+  `src/cli.mc` +33/-2 (20 code), `src/backend_elf_exe.mc` +26/-8 (9 code).
+  New: `tests/proj/lin-libc.mc` and four configs (`linux-musl`, `linux-gnu`, `linux-static`,
+  `linux-static-linker`); `scripts/check-build.sh` +217 lines -- **the whole matrix, both roads,
+  with no Docker**: musl/dynamic and gnu/dynamic built and read with `llvm-readelf` (`PT_INTERP`
+  + `DT_NEEDED`), none/static with neither program header, gnu|musl/static through `[linker]`
+  (object + spawn, `echo` standing in for `ld.lld`), the four CLI cases (`--libc=gnu`,
+  `--libc=musl`, `--interp=` overriding, the last flag winning) and seven refusals verbatim.
+  `make check-build` 21/21 -> **47/47**.
+  -- `make bundle` re-run before bootstrapping (78 files, raw 848230 -> LZ 395264, blob 396217 B).
+  `make check` green end to end (RC 0, zero FAIL): `test` 32/32, `check-lex` 126/126 (2 skipped),
+  `check-ast`/`check-asm` 126/126, `check-obj` **32/32 identical to the frozen seed**,
+  `check-bundle`, `bootstrap` at a fixed point (`mc2.o == mc3.o`, 925176 B; the `--dump-asm` diff
+  between `mc1` and `mc2` is **empty**), `check-surface` 32/32, `test-exe` **32/32 via `--exe`**,
+  `check-mc`, `check-standalone`, `check-toml`, **`check-build` 47/47**, `check-stubs`,
+  `check-limits` 17/17 under 90%, `test-linux` 34/34 and `test-linux-x86_64` 31/31, the four
+  `--exe` cells **37/37 (aarch64 musl, alpine:3), 37/37 (aarch64 gnu, ubuntu:latest), 34/34
+  (x86_64 musl) and 34/34 (x86_64 gnu)**, `test-windows` / `test-windows-x86_64`, `check-float`,
+  `check-wide`,
+  `check-examples`, `check-lang`, `check-conc`, `check-desktop`, `check-kernel`, `check-avr`,
+  `check-docs` (183 symbols, 22 flags, 20 TOML keys, 10 directives, 47 samples, 277 links),
+  `site` 84 pages + `check-site` (0 link problems, 84 files 0 problems, 50 contrast pairs 0 below
+  the minimum). `scripts/check-inert.sh` against a `build/mc1` built from `main`: **33 objects and
+  all five taught examples byte-identical** -- the keys and the flags are inert when nobody writes
+  them. `make check-linux-host` RC 0, all four cells: fixed point `mc2l.o == mc3l.o` on both
+  architectures under musl AND under gnu, the suite native through `mc --exe` (35/35 aarch64,
+  32/32 x86_64 on the gnu cells) and the cross proof against the macOS `build/mc2.o` in each.
+  The five goldens rewritten once, each only after its own criterion: `mc2.sha256`
+  `7baa684a...b2c5` -> `2b919a15f9509a10c6a26e795a9107b8cff8c064077895132de27c75f9913601`, the
+  Linux pair deleted and re-recorded by `make check-linux-host`
+  (`d899ec57...8117`, `d1fa7e6c...deb9`) and the Windows pair cross-computed per
+  `tests/golden/README.md` (`0ea0599b...d97c`, `c5364e3a...74d3`).
 - Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
   `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
   from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:
