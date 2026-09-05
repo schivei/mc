@@ -247,8 +247,12 @@ repository's glibc baseline. The seed is `build/mc-linux-<target>-gnu`, and **no
 in the container**: no `make`, no `lld`, no `musl-dev`.
 
 1. `scripts/bootstrap-linux.sh --libc gnu <seed>` — the same four stages, with every executable
-   written by the previous compiler through `--exe --libc=gnu` instead of by a linker, then the
-   whole suite through `scripts/test-linux.sh --exe --libc gnu`, natively;
+   written by the previous compiler's `elf-exe` writer instead of by a linker. The script goes
+   through `mc build` with a generated config (`[target].libc = "gnu"` plus
+   `[limits] tolerance = 1.0`) rather than through `mc --exe --libc=gnu`: the tolerance is a key
+   the command line cannot carry, and `src/mc.mc` needs it so that no table doubles mid-build
+   (the header of `scripts/bootstrap-linux.sh` says so). Then the whole suite through
+   `scripts/test-linux.sh --exe --libc gnu`, natively;
 2. the same cross proof.
 
 The golden is the same file in both cells: an ELF object records no interpreter, so the musl chain
