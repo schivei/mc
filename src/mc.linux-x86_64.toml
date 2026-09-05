@@ -2,7 +2,7 @@
 # (M37, docs/guide/90-linux-host.md).
 #
 #   build/mc1 build src --config src/mc.linux-x86_64.toml
-#   -> build/mc-linux-x86_64          an ELF64 executable, musl, statically linked
+#   -> build/mc-linux-x86_64   a DYNAMIC ELF64 executable, no linker, no sysroot
 #
 # The entry is src/mc_linux_x86_64.mc: the same core and the same extension point as
 # src/mc.mc, with the Linux host layer instead of the macOS one. Nothing else
@@ -12,9 +12,21 @@
 # Every path below is relative to THIS FILE's directory (src/), which is why
 # they all start with `../`.
 #
-# The sysroot is the four musl files scripts/sysroot-linux.sh copies out of
-# alpine:3; `make sysroot-linux` populates it. There is no [compiler] section:
-# this is the plain compiler, not a taught one.
+# M42: this file used to carry a [linker] table and a [sysroot] table, and it
+# carries neither now. `os = "linux"` has a direct-executable backend since M42
+# (`elf-exe` / `elf-exe-x86_64`), so `mc build` writes the binary itself: a
+# dynamic ELF64 ET_EXEC naming the musl loader in PT_INTERP and libc.so in
+# DT_NEEDED. Nothing outside the compiler is involved -- no ld.lld, no crt1.o,
+# no libc.a, no `make sysroot-linux`. That is the milestone's point, and this
+# file is where the compiler itself takes it.
+#
+# For glibc, add `interp` and `libc` to [target]
+# (docs/reference/toml.md, the [target] section). For a STATIC link against a
+# real libc, put the two tables back: that is still supported and it is still
+# the only route to one. src/mc.linux-<arch>-obj.toml is the CI half and is
+# unchanged -- it stops at the object, which the Linux runner links itself.
+#
+# There is no [compiler] section: this is the plain compiler, not a taught one.
 
 [project]
 name  = "mc-linux-x86_64"
@@ -25,17 +37,6 @@ kind  = "exe"
 [target]
 os   = "linux"
 arch = "x86_64"
-
-[sysroot]
-path = "../build/sysroot/linux-x86_64"
-
-# `os = "linux"` has no direct executable backend, so [linker] is required. The
-# argument list is the one scripts/test-linux.sh uses for every test, plus
-# nothing: crt1/crti, the object, libc.a, crtn.
-[linker]
-cmd  = "ld.lld"
-args = ["-o", "{out}", "{sysroot}/crt1.o", "{sysroot}/crti.o", "{obj}",
-        "{sysroot}/libc.a", "{sysroot}/crtn.o"]
 
 # The compiler compiling itself is the biggest source in the repository; at the
 # default 0.25 several tables double mid-build. 1.0 keeps the whole build inside

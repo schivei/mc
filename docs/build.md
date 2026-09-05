@@ -1,4 +1,4 @@
-# build.md — `mc build` and `mc.toml` (M14), the bundle and `#embed` (M15), Linux targets (M16), Windows targets (M19/M20), limits (M23), a Linux host (M37), a Windows host (M38)
+# build.md — `mc build` and `mc.toml` (M14), the bundle and `#embed` (M15), Linux targets (M16), Windows targets (M19/M20), limits (M23), a Linux host (M37), a Windows host (M38), the Linux executable (M42)
 
 Through M13 the only way to compile was one file at a time:
 
@@ -460,7 +460,7 @@ prog.mc:1: unknown bundled include: no/such/module
 | names | files |
 |---|---|
 | `sys`, `sys_svc`, `sys_linux`, `io`, `prelude`, `lz`, `backend_arm64`, `pass_demo`, `user_default`, … | every `lib/*.mc`, plus `src/lz.mc` (a library, not only a compiler module) |
-| `mc/core`, `mc/arena`, `mc/lex`, `mc/parse`, `mc/gen_resolve`, `mc/gen_walk`, `mc/machine_arm64`, `mc/backend_exe`, `mc/backend_elf`, … | every module `src/core.mc` includes |
+| `mc/core`, `mc/arena`, `mc/lex`, `mc/parse`, `mc/gen_resolve`, `mc/gen_walk`, `mc/machine_arm64`, `mc/backend_exe`, `mc/backend_elf`, `mc/backend_elf_exe`, … | every module `src/core.mc` includes |
 
 Everything a taught compiler needs is there, which is what makes `<mc/core>` complete.
 
@@ -675,19 +675,78 @@ seed is frozen. That is why their tests live in `tests/mc/` rather than in `test
 
 ---
 
-## M16 / M17 — Linux targets (`os = "linux"`, `arch = "aarch64"` or `"x86_64"`)
+## M16 / M17 / M42 — Linux targets (`os = "linux"`, `arch = "aarch64"` or `"x86_64"`)
 
-`os = "linux"` in `[target]` makes `mc build` write an **ELF64 relocatable** instead of a Mach-O
-and hand it to the linker named in `[linker]`. Nothing else in the file changes, and nothing in
-`stage0/` changes: the ELF writer is `src/backend_elf.mc`, a backend registered like any other
-(`--backend=elf-obj` and `--backend=elf-obj-x86_64` also work from the single-file CLI).
+`os = "linux"` in `[target]` makes `mc build` write **ELF** instead of Mach-O. Nothing else in the
+file changes, and nothing in `stage0/` changes: both writers are backends registered like any
+other, and both also work from the single-file CLI.
+
+| `kind` | `[linker]` | what is written |
+|---|---|---|
+| `"exe"` (the default) | absent | a **dynamic ELF64 `ET_EXEC`**, by `mc` alone (M42: `elf-exe`, `elf-exe-x86_64`) |
+| `"exe"` | present | an ELF64 `ET_REL`, handed to the linker — the only route to a **static** libc link |
+| `"obj"` | ignored | an ELF64 `ET_REL` and nothing more |
+
+**Since M42 a Linux executable needs no linker and no sysroot.** The shortest complete `mc.toml`
+for Linux is six lines:
+
+```toml
+[project]
+entry = "hello.mc"
+out   = "build/hello"
+
+[target]
+os   = "linux"
+arch = "aarch64"
+```
+
+```
+$ build/mc1 build . --config linux.toml
+compile hello.mc -> build/hello
+$ docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w alpine:3 /w/build/hello
+hello
+```
+
+The binary asks for musl's loader (`/lib/ld-musl-<arch>.so.1`) and `libc.so`; `[target].interp`
+and `[target].libc` name glibc's instead
+([reference/toml.md](reference/toml.md#target-interp-and-target-libc-the-two-per-libc-names)):
+
+```toml
+[target]
+os     = "linux"
+arch   = "aarch64"
+interp = "/lib/ld-linux-aarch64.so.1"    # /lib64/ld-linux-x86-64.so.2 on x86_64
+libc   = "libc.so.6"
+```
+
+**Which one you pick decides where the binary runs.** `PT_INTERP` is an absolute path, so a
+musl-linked binary on a glibc system does not start at all — the kernel cannot find the
+interpreter and reports `no such file or directory` about a program that is plainly there — and a
+glibc-linked binary on Alpine fails the same way. Both are exercised on both architectures:
+`make test-linux-exe` and `make test-linux-x86_64-exe` run the whole corpus twice, musl in
+`alpine:3` and glibc in `ubuntu:latest` (`scripts/test-linux.sh --exe [--libc glibc]`), and the
+CI legs run the glibc set natively on the Ubuntu runners. The **object** does not depend on the
+choice: an ELF `ET_REL` records no interpreter.
+A program with no undefined symbol at all — anything on `<sys_linux>` — comes out static, with no
+`PT_INTERP` and no `PT_DYNAMIC`, and that is decided by counting imports rather than by a key.
+The layout, field by field, is
+[reference/objects.md § 8b](reference/objects.md#8b-the-elf-executable-elf-exe-and-elf-exe-x86_64).
+
+`arch = "x86_64"` (M17 step B) changes the instruction set and three fields of the object —
+`e_machine`, the relocation numbers and their addend — and nothing else: the same `gen_lower`, the
+same two-pass encoder, the same section table, the same symbol partition. What it swaps is the
+**machine** behind the walker (`src/machine_x86_64.mc`, [reference/machine.md](reference/machine.md)).
 
 `arch = "x86_64"` (M17 step B) changes the instruction set and three fields of the file —
 `e_machine`, the relocation numbers and their addend — and nothing else: the same `gen_lower`, the
 same two-pass encoder, the same section table, the same symbol partition. What it swaps is the
 **machine** behind the walker (`src/machine_x86_64.mc`, [reference/machine.md](reference/machine.md)).
 
-The real config — this is exactly what `scripts/test-linux.sh` generates, with absolute paths:
+### The linker road, which is still there
+
+`[linker]` is what a **static** link against a real libc goes through, and that is the one thing
+the direct executable cannot do. This is exactly what `scripts/test-linux.sh` generates in its
+object+link mode, with absolute paths:
 
 ```toml
 [project]
@@ -717,15 +776,18 @@ $ docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w alpine:3 /w/build/he
 hello
 ```
 
-`[linker]` is **required** for `os = "linux"`; there is no `macho-exe` equivalent that writes a
-Linux executable directly, and asking for one says so:
+Until M42 that table was **required**: `linux requires [linker]: there is no direct executable`
+was the message for a Linux `mc.toml` without one. It is gone for Linux and still there for
+Windows, whose PE executable writer is a separate milestone.
 
-```
-$ build/mc1 build tests/proj --config /tmp/d.toml
-/tmp/d.toml:6:6: linux requires [linker]: there is no direct executable: target.os
-```
+### The sysroot — when it is still needed
 
-### The sysroot
+**Not for a dynamic executable.** A dynamic binary needs *names* (the interpreter path, the
+`DT_NEEDED` soname, the symbol names), and a name is not a file to download. The four files below
+exist to serve the **static external link**, which is the `[linker]` road above:
+`examples/api`-style projects that link a real library statically, and anything that must run on a
+machine with no dynamic libc at all. Running on a glibc system is **not** one of those cases: it
+is `[target].interp` plus `[target].libc`, two names and no files.
 
 `scripts/sysroot-linux.sh [--arch aarch64|x86_64]` fills `build/sysroot/linux-<arch>` by running
 `apk add musl-dev` inside a throwaway Alpine container of the matching platform (`linux/arm64` or
@@ -1681,9 +1743,10 @@ three.
   of `macho-exe`, so `ld.lld` (or any linker named in the config) does the layout.
 - **The taught compiler is always built for the host, never for `[target]`.** It is a tool that
   has to run here, not part of the artifact. Which backend that is comes from the target registry,
-  looked up with the *host's* pair: on macOS `macho-exe`, one step. On a host with no
-  direct-executable backend — Linux — it is the host's object backend plus `[linker]`, the same
-  section the entry uses, and a project that teaches the compiler there without one gets
+  looked up with the *host's* pair: on macOS `macho-exe` and, since M42, `elf-exe` /
+  `elf-exe-x86_64` on Linux — one step in both cases. On a host with no direct-executable
+  backend — Windows — it is the host's object backend plus `[linker]`, the same section the entry
+  uses, and a project that teaches the compiler there without one gets
   `a taught compiler on this host needs [linker]: there is no direct executable`.
 - ~~**`mc` itself does not cross-compile yet**~~ — done in M37. `_NSGetEnviron` was the single
   blocker (libSystem's way of reaching `environ`, with no musl equivalent), and it now lives in

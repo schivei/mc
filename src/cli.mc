@@ -257,10 +257,11 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
     // backend at all. `--backend=NAME` skips the whole block: it named one.
     //
     // A 0 in either slot is a REGISTRATION saying this target does not have
-    // that role -- 0 in the exe slot is linux and windows (src/core_writers.mc),
-    // 0 in the object slot is what a board whose flat image is the whole
-    // artefact writes (examples/kernel) -- and neither may reach backend_find(),
-    // which takes a name and would dereference it. Both messages are the
+    // that role -- 0 in the exe slot is windows (src/core_writers.mc; linux had
+    // one too until M42 filled it), 0 in the object slot is what a board whose
+    // flat image is the whole artefact writes (examples/kernel) -- and neither
+    // of the two may reach backend_find(), which takes a name and would
+    // dereference it. Both messages are the
     // driver's (drv_backend_for, src/driver.mc), with what a TOML file would do
     // replaced by what a command line can: `[linker]` becomes "a linker" and
     // `kind = "exe"` becomes `--exe`.

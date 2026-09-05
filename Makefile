@@ -134,9 +134,12 @@ check-parts: build/mc1
 	scripts/check-parts.sh build/mc1
 
 # M11: the whole suite via the direct executable (--exe), no ld. Only the
-# .mc compiler has this backend, so the target depends on build/mc1.
-test-exe: build/mc1
-	scripts/test-exe.sh build/mc1
+# .mc compiler has this backend, so the target depends on $(MC) -- which is
+# build/mc1 on macOS and, since M42, the bootstrapped build/mc2l on a Linux
+# host, where `--exe` writes a dynamic ELF64 executable and is equally the whole
+# toolchain. Naming build/mc1 here would ask a Linux container for clang.
+test-exe: $(MC)
+	scripts/test-exe.sh $(MC)
 
 bootstrap: stage0
 	scripts/bootstrap.sh
@@ -192,6 +195,41 @@ test-linux-x86_64: build/mc1
 	    echo "test-linux-x86_64: SKIPPED (docker is not running; see docs/build.md § Linux targets)"; \
 	else \
 	    scripts/test-linux.sh --arch x86_64 build/mc1; \
+	fi
+
+# M42: the same two suites with THE LINKER OUT OF THE PATH -- `mc build` writes
+# the dynamic ELF64 executable itself (`elf-exe` / `elf-exe-x86_64`), with no
+# [linker], no crt1.o and no libc.a, and the mode moves the cached sysroots
+# aside while it runs to prove it. Only Docker is needed, to RUN the binaries,
+# so the guard is one condition shorter than test-linux's.
+#
+# Each target runs BOTH libcs, because [target].interp and [target].libc are the
+# only per-libc facts in the file and each one has its own oracle: musl in
+# `alpine:3` and glibc in `ubuntu:latest` (the newest Ubuntu). The glibc half
+# skips itself with a reason when that image is not available, so a machine with
+# only the alpine image cached still gets the musl half.
+test-linux-exe: build/mc1
+	@if ! docker info > /dev/null 2>&1; then \
+	    echo "test-linux-exe: SKIPPED (docker is not running; see docs/build.md § Linux targets)"; \
+	else \
+	    scripts/test-linux.sh --exe build/mc1 || exit 1; \
+	    if docker image inspect ubuntu:latest > /dev/null 2>&1 || docker pull -q ubuntu:latest > /dev/null 2>&1; then \
+	        scripts/test-linux.sh --exe --libc glibc build/mc1 || exit 1; \
+	    else \
+	        echo "test-linux-exe (glibc): SKIPPED (no ubuntu:latest image and it cannot be pulled)"; \
+	    fi; \
+	fi
+
+test-linux-x86_64-exe: build/mc1
+	@if ! docker info > /dev/null 2>&1; then \
+	    echo "test-linux-x86_64-exe: SKIPPED (docker is not running; see docs/build.md § Linux targets)"; \
+	else \
+	    scripts/test-linux.sh --arch x86_64 --exe build/mc1 || exit 1; \
+	    if docker image inspect ubuntu:latest > /dev/null 2>&1 || docker pull -q ubuntu:latest > /dev/null 2>&1; then \
+	        scripts/test-linux.sh --arch x86_64 --exe --libc glibc build/mc1 || exit 1; \
+	    else \
+	        echo "test-linux-x86_64-exe (glibc): SKIPPED (no ubuntu:latest image and it cannot be pulled)"; \
+	    fi; \
 	fi
 
 # M19: the Windows sysroot -- kernel32.def plus the import library llvm-dlltool
@@ -405,13 +443,15 @@ mcrt-windows-x86_64: build/mc1
 	build/mc1 --backend=coff-obj-x86_64 lib/sys_windows_host.mc  -o build/sysroot/windows-x86_64/mcrt.obj
 
 # M37: cross-building `mc` itself for a Linux host, from macOS. Two configs,
-# two ELF executables, both statically linked against musl by ld.lld. The
-# sysroot prerequisite is what needs Docker: scripts/sysroot-linux.sh copies the
-# four musl files out of alpine:3.
-mc-linux: build/mc1 sysroot-linux
+# two ELF executables.
+# M42: DYNAMIC executables, written by `mc build` itself -- the two configs lost
+# their [linker] and their [sysroot], so these targets no longer need Docker,
+# no longer need ld.lld and no longer depend on sysroot-linux. Cross-building
+# the compiler for Linux is now one command with nothing installed.
+mc-linux: build/mc1
 	build/mc1 build src --config src/mc.linux-aarch64.toml
 
-mc-linux-x86_64: build/mc1 sysroot-linux-x86_64
+mc-linux-x86_64: build/mc1
 	build/mc1 build src --config src/mc.linux-x86_64.toml
 
 # M37: the same cross-build stopped one step earlier -- `kind = "obj"`, so no
@@ -450,7 +490,7 @@ check-skipped:
 	@echo "check-build: SKIPPED (tests/proj targets macos/aarch64 through ld)"
 	@echo "check-stubs: SKIPPED (its acceptance links a macOS binary with ld64.lld and runs it)"
 	@echo "check-minimal: SKIPPED (its ceilings are measured on the macOS backends)"
-	@echo "test-linux/test-linux-x86_64: SKIPPED (cross-compilation from macOS, with Docker)"
+	@echo "test-linux/test-linux-x86_64 (+ the two --exe modes): SKIPPED (cross-compilation from macOS, with Docker)"
 	@echo "test-windows/test-windows-x86_64: SKIPPED (cross-compilation from macOS; here the suite is native)"
 	@echo "check-examples/check-lang/check-conc/check-desktop: SKIPPED (macOS dylibs and --exe)"
 	@echo "check-docs/site/check-site: SKIPPED (their samples are built with --exe)"
@@ -458,13 +498,12 @@ else
 check-skipped:
 	@echo "budget/stage0: the C seed is macOS-first -- it emits Mach-O only (docs/bootstrap.md)"
 	@echo "bootstrap: SKIPPED (macOS chain: mc0 -> mc1 -> mc2 -> mc3; bootstrap-linux is the Linux one)"
-	@echo "test-exe: SKIPPED (--exe is refused on this host: linux has no direct executable; it links with ld.lld)"
 	@echo "check-standalone: SKIPPED (its criterion is a signed Mach-O executable)"
 	@echo "check-surface: SKIPPED (its cases build taught compilers with --exe)"
 	@echo "check-build: SKIPPED (tests/proj targets macos/aarch64 through ld)"
 	@echo "check-stubs: SKIPPED (its acceptance links a macOS binary with ld64.lld and runs it)"
 	@echo "check-minimal: SKIPPED (its ceilings are measured on the macOS backends)"
-	@echo "test-linux/test-linux-x86_64: SKIPPED (cross-compilation from macOS; here the suite is native)"
+	@echo "test-linux/test-linux-x86_64 (+ the two --exe modes): SKIPPED (cross-compilation from macOS; here the suite is native)"
 	@echo "test-windows: SKIPPED (cross-compilation from macOS; the windows-11-arm CI leg is the runtime oracle)"
 	@echo "test-windows-x86_64: SKIPPED (cross-compilation from macOS; the windows-2025 CI leg is the runtime oracle)"
 	@echo "check-examples/check-lang/check-conc/check-desktop: SKIPPED (macOS dylibs and --exe)"
@@ -472,14 +511,14 @@ check-skipped:
 endif
 
 ifeq ($(HOST),Linux)
-check: budget bootstrap-linux check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-sysroots check-limits check-skipped
+check: budget bootstrap-linux check-lex check-ast check-asm check-obj check-bundle check-mc test-exe check-toml check-sysroots check-limits check-skipped
 else ifneq (,$(WINHOST))
 # M38: the Windows subset. Everything not here needs `mc` plus something this
 # host does not have -- the C seed, the Mach-O direct-executable backend, GTK4,
 # Docker or python3 -- and `check-skipped` prints the reason for each one.
 check: budget bootstrap-windows check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-sysroots check-limits check-skipped
 else
-check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-parts check-toml check-build check-sysroots check-stubs check-limits check-minimal test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-desktop check-float check-wide check-kernel check-avr check-docs site check-site
+check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-parts check-toml check-build check-sysroots check-stubs check-limits check-minimal test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-desktop check-float check-wide check-kernel check-avr check-docs site check-site test-linux-exe test-linux-x86_64-exe
 endif
 
 budget:
@@ -491,7 +530,7 @@ clean:
 .PHONY: bootstrap-linux mc-linux mc-linux-x86_64 mc-linux-obj mc-linux-x86_64-obj
 .PHONY: check-linux-host check-skipped
 .PHONY: bootstrap-windows mc-windows mc-windows-x86_64 mc-windows-obj mc-windows-x86_64-obj
-.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-parts check-toml check-build check-sysroots check-stubs check-limits sysroot-linux sysroot-linux-x86_64 sysroot-windows sysroot-windows-x86_64 test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal mcrt-windows mcrt-windows-x86_64 check-float check-wide check-kernel check-avr
+.PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-parts check-toml check-build check-sysroots check-stubs check-limits sysroot-linux sysroot-linux-x86_64 sysroot-windows sysroot-windows-x86_64 test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal mcrt-windows mcrt-windows-x86_64 check-float check-wide check-kernel check-avr test-linux-exe test-linux-x86_64-exe
 
 # M32: examples/desktop -- a GTK4 application written in mc, and the same
 # application with its widget tree written in a UI language taught by ui.mc.

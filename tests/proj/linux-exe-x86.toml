@@ -1,0 +1,9 @@
+# linux-exe-x86.toml — the same file for the other Linux architecture, so the
+# check covers both executable backends M42 registered.
+[project]
+entry = "lin.mc"
+out   = "build/lin-exe-x86"
+
+[target]
+os   = "linux"
+arch = "x86_64"

@@ -2081,6 +2081,166 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `mc2-windows-x86_64.sha256`
   `0163654105ea20cf13faf88203a7fecefa7ff41664f20ed5f0d5b8737fdd5e73` (898911 B), both also
   produced byte for byte by `build/mc2`.
+- M42 done (`docs/specs/M42.md`, incl. its new § Implementation notes): **`elf-exe` and
+  `elf-exe-x86_64` -- a dynamic ELF64 `ET_EXEC` writer, so `--exe` works on Linux and a Linux
+  `mc build` needs no `[linker]` and no sysroot.** `stage0/` untouched (2848/3000).
+  `src/backend_elf_exe.mc` (956 lines, ~500 of them code) is to `src/backend_elf.mc` what
+  `src/backend_exe.mc` is to `src/macho.mc`: the same `gen_lower` + `gen_encode_all` in front,
+  the same sections/symbols/relocations behind, and then instead of handing the relocations to
+  `ld.lld` it lays out the segments, resolves everything in place and writes the loader's tables.
+  `ET_EXEC` at `0x400000` (not PIE: no `R_*_RELATIVE`, and no ASLR -- documented, priced as a
+  follow-up); `DT_BIND_NOW` + `DF_1_NOW` (no lazy binding, no PLT0, no resolver); `PT_PHDR`,
+  `PT_INTERP`, one `PT_LOAD` per Mach-O segment name (the grouping `backend_exe.mc` already uses,
+  so a `#section` with its own segment gets its own load), `PT_DYNAMIC`, `PT_GNU_STACK` **RW and
+  never X**; `p_align` 64 KiB on aarch64 and 4 KiB on x86-64 (§ Risks 3). One PLT stub
+  (`adrp x16 / ldr x17 / br x17 / nop`, or `jmp qword ptr [rip+got] / int3 / int3`) and exactly
+  one 8-byte GOT slot per import; a real SysV `DT_HASH` (`nbucket = nchain = 1 + imports`).
+  **`JUMP_SLOT` is the only dynamic relocation kind in the file**: a reference to an import -- a
+  call, and equally `&write` in an expression (the global-initializer form the spec first cited,
+  `uptr p[] = { &write }`, is not syntax this language has: it is `initializer must be constant`)
+  -- resolves in place to its stub, which is the canonical address a
+  linker gives an imported function in a non-PIE executable, so no `GLOB_DAT` is needed (mc
+  imports functions, never data). Relocations are patched with `backend_exe.mc`'s four patchers:
+  they encode instructions, and an instruction has no file format.
+  **The static case is the degenerate case, decided by COUNTING imports and never by a flag**:
+  with none there is no `PT_INTERP`, no `PT_DYNAMIC`, no `.dynsym`/`.dynstr`/`.hash`/`.rela.plt`,
+  no PLT and no GOT.
+  Deviations, all in § Implementation notes: **section headers ARE written** (plus a full
+  `.symtab`/`.strtab` with final addresses -- no loader reads them, but `llvm-readelf`, `llvm-nm`,
+  `llvm-objdump -d` and a debugger do); the **entry point** is the program's own `_start` when it
+  has one (`<sys_linux>`) and otherwise a synthesized `.text.mcstart` -- 7 AArch64 instructions
+  (28 B) or 34 x86-64 bytes -- that reads argc/argv/envp off the entry stack, calls `main` and
+  exits by **raw `exit_group` syscall**, so it costs no import; both segments are page-padded in
+  the file so `p_offset == p_vaddr (mod p_align)` holds by construction; `DT_NEEDED` is emitted
+  for the default library even when every import is claimed by a `#dylib`, as `macho-exe` always
+  emits `LC_LOAD_DYLIB` for libSystem.
+  **Two TOML keys, not one** (decision 6 asked for the interpreter path; glibc needs a second
+  name): `[target].interp` and `[target].libc`, musl by default
+  (`/lib/ld-musl-<arch>.so.1`, `libc.so`), glibc one config line away
+  (`/lib/ld-linux-aarch64.so.1` or `/lib64/ld-linux-x86-64.so.2`, `libc.so.6`). `src/driver.mc`
+  reads them into two globals declared in `src/objmodel.mc` and NOT in the writer, because
+  `<mc/core_build>` may be assembled without `<mc/core_writers>` and must still compile
+  (`scripts/check-parts.sh` § 1b).
+  One more core edit, forced: `lim_seeds[T_BACKENDS]` 8 -> 16 in `src/arena.mc`, because that
+  table is full before the pre-scan can size it (every built-in is registered from `main()`) and
+  `<mc/core_writers>` now registers eight, so `examples/kernel` reported `grew`. Capacity only.
+  `mc limits src/mc.mc` says `backends 0 16 8 0 ok`.
+  **`--exe` is NOT this milestone's edit any more**: the post-M41 review batch (#15) already made
+  `src/cli.mc` resolve the host pair through the `target()` registry, after `user_init()`, and
+  refuse a 0 slot; M42's own first draft resolved it during argv parsing (before `user_init()`,
+  so a module's registration was silently ignored) and was dropped in the rebase. What M42 changes
+  is only which slots are non-zero -- the two Linux ones -- and `tests/proj/noexe.mc`, which
+  re-registers the host pair with 0 in the exe slot, still passes.
+  Gates: `scripts/test-linux.sh` gained an **`--exe` mode** beside the object+link mode -- same
+  corpus, same Docker oracle, both architectures, both split halves (`--build-only` writes
+  executables, `--run-only` just runs them) -- which **moves `~/.mc/sysroots/linux-*` and
+  `build/sysroot/linux-*` aside for the duration and puts them back**, so the no-sysroot claim is
+  proved by the script and not by the report. It adds four assertions the object mode cannot make:
+  `013-putnum` shows `PT_INTERP` + `DT_NEEDED` + a `JUMP_SLOT` and `001-return42` shows none of
+  the three, `GNU_STACK` is RW and never E on every binary, and two builds are `cmp`-identical.
+  `tests/linux/071-errno-malloc.mc` goes past the § 0 probe: a failing libc call whose `errno` it
+  reads (TLS) plus `malloc` and stdio, run under **musl (`alpine:3` 3.24.1) AND glibc
+  (`ubuntu:latest` = Ubuntu 26.04 LTS, glibc 2.43) on both architectures -- `errno=2 malloc ok`,
+  exit 0, four for four**. It uses `fopen` and not `open`, but NOT for the reason first written
+  here: the claim that glibc's failing `open` hands back `0x00000000ffffffff` was **re-measured on
+  all four cells and does not reproduce** -- every one of them returns `0xffffffffffffffff` and
+  `fd >= 0` is false. What survives is that both ABIs leave the bits above a 32-bit return value
+  unspecified and mc has no narrow return types, so the hazard is latent; `fopen` is kept because
+  it returns a full pointer and drags stdio in, which is more start-up state to prove.
+  `scripts/test-exe.sh` is host-aware (`codesign` only on macOS, `// skip-<host>` honoured), so
+  **`make check` on a Linux host runs `test-exe`** -- the whole suite through `mc --exe`, natively.
+  `scripts/check-build.sh` lost the `linux requires [linker]` diagnostic (it is gone for Linux and
+  still there for Windows) and gained `tests/proj/linux-exe.toml` / `linux-exe-x86.toml`: both
+  architectures asserted down to `e_type`/`e_machine` with `od`, plus determinism -- **31/31**
+  with the post-M41 cases.
+  `Makefile`: `test-linux-exe` and `test-linux-x86_64-exe` inside `make check`, guarded on Docker
+  alone. `.github/workflows/ci.yml`: the macOS job cross-compiles both `--exe` suites into the new
+  `linux-arm64-exes` / `linux-x86_64-exes` artifacts and each Linux leg runs them with nothing
+  linked.
+  **Both libcs, everywhere** (post-merge review): `scripts/test-linux.sh` gained `--libc musl`
+  (default, `alpine:3`) and `--libc glibc` (`ubuntu:latest`), which writes `[target].interp` /
+  `[target].libc` into the generated config and picks the container; `native` now also asks
+  whether the host HAS that loader, so a glibc runner falls back to Docker for the musl set
+  instead of failing on `no such file or directory`. Without this the new CI legs -- which run
+  `--exe --run-only` NATIVELY on the Ubuntu runners -- would have failed on every binary:
+  reproduced under `ubuntu:latest`, `exec ...: no such file or directory`, exit 255. Both
+  Makefile targets run both libcs and the CI legs run the glibc set natively and the musl set in
+  `alpine:3`.
+  **`mc --exe` still writes musl** and cannot be told otherwise: the two names are TOML keys and
+  the writer's default is a constant, because a probe of the machine would make one source produce
+  different bytes on two hosts (`docs/determinism.md`). That is written down in
+  `docs/specs/M42.md` § Implementation notes 12, in `docs/reference/cli.md` and in
+  `docs/guide/90-linux-host.md` § 3, and the three scripts that need a runnable binary on the host
+  --  `scripts/test-exe.sh`, `scripts/build-exe.sh` and `scripts/bootstrap-linux.sh` -- take the
+  `mc build` road when the loader on the disk says the host is glibc, and say which road they
+  took. Measured: `test-exe.sh` is **31/31 via `mc build`** inside `ubuntu:latest` and **31/31 via
+  `--exe`** inside `alpine:3`, with the same glibc- and musl-hosted compilers.
+  **The self-hosting proof**: `src/mc.linux-aarch64.toml` and `src/mc.linux-x86_64.toml` DROPPED
+  their `[linker]` and `[sysroot]`, and `make mc-linux` / `mc-linux-x86_64` no longer depend on
+  `sysroot-linux` -- cross-building `mc` for a Linux host from macOS now needs nothing installed.
+  `make check-linux-host` now runs **two cells per architecture, one per libc**, and is green for
+  all four (RC 0). The musl cell is what it was -- `make check SEED=...` inside `alpine:3` plus
+  the cross proof. The glibc cell is new (post-merge review, the owner's "dynamic support even if
+  only in tests" applied to the COMPILER): `src/mc.linux-{aarch64,x86_64}-gnu.toml` cross-build
+  `mc` for a glibc host from macOS -- the musl config plus `interp` and `libc`, nothing else --
+  and inside `ubuntu:latest` **with nothing installed in the container** (no `make`, no `lld`, no
+  `musl-dev`) `scripts/bootstrap-linux.sh --libc glibc` takes it to its own fixed point, runs the
+  whole suite through `mc --exe`, and does the same cross proof.
+  `scripts/bootstrap-linux.sh` gained `--exe` and `--libc` for that: with them every stage is
+  written by the previous compiler through `mc build` and there is no linker in the chain at all.
+  Its default is unchanged -- `ld.lld` plus the musl sysroot -- because the SEED may be a
+  published release older than M42.
+  **The golden is the same file on both roads**: an ELF `ET_REL` records no interpreter, so the
+  musl chain and the glibc chain must write the same `mc2l.o`, and they do.
+  Windows is untouched and still refuses `--exe`; this milestone filled two of the four zero slots.
+  -- `stage0/` untouched, 2848/3000 (`git diff origin/main -- stage0/` is empty); `make bundle`
+  re-run before bootstrapping (78 files, raw 840956 -> LZ 391459, blob 392412 B;
+  `tools/bundle.list` gained `mc/backend_elf_exe`).
+  `make check` RC 0, zero FAIL: `test` 32/32, `check-lex`/`check-ast`/`check-asm` 126/126
+  (2 skipped), `check-obj` **32/32 identical to the frozen seed**, `bootstrap` at a fixed point
+  (`mc2.o == mc3.o`, 917008 B; the `--dump-asm` diff between `mc1` and `mc2` is **empty**),
+  `check-surface` 32/32 + inert, `test-exe` 32/32 via `--exe`, `check-mc` 7/7,
+  `check-standalone`, `check-parts`, `check-toml` 10/10, `check-build` **31/31**, `check-stubs`
+  9/9, `check-sysroots`, `check-limits` 17/17 under 90%, `check-minimal`,
+  `test-linux` 34/34 + **`test-linux-exe` 37/37 musl and 37/37 glibc**,
+  `test-linux-x86_64` 31/31 + **`test-linux-x86_64-exe` 34/34 musl and 34/34 glibc**,
+  `test-windows` 35/35, `test-windows-x86_64` 33/33, `check-examples`, `check-lang`, `check-conc`,
+  `check-desktop`, `check-float`, `check-wide`, `check-kernel` (QEMU 11.0.1), `check-docs`
+  (183 symbols, 19 flags, 19 TOML keys, 10 directives, 47 samples, 261 links), `site` 82 pages +
+  `check-site` 0 link problems. `scripts/check-inert.sh` between a `build/mc1` built from
+  `origin/main` and this one: **identical everywhere** (33 objects including `src/mc.mc`, and the
+  five taught examples -- api, lang, conc, desktop, kernel).
+  `make check-linux-host` RC 0 over all four cells: fixed point `mc2l.o == mc3l.o`
+  (1161024 B on aarch64, 1076360 B on x86_64), the musl cells' `make check` with
+  `test-exe` 31/31 and 29/29 and `check-obj` 31/31 and 29/29, the glibc cells' suites 35/35 and
+  32/32 natively through `mc --exe`, and the cross proof on all four.
+  All five goldens rewritten, each only after its own criterion: `mc2.sha256`
+  `d73a2861...e849b79b` -> `7baa684a571a2cb4ed95c025a00ae813314b1cbd055623961b2015e69bc9b2c5`
+  (after the empty `--dump-asm` diff and `cmp build/mc2.o build/mc3.o`);
+  the Linux pair deleted and re-recorded by `make check-linux-host` --
+  `mc2-linux-arm64.sha256` `af2bbca7118274b64b1abb497999586a9c68dec118d84377d153bc6f09de000d`,
+  `mc2-linux-x86_64.sha256` `978be8d6fa896601fd495bdec58b3f6941d135867613de05cde6db9ccb1a9724`,
+  each verified a second time by the glibc cell of its architecture;
+  the Windows pair cross-computed per `tests/golden/README.md` --
+  `mc2-windows-arm64.sha256` `dc900682e98b6af721692ba95f10a5590d8f5007bca7a68db63c4c13dfa420b4`
+  (934590 B), `mc2-windows-x86_64.sha256`
+  `20f22777b8e907407b6b7a4938e3bf0a37555af364fbff6a1295beeb41248788` (953722 B), both also
+  produced byte for byte by `build/mc2`.
+  Docs: `docs/reference/objects.md` § 8b (new, the layout field by field with the `llvm-readelf`
+  cross-check), `docs/reference/toml.md` § `[target]`, `docs/reference/cli.md`,
+  `docs/reference/bundle.md`, `docs/build.md` § Linux targets (rewritten),
+  `docs/guide/50-cross-compile.md`, `docs/guide/90-linux-host.md` § 3 (rewritten),
+  `docs/bootstrap.md` (the standalone claim now says on which hosts it holds -- and, since the
+  post-merge review, that `ld-musl-<arch>.so.1` exists only on musl distributions and the default
+  is a CHOICE), `docs/ci.md`.
+  Post-merge review, all of it recorded in `docs/specs/M42.md`: the `--exe` draft dropped for
+  `main`'s (a), `lim_seeds[T_BACKENDS]` reconciled BY NAME after M41.5 inserted `T_SYNPARAM`
+  before it -- index 31, not 30, and a textual merge would have put the 16 on `syntax_param` with
+  no conflict to show for it (b), the two libcs everywhere (d), `ubuntu:latest` (26.04, glibc
+  2.43) as the glibc oracle in place of `debian:bookworm-slim` and the four-cell run redone on it
+  (e), the compiler itself built dynamically against glibc and taken to its own fixed point (f),
+  note 5's unreachable `uptr p[] = { &write }` corrected (g), and note 10's `open` claim
+  re-measured and **not reproduced** (h).
 - Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
   `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
   from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:

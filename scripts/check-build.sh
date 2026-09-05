@@ -9,6 +9,9 @@
 #   link.toml  [linker] cmd/args with {out} {obj} {sdk} {libs}
 #              -> mc writes the .o and `ld` produces the binary
 #   obj.toml   kind = "obj" -> stop at the relocatable object
+#   linux-exe.toml / linux-exe-x86.toml
+#              M42: os = "linux" with NO [linker] and NO sysroot -> a dynamic
+#              ELF64 ET_EXEC straight out of the compiler
 #
 # app.mc's `#include "db.mc"` only resolves through [include].paths: without it
 # the build stops, which is the check for that key. `sqlite3_libversion` has no
@@ -35,8 +38,8 @@
 # honour) and mc-noobjhost.mc (the object slot at 0, refused with the advice
 # `--exe`, which the same compiler then carries out).
 #
-# The last section checks the diagnostics: a foreign [target].os, os = "linux"
-# with no [linker] (M16), a missing key and a bad [project].kind have to come
+# The last section checks the diagnostics: a foreign [target].os, os = "windows"
+# with no [linker] (M19), a missing key and a bad [project].kind have to come
 # out with file:line:col and exit 1 -- and the same two [target] messages,
 # byte for byte, from `mc sysroot stub`, which reaches the same resolution
 # without going through a compile (M39.5).
@@ -355,6 +358,51 @@ else
     ok "--sysroot-dir DIR"
 fi
 
+# ---- M42: os = "linux" with no [linker] and no sysroot ----
+# Until M42 these two configs were the diagnostic `linux requires [linker]`.
+# The executable slot of both Linux targets is filled now, so the same six lines
+# write a dynamic ELF64 ET_EXEC with nothing external involved -- no ld.lld, no
+# crt1.o, no libc.a. Only the header is read here (this script has no Docker);
+# running the result is scripts/test-linux.sh --exe.
+#
+# e_ident[4] is the class (2 = ELF64), e_type is at 16 (2 = ET_EXEC) and
+# e_machine at 18 (183 = AArch64, 62 = x86-64) -- read with od, so the check
+# needs no LLVM either.
+elf_hdr() { od -An -tu1 -j "$2" -N "$3" -v "$1" | tr -s ' ' | sed 's/^ //;s/ $//'; }
+
+for a in aarch64:linux-exe.toml:lin-exe:183 x86_64:linux-exe-x86.toml:lin-exe-x86:62; do
+    arch=${a%%:*}; rest=${a#*:}
+    cfg=${rest%%:*}; rest=${rest#*:}
+    out=${rest%%:*}; mach=${rest##*:}
+    total=$((total + 1))
+    rm -f "$dir/build/$out"
+    if ! "$mc" build "$dir" --config "$dir/$cfg" > "$tmp/o" 2>&1; then
+        fail "$cfg" "$(cat "$tmp/o")"
+    elif [ ! -x "$dir/build/$out" ]; then
+        fail "$cfg" "build/$out was not written"
+    elif [ "$(elf_hdr "$dir/build/$out" 0 5)" != "127 69 76 70 2" ]; then
+        fail "$cfg" "not an ELF64 image: $(elf_hdr "$dir/build/$out" 0 5)"
+    elif [ "$(elf_hdr "$dir/build/$out" 16 2)" != "2 0" ]; then
+        fail "$cfg" "e_type is not ET_EXEC: $(elf_hdr "$dir/build/$out" 16 2)"
+    elif [ "$(elf_hdr "$dir/build/$out" 18 1)" != "$mach" ]; then
+        fail "$cfg" "e_machine is not $mach: $(elf_hdr "$dir/build/$out" 18 1)"
+    else
+        ok "$cfg -> ELF64 ET_EXEC for linux/$arch, no [linker] and no sysroot"
+        sed 's|^|  |' "$tmp/o"
+    fi
+done
+
+# determinism: the same source built twice is the same file
+total=$((total + 1))
+cp "$dir/build/lin-exe" "$tmp/lin-exe.1"
+if ! "$mc" build "$dir" --config "$dir/linux-exe.toml" > "$tmp/o" 2>&1; then
+    fail "linux-exe.toml twice" "$(cat "$tmp/o")"
+elif ! cmp -s "$tmp/lin-exe.1" "$dir/build/lin-exe"; then
+    fail "linux-exe.toml twice" "two builds of the same source differ"
+else
+    ok "linux-exe.toml twice -> byte for byte the same executable"
+fi
+
 # ---- diagnostics ----
 # name, config path, config body, expected LAST line of output (CFG = config path).
 # The error is always the last thing printed: a step line may come first.
@@ -411,18 +459,6 @@ os   = "macos"
 arch = "sparc"
 ' \
     'CFG:7:8: only aarch64 (see docs/build.md): target.arch'
-
-# M16: os = "linux" is valid, but there is no direct executable for it -- a
-# Linux build always hands the object to [linker].
-diag "diag [target].os linux without [linker]" "$dir/build/d.toml" \
-    '[project]
-entry = "../app.mc"
-out   = "build/x"
-
-[target]
-os = "linux"
-' \
-    'CFG:6:6: linux requires [linker]: there is no direct executable: target.os'
 
 # M19: the same for Windows -- valid os, no direct executable, and the message
 # names the operating system the file asked for.

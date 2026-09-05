@@ -1,6 +1,18 @@
 #!/bin/sh
-# check-linux-host.sh [--arch A] — the Linux HOST proof, run from macOS (M37,
-# docs/guide/90-linux-host.md).
+# check-linux-host.sh [--arch A] [--libc L] — the Linux HOST proof, run from
+# macOS (M37, docs/guide/90-linux-host.md).
+#
+# Two cells per architecture, one per libc, because a dynamic executable names
+# its loader by path and the two libcs are two different systems to be hosted on:
+#
+#   musl   `alpine:3`, the full one -- `make check SEED=...`, i.e. the whole
+#          Linux subset, plus the cross proof
+#   glibc  `ubuntu:latest` (the newest Ubuntu, this repository's glibc baseline),
+#          M42 § acceptance 9 -- the compiler itself built DYNAMICALLY against
+#          glibc, taken to its own fixed point with scripts/bootstrap-linux.sh
+#          --libc glibc, the suite run natively through `mc --exe`, and the same
+#          cross proof. Nothing is installed in that container: no make, no lld,
+#          no musl-dev. The chain has no linker in it at all.
 #
 # For each architecture (aarch64 and x86_64 unless --arch narrows it):
 #
@@ -26,13 +38,24 @@
 # nothing is downloaded twice and no sysroot has to be built.
 set -e
 arches="aarch64 x86_64"
+libcs="musl glibc"
 while [ $# -gt 0 ]; do
     case "$1" in
         --arch)   arches="$2"; shift 2 ;;
         --arch=*) arches="${1#--arch=}"; shift ;;
-        *) echo "usage: check-linux-host.sh [--arch aarch64|x86_64]" >&2; exit 1 ;;
+        --libc)   libcs="$2"; shift 2 ;;
+        --libc=*) libcs="${1#--libc=}"; shift ;;
+        *) echo "usage: check-linux-host.sh [--arch aarch64|x86_64] [--libc musl|glibc]" >&2
+           exit 1 ;;
     esac
 done
+case " $libcs " in *" glibc "*)
+    if ! docker image inspect ubuntu:latest > /dev/null 2>&1; then
+        docker pull -q ubuntu:latest > /dev/null 2>&1 \
+            || { echo "FAIL: ubuntu:latest is not available (the glibc oracle)" >&2; exit 1; }
+    fi
+    ;;
+esac
 
 root=$(pwd)
 mc="${MC:-build/mc1}"
@@ -45,13 +68,22 @@ for arch in $arches; do
         x86_64)  target="x86_64"; platform="linux/amd64" ;;
         *) echo "FAIL: unknown --arch $arch" >&2; exit 1 ;;
     esac
+
+  for libc in $libcs; do
+   if [ "$libc" = "musl" ]; then
     bin="build/mc-linux-$target"
 
     echo "=================================================================="
-    echo "== linux/$arch host =============================================="
+    echo "== linux/$arch host, musl (alpine:3) ============================="
     echo "=================================================================="
     echo "-- cross-build: $mc build src --config src/mc.linux-$arch.toml --"
-    scripts/sysroot-linux.sh --arch "$arch" "build/sysroot/linux-$arch" >/dev/null
+    # M42: no sysroot is fetched here any more. src/mc.linux-<arch>.toml lost
+    # its [linker] and its [sysroot] -- `mc build` writes the dynamic ELF64
+    # executable itself -- so the cross-build needs nothing but `mc`. The
+    # container below still installs musl-dev, because scripts/bootstrap-linux.sh
+    # links mc1l and mc2l with ld.lld against MC_SYSROOT: the SEED may be a
+    # published release older than this milestone, so that chain does not assume
+    # a `--exe` that only a new enough compiler has.
     rm -f "$bin"
     "$mc" build src --config "src/mc.linux-$arch.toml"
     ls -l "$bin"
@@ -81,5 +113,53 @@ for arch in $arches; do
         cmp build/x-cross.o build/mc2-macos.o
         echo 'ok: the Mach-O object written on linux/$arch is byte for byte the one macOS writes'
     "
-    echo "== linux/$arch host: ok =========================================="
+    echo "== linux/$arch host, musl: ok ===================================="
+   else
+    # ---- M42 § acceptance 9: the compiler itself, dynamic against glibc ----
+    bin="build/mc-linux-$target-gnu"
+
+    echo "=================================================================="
+    echo "== linux/$arch host, glibc (ubuntu:latest) ======================="
+    echo "=================================================================="
+    echo "-- cross-build: $mc build src --config src/mc.linux-$arch-gnu.toml --"
+    # the same config as the musl one with [target].interp and [target].libc
+    # added: two names, no files, no sysroot, no linker.
+    rm -f "$bin"
+    "$mc" build src --config "src/mc.linux-$arch-gnu.toml"
+    ls -l "$bin"
+
+    echo "-- inside docker run --platform $platform ubuntu:latest --"
+    # NOTHING is installed in this container. The chain is
+    # seed -> mc1l -> mc2l -> mc3l with every executable written by the previous
+    # compiler, then the suite through `mc --exe`, then the cross proof. The
+    # golden is the same file the musl chain verifies -- an ELF object records
+    # no interpreter, so both roads must produce the same bytes.
+    # `cp -a` and not `tar cf - | tar xf -`: the amd64 ubuntu image is emulated on
+    # an arm64 host, and GNU tar there fails every open with `Function not
+    # implemented` (alpine's busybox tar does not). The copy is the same copy.
+    docker run --rm --platform "$platform" -v "$root":/w -w /w ubuntu:latest /bin/sh -c "
+        set -e
+        mkdir -p /work
+        cp -a /w/. /work/
+        rm -rf /work/build
+        mkdir -p /work/build
+        cp /w/$bin /work/build/
+        cp /w/build/mc2.o /work/build/mc2-macos.o
+        cd /work
+        uname -m
+        cat /etc/os-release | grep '^VERSION='
+        ./$bin --host
+        echo ''
+        echo '### scripts/bootstrap-linux.sh --libc glibc (no linker, no sysroot)'
+        sh scripts/bootstrap-linux.sh --libc glibc $bin
+        cp -f tests/golden/mc2-linux-*.sha256 /w/tests/golden/ 2>/dev/null || true
+        echo ''
+        echo '### cross proof: build/mc2l --backend=macho src/mc.mc == the macOS build/mc2.o'
+        build/mc2l --backend=macho src/mc.mc -o build/x-cross.o
+        cmp build/x-cross.o build/mc2-macos.o
+        echo 'ok: the Mach-O object written on glibc linux/$arch is byte for byte the one macOS writes'
+    "
+    echo "== linux/$arch host, glibc: ok ==================================="
+   fi
+  done
 done

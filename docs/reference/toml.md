@@ -67,6 +67,8 @@ A missing `entry` or `out` is `<file>: missing key: project.entry`. A `kind` tha
 |---|---|---|---|
 | `target.os` | string | the host's | a pair the compiler or one of its modules registered |
 | `target.arch` | string | the host's | likewise |
+| `target.interp` | string | musl's `/lib/ld-musl-<arch>.so.1` | the program interpreter a **dynamic ELF executable** asks for (`PT_INTERP`) |
+| `target.libc` | string | `libc.so` (musl) | the `DT_NEEDED` soname every import that no `#dylib` and no `[externs]` pattern claims comes from |
 
 The accepted set is the `(os, arch)` pairs the `target()` registry holds
 ([hooks.md](hooks.md)) — `macos/aarch64`, `linux/aarch64`, `linux/x86_64`,
@@ -85,14 +87,40 @@ $ mc build tests/proj --config /tmp/riscv.toml
 /tmp/riscv.toml:7:8: only aarch64 and x86_64 (see docs/build.md): target.arch
 ```
 
-`os = "linux"` changes exactly two things: the object comes out as an ELF64 `ET_REL` (the
-`elf-obj` / `elf-obj-x86_64` backends) instead of a Mach-O, and `[linker]` becomes **required** —
-there is no direct-executable backend for Linux (`linux requires [linker]: there is no direct
-executable`). `arch` then decides the instruction set inside that object.
+`os = "linux"` changes one thing: the file format. The object comes out as an ELF64 `ET_REL` (the
+`elf-obj` / `elf-obj-x86_64` backends) instead of a Mach-O, and `kind = "exe"` writes a dynamic
+ELF64 `ET_EXEC` (`elf-exe` / `elf-exe-x86_64`, M42) with **no `[linker]` and no sysroot**. `arch`
+then decides the instruction set inside either one. `[linker]` is still accepted and is still the
+only route to a **static** libc link — when it is present the driver writes the object and hands it
+over, exactly as before.
 
-`os = "windows"` says the same two things in COFF: the object is an
+### `target.interp` and `target.libc` — the two per-libc names
+
+A dynamic executable needs no libc *files*, only two *names*, and they are the one thing that
+differs between the C libraries. They are keys and not constants for exactly that reason:
+
+| libc | `interp` (aarch64) | `interp` (x86_64) | `libc` |
+|---|---|---|---|
+| musl (the default) | `/lib/ld-musl-aarch64.so.1` | `/lib/ld-musl-x86_64.so.1` | `libc.so` |
+| glibc | `/lib/ld-linux-aarch64.so.1` | `/lib64/ld-linux-x86-64.so.2` | `libc.so.6` |
+
+```toml
+[target]
+os     = "linux"
+arch   = "aarch64"
+interp = "/lib/ld-linux-aarch64.so.1"
+libc   = "libc.so.6"
+```
+
+Both are ignored by every other target and by every object backend: only
+[`elf-exe`](objects.md#8b-the-elf-executable-elf-exe-and-elf-exe-x86_64) reads them. The
+single-file CLI (`mc --exe`) has no config and always takes the musl defaults; a glibc host is one
+`mc.toml` away.
+
+`os = "windows"` still says both things: the object is an
 `IMAGE_FILE_MACHINE_ARM64` `.obj` (`coff-obj-arm64`) and `[linker]` is required
-(`windows requires [linker]: there is no direct executable`).
+(`windows requires [linker]: there is no direct executable`) — the PE executable writer is a
+separate milestone, so Windows is where the message M42 removed for Linux still lives.
 See [../guide/50-cross-compile.md](../guide/50-cross-compile.md).
 
 A registered pair may be missing the *other* half instead: `target(os, arch, 0, exe)` is a target

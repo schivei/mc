@@ -77,8 +77,8 @@ i64  drv_stub_mode = 0;               // `mc sysroot stub`: parse, write the
 // this file used to carry -- an `i64 drv_linux` flag and two literal messages --
 // with the registry in src/hooks.mc: `target(os, arch, obj, exe)`, registered by
 // src/main.mc. A zero `exe` slot says the target has no direct executable and
-// always goes through [linker], which is what Linux does
-// (docs/build.md § Linux targets).
+// always goes through [linker], which is what Windows does -- Linux did too
+// until M42 wrote `elf-exe` (docs/build.md § Linux targets).
 //
 // M39.5: the pair is NOT resolved when the TOML is read. drv_run keeps
 // [target].os/.arch as the strings the file wrote, drv_entry asks for a ROLE,
@@ -607,9 +607,10 @@ i64 drv_teach(uptr cout, uptr dir, i64 compiler_only) {
     drv_step("compiler", tm_cat(cout, ".mc"), cbin);
     // M37: the taught compiler is a program for the HOST, never for [target] --
     // it has to run here, right after it is written. Which backend that is
-    // comes from the registry, looked up with the host's own pair: on macos it
-    // is `macho-exe` and one step; on a host with no direct executable (Linux)
-    // it is the object backend plus [linker], the same linker the entry uses.
+    // comes from the registry, looked up with the host's own pair: `macho-exe`
+    // on macos and, since M42, `elf-exe` / `elf-exe-x86_64` on linux -- one
+    // step in both cases. A host with no direct executable (windows) is the
+    // object backend plus [linker], the same linker the entry uses.
     i64 ht = target_find(host_os(), host_arch());
     if (ht < 0) die2("the host is not a registered target", host_os());
     if (tgt_exe_at(ht) != 0) {
@@ -693,6 +694,15 @@ i64 drv_run(uptr dir, uptr cfg, i64 entry_only, i64 compiler_only) {
     if (arch == 0) arch = host_arch();
     drv_os = os;
     drv_arch = arch;
+    // M42: the two names a dynamic ELF executable needs and no object does.
+    // They are per-libc, not per-target, so they are keys and not constants:
+    // the writer's default is musl (`libc.so`, `/lib/ld-musl-<arch>.so.1`) and
+    // glibc is `interp = "/lib/ld-linux-aarch64.so.1"` (or
+    // "/lib64/ld-linux-x86-64.so.2") plus `libc = "libc.so.6"`. The globals
+    // live in src/objmodel.mc so that this file names no writer
+    // (docs/reference/toml.md § [target]).
+    dyn_interp = toml_get("target.interp");
+    dyn_libc = toml_get("target.libc");
 
     uptr entry = toml_get("project.entry");
     if (entry == 0) toml_err_key("project.entry", "missing key");

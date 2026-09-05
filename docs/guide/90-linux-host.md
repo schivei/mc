@@ -119,39 +119,56 @@ each with one ignored bit. Both were measured: the mapping succeeds and is writa
 
 ---
 
-## 3. No direct executable
+## 3. The direct executable (M42)
 
-macOS has `--exe`: `mc` lays out the segments, resolves the relocations, writes the bind opcodes
-and signs the result itself (M11). There is no ELF equivalent — the ELF side of `mc` is an
-**object** writer — so on Linux every program is an object plus a linker:
+macOS has had `--exe` since M11: `mc` lays out the segments, resolves the relocations, writes the
+bind opcodes and signs the result itself. **Since M42 Linux has the same thing** — `src/backend_elf_exe.mc`,
+a dynamic ELF64 `ET_EXEC` with no linker, no crt object and no sysroot
+([../reference/objects.md § 8b](../reference/objects.md#8b-the-elf-executable-elf-exe-and-elf-exe-x86_64)):
 
 ```sh
-mc hello.mc -o hello.o
-scripts/link-linux.sh hello hello.o          # ld.lld + the musl sysroot
+mc --exe hello.mc -o hello
+./hello
 ```
 
-or, the usual way, `mc build` with a `[linker]` section. Two consequences worth knowing:
+`--exe` is not a Mach-O flag any more. It resolves the **host's** executable backend through the
+same `target()` registry the default object backend comes from, so on a Linux host it means
+`elf-exe` or `elf-exe-x86_64`, and on macOS it still means `macho-exe`. `make check` on a Linux
+host runs `test-exe`, which is the whole `tests/*.mc` corpus through it.
 
-* **`[linker]` is required** for `os = "linux"`, and the driver says so:
-  `linux requires [linker]: there is no direct executable`.
-* **A taught compiler is linked with that same `[linker]`.** `mc build` builds the compiler for the
-  *host*, not for `[target]` — it has to run here, right after it is written. On macOS that is one
-  step (`macho-exe`); on Linux it is an object plus `[linker]`, so a project that teaches the
-  compiler on a Linux host needs that section even if its `[target]` is something else. Without it:
-  `a taught compiler on this host needs [linker]: there is no direct executable`.
+**Which libc it asks for is a key, not a guess.** `PT_INTERP` holds an absolute path, and the
+writer's default is musl's `/lib/ld-musl-<arch>.so.1`. That default is a constant on purpose — a
+probe of the machine would make the same source produce different bytes on two hosts — so on a
+**glibc** host (Debian, Ubuntu, Fedora, Arch) `mc --exe` writes a binary this machine cannot
+start, and the road is `mc build` with two more keys:
 
-`--exe` exists on a Linux host and is **refused** there (post-M41 review):
-
+```toml
+[target]
+os     = "linux"
+arch   = "aarch64"
+interp = "/lib/ld-linux-aarch64.so.1"   # /lib64/ld-linux-x86-64.so.2 on x86_64
+libc   = "libc.so.6"
 ```
-$ mc --exe hello.mc -o hello
-mc: linux requires a linker: there is no direct executable
-```
 
-It used to write a signed Mach-O executable — a macOS binary this kernel refuses with `ENOEXEC`,
-produced with no warning, because the flag was the literal backend name `macho-exe` in
-`src/cli.mc`. It resolves the exe slot of the host's `target()` registration now, and `linux` is
-registered with 0 in that slot. To cross-compile to macOS from here, ask for it:
-`mc --backend=macho-exe hello.mc -o hello`.
+`scripts/test-exe.sh`, `scripts/build-exe.sh` and `scripts/bootstrap-linux.sh` all take that road
+by themselves when the loader on the disk says the host is glibc, and each says which road it
+took.
+
+Three consequences worth knowing:
+
+* **`[linker]` is no longer required** for `os = "linux"`. `mc build` with `kind = "exe"` and no
+  `[linker]` writes the binary. The section is still supported and is still the only route to a
+  **static** libc link, which is what needs a sysroot.
+* **A taught compiler is built the same way.** `mc build` builds the compiler for the *host*, not
+  for `[target]` — it has to run here, right after it is written — and the host now has a
+  direct-executable backend, so a project that teaches the compiler on a Linux host needs no
+  `[linker]` at all.
+* **The bootstrap chain still links.** `scripts/bootstrap-linux.sh` uses `scripts/link-linux.sh`
+  for `mc1l` and `mc2l` on purpose: the SEED may be a published release older than M42, and the
+  chain has to work with whatever seed it is handed.
+
+To cross-compile *to macOS* from a Linux host, name the backend: `--backend=macho-exe` writes the
+signed Mach-O executable, which will not run where it was built.
 
 ---
 
@@ -160,13 +177,21 @@ registered with 0 in that slot. To cross-compile to macOS from here, ask for it:
 Two configs in `src/` do it, and neither has a `[compiler]` section — this is the plain compiler:
 
 ```sh
-make sysroot-linux                                          # four musl files out of alpine:3
 build/mc1 build src --config src/mc.linux-aarch64.toml       # -> build/mc-linux-arm64
 build/mc1 build src --config src/mc.linux-x86_64.toml        # -> build/mc-linux-x86_64
 ```
 
-or `make mc-linux` / `make mc-linux-x86_64`, which run the sysroot step first. Both are ELF64
-executables statically linked against musl by `ld.lld`, around 730 KB.
+or `make mc-linux` / `make mc-linux-x86_64`. Since M42 neither needs a sysroot, a linker or
+Docker: both configs dropped their `[linker]` and `[sysroot]` and `mc build` writes the **dynamic
+ELF64 executable** itself, around 880 KB, asking for musl's loader.
+
+Two more configs write the same compiler for a **glibc** host — the same files with
+`[target].interp` and `[target].libc` added and nothing else changed:
+
+```sh
+build/mc1 build src --config src/mc.linux-aarch64-gnu.toml   # -> build/mc-linux-arm64-gnu
+build/mc1 build src --config src/mc.linux-x86_64-gnu.toml    # -> build/mc-linux-x86_64-gnu
+```
 
 ### Without Docker: stop at the object
 
@@ -199,8 +224,11 @@ This is exactly what CI does — GitHub's macOS runners have no Docker, so the c
 objects and the two Linux jobs link them ([../ci.md](../ci.md) § M37). Locally, where Docker is
 usually there, `make mc-linux` is the shorter road.
 
-`make check-linux-host` is the proof, run from macOS. For each architecture it cross-builds the
-compiler and then, inside `docker run --platform linux/<arch> alpine:3`:
+`make check-linux-host` is the proof, run from macOS. It runs **two cells per architecture**, one
+per libc, because a dynamic executable names its loader by path and the two libcs are two
+different systems to be hosted on. `--arch` and `--libc` narrow it.
+
+**musl**, inside `docker run --platform linux/<arch> alpine:3`:
 
 1. `make check SEED=build/mc-linux-<target>`, which starts with `scripts/bootstrap-linux.sh` —
    seed → `mc1l` → `mc2l` → `mc3l`, `cmp mc2l.o mc3l.o`, the golden — and then runs the Linux
@@ -211,6 +239,18 @@ compiler and then, inside `docker run --platform linux/<arch> alpine:3`:
    equal. That is the strongest statement available that hosting changed
    nothing about the compiler.
 
+**glibc**, inside `docker run --platform linux/<arch> ubuntu:latest` — the newest Ubuntu, this
+repository's glibc baseline. The seed is `build/mc-linux-<target>-gnu`, and **nothing is installed
+in the container**: no `make`, no `lld`, no `musl-dev`.
+
+1. `scripts/bootstrap-linux.sh --libc glibc <seed>` — the same four stages, with every executable
+   written by the previous compiler through `mc build` instead of by a linker, then the whole
+   suite through `scripts/test-linux.sh --exe --libc glibc`, natively;
+2. the same cross proof.
+
+The golden is the same file in both cells: an ELF object records no interpreter, so the musl chain
+and the glibc chain have to write the same `mc2l.o`, and they do.
+
 ---
 
 ## 5. `make check` on Linux
@@ -219,8 +259,13 @@ The Makefile switches on `uname -s`. On Linux `check` is:
 
 ```
 budget bootstrap-linux check-lex check-ast check-asm check-obj
-check-bundle check-mc check-toml check-limits check-skipped
+check-bundle check-mc test-exe check-toml check-sysroots check-limits check-skipped
 ```
+
+`test-exe` joined the list at M42: `--exe` on a Linux host writes a dynamic ELF64 executable, so
+the whole suite goes through it natively, with no linker. On a **glibc** host the script reaches
+the same backend through `mc build` with the two per-libc keys, and prints which road it took —
+`mc --exe`'s default interpreter is musl's and cannot be told otherwise from a command line.
 
 `bootstrap-linux` ends by running the whole `tests/*.mc` suite with the compiler it just
 bootstrapped (`scripts/test-linux.sh`, native mode — no Docker, no emulation), which is why `test`
@@ -248,7 +293,6 @@ Linux there is no C seed, so it is a build-and-run gate rather than a cross-chec
 
 ```
 bootstrap: SKIPPED (macOS chain: mc0 -> mc1 -> mc2 -> mc3; bootstrap-linux is the Linux one)
-test-exe: SKIPPED (--exe is refused on this host: linux has no direct executable; it links with ld.lld)
 check-standalone: SKIPPED (its criterion is a signed Mach-O executable)
 check-surface: SKIPPED (its cases build taught compilers with --exe)
 check-build: SKIPPED (tests/proj targets macos/aarch64 through ld)

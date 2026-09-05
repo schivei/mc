@@ -92,6 +92,7 @@ and supplying that function *is* a taught compiler ([hooks.md](hooks.md)).
 | `<mc/backend_exe>` | `src/backend_exe.mc` |
 | `<mc/backend_coff>` | `src/backend_coff.mc` |
 | `<mc/backend_elf>` | `src/backend_elf.mc` |
+| `<mc/backend_elf_exe>` | `src/backend_elf_exe.mc` |
 | `<mc/sha256>` | `src/sha256.mc` |
 | `<mc/toml>` | `src/toml.mc` |
 | `<mc/driver>` | `src/driver.mc` |
@@ -197,7 +198,7 @@ this table cannot drift from the code.
 |---|---|---|---|
 | `<mc/core_min>` | `src/core_min.mc` | `arena` `lz` `objmodel` `lex` `ast` `parse` `gen_resolve` `gen_walk` `hooks` `cli` | the compiler that has no target: lexer, parser, resolver, walker, every registry, and `mc_main()` |
 | `<mc/core_machines>` | `src/core_machines.mc` | `machine_arm64` `machine_x86_64` | `mc_machines_init()` — the two host machines |
-| `<mc/core_writers>` | `src/core_writers.mc` | `sha256` `macho` `backend_exe` `backend_elf` `backend_coff` | `mc_writers_init()` — the six `backend()` and five `target()` registrations |
+| `<mc/core_writers>` | `src/core_writers.mc` | `sha256` `macho` `backend_exe` `backend_elf` `backend_elf_exe` `backend_coff` | `mc_writers_init()` — the eight `backend()` and five `target()` registrations |
 | `<mc/core_build>` | `src/core_build.mc` | `sha256` `toml` `driver` `sysroots` `sysroot` `stubs` `limits` | `mc_build_init()` — `mc build`, `mc limits`, `mc sysroot`, and the pre-scan |
 | `<mc/core_bundle>` | `src/core_bundle.mc` | `bundle_data` `bundle` | `mc_bundle_init()` — `#include <name>` itself |
 
