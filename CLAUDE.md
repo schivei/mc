@@ -1660,6 +1660,30 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `f8b05c08c9f06a14ba17ae3f329f240396ff5dc2473c07c445a4013feba173e1`, Linux `d8bdbeeb…da6b59` /
   `ed7c7f61…fd08dd`, Windows `4de1c3c9…d48cf3` / `7da0aa71…1c0d01`. Draft PR #23: three CI
   rounds, the last two **14/14 green**.
+- M43 review batch ✔ (`docs/specs/M43.md` § Implementation notes -- the review): the security
+  review's HIGH finding, **reproduced before it was fixed**. The COMPILE profile listed `clone`
+  (and `clone3` in the glibc variant) as a plain ALLOW -- the arg-checked clone block was emitted
+  only under `--allow=threads` -- so a program reachable from an untrusted tree (`mc build` runs
+  `[linker].cmd` from the source's own `mc.toml`: `/src/bomb`, `PATH=/`, `/src` writable and
+  executable) forked freely with no `refused:` line: `forked 12` unprivileged, `forked 200` as
+  root, and `nsclone.mc` created a USER NAMESPACE inside the box (`cloned 4`). Rule now: **a
+  process-creating call is never a plain ALLOW in any profile** -- `clone`/`clone3`/`fork`/`vfork`
+  always reach P (`sb_notified`), any `CLONE_NEW*` bit is `refused: clone with namespace flags`
+  (for `clone3` the first u64 of `clone_args` read with `process_vm_readv`; unreadable ->
+  `refused: clone3 with unreadable arguments`), the rest counted per step -- compile **16**, run
+  0, `--allow=threads` 64 -- as `refused: process limit (N)`; `RLIMIT_NPROC` stays the second
+  wall (compile 32, so the named one wins). The generated profiles say
+  `// SN_CLONE  notified, never allowed`. New cases `tests/sandbox/linkbomb/` (the hostile
+  `mc.toml`), `nsclone.mc`, `nsclone3.mc`; `forkbomb.mc`'s three per-libc headers collapsed into
+  one line. LOW: `sb_num` stops at 10^12 with maxima 86400 s / 1048576 MiB / 65536 MiB and minimum
+  1 (`--mem 0` used to SIGSEGV the compile step). INFO: `landlock: abi N (no scoped signals below
+  6)`. The docs' "compile-step forks" residual paragraph is gone because it is no longer true.
+  Measured: Lima aarch64 glibc root+unprivileged 55/55, VPS x86_64 musl root+unprivileged 53/53,
+  x86_64 glibc by hand, CI four cells 55/55 x2 + 53/53 x2; host process count 134 -> 134 in every
+  case; `sandbox-trace.sh --check` green everywhere. `make check` RC 0, `check-obj` 32/32,
+  `check-inert` identical, four Linux cells RC 0; goldens rewritten once: `mc2.sha256`
+  `9e7b803f127cb6f1e059c1e6572a629bfa909cfbecbfae18b01abd1fd7a2d431`, Linux `182a4c6d…036679` /
+  `e63d09bc…d99ffa`, Windows `dcaac914…4256c3` / `dfaf002c…a97b861`. PR #23 CI 14/14.
 - Next: M18 or M24 (`docs/plan.md`); M40 (the word-size sweep AVR/PIC need) is
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
 - M24 step A ✔ (`docs/specs/M24.md` § M1-M6, M8 and decision D5): **Tier 4 -- the inert half.
