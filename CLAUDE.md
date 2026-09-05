@@ -3096,6 +3096,24 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   contract), `docs/reference/diagnostics.md` (three rows), `docs/surface.md` (the nine
   registrations, and a § "The type position"), `docs/reference/language.md` § 2 ("A suffix on a
   type word the core owns").
+- M44 step 1 ✔ (`docs/specs/M44.md` § Implementation notes -- step 1; decision D20, the architect's
+  addition (f)): **the baked version.** `src/version.mc` (`uptr mc_version()` = the literal
+  `0.0.0-dev`, the sentinel; 33 lines, one of code), included by `src/core_min.mc` before `cli.mc`
+  and bundled as `mc/version` -- so a taught compiler reports the version of the binary that built
+  it, proved in both directions (`0.0.0-dev` -> `0.0.0-dev`, `9.9.9` -> `9.9.9`); `mc --version`
+  prints `mc <version>` (no `v`: the tag owns the `v`, and this is the string `release-assets.sh`
+  and a future `[deps]` minimum carry); `scripts/set-version.sh VERSION` rewrites the one literal
+  and runs `make bundle`, refusing anything but `X.Y.Z[-suffix]` -- it CANNOT delegate the whole
+  string to `next-version.sh`, which rejects every suffix on purpose while the sentinel itself is
+  suffixed (deviation 1); `scripts/check-bundle.sh` guards the sentinel (a tree where
+  `set-version.sh` ran FAILS naming it, after the staleness check so a stale-and-versioned tree is
+  reported as stale first); `release.yml`'s "Build the compiler" split in three (seed, bake, build)
+  so all five shipped binaries carry the tag from one call. Cost: **53 added lines in `src/`, 9 of
+  them code**; globals unchanged at 432/512 (a string literal, not a global). `make check` RC 0
+  (`check-obj` 32/32, fixed point 1109608 B, `check-docs` 196 symbols / 34 flags), four Linux cells
+  RC 0, `check-inert` identical everywhere. Goldens rewritten once: `mc2.sha256`
+  `8e5e127dd96e0d125fd8757b662e6bca61b661d415cdd7349afc9791be14e544`, Linux `6002790c…344380` /
+  `1ca2ea58…b15516`, Windows `478e2f28…a50520` / `6d49bfc6…3e70f05`.
 - Next: **M44** (packages, `docs/specs/M44.md`), then **M42 step 2** (PE `--exe`, CI-gated on the
   Windows runners). **M46** only on the owner's request; **M43 Layer 2** after 1.0.0. M13 and M18
   stay in the backlog (`docs/specs/M13.md`: sizing a program's memory at compile time -- the fixed
