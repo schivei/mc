@@ -1702,7 +1702,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `src/driver.mc` `--libs-dir` (default `host_home()/.mc/libs`), `drv_apply_deps` for both halves,
   `<...>` modules verbatim. Cost **999 added lines in `src/`, 677 code** (spec ~543); globals
   432 -> **439/512**. **What did not survive**: `check-lex` cannot stay 100% -- `--dump-tokens`
-  processes no directive, so `lib/syntax_demo_test.mc`'s `#infix ".+"` now lexes `.` `+` where the
+  processes no directive, so `lib/syntax_demo_test.mc`'s taught `.+` operator now lexes `.` `+` where the
   seed says `unexpected character` (M44 risk 17, measured); a new `// lex-skip:` header (NOT
   `seed-skip:`, which `check-asm`/`check-ast` also honour and which would have dropped the file from
   two gates that still compare it byte for byte) -- 135/135 identical, 3 skipped. Two silent path
@@ -1782,8 +1782,8 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   shape). Cost: `deps.mc` +106 code, `fetch.mc` +197, `pkg.mc` +46. `make check` RC 0 (`check-obj`
   32/32, empty `--dump-asm` diff, `check-lex` 143/143 (3 skipped), `check-docs` 197 symbols),
   four Linux cells RC 0, `check-inert` identical. Goldens rewritten (final, after the Copilot
-  fix): `mc2.sha256` `f4dbb784e204f4238c5a3374cf6132ca76dd6d2a71ef78f963749e3a4d7af885`, Linux
-  `f9ab763d…64c2da` / `d44f70a7…ac9239`, Windows `e114ae73…aec033` / `565ea57f…157867` -- all
+  fix and the lex-skip wording): `mc2.sha256` `5d2db5f9e94d33422d6d812d1143dc1cdd9f3bc2a1e8727a6ea113060e67ae55`, Linux
+  `9161fb1b…e17f8d` / `1ea7dc83…90d1cb`, Windows `831a422a…64b068` / `6224c4a9…9b570b` -- all
   five in the scripts' `hash  file` format.
 - Next: M18 or M24 (`docs/plan.md`); M40 (the word-size sweep AVR/PIC need) is
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:

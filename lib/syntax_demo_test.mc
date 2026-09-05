@@ -6,7 +6,7 @@
 // With the default compiler (build/mc1) it fails right at the first useful
 // line, with `type expected at top level` — `enum` there is just an identifier.
 // expect-exit: 42
-// lex-skip: it registers `#infix ".+"`, and `.` is a lexeme in src/lex.mc (M44) but not in the frozen stage0
+// lex-skip: it USES the taught `.+` operator; `.` is a lexeme in src/lex.mc since M44 and not in the frozen stage0 lexer, and --dump-tokens processes no directive
 
 enum Color { GREEN, YELLOW, RED }
 
