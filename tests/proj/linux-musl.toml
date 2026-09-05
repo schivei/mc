@@ -1,0 +1,14 @@
+# linux-musl.toml — the musl DYNAMIC cell of the Linux matrix
+# (docs/build.md § Linux targets, scripts/check-build.sh).
+#
+# The entry imports one libc symbol, so this is a real dynamic image: a
+# PT_INTERP naming the musl loader and a DT_NEEDED on `libc.so`. musl is the
+# writer's default, so the cell is written by NOT writing a `libc` key -- which
+# is what makes this file the check that the default did not move.
+[project]
+entry = "lin-libc.mc"
+out   = "build/lin-musl"
+
+[target]
+os   = "linux"
+arch = "aarch64"

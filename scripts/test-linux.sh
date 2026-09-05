@@ -11,10 +11,12 @@
 # `[target].arch` in the generated mc.toml, the sysroot directory, the Docker
 # platform and which `// skip-` header applies.
 #
-# --libc is musl (the default) or glibc, and it only means something with --exe:
+# --libc is musl (the default) or gnu, and it only means something with --exe:
 # a dynamically linked executable names its loader and its library BY PATH, and
-# those two names are the only per-libc facts in the file ([target].interp and
-# [target].libc, docs/reference/toml.md). musl runs in `alpine:3`, glibc in
+# ONE key decides both ([target].libc, a FAMILY and not a soname --
+# docs/reference/toml.md). The vocabulary is the compiler's own, so what is
+# written here is what an mc.toml and `mc --exe --libc=` say. musl runs in
+# `alpine:3`, gnu in
 # `ubuntu:latest` -- the newest Ubuntu, which is the baseline this repository
 # measures glibc against. A binary built for one does not run on the other: the
 # loader named in PT_INTERP simply is not there, and the kernel answers ENOENT
@@ -91,7 +93,7 @@ while [ $# -gt 0 ]; do
         --exe) exe=1; shift ;;
         --libc)
             [ -n "$2" ] && [ "${2#-}" = "$2" ] \
-                || { echo "FAIL: --libc needs a value (musl | glibc)" >&2; exit 1; }
+                || { echo "FAIL: --libc needs a value (musl | gnu)" >&2; exit 1; }
             libc="$2"; shift 2
             ;;
         --libc=*) libc="${1#--libc=}"; shift ;;
@@ -117,24 +119,19 @@ case "$arch" in
 esac
 mc="${mc:-build/mc1}"
 
-# the loader path and the DT_NEEDED soname of each libc, and the container that
-# has it. musl is the writer's own default, so its two keys are left unwritten
-# and the default is exercised as well.
+# the container each libc lives in. The names inside the image -- the loader
+# path and the DT_NEEDED soname -- are not written here any more: `libc = "gnu"`
+# is the whole statement and the writer knows both halves of the family
+# (the post-M42 patch). musl is the writer's own default, so its key is left
+# unwritten and the default is exercised as well.
 case "$libc" in
-    musl)
-        img="alpine:3"
-        interp=""
-        soname=""
-        ;;
+    musl) img="alpine:3";     libckey="" ;;
+    gnu)  img="ubuntu:latest"; libckey="gnu" ;;
     glibc)
-        img="ubuntu:latest"
-        soname="libc.so.6"
-        case "$arch" in
-            aarch64) interp="/lib/ld-linux-aarch64.so.1" ;;
-            x86_64)  interp="/lib64/ld-linux-x86-64.so.2" ;;
-        esac
+        echo "FAIL: --libc glibc was renamed to --libc gnu (the compiler's own vocabulary: [target].libc = \"gnu\")" >&2
+        exit 1
         ;;
-    *) echo "FAIL: unknown --libc $libc (musl | glibc)" >&2; exit 1 ;;
+    *) echo "FAIL: unknown --libc $libc (musl | gnu)" >&2; exit 1 ;;
 esac
 if [ "$exe" = "0" ] && [ "$libc" != "musl" ]; then
     # the object+link road links against the musl sysroot scripts/sysroot-linux.sh
@@ -161,7 +158,7 @@ fi
 # to exist here, so a glibc host cannot run a musl-linked binary and the other
 # way round. The host's libc is read from the loader that is on the disk (musl
 # installs /lib/ld-musl-<arch>.so.1), never from the distribution's name.
-host_libc="glibc"
+host_libc="gnu"
 if [ "$(uname -s)" = "Linux" ]; then
     for l in /lib/ld-musl-*.so.1; do
         [ -e "$l" ] && host_libc="musl"
@@ -365,10 +362,9 @@ gen_toml_exe() {
         echo '[target]'
         echo 'os   = "linux"'
         echo "arch = \"$arch\""
-        # musl is the writer's own default, so --libc musl writes NEITHER key
+        # musl is the writer's own default, so --libc musl writes NO key at all
         # and the default is what gets exercised
-        [ -n "$interp" ] && echo "interp = \"$interp\""
-        [ -n "$soname" ] && echo "libc   = \"$soname\""
+        [ -n "$libckey" ] && echo "libc = \"$libckey\""
     } > "$tmp/mc.toml"
 }
 

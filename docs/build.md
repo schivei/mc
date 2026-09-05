@@ -707,28 +707,78 @@ $ docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w alpine:3 /w/build/he
 hello
 ```
 
-The binary asks for musl's loader (`/lib/ld-musl-<arch>.so.1`) and `libc.so`; `[target].interp`
-and `[target].libc` name glibc's instead
-([reference/toml.md](reference/toml.md#target-interp-and-target-libc-the-two-per-libc-names)):
+### The matrix: libc x link
+
+A Linux target has **two axes**, and one vocabulary says both — the same words in `mc.toml` and on
+the command line (the post-M42 patch):
+
+| | key | flag | values | default |
+|---|---|---|---|---|
+| which C library | `[target].libc` | `--libc=` | `gnu`, `musl` | `musl` |
+| how it is linked | `[target].link` | `--link=` | `dynamic`, `static` | `dynamic` |
+| the loader, spelled out | `[target].interp` | `--interp=` | any absolute path | the family's |
+
+`libc` is a **family, not a soname**: one word picks both per-libc names at once, because they
+always travel together and a file that names them one at a time is a file that can name half of a
+libc.
+
+| `libc` | `PT_INTERP` (aarch64) | `PT_INTERP` (x86_64) | `DT_NEEDED` |
+|---|---|---|---|
+| `musl` (the default) | `/lib/ld-musl-aarch64.so.1` | `/lib/ld-musl-x86_64.so.1` | `libc.so` |
+| `gnu` | `/lib/ld-linux-aarch64.so.1` | `/lib64/ld-linux-x86-64.so.2` | `libc.so.6` |
 
 ```toml
 [target]
-os     = "linux"
-arch   = "aarch64"
-interp = "/lib/ld-linux-aarch64.so.1"    # /lib64/ld-linux-x86-64.so.2 on x86_64
-libc   = "libc.so.6"
+os   = "linux"
+arch = "aarch64"
+libc = "gnu"          # one key; `interp` is still there to override the path itself
 ```
 
-**Which one you pick decides where the binary runs.** `PT_INTERP` is an absolute path, so a
+The six cells, and the road to each:
+
+| | `link = "dynamic"` (default) | `link = "static"` |
+|---|---|---|
+| `libc = "gnu"` | **`mc --exe` / `mc build`.** `PT_INTERP` `/lib/ld-linux-<arch>.so.1`, `DT_NEEDED` `libc.so.6` | **`[linker]` only.** Without one: `static link with imports needs [linker]: see docs/build.md -- static linking (M46)`, exit 1 |
+| `libc = "musl"` | **`mc --exe` / `mc build`.** `PT_INTERP` `/lib/ld-musl-<arch>.so.1`, `DT_NEEDED` `libc.so` | **`[linker]` only**, against the `libc.a` of a sysroot — same message without one |
+| no libc (the program imports nothing: `<sys_linux>`, raw `svc`) | **`mc --exe`**, and there is nothing dynamic about it: no `PT_INTERP`, no `PT_DYNAMIC`, no PLT | **`mc --exe`** — the same image. `link = "static"` here is an assertion that is checked, not a switch |
+
+Two things follow from that table and are worth saying plainly.
+
+**The static image is chosen by the program, not by the key.** The writer decides by counting
+imports: no undefined symbol, no `PT_INTERP`. `link = "static"` does not create that case — it
+*requires* it, and refuses the build when the program does import anything (a libc symbol or a `#dylib` one), instead of quietly
+handing back a dynamic binary. mc has no archive linker, so a static link against a real `libc.a`
+is the `[linker]` road below; **M46** is the milestone that would remove the need for it.
+
+**Which libc you pick decides where the binary runs.** `PT_INTERP` is an absolute path, so a
 musl-linked binary on a glibc system does not start at all — the kernel cannot find the
 interpreter and reports `no such file or directory` about a program that is plainly there — and a
-glibc-linked binary on Alpine fails the same way. Both are exercised on both architectures:
+gnu-linked binary on Alpine fails the same way. Both are exercised on both architectures:
 `make test-linux-exe` and `make test-linux-x86_64-exe` run the whole corpus twice, musl in
-`alpine:3` and glibc in `ubuntu:latest` (`scripts/test-linux.sh --exe [--libc glibc]`), and the
-CI legs run the glibc set natively on the Ubuntu runners. The **object** does not depend on the
-choice: an ELF `ET_REL` records no interpreter.
-A program with no undefined symbol at all — anything on `<sys_linux>` — comes out static, with no
-`PT_INTERP` and no `PT_DYNAMIC`, and that is decided by counting imports rather than by a key.
+`alpine:3` and gnu in `ubuntu:latest` (`scripts/test-linux.sh --exe [--libc gnu]`), and the
+CI legs run the gnu set natively on the Ubuntu runners. The **object** does not depend on the
+choice: an ELF `ET_REL` records no interpreter, which is why both chains verify the same golden.
+
+The same from the single-file CLI, with no `mc.toml` anywhere:
+
+```
+$ mc --exe --libc=gnu hello.mc -o hello           # glibc, dynamic
+$ mc --exe --libc=musl --link=static hello.mc -o hello
+mc: static link with imports needs [linker]: see docs/build.md -- static linking (M46)
+```
+
+The compiler **never probes the host** for its libc: one source gives one answer on every machine
+([determinism.md](determinism.md)), so the default is the constant `musl` and the flag is how a
+glibc host says so.
+
+The three flags apply to a Linux **executable**, and nothing else reads them — an object file has
+no `PT_INTERP` and no `DT_NEEDED`. So each half of that sentence is a refusal rather than a flag
+read and thrown away (post-M42 review): a run that writes an object (`mc x.mc -o x.o`, or a
+`--backend=` no `target()` names in an exe slot) is `--libc applies to an executable: use --exe`, a
+`--dump-*` mode is `--libc applies to an executable: a --dump-* mode writes none`, and `--exe` on a
+host that is not Linux is `--libc applies to a linux target`. The cross road is
+`mc --backend=elf-exe --libc=gnu prog.mc -o prog`, which works from any host.
+
 The layout, field by field, is
 [reference/objects.md § 8b](reference/objects.md#8b-the-elf-executable-elf-exe-and-elf-exe-x86_64).
 
@@ -787,7 +837,7 @@ Windows, whose PE executable writer is a separate milestone.
 exist to serve the **static external link**, which is the `[linker]` road above:
 `examples/api`-style projects that link a real library statically, and anything that must run on a
 machine with no dynamic libc at all. Running on a glibc system is **not** one of those cases: it
-is `[target].interp` plus `[target].libc`, two names and no files.
+is `libc = "gnu"`, one word and no files.
 
 `scripts/sysroot-linux.sh [--arch aarch64|x86_64]` fills `build/sysroot/linux-<arch>` by running
 `apk add musl-dev` inside a throwaway Alpine container of the matching platform (`linux/arm64` or

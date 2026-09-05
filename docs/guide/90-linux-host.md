@@ -139,20 +139,23 @@ host runs `test-exe`, which is the whole `tests/*.mc` corpus through it.
 **Which libc it asks for is a key, not a guess.** `PT_INTERP` holds an absolute path, and the
 writer's default is musl's `/lib/ld-musl-<arch>.so.1`. That default is a constant on purpose — a
 probe of the machine would make the same source produce different bytes on two hosts — so on a
-**glibc** host (Debian, Ubuntu, Fedora, Arch) `mc --exe` writes a binary this machine cannot
-start, and the road is `mc build` with two more keys:
+**glibc** host (Debian, Ubuntu, Fedora, Arch) `mc --exe` alone writes a binary this machine cannot
+start. Saying so is one word, and it is the same word on both roads:
+
+```
+$ mc --exe --libc=gnu hello.mc -o hello
+```
 
 ```toml
 [target]
-os     = "linux"
-arch   = "aarch64"
-interp = "/lib/ld-linux-aarch64.so.1"   # /lib64/ld-linux-x86-64.so.2 on x86_64
-libc   = "libc.so.6"
+os   = "linux"
+arch = "aarch64"
+libc = "gnu"                            # the family, not a soname
 ```
 
-`scripts/test-exe.sh`, `scripts/build-exe.sh` and `scripts/bootstrap-linux.sh` all take that road
-by themselves when the loader on the disk says the host is glibc, and each says which road it
-took.
+`scripts/test-exe.sh`, `scripts/build-exe.sh` and `scripts/bootstrap-linux.sh` pass that flag by
+themselves when the loader on the disk says the host is glibc — the probing is the script's, never
+the compiler's — and each says which libc it asked for.
 
 Three consequences worth knowing:
 
@@ -186,7 +189,7 @@ Docker: both configs dropped their `[linker]` and `[sysroot]` and `mc build` wri
 ELF64 executable** itself, around 880 KB, asking for musl's loader.
 
 Two more configs write the same compiler for a **glibc** host — the same files with
-`[target].interp` and `[target].libc` added and nothing else changed:
+`[target].libc = "gnu"` added and nothing else changed:
 
 ```sh
 build/mc1 build src --config src/mc.linux-aarch64-gnu.toml   # -> build/mc-linux-arm64-gnu
@@ -243,9 +246,13 @@ different systems to be hosted on. `--arch` and `--libc` narrow it.
 repository's glibc baseline. The seed is `build/mc-linux-<target>-gnu`, and **nothing is installed
 in the container**: no `make`, no `lld`, no `musl-dev`.
 
-1. `scripts/bootstrap-linux.sh --libc glibc <seed>` — the same four stages, with every executable
-   written by the previous compiler through `mc build` instead of by a linker, then the whole
-   suite through `scripts/test-linux.sh --exe --libc glibc`, natively;
+1. `scripts/bootstrap-linux.sh --libc gnu <seed>` — the same four stages, with every executable
+   written by the previous compiler's `elf-exe` writer instead of by a linker. The script goes
+   through `mc build` with a generated config (`[target].libc = "gnu"` plus
+   `[limits] tolerance = 1.0`) rather than through `mc --exe --libc=gnu`: the tolerance is a key
+   the command line cannot carry, and `src/mc.mc` needs it so that no table doubles mid-build
+   (the header of `scripts/bootstrap-linux.sh` says so). Then the whole suite through
+   `scripts/test-linux.sh --exe --libc gnu`, natively;
 2. the same cross proof.
 
 The golden is the same file in both cells: an ELF object records no interpreter, so the musl chain
@@ -263,9 +270,11 @@ check-bundle check-mc test-exe check-toml check-sysroots check-limits check-skip
 ```
 
 `test-exe` joined the list at M42: `--exe` on a Linux host writes a dynamic ELF64 executable, so
-the whole suite goes through it natively, with no linker. On a **glibc** host the script reaches
-the same backend through `mc build` with the two per-libc keys, and prints which road it took —
-`mc --exe`'s default interpreter is musl's and cannot be told otherwise from a command line.
+the whole suite goes through it natively, with no linker. On a **glibc** host the script adds
+`--libc=gnu`, which is the same thing `[target].libc` says in an `mc.toml`: since the post-M42
+patch `--exe` can name its libc family, so there is no `mc build` detour left in
+`scripts/test-exe.sh` or `scripts/build-exe.sh`. The probe of the loader on the disk is the
+script's; the compiler never probes.
 
 `bootstrap-linux` ends by running the whole `tests/*.mc` suite with the compiler it just
 bootstrapped (`scripts/test-linux.sh`, native mode — no Docker, no emulation), which is why `test`

@@ -7,10 +7,10 @@
 #
 #   musl   `alpine:3`, the full one -- `make check SEED=...`, i.e. the whole
 #          Linux subset, plus the cross proof
-#   glibc  `ubuntu:latest` (the newest Ubuntu, this repository's glibc baseline),
+#   gnu    `ubuntu:latest` (the newest Ubuntu, this repository's glibc baseline),
 #          M42 § acceptance 9 -- the compiler itself built DYNAMICALLY against
 #          glibc, taken to its own fixed point with scripts/bootstrap-linux.sh
-#          --libc glibc, the suite run natively through `mc --exe`, and the same
+#          --libc gnu, the suite run natively through `mc --exe`, and the same
 #          cross proof. Nothing is installed in that container: no make, no lld,
 #          no musl-dev. The chain has no linker in it at all.
 #
@@ -38,18 +38,18 @@
 # nothing is downloaded twice and no sysroot has to be built.
 set -e
 arches="aarch64 x86_64"
-libcs="musl glibc"
+libcs="musl gnu"
 while [ $# -gt 0 ]; do
     case "$1" in
         --arch)   arches="$2"; shift 2 ;;
         --arch=*) arches="${1#--arch=}"; shift ;;
         --libc)   libcs="$2"; shift 2 ;;
         --libc=*) libcs="${1#--libc=}"; shift ;;
-        *) echo "usage: check-linux-host.sh [--arch aarch64|x86_64] [--libc musl|glibc]" >&2
+        *) echo "usage: check-linux-host.sh [--arch aarch64|x86_64] [--libc musl|gnu]" >&2
            exit 1 ;;
     esac
 done
-case " $libcs " in *" glibc "*)
+case " $libcs " in *" gnu "*)
     if ! docker image inspect ubuntu:latest > /dev/null 2>&1; then
         docker pull -q ubuntu:latest > /dev/null 2>&1 \
             || { echo "FAIL: ubuntu:latest is not available (the glibc oracle)" >&2; exit 1; }
@@ -119,11 +119,12 @@ for arch in $arches; do
     bin="build/mc-linux-$target-gnu"
 
     echo "=================================================================="
-    echo "== linux/$arch host, glibc (ubuntu:latest) ======================="
+    echo "== linux/$arch host, gnu (glibc, ubuntu:latest) ================="
     echo "=================================================================="
     echo "-- cross-build: $mc build src --config src/mc.linux-$arch-gnu.toml --"
-    # the same config as the musl one with [target].interp and [target].libc
-    # added: two names, no files, no sysroot, no linker.
+    # the same config as the musl one with ONE key added, [target].libc = "gnu":
+    # a family, which names both the loader and the soname. No files, no
+    # sysroot, no linker.
     rm -f "$bin"
     "$mc" build src --config "src/mc.linux-$arch-gnu.toml"
     ls -l "$bin"
@@ -150,16 +151,16 @@ for arch in $arches; do
         cat /etc/os-release | grep '^VERSION='
         ./$bin --host
         echo ''
-        echo '### scripts/bootstrap-linux.sh --libc glibc (no linker, no sysroot)'
-        sh scripts/bootstrap-linux.sh --libc glibc $bin
+        echo '### scripts/bootstrap-linux.sh --libc gnu (no linker, no sysroot)'
+        sh scripts/bootstrap-linux.sh --libc gnu $bin
         cp -f tests/golden/mc2-linux-*.sha256 /w/tests/golden/ 2>/dev/null || true
         echo ''
         echo '### cross proof: build/mc2l --backend=macho src/mc.mc == the macOS build/mc2.o'
         build/mc2l --backend=macho src/mc.mc -o build/x-cross.o
         cmp build/x-cross.o build/mc2-macos.o
-        echo 'ok: the Mach-O object written on glibc linux/$arch is byte for byte the one macOS writes'
+        echo 'ok: the Mach-O object written on gnu linux/$arch is byte for byte the one macOS writes'
     "
-    echo "== linux/$arch host, glibc: ok ==================================="
+    echo "== linux/$arch host, gnu: ok ====================================="
    fi
   done
 done

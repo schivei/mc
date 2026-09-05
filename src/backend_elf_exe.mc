@@ -20,10 +20,13 @@
 //      (`#include <sys_linux>`) keeps it; anything else gets the 7-instruction
 //      stub this file synthesizes.
 //
-// THE STATIC CASE IS THE DEGENERATE CASE, decided by counting imports and never
-// by a flag: with no undefined symbol there is no `PT_INTERP`, no `PT_DYNAMIC`,
-// no `.dynsym`/`.dynstr`/`.hash`/`.rela.plt`, no PLT and no GOT, and what comes
-// out is a static executable the kernel runs with no loader at all.
+// THE STATIC CASE IS THE DEGENERATE CASE, decided by counting imports: with no
+// undefined symbol there is no `PT_INTERP`, no `PT_DYNAMIC`, no
+// `.dynsym`/`.dynstr`/`.hash`/`.rela.plt`, no PLT and no GOT, and what comes out
+// is a static executable the kernel runs with no loader at all. The post-M42
+// patch added `link = "static"` (`--link=static`), which does not SELECT that
+// path -- the import count still does -- but ASSERTS it: with an import in the
+// set the writer refuses instead of quietly producing a dynamic binary.
 //
 // Two simplifications, both with M11's precedent of refusing the optional half
 // of a format (docs/specs/M42.md § 2):
@@ -41,7 +44,8 @@
 // on both architectures. This writer emits the same shape.
 //
 // Depends on arena.mc (buf_*, xalloc, die, die2), on objmodel.mc (sections,
-// symbols, relocations, sym_order, dyn_interp/dyn_libc), on gen_walk.mc
+// symbols, relocations, sym_order, dyn_interp/dyn_libc/dyn_static/dyn_die),
+// on gen_walk.mc
 // (gen_lower/gen_encode_all, ivec_at/set_ivec_at), on parse.mc (dylib_count/
 // dylib_path) and on two files of its own part: backend_elf.mc (the ELF
 // constants and the section naming/typing this shares with the object writer)
@@ -190,13 +194,21 @@ uptr ee_liboff;                        // dynstr offset of each DT_NEEDED name
 uptr ee_impoff;                        // dynstr offset of each import's name
 
 // ---- the two per-libc names ----
-// Both come from [target] in mc.toml (src/driver.mc) and fall back to musl,
-// which is the libc the whole Linux half of this repository is tested against.
-// glibc is `interp = "/lib/ld-linux-aarch64.so.1"` (or
-// "/lib64/ld-linux-x86-64.so.2") plus `libc = "libc.so.6"`; both were measured
-// in docs/specs/M42.md § 0.
+// ONE choice decides both: `libc = "gnu"` or `libc = "musl"` ([target] in
+// mc.toml, --libc= on the command line), because a loader path and a DT_NEEDED
+// soname always travel together and a config that names them one by one is a
+// config that can name half of a libc. 0 is musl, the libc the whole Linux half
+// of this repository is tested against. Both pairs were measured in
+// docs/specs/M42.md § 0.
+//
+// `interp` is the escape hatch: an explicit path wins over the family's
+// default, for a system whose loader is at neither standard place.
 uptr ee_interp_path() {
     if (dyn_interp) return dyn_interp;
+    if (dyn_libc_gnu()) {
+        if (ee_em == EM_X86_64) return "/lib64/ld-linux-x86-64.so.2";
+        return "/lib/ld-linux-aarch64.so.1";
+    }
     if (ee_em == EM_X86_64) return "/lib/ld-musl-x86_64.so.1";
     return "/lib/ld-musl-aarch64.so.1";
 }
@@ -205,7 +217,7 @@ uptr ee_interp_path() {
 // loads libSystem and ELF always names this one, for the same reason: every
 // import that no #dylib and no [externs] pattern claims comes from it.
 uptr ee_libc_name() {
-    if (dyn_libc) return dyn_libc;
+    if (dyn_libc_gnu()) return "libc.so.6";
     return "libc.so";
 }
 
@@ -865,6 +877,17 @@ void ee_pick_entry() {
 
 void ee_write(uptr path) {
     exe_collect_undef();
+    // post-M42 patch: `link = "static"` is an ASSERTION, and this is where it is
+    // checked, because the import set is the only thing that answers it. A
+    // program built on <sys_linux> imports nothing and gets the static image
+    // below; a program that imports ANYTHING -- a libc symbol or a `#dylib`
+    // one, the count does not distinguish -- would need an archive to link,
+    // and mc has no archive linker: it is refused by name instead of being
+    // handed a dynamic binary it did not ask for. dyn_die puts the mc.toml file:line:col
+    // in front when there is a file (src/objmodel.mc).
+    if (dyn_static && nundef > 0)
+        dyn_die("target.link",
+                "static link with imports needs [linker]: see docs/build.md -- static linking (M46)");
     ee_dynamic = nundef > 0;
     ee_nlib = 1 + dylib_count();
     ee_pick_entry();

@@ -705,8 +705,16 @@ regardless, for a module that emits its own data.)
 
 `DT_NEEDED` names come from the same two places Mach-O's `LC_LOAD_DYLIB` comes from — `#dylib`
 (M12) and `[libs]`/`[externs]` (M14) — with the default library first, the way libSystem is always
-ordinal 1. The default and the interpreter path are `[target].libc` and `[target].interp` in
-`mc.toml` ([`toml.md`](toml.md#target)), defaulting to musl.
+ordinal 1. Which libc that default is comes from one word — `[target].libc = "gnu" | "musl"` in
+`mc.toml`, or `--libc=` on the command line ([`toml.md`](toml.md#target), [`cli.md`](cli.md)) —
+and it names the `PT_INTERP` path and the `DT_NEEDED` soname together, defaulting to musl.
+`[target].interp` / `--interp=` overrides the path alone.
+
+The static path is taken by counting imports: no undefined symbol, no `PT_INTERP`, no
+`PT_DYNAMIC`, no `.dynsym`, no PLT and no GOT. `[target].link = "static"` (`--link=static`) does
+not select it — it asserts it, and the writer refuses a program that does import any symbol, libc or `#dylib`,
+with `static link with imports needs [linker]: see docs/build.md -- static linking (M46)`, because
+there is no archive linker here.
 
 `DT_HASH` and not `DT_GNU_HASH`: the SysV table is nine lines and every loader accepts it, while
 `DT_GNU_HASH` is a bloom filter plus sorted buckets for a lookup speed that does not matter at

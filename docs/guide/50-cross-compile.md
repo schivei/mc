@@ -49,19 +49,33 @@ $ llvm-readelf -l -d build/hello | grep -E 'INTERP|NEEDED|GNU_STACK'
   0x0000000000000001 (NEEDED)   Shared library: [libc.so]
 ```
 
-It targets musl by default. For glibc, name its two files:
+It targets musl by default. A Linux target has two axes — **which libc** and **how it is
+linked** — and one word says the first of them:
 
 ```toml
 [target]
-os     = "linux"
-arch   = "aarch64"
-interp = "/lib/ld-linux-aarch64.so.1"
-libc   = "libc.so.6"
+os   = "linux"
+arch = "aarch64"
+libc = "gnu"          # or "musl", the default
+link = "dynamic"      # or "static"
+```
+
+`libc` is a family, not a soname: `gnu` picks `/lib/ld-linux-aarch64.so.1` (or
+`/lib64/ld-linux-x86-64.so.2`) **and** `libc.so.6` together, and `musl` picks
+`/lib/ld-musl-<arch>.so.1` and `libc.so`. The single-file CLI says the same two things with
+`--libc=gnu|musl` and `--link=dynamic|static`, so a one-file program never has to become a project
+to name its libc:
+
+```
+$ mc --exe --libc=gnu hello.mc -o hello
 ```
 
 A program that imports nothing — anything on `<sys_linux>`, which is raw `svc #0` syscalls —
 comes out **static**, with no `PT_INTERP` and no `PT_DYNAMIC` at all. That is not a switch: the
-writer counts imports.
+writer counts imports. `link = "static"` does not create that case, it *requires* it — a program
+that does import anything is refused (`static link with imports needs [linker]: see
+docs/build.md -- static linking (M46)`) rather than handed a dynamic binary, because `mc` has no
+archive linker. The full matrix is [../build.md § The matrix](../build.md#the-matrix-libc-x-link).
 
 The object backend is also reachable from the single-file CLI, which is useful when you only want
 to look at what came out:
@@ -79,6 +93,12 @@ i64 main() {
 $ mc --backend=elf-obj hello.mc -o hello.o
 $ llvm-readobj --file-headers hello.o | head -5
 ```
+
+`--libc`, `--link` and `--interp` do **not** come along on that road: an object has no
+`PT_INTERP` and no `DT_NEEDED`, so nothing would read them, and since the post-M42 review they are
+refused there (`mc: --libc applies to an executable: use --exe`) instead of accepted and ignored.
+They belong to a run that writes an executable — `--exe`, or a `--backend=` some `target()` names
+in its exe slot ([../reference/cli.md](../reference/cli.md)).
 
 ## Linux x86-64
 
@@ -160,7 +180,7 @@ args = ["-o", "{out}",
 
 That is what `examples/api`-style projects use to bring a library in statically, and what a binary
 that has to run on a machine with no dynamic libc at all needs. Running on a **glibc** system is
-not that case: it is the two names in `[target].interp` and `[target].libc`, and no files.
+not that case: it is `libc = "gnu"`, one word and no files.
 
 A Linux link needs musl's `crt1.o`, `crti.o`, `crtn.o` and `libc.a`.
 `scripts/sysroot-linux.sh [--arch aarch64|x86_64]` fills `build/sysroot/linux-<arch>` by running

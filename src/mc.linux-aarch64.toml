@@ -20,7 +20,8 @@
 # no libc.a, no `make sysroot-linux`. That is the milestone's point, and this
 # file is where the compiler itself takes it.
 #
-# For glibc, add `interp` and `libc` to [target]
+# For glibc, add `libc = "gnu"` to [target] -- one key names the family and the
+# family picks both the loader path and the DT_NEEDED soname
 # (docs/reference/toml.md, the [target] section). For a STATIC link against a
 # real libc, put the two tables back: that is still supported and it is still
 # the only route to one. src/mc.linux-<arch>-obj.toml is the CI half and is

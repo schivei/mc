@@ -3,7 +3,8 @@
 // `main()` that says which PARTS this compiler is made of.
 //
 // usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules|--dump-machine]
-//         [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] input.mc [-o output]
+//         [--backend=NAME|--exe] [--machine=NAME] [--include=DIR]
+//         [--libc=gnu|musl] [--interp=PATH] [--link=dynamic|static] input.mc [-o output]
 //        mc build [DIR]   ·   mc limits [DIR|FILE.mc]   ·   mc sysroot ...
 // The --dump-* modes write to stdout and do not generate the object.
 //
@@ -126,7 +127,7 @@ void dump_machine() {
 // compiler without <mc/core_build> has none and prints just the two -- which is
 // the honest answer, since `mc build` is not in it.
 void usage() {
-    out_str(2, "usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules|--dump-machine] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] source.mc [-o out]\n");
+    out_str(2, "usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules|--dump-machine] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] [--libc=gnu|musl] [--interp=PATH] [--link=dynamic|static] source.mc [-o out]\n");
     out_str(2, "       mc --host\n");
     subcommand_usage();
 }
@@ -146,6 +147,7 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
     uptr mname = 0;                             // --machine=, for the dump modes
     i64 mode = M_COMPILE;
     i64 want_exe = 0;                           // --exe: the HOST's exe backend
+    uptr linkflag = 0;                          // the last of --libc/--interp/--link
 
     // M17: the machines were registered before this call. `machine()` also
     // makes each one current, so the host's is named again here -- when it
@@ -196,9 +198,32 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
             // carry two platform layers in different directories and pick one
             // without `mc build` (examples/conc/lib/macos, lib/linux).
             uptr ip = opt_val(a, "--include=");
+            // post-M42 patch: the two axes of a Linux dynamic executable, said
+            // on the command line exactly as [target] says them in mc.toml --
+            // one vocabulary, and no probe of the machine: `mc --exe prog.mc`
+            // with no flag writes the same bytes on every host, which is what
+            // docs/determinism.md asks for. They are written straight into the
+            // globals src/objmodel.mc holds for the writer; the last one wins,
+            // like every other flag here.
+            uptr lc = opt_val(a, "--libc=");
+            uptr it = opt_val(a, "--interp=");
+            uptr lk = opt_val(a, "--link=");
             if (mn)      mname = mn;
             else if (bn) { bname = bn; want_exe = 0; }
             else if (ip) { }                    // applied after lex_init, below
+            else if (lc) {
+                if (!str_eq(lc, "gnu") && !str_eq(lc, "musl"))
+                    die2("--libc must be gnu or musl", lc);
+                dyn_libc = lc;
+                linkflag = "--libc";
+            }
+            else if (it) { dyn_interp = it; linkflag = "--interp"; }
+            else if (lk) {
+                if (str_eq(lk, "static"))        dyn_static = 1;
+                else if (str_eq(lk, "dynamic"))  dyn_static = 0;
+                else die2("--link must be dynamic or static", lk);
+                linkflag = "--link";
+            }
             else         die2("unknown option", a);
         }
         else if (in == 0)          in = a;
@@ -228,6 +253,39 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
     // the entire core. Before any token is read, because the lexer is
     // incremental: the user's `#token`/`#rule` still apply to the whole source.
     user_init();
+
+    // post-M42 review: --libc, --interp and --link describe A LINUX DYNAMIC
+    // EXECUTABLE, and nothing else reads them -- src/backend_elf_exe.mc is the
+    // only file in the tree that names dyn_libc/dyn_interp/dyn_static. So every
+    // other road silently ignored them: on a Linux host `mc x.mc -o x.o
+    // --libc=gnu` wrote exactly the object it writes without the flag (elf-obj
+    // has no PT_INTERP and no DT_NEEDED to put it in), and so did
+    // `--backend=elf-obj --libc=gnu` on any host. Three questions, in the order
+    // a user can act on them:
+    //
+    //   1. is anything written at all? a --dump-* mode returns before a backend
+    //      is ever reached, so the flag can affect nothing there either;
+    //   2. is what is written an EXECUTABLE? that is `--exe`, or a --backend=
+    //      the TARGET REGISTRY names in an exe slot (backend_is_exe,
+    //      src/hooks.mc) -- asked of the registry, never of the name, so a
+    //      target a module registered answers for its own writer;
+    //   3. is that executable a Linux one? the host decides when no backend was
+    //      named; with one named the caller chose the format and this is the
+    //      cross road (`--backend=elf-exe --libc=gnu` from macOS).
+    //
+    // Here and not where the flags were read, for the reason M39.5 wrote for
+    // `mc build`'s [target]: after user_init() a backend a module registered
+    // counts. The price is that the entry is opened and lexed first, so
+    // `cannot open` now comes before the refusal (docs/reference/diagnostics.md).
+    if (linkflag) {
+        if (mode != M_COMPILE)
+            die(tm_cat(linkflag, " applies to an executable: a --dump-* mode writes none"));
+        if (!want_exe && (bname == 0 || !backend_is_exe(bname)))
+            die(tm_cat(linkflag, " applies to an executable: use --exe"));
+        if (bname == 0 && !str_eq(host_os(), "linux"))
+            die(tm_cat(linkflag, " applies to a linux target"));
+    }
+
     // after user_init, so a module can register the machine the flag names
     if (mname) machine_use(mname);
     // M24: after user_init and after --machine=, because both are what a

@@ -203,9 +203,9 @@ test-linux-x86_64: build/mc1
 # aside while it runs to prove it. Only Docker is needed, to RUN the binaries,
 # so the guard is one condition shorter than test-linux's.
 #
-# Each target runs BOTH libcs, because [target].interp and [target].libc are the
-# only per-libc facts in the file and each one has its own oracle: musl in
-# `alpine:3` and glibc in `ubuntu:latest` (the newest Ubuntu). The glibc half
+# Each target runs BOTH libcs, because [target].libc is the only per-libc fact
+# in the file and each family has its own oracle: musl in `alpine:3` and gnu
+# (glibc) in `ubuntu:latest` (the newest Ubuntu). The gnu half
 # skips itself with a reason when that image is not available, so a machine with
 # only the alpine image cached still gets the musl half.
 test-linux-exe: build/mc1
@@ -214,9 +214,9 @@ test-linux-exe: build/mc1
 	else \
 	    scripts/test-linux.sh --exe build/mc1 || exit 1; \
 	    if docker image inspect ubuntu:latest > /dev/null 2>&1 || docker pull -q ubuntu:latest > /dev/null 2>&1; then \
-	        scripts/test-linux.sh --exe --libc glibc build/mc1 || exit 1; \
+	        scripts/test-linux.sh --exe --libc gnu build/mc1 || exit 1; \
 	    else \
-	        echo "test-linux-exe (glibc): SKIPPED (no ubuntu:latest image and it cannot be pulled)"; \
+	        echo "test-linux-exe (gnu): SKIPPED (no ubuntu:latest image and it cannot be pulled)"; \
 	    fi; \
 	fi
 
@@ -226,9 +226,9 @@ test-linux-x86_64-exe: build/mc1
 	else \
 	    scripts/test-linux.sh --arch x86_64 --exe build/mc1 || exit 1; \
 	    if docker image inspect ubuntu:latest > /dev/null 2>&1 || docker pull -q ubuntu:latest > /dev/null 2>&1; then \
-	        scripts/test-linux.sh --arch x86_64 --exe --libc glibc build/mc1 || exit 1; \
+	        scripts/test-linux.sh --arch x86_64 --exe --libc gnu build/mc1 || exit 1; \
 	    else \
-	        echo "test-linux-x86_64-exe (glibc): SKIPPED (no ubuntu:latest image and it cannot be pulled)"; \
+	        echo "test-linux-x86_64-exe (gnu): SKIPPED (no ubuntu:latest image and it cannot be pulled)"; \
 	    fi; \
 	fi
 

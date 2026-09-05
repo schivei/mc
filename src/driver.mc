@@ -126,6 +126,13 @@ uptr drv_backend_for(i64 role) {
     return tgt_exe_at(drv_target);
 }
 
+// post-M42 patch: [target].link, validated in drv_run and handed to the writer
+// (dyn_static) in drv_entry alone -- the key describes THE ENTRY's executable.
+// The taught compiler drv_teach builds is a binary for THIS host, it imports a
+// libc by construction, and a `link = "static"` meant for the target must not
+// refuse it.
+i64 drv_static = 0;
+
 // M23: 0 = plain build, 1 = --limits (report + verdict), 2 = --fix-limits
 // (report + rewrite the [limits] section). `mc limits` is mode 1.
 i64 drv_lim_mode = 0;
@@ -582,7 +589,9 @@ void drv_entry(uptr entry, uptr out, uptr kind) {
     }
     if (has_linker == 0) {
         drv_step("compile", entry, out);
+        dyn_static = drv_static;             // the one compile [target].link is about
         drv_compile(src, drv_path(out), DRV_ROLE_EXE, 1, entry);
+        dyn_static = 0;
         return;
     }
     uptr obj = tm_cat(out, ".o");
@@ -694,15 +703,42 @@ i64 drv_run(uptr dir, uptr cfg, i64 entry_only, i64 compiler_only) {
     if (arch == 0) arch = host_arch();
     drv_os = os;
     drv_arch = arch;
-    // M42: the two names a dynamic ELF executable needs and no object does.
-    // They are per-libc, not per-target, so they are keys and not constants:
-    // the writer's default is musl (`libc.so`, `/lib/ld-musl-<arch>.so.1`) and
-    // glibc is `interp = "/lib/ld-linux-aarch64.so.1"` (or
-    // "/lib64/ld-linux-x86-64.so.2") plus `libc = "libc.so.6"`. The globals
-    // live in src/objmodel.mc so that this file names no writer
-    // (docs/reference/toml.md § [target]).
+    // M42 + the post-M42 patch: WHAT THE EXECUTABLE IS LINKED AGAINST -- the
+    // two axes of the Linux family, in one vocabulary (docs/build.md § Linux
+    // targets). `libc` is a FAMILY (`gnu` or `musl`) and picks the DT_NEEDED
+    // soname and the default loader path together; `link` is `dynamic` or
+    // `static`; `interp` stays an explicit path override. The globals live in
+    // src/objmodel.mc so that this file names no writer, and the reporter
+    // installed here is what puts the key's own file:line:col in front of a
+    // refusal the WRITER raises (docs/reference/toml.md § [target]).
+    dyn_err_fn = &toml_err_key;
     dyn_interp = toml_get("target.interp");
     dyn_libc = toml_get("target.libc");
+    uptr link = toml_get("target.link");
+    // All three describe a Linux dynamic image, and there is no such thing on
+    // any other target: a Mach-O names /usr/lib/dyld and libSystem, a PE names
+    // an import directory, a flat image names nothing. Ignoring the key would
+    // be worse than refusing it -- the file would say something the build did
+    // not do -- so it is refused at its own position.
+    //
+    // "on this build" and not "on this [target]": a taught compiler is a binary
+    // for THE HOST (drv_teach asks the host pair for its exe backend), so on a
+    // Linux host these three still describe something even when [target] is
+    // macOS. The condition is the same one src/cli.mc uses for the flags.
+    if (!str_eq(os, "linux") && !str_eq(host_os(), "linux")) {
+        if (dyn_interp) toml_err_key("target.interp", "interp applies to a linux target");
+        if (dyn_libc)   toml_err_key("target.libc", "libc applies to a linux target");
+        if (link)       toml_err_key("target.link", "link applies to a linux target");
+    }
+    if (dyn_libc && !str_eq(dyn_libc, "gnu") && !str_eq(dyn_libc, "musl"))
+        toml_err_key("target.libc",
+                     "libc must be gnu or musl (a soname is not a value: gnu is libc.so.6, musl is libc.so)");
+    drv_static = 0;
+    if (link) {
+        if (str_eq(link, "static"))       drv_static = 1;
+        else if (!str_eq(link, "dynamic"))
+            toml_err_key("target.link", "link must be dynamic or static");
+    }
 
     uptr entry = toml_get("project.entry");
     if (entry == 0) toml_err_key("project.entry", "missing key");

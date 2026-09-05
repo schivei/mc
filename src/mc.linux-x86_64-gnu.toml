@@ -4,10 +4,12 @@
 #   build/mc1 build src --config src/mc.linux-x86_64-gnu.toml
 #   -> build/mc-linux-x86_64-gnu   a DYNAMIC ELF64 executable, no linker
 #
-# It is src/mc.linux-x86_64.toml with two keys added and nothing else changed.
-# A dynamic executable names its loader and its library BY PATH, and those two
-# names are the only per-libc facts in the file: musl is the writer's default,
-# and these are glibc's (docs/reference/toml.md, the [target] section).
+# It is src/mc.linux-x86_64.toml with ONE key added and nothing else changed.
+# `libc` names the FAMILY, and the family picks both per-libc names at once --
+# the DT_NEEDED soname (`libc.so.6`) and the loader path
+# (`/lib/ld-linux-<arch>.so.1`, `/lib64/ld-linux-x86-64.so.2`). `musl` is the
+# writer's default and the other half of the same axis
+# (docs/reference/toml.md, the [target] section).
 #
 # The OBJECT this compiler writes does not depend on either of them, which is
 # what makes the glibc chain's golden the same value as the musl chain's:
@@ -24,8 +26,7 @@ kind  = "exe"
 [target]
 os     = "linux"
 arch   = "x86_64"
-interp = "/lib64/ld-linux-x86-64.so.2"
-libc   = "libc.so.6"
+libc   = "gnu"
 
 # same reason as the musl config: the compiler compiling itself is the biggest
 # source here, and at 0.25 several tables double mid-build.

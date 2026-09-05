@@ -1,0 +1,21 @@
+# linux-static-linker.toml — the cell mc cannot write by itself: a STATIC link
+# against a real libc (docs/build.md § Linux targets). `link = "static"` says
+# what is wanted and [linker] is the road there -- with the table present the
+# driver writes the object and hands it over, exactly as it did before the key
+# existed, and `link` never reaches the executable writer at all.
+#
+# The linker here is `echo`, so the case is hermetic: no ld.lld, no musl
+# libc.a, no Docker. What is being checked is the ROUTE (an object, then a
+# spawn), not the archive linker's own work.
+[project]
+entry = "lin-libc.mc"
+out   = "build/lin-static-linked"
+
+[target]
+os   = "linux"
+arch = "aarch64"
+link = "static"
+
+[linker]
+cmd  = "echo"
+args = ["-static", "-o", "{out}", "{obj}"]
