@@ -1235,12 +1235,19 @@ jobs:
       - name: qemu-system-avr -- the same transcript on UART0
         run: |
           set -u
+          # An arduino-uno has no exit device: the firmware ends in the watchdog and
+          # QEMU never exits on its own, so `timeout`'s 124 is the DESIGNED end of the
+          # run (examples/avr/test.sh's run_guarded treats it the same way). The
+          # `|| st=$?` keeps `set -e` from aborting before the transcript is judged.
+          st=0
           timeout 30 qemu-system-avr -machine arduino-uno -bios avr/avr.elf -nographic \
-              < /dev/null > out.txt 2> err.txt
-          st=$?
+              < /dev/null > out.txt 2> err.txt || st=$?
           echo "--- transcript ---"; cat out.txt; echo "--- exit $st ---"
+          if [ "$st" != "0" ] && [ "$st" != "124" ]; then
+            echo "::error::qemu exited with $st"; cat err.txt; exit 1
+          fi
           expected=$(printf 'boot\nblink\ntick\nsum 352\nok')
-          if [ "$(cat out.txt)" != "$expected" ]; then
+          if [ "$(tr -d '\r' < out.txt)" != "$expected" ]; then
             echo "::error::wrong transcript on UART0"; cat err.txt; exit 1
           fi
           echo "ok: the same transcript on a second simulator"
