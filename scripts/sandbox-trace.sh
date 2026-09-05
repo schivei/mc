@@ -1,9 +1,13 @@
 #!/bin/sh
-# sandbox-trace.sh [--check] [--libc musl|gnu] [MC] — the seccomp profiles,
-# MEASURED (M43 step C, docs/specs/M43.md § 4, acceptance 5).
+# sandbox-trace.sh [--check|--strict|--union] [--libc musl|gnu] [MC] — the
+# seccomp profiles, MEASURED (M43 step C, docs/specs/M43.md § 4, acceptance 5).
 #
 #   sh scripts/sandbox-trace.sh            trace this host and rewrite the tables
-#   sh scripts/sandbox-trace.sh --check    trace this host and compare, both ways
+#   sh scripts/sandbox-trace.sh --union    trace this host and ADD what it needs
+#   sh scripts/sandbox-trace.sh --check    trace and compare: a call the table
+#                                          lacks fails, an entry this host did
+#                                          not need is a `note` line
+#   sh scripts/sandbox-trace.sh --strict   the same, both directions failing
 #
 # The profiles src/sandbox_profiles.mc holds are not written by hand: they are
 # what `strace` saw. This script is what writes them, and `--check` is what
@@ -43,13 +47,17 @@
 # by regenerating it and diffing.
 
 check=0
+strict=0
+union=0
 libc=
 mc=
 while [ $# -gt 0 ]; do
     case "$1" in
-        --check) check=1; shift ;;
-        --libc)  libc="$2"; shift 2 ;;
-        *)       mc="$1"; shift ;;
+        --check)  check=1; shift ;;
+        --strict) check=1; strict=1; shift ;;
+        --union)  union=1; shift ;;
+        --libc)   libc="$2"; shift 2 ;;
+        *)        mc="$1"; shift ;;
     esac
 done
 
@@ -247,17 +255,55 @@ if [ -n "$miss" ]; then
 fi
 
 # ---- write the lists --------------------------------------------------------
+# THE TWO DIRECTIONS ARE NOT THE SAME KIND OF FACT, and step D's CI job is what
+# made the difference matter. A name in the trace that the table does not have
+# is a BOX THAT REFUSES A LEGITIMATE PROGRAM on this host: it fails, always. A
+# name in the table that this host's trace did not use is not an error, because
+# the table is the union over the C libraries and the C library VERSIONS the
+# project supports, and no single host can exercise them all -- measured, with
+# the same compiler and the same corpus:
+#
+#   glibc 2.43 (Ubuntu 26.04, the aarch64 and x86_64 oracles)  uses madvise and
+#       getrandom at startup and clone3 to spawn;
+#   glibc 2.39 (Ubuntu 24.04, both GitHub runners)             uses neither, and
+#       needs rt_sigaction and clone instead.
+#
+# So the checked-in list is the union of those measurements (`--union` writes
+# it), the default `--check` fails on the first direction and reports the second
+# as `note` lines, and `--strict` restores the two-way failure for a
+# single-host audit -- which is only meaningful on the host that last wrote the
+# table with a plain (replacing) run.
 newlist() {   # newlist KIND
     src="$out/$1.list"
     dst="tools/sandbox/$arch-$libc-$1.list"
     if [ "$check" = 1 ]; then
         if [ ! -f "$dst" ]; then echo "FAIL: $dst is missing"; return 1; fi
-        if ! diff -u "$dst" "$src" > "$out/$1.diff"; then
-            echo "FAIL: the $1 trace and $dst disagree:"
-            sed 's/^/     /' "$out/$1.diff"
-            return 1
+        missing=$(comm -13 "$dst" "$src")
+        unused=$(comm -23 "$dst" "$src")
+        st=0
+        if [ -n "$missing" ]; then
+            echo "FAIL: the $1 trace makes calls $dst does not have:"
+            echo "$missing" | sed 's/^/       /'
+            echo "       a box on this host would refuse a legitimate program;"
+            echo "       add them with: sh scripts/sandbox-trace.sh --union"
+            st=1
         fi
-        echo "ok   $1: $(wc -l < "$dst") calls, trace and table agree both ways"
+        if [ -n "$unused" ]; then
+            if [ "$strict" = 1 ]; then
+                echo "FAIL: $dst has entries this host's trace never used:"
+                echo "$unused" | sed 's/^/       /'
+                st=1
+            else
+                echo "note $1: $dst has entries this host did not need: $(echo $unused)"
+            fi
+        fi
+        [ "$st" = 0 ] && echo "ok   $1: $(wc -l < "$dst") calls, every call in the trace is in the table"
+        return $st
+    fi
+    if [ "$union" = 1 ] && [ -f "$dst" ]; then
+        sort -u "$dst" "$src" > "$out/$1.union"
+        cp "$out/$1.union" "$dst"
+        echo "     wrote $dst ($(wc -l < "$dst") calls, the union with what was there)"
         return 0
     fi
     cp "$src" "$dst"

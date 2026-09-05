@@ -1843,8 +1843,21 @@ taken and how it is kept honest:
 
 ```
 make sandbox-trace          # re-trace THIS host and rewrite the tables
-make sandbox-trace-check    # trace and compare, both directions, exit 1 on a difference
+make sandbox-trace-check    # trace and compare: a missing call is a failure
+sh scripts/sandbox-trace.sh --union    # trace and ADD what this host needs
+sh scripts/sandbox-trace.sh --strict   # both directions fail (a single-host audit)
 ```
+
+**The two directions are not the same kind of fact**, and the CI job is what made the difference
+matter. A call in the trace that the table does not have is a box that would refuse a legitimate
+program on that host: it fails, always. A table entry this host did not use is a `note` line,
+because the list is the union over the C library *versions* the project supports and no single
+host can exercise them all — measured with the same compiler and the same corpus, glibc 2.43
+(Ubuntu 26.04, the project's oracles) uses `madvise` and `getrandom` at start-up and `clone3` to
+spawn, where glibc 2.39 (Ubuntu 24.04, both GitHub runners) uses neither and needs `rt_sigaction`
+and `clone` instead. `--union` is how a new host adds what it needs without erasing what another
+one needs; `--strict` restores the two-way failure, and is only meaningful on the host that last
+wrote the table with a plain, replacing run.
 
 Both need `strace` (`apt-get install strace`, `apk add strace`) and a Linux host; on macOS, and
 without strace, they print one `SKIPPED` line. `sandbox-trace` runs the whole corpus twice — once
@@ -1855,9 +1868,10 @@ architecture never erases the other's numbers, and the file that is checked in i
 printed. Neither target is in `make check`: the first writes generated source and the second is a
 full corpus run per libc, which belongs in the sandbox CI job.
 
-The twelve lists in this repository were taken on four cells: `aarch64` glibc (Lima) and musl
-(`alpine:3` under the same kernel), and `x86_64` glibc and musl (both on the VPS, which has both
-loaders installed). Run `make sandbox-trace-check` after anything that changes what the compiler
+The twelve lists in this repository were taken on five cells: `aarch64` glibc (Lima, Ubuntu 26.04)
+and musl (`alpine:3` under the same kernel), `x86_64` glibc and musl (both on the VPS, which has
+both loaders installed), and `aarch64` glibc 2.39 (`ubuntu:24.04`, the version the GitHub runners
+carry) folded in with `--union`. Run `make sandbox-trace-check` after anything that changes what the compiler
 asks the kernel for — a new libc call in a host file, a new step in the driver — because the
 first thing a missing entry does is refuse a legitimate program.
 

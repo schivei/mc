@@ -1,6 +1,7 @@
 # `mc sandbox` — compile and run an arbitrary program in isolation
 
-**Status: step C, complete.** The box is there — namespaces, a mount tree, `pivot_root`, the caps,
+**Status: complete** (M43, four steps; the CI job of step D is what proves the unprivileged path).
+The box is there — namespaces, a mount tree, `pivot_root`, the caps,
 the steps, the wall clock and the report — and so are the two walls that make a refusal a
 *sentence*: a **Landlock** ruleset over the box's roots and a **seccomp** filter whose default
 action is not a kill but a question to the supervisor. A program that reaches outside the box is
@@ -16,7 +17,9 @@ sandbox: refused: process limit (64)
 
 each with exit code **125**. Every measured number below gives the host it came from.
 
-The design is `docs/specs/M43.md`. This page is the reference.
+The design is `docs/specs/M43.md`. This page is the reference; the task-oriented half — "I have a
+file I do not trust and I want to know what it does" — is
+[../guide/99-sandbox.md](../guide/99-sandbox.md).
 
 ---
 
@@ -86,6 +89,15 @@ of them run twice); "the suite" is every `tests/*.mc` compiled *and* run inside 
 | linux/x86_64, musl, root (the VPS) | 10/10 | 29/29 (3 skipped) | 2/2 | ok | 3.0–4.5 ms |
 | linux/x86_64, musl, unprivileged | 10/10 | 29/29 (3 skipped) | 2/2 | ok | 3.7 ms |
 | linux/aarch64, musl, `alpine:3` under `docker run --privileged` | 10/10 | 31/31 | 2/2 | ok | not measurable (busybox `date` has no `%N`) |
+
+**One thing a container adds, measured in step D:** under Docker Desktop on macOS a checkout
+*bind-mounted from the Mac* is a `fakeowner` mount, and `execve` of a file on it **inside** the
+box answers `EACCES` — `sandbox: cannot execute the step`, exit 126 — while the very same image,
+kernel and compiler run the whole suite when the tree is on the container's own filesystem
+(`cp` it to `/opt` and it passes). Lima does not have the problem, which is why it is the first
+delegate `scripts/test-sandbox.sh` tries; a container is the second, and on a Mac it wants the
+tree copied in rather than mounted. Nothing about the box depends on it: the CI cells run on real
+Ubuntu hosts, and the container cell there asserts a *refusal*.
 
 The x86-64 host is a shared VPS and its numbers move: an unboxed `return 0` program measured
 between 272 µs and 828 µs across the same afternoon, so the box's own cost there is quoted as a
@@ -484,11 +496,26 @@ tools/sandbox/<arch>-<libc>-threads.list      what --allow=threads adds
 
 `src/sandbox_profiles.mc` is generated from those twelve files: per architecture a base (musl), a
 glibc delta **per step**, and one shared threads delta. `sh scripts/sandbox-trace.sh --check`
-(`make sandbox-trace-check`) re-traces the host it runs on and fails if the trace and the recorded
-list disagree in *either* direction, or if regenerating the `.mc` from the lists does not
-reproduce it byte for byte.
+(`make sandbox-trace-check`) re-traces the host it runs on and compares, and the CI job runs it on
+both architectures on every pull request.
 
-Four facts about that, each of which cost a refusal to learn:
+**The two directions of that comparison are not the same kind of fact.** A call in the trace that
+the list does not have is a box that would refuse a legitimate program: it fails. A list entry
+this host's trace never used is a `note` line, because the list is the **union over the C library
+versions the project supports**, and no single host can exercise them all — measured with one
+compiler and one corpus:
+
+| | start-up | spawn |
+|---|---|---|
+| glibc 2.43 (Ubuntu 26.04: Lima, the VPS) | `madvise`, `getrandom` | `clone3` |
+| glibc 2.39 (Ubuntu 24.04: both GitHub runners) | `rt_sigaction` | `clone3` **and** `clone` |
+
+`sh scripts/sandbox-trace.sh --union` is how a host adds what it needs without erasing what
+another host needs; `--strict` restores the two-way failure and is only meaningful on the host
+that last wrote the list with a plain, replacing run. Regenerating the `.mc` from the lists must
+reproduce it byte for byte in every mode.
+
+Four more facts, each of which cost a refusal to learn:
 
 * **The trace runs outside the box.** Tracing the box would record the box's own setup —
   `unshare`, `mount`, `pivot_root` — which must never be in a profile, and once a filter exists
@@ -523,9 +550,12 @@ The sizes, measured (aarch64 first, x86-64 second):
 
 | profile | musl | glibc |
 |---|---|---|
-| compile | 18 / 19 | +8 / +7 |
+| compile | 18 / 19 | +9 / +7 |
 | program | 16 / 17 | +9 / +9 |
 | `--allow=threads` delta | 5 shared entries, `clone` excluded (it has the flag test) | |
+
+The glibc compile delta on AArch64 is nine and not eight because of the 2.39 row above:
+`rt_sigaction` is in the list and no 2.43 host asks for it.
 
 ---
 

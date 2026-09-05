@@ -56,6 +56,7 @@ i64 sbp_gnu_compile_aarch64[] = {
     SN_MUNMAP,
     SN_PRLIMIT64,
     SN_RSEQ,
+    SN_RT_SIGACTION,
     SN_SET_ROBUST_LIST,
     -1
 };
