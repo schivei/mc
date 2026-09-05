@@ -590,12 +590,14 @@ else
         fi
     done
 
-    # M38, then M45: the tests/mc/ cases that belong to EVERY target. They live
-    # there because the frozen C seed refuses them -- 080 with `at most 8
-    # parameters`, 090..093 with `type expected`, since it has neither a
-    # registry nor an alias table -- and not because they need anything the
-    # other tests do not. Twelve parameters four of which are on the stack, and
-    # a signed 32-bit integer, are ABI claims, and every ABI has to answer them.
+    # M38, then M45, then `continue N`: the tests/mc/ cases that belong to
+    # EVERY target. They live there because the frozen C seed refuses them --
+    # 080 with `at most 8 parameters`, 090..093 with `type expected`, since it
+    # has neither a registry nor an alias table, 094/095 with `expected ; after
+    # continue` -- and not because they need anything the other tests do not.
+    # Twelve parameters four of which are on the stack, a signed 32-bit integer
+    # and a jump to an outer loop's top are all claims about the generated
+    # code, and every target has to answer them.
     # The glob is `0[89]*` so that a new one is picked up by existing.
     for f in tests/mc/0[89]*.mc; do
         [ -f "$f" ] || continue

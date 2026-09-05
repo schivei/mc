@@ -339,11 +339,12 @@ else
         build_one "$f" "$name" kernel32
     done
 
-    # M38, then M45: the tests/mc/ cases that belong to EVERY target -- twelve
-    # parameters, four of them on the stack, and a signed 32-bit integer. They
-    # live in tests/mc/ because the frozen C seed refuses them (`at most 8
-    # parameters`, `type expected`), not because they need anything Windows
-    # cannot give: they link like every other test here.
+    # M38, then M45, then `continue N`: the tests/mc/ cases that belong to
+    # EVERY target -- twelve parameters, four of them on the stack, a signed
+    # 32-bit integer, and a jump that restarts an outer loop. They live in
+    # tests/mc/ because the frozen C seed refuses them (`at most 8 parameters`,
+    # `type expected`, `expected ; after continue`), not because they need
+    # anything Windows cannot give: they link like every other test here.
     for f in tests/mc/0[89]*.mc; do
         [ -f "$f" ] || continue
         name=$(basename "$f" .mc)
