@@ -304,10 +304,50 @@ mc sysroot stub [DIR] [--config FILE]
 | `--sysroot-dir DIR` | DIR is the destination (`fetch`) or the candidate (`path`), instead of `~/.mc/sysroots/<os>-<arch>` |
 
 `mc sysroot stub` is the same thing `{stubs}` in `[linker].args` does on its own during a build,
-without the build. `fetch` is the **only** thing in `mc` that reaches the network, and it does it by spawning
-`curl`/`wget`/`curl.exe` — there is no HTTP and no TLS in this language. `mc build` never
-downloads. Everything about the chain, the cache and the pinned rows is in
+without the build. `fetch` reaches the network by spawning `curl`/`wget`/`curl.exe` — there is no
+HTTP and no TLS in this language — and it and `mc pkg` are the **only** two things in `mc` that do.
+`mc build` never downloads. Everything about the chain, the cache and the pinned rows is in
 [sysroot.md](sysroot.md).
+
+## 3d. `mc pkg` and `mc update` — dependencies
+
+```
+mc pkg sync   [DIR] [--config FILE] [--yes] [--registry URL|DIR] [--libs-dir DIR]
+mc pkg add    NAME[@VERSION] [DIR] [--config FILE] [--yes] [--registry URL|DIR] [--libs-dir DIR]
+mc pkg list   [DIR] [--config FILE] [--libs-dir DIR]
+mc pkg vendor [DIR] [--config FILE] [--libs-dir DIR]
+mc pkg verify [DIR] [--config FILE] [--libs-dir DIR]
+mc pkg hash   DIR
+mc pkg check  INDEX.toml [--yes] [--registry URL|DIR] [--libs-dir DIR]
+mc update     [NAME] [DIR] [--config FILE] [--yes] [--registry URL|DIR] [--libs-dir DIR]
+```
+
+Registered by `<mc/core_pkg>` ([bundle.md](bundle.md) § The parts), which is a part a compiler can
+leave out: without it these two subcommands do not exist, and `mc build` still builds a project
+from its `mc.lock` and its `deps/` tree.
+
+| subcommand | Go analogue | what it does |
+|---|---|---|
+| `sync` | `go mod tidy` + `go mod download` | read `[deps]`, read the index rows it needs, run minimal version selection, fetch the trees that are missing, write `mc.lock`. Rows nothing requires are dropped |
+| `add NAME[@VERSION]` | `go get pkg@v` | write one `[deps]` line — the newest non-yanked version when there is no `@` — then `sync` |
+| `list` | `go list -m all` | one line per lock row: name, version, the first 12 characters of the hash, and `vendored`/`cache`/`path`. No absolute path, so it is a golden |
+| `vendor` | `go mod vendor` | copy each locked tree into `deps/<name>/` — `mc.toml` plus `[package].files` — then verify |
+| `verify` | `go mod verify` | rehash every locked tree and check it against `mc.lock`; exit 0 or 2 |
+| `hash DIR` | `dirhash.Hash1` | print the tree hash of a checkout: what a registry row's `sha256` has to carry |
+| `check INDEX.toml` | — | the registry-side gate: with `--yes` it downloads every row, re-derives the hash, and compares the row against the archive's own `mc.toml` |
+| `mc update [NAME]` | `go get -u` | raise the `[deps]` minimum(s) to the newest non-yanked version **of the same major**, then `sync` |
+
+| flag | meaning |
+|---|---|
+| `--yes` | actually download. Without it, anything that would fetch prints the plan — source, expected tree hash, destination — says `nothing was downloaded: re-run with --yes` and exits 0. There is no prompt: `mc` has no `isatty` |
+| `--registry URL\|DIR` | where the index lives, instead of `[registry].url` or the default `https://minicompiler.dev/registry`. A directory is read in place; a URL is fetched into `<libs>/index/<name>.toml`, the offline snapshot |
+| `--libs-dir DIR` | where installed packages live, instead of `~/.mc/libs`. `mc build` takes it too, so no CI job depends on `HOME` |
+| `--config FILE` | the project file, instead of `DIR/mc.toml` |
+
+`mc pkg` is the only thing that writes `mc.lock`, the only thing that writes under `<libs>`, and —
+with `mc sysroot fetch` — one of the two that spawn a downloader. Everything about what a package
+is, how `#include <pack/file.mc>` is resolved and what a build refuses is in
+[packages.md](packages.md).
 
 ## 3c. `mc sandbox` — compile and run something you do not trust
 

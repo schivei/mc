@@ -8,9 +8,8 @@
 > **a compiler-module package is trusted code**.
 
 This page is the reference for what a package IS, how `#include <name>` is resolved, what
-`mc.lock` says and what `mc build` refuses. Fetching a package, writing the lock and the registry
-itself are `mc pkg`'s, and they are not in this build yet — everything below works from a lock and
-a tree that are already on the disk.
+`mc.lock` says, what `mc build` refuses, and what `mc pkg` does — the registry, minimal version
+selection, the fetch, the lock writer and vendoring.
 
 ---
 
@@ -104,8 +103,9 @@ void user_init() {
 
 ## 4. The lock
 
-`mc.lock` sits beside `mc.toml`, is written only by `mc pkg`, and has one `[[package]]` row per
-resolved package, sorted by name:
+`mc.lock` sits beside `mc.toml`, is written only by `mc pkg sync` (§ 10), and has one
+`[[package]]` row per resolved package, sorted by name — a total order over unique keys, so two
+runs of `sync` write the same bytes:
 
 ```toml
 # written by `mc pkg sync` -- do not edit (docs/reference/packages.md)
@@ -147,8 +147,10 @@ no mode and no ordering of its own — manifest order is the canonical order. By
 exactly as they are on disk, so a checkout that translates line endings changes the hash. This
 repository sets `* -text` in `.gitattributes` for that reason.
 
-`scripts/pkg-hash.sh DIR` is the same rule in shell, and `make check-pkg` compares the two
-implementations against every lock checked into `tests/pkg` on every run.
+`mc pkg hash DIR` prints it. `scripts/pkg-hash.sh DIR` is the same rule in shell, and
+`make check-pkg` compares the two implementations against every lock checked into `tests/pkg` on
+every run — a divergence between the compiler and this page is a red `make check`, not a surprise
+at a consumer.
 
 ### The cache manifest
 
@@ -264,12 +266,153 @@ if they are invoked.
 
 **It never opens a directory no lock names**, and it never guesses a version.
 
-## 10. Not in this build
+A compiler assembled without `<mc/core_pkg>` cannot download even in principle: it has no
+fetcher, no registry and no lock writer, and it still builds every project above. That is the
+CI and consumer shape ([bundle.md](bundle.md) § The parts).
 
-`mc pkg` — `sync`, `add`, `list`, `vendor`, `verify`, `hash`, `check` — the registry, minimal
-version selection and `mc install`/`update`/`upgrade` are the later steps of the same milestone
-(`docs/specs/M44.md`). Until they land, a lock and a tree are produced by hand or by
-`scripts/pkg-hash.sh`, which is exactly what `tests/pkg` does.
+---
+
+## 10. `mc pkg` — resolving, fetching and locking
+
+Everything below is `<mc/core_pkg>`'s. The command lines are in [cli.md](cli.md) § 3d.
+
+### The registry
+
+One file per package, at `<registry>/index/<name>.toml`:
+
+```toml
+# index/geo.toml
+[package]
+name        = "geo"
+repo        = "https://github.com/schivei/mc-geo"
+description = "2-D vectors"
+
+[[versions]]
+version = "1.0.0"
+url     = "https://github.com/schivei/mc-geo/archive/refs/tags/v1.0.0.tar.gz"
+strip   = 1
+sha256  = "<the tree hash of that tag's checkout>"
+deps    = ["mathx 1.0.0"]
+
+[[versions]]
+version = "1.2.0"
+url     = "https://github.com/schivei/mc-geo/archive/refs/tags/v1.2.0.tar.gz"
+strip   = 1
+sha256  = "..."
+deps    = ["mathx 1.1.0"]
+yanked  = true          # optional, and the ONLY thing a published row may gain
+```
+
+`sha256` is the **tree hash** of § 4, never the archive's: a forge that regenerates its tag
+tarballs (GitHub did, in 2023) does not move it. `strip` is what `tar --strip-components` gets, 1
+for the `<repo>-<version>/` top directory a tag archive has. `deps` carries each requirement as
+`"<name> <minimum>"`, which is what lets version selection run over the index alone, with no
+archive downloaded.
+
+**Where the index comes from.** `--registry`, else `[registry].url`, else
+`https://minicompiler.dev/registry` — a package **server** that produces exactly this layout out
+of the git repositories registered with it. The compiler's side of that is a reader and a
+constant: there is no API client here, no JSON, no search and no transparency log. A **directory**
+with the same layout is a registry too, read in place, which is what a private tap costs: a
+`git clone` and one line of TOML. A URL registry is fetched one file at a time into
+`<libs>/index/<name>.toml`, the snapshot every later `mc pkg` in that project reads.
+
+### Minimal version selection
+
+Go's algorithm (`cmd/go/internal/mvs`), exactly:
+
+1. the build list starts from the project's `[deps]` minimums;
+2. for every selected `(name, version)`, the requirements of **that** version's index row are
+   added;
+3. a name's selected version is the **maximum over every minimum that mentions it**;
+4. repeat to a fixed point.
+
+No search, no SAT and no "latest": the answer is a function of the index alone, and the lock then
+freezes it, so the index can move afterwards without moving the build. A project asking for
+`mathx 1.0.0` whose `plot` asks for `mathx 1.1.0` gets **1.1.0** — not 1.0.0, and not the 2.0.0
+the registry also carries.
+
+**Two majors of one name are refused, not solved:**
+
+```text
+mc: mathx: 1.0.0 and 2.0.0: different majors: no solver
+```
+
+exit 1, and no lock is written. Semantic import versioning (`/v2` in the name) is out of scope.
+
+**Yanked** is Go's `retract`: `mc pkg add` and `mc update` skip such a row, and a lock that
+already pins one keeps working — a published build never breaks retroactively. `mc update` also
+stays inside the current major: raising a minimum across a major is not an update, it is the case
+above.
+
+### The fetch
+
+In `mc sysroot fetch`'s order of operations, and for the same reasons:
+
+1. download the archive to `<libs>/<pack>/v<version>.tar.gz` (an `https://` url through
+   `curl`/`wget` with the HTTPS-only flags; a source with no scheme is a local path, copied);
+2. `tar -xzf` it into `<libs>/<pack>/v<version>/` with the row's `strip`;
+3. **hash the tree and compare it to the row, before anything else.** On a mismatch every file the
+   package lists is unlinked and no manifest is written:
+
+   ```text
+   mc: checksum mismatch for geo 1.2.0
+     expected ba1924dc...
+     got      2b7c01f9...
+   ```
+
+   exit 2. The archive itself is not checksummed — § 4 says why — so unlike a sysroot the refusal
+   comes after the bytes are on disk, but still before any manifest exists and before any build
+   can consume the tree;
+4. write `<libs>/<pack>/v<version>.toml` **last**. That file is the claim.
+
+A download that fails leaves no claim either: `mc: the download failed (exit 22): <url>` for a URL
+and `mc: cannot open: <path>` for a path, exit 2, and the next `mc build` says `is not fetched`
+rather than reading debris.
+
+Nothing downloads without `--yes`. Without it every verb that would fetch prints the plan and
+stops:
+
+```text
+fetch  plot 1.0.0
+url    /path/to/archives/plot-1.0.0.tar.gz
+sha256 f5e0f0c64e85...
+into   /path/to/libs/plot/v1.0.0/
+nothing was downloaded: re-run with --yes
+```
+
+`mc` has no `isatty`, so there is no prompt — the plan is the prompt.
+
+### The lock writer
+
+`mc pkg sync` writes every row from the tree it just resolved, never from the index's claim about
+it: `version` is what selection chose, `lib` and `deps` come out of the package's **own**
+`mc.toml`, and `sha256` is the tree hash of what is on the disk. A `[replace]`d package gets a
+`path` line and no hash (§ 7). Rows nothing requires are dropped, because the lock is written from
+the build list and from nothing else.
+
+### Vendoring
+
+`mc pkg vendor` copies each locked tree into `deps/<pack>/` — `mc.toml` plus `[package].files`,
+which is the same list the hash is over — and then verifies. `deps/` plus `mc.lock` in git is the
+fully offline project: a build with an empty `<libs>` produces a byte-identical object, and
+`make check-pkg` asserts exactly that.
+
+### `mc pkg check` — the registry gate
+
+What the registry's CI runs on every changed index file, and what an author runs before opening
+the pull request. It refuses:
+
+* a `[package].name` outside the name rule (§ 6) or a reserved one — `mc` above all;
+* a row with no `url`, no `sha256`, or a `sha256` that is not 64 hex characters;
+* with `--yes`, a row whose **archive** disagrees with it: the tree hash, the package name, or the
+  set of `[deps]` — `the archive requires a package the row does not list: mathx`;
+* against the registry's current copy, any edit to a published row except adding `yanked = true`:
+  `mc: plot 1.0.0: a published row was edited: only yanked = true may be added`, and
+  `a published version was removed` for a row that vanished.
+
+Rows are immutable because that is the one property of a checksum database worth keeping when you
+have no server to run one on: the git history of the index IS the audit log.
 
 ## See also
 

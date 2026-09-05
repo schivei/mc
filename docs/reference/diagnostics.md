@@ -480,6 +480,32 @@ Note the shape of the first three: `<name> <version>: <what> does not match mc.l
 field is a file inside the package, `mc.toml` when the manifest itself moved, and `the tree` when
 there is nothing to attribute it to.
 
+### `mc pkg` and `mc update`
+
+The verbs that resolve, fetch and lock ([packages.md](packages.md) § 10). Exit 2 is again "the
+environment is not ready" -- a transfer that failed, a checksum that did not match -- and exit 1 is
+"what you wrote, or what the registry published, is wrong".
+
+| message | exit | cause | fix |
+|---|---|---|---|
+| `mc: cannot open: /path/to/geo-1.2.0.tar.gz` | 2 | the row's `url` has no scheme, so it is a local path, and it does not open | fix the row, or the directory the registry points at |
+| `mc: the download failed (exit 22): URL` | 2 | the downloader ran and refused; the code is `curl`'s or `wget`'s | the URL, the network, the proxy |
+| `mc: no downloader on this PATH (tried curl, wget)` | 2 | neither program is installed | install one, or fetch by hand and use `--libs-dir` |
+| `mc: tar could not extract geo-1.2.0.tar.gz` | 2 | the archive is not what its name says | the row's `url` |
+| `mc: checksum mismatch for geo 1.2.0` + `expected`/`got` | 2 | the tree that arrived is not the tree the row pins. The extracted files are unlinked and no manifest is written | a moved tag, a wrong `sha256` in the index, or a tampered mirror. Never a reason to "just re-run" |
+| `mc: geo 1.2.0: the archive carries no mc.toml at its root` | 2 | `strip` is wrong, or the tag is not a package | the row's `strip` |
+| `mc: nowhere to put a package: no --libs-dir and no HOME` | 2 | there is no `<libs>` to write into | `--libs-dir DIR` |
+| `mc: geo 1.9.0: no such version in the registry` | 1 | a `[deps]` minimum, or an `@VERSION`, that no index row carries | `mc pkg list`, or the index page |
+| `mc: no such package in the registry: geo` | 1 | a DIRECTORY registry with no `index/geo.toml` | the name, or the registry |
+| `mc: mathx: 1.0.0 and 2.0.0: different majors: no solver` | 1 | two requirements of one name whose majors differ. No lock is written | drop one of them, or wait for the dependency to move |
+| `mc: mathx 2.0.1: is yanked: pick another version` | 1 | `mc pkg add name@version` named a row the registry retracted | pick another version; without `@` the newest non-yanked one is chosen for you |
+| `mc: geo: not a dependency of this project` | 1 | `mc update NAME` for a name that is not in `[deps]` | `mc pkg add` it first |
+| `mc: mc pkg add cannot edit this file: [deps] is written more than once` | 1 | the scan that inserts one key found a shape it will not rewrite | edit `[deps]` by hand |
+| `mc: geo 1.2.0: the archive's mc.toml names another package` | 1 | `mc pkg check`: the row and the tree disagree about the name | the index row, or the tag |
+| `mc: geo 1.2.0: the archive requires a package the row does not list: mathx` | 1 | `mc pkg check`: the row's `deps` are not the archive's `[deps]` | regenerate the row |
+| `mc: plot 1.0.0: a published row was edited: only yanked = true may be added` | 1 | `mc pkg check` against the registry's current copy | published rows are immutable; publish a new version |
+| `mc: plot 1.0.0: a published version was removed` | 1 | the same, for a row that vanished from the file | put it back and yank it instead |
+
 ---
 
 ## Reproducing them

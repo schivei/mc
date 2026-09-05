@@ -298,8 +298,13 @@ version and a content hash — which `mc build` re-checks on every build. A `[de
 lock cannot meet is `mc.lock is stale`, exit 2.
 
 `[deps]` is what turns on `#include <pack/file.mc>`; with no `[deps]` section `mc build` reads no
-lock at all and every `<name>` resolves exactly as it did before packages existed. `[registry]` is
-read but unused in this build: nothing in `mc build` reaches the network.
+lock at all and every `<name>` resolves exactly as it did before packages existed.
+
+`[registry].url` is where `mc pkg` looks a name up, and it takes a URL **or a directory**: a
+private registry is a `git clone` of a tap plus one line here, at no cost in code. `--registry` on
+the command line wins over it, and with neither the default is
+`https://minicompiler.dev/registry`. Nothing in `mc build` ever reads it — the network side is
+`mc pkg`'s alone.
 
 A replaced package is not pinned and not hashed, and the build says so on stdout
 (`replaced geo: ../geo -- not pinned by mc.lock`).
@@ -315,8 +320,9 @@ rule — is in [packages.md](packages.md).
 | `package.files` | array of strings | every file the package ships, in the order that fixes the hash |
 | `package.lib` | string | optional: the file a bare `#include <name>` means |
 | `package.module` | string | optional: the file a COMPILER includes; it exports `<name>_init()` |
+| `package.repo` | string | read out of a REGISTRY INDEX file, not out of a package: where the source lives |
 
-This table is read out of a DEPENDENCY's `mc.toml`, not out of your own — a project's `mc.toml`
+The first four keys are read out of a DEPENDENCY's `mc.toml`, not out of your own — a project's `mc.toml`
 without `[package]` is not a package, and a package that is also a program simply carries both
 tables. `files` is the hash's input, the vendor-copy list and the boundary a package may not read
 outside of; see [packages.md](packages.md) § 3.
