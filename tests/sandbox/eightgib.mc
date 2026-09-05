@@ -25,7 +25,9 @@ i64 main() {
     // PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS -- the same numbers on
     // both architectures (src/arena.mc says so too).
     uptr p = mmap(0, 8589934592, 3, 0x22, -1, 0);
-    if (p == 0 || p + 1 == 0) { puts("mmap refused\n"); return 0; }
+    // failure is MAP_FAILED, (uptr)-1 -- never 0: an anonymous mapping is
+    // placed above vm.mmap_min_addr, so 0 is not an address mmap hands back.
+    if (p + 1 == 0) { puts("mmap refused\n"); return 0; }
     // If it ever succeeds, touch every page so the cap is measured and not
     // merely reserved.
     i64 i = 0;
