@@ -258,7 +258,7 @@ system or architecture becomes reachable from `mc.toml` without editing the driv
 
 ---
 
-## 3. Tier 3 and Tier 4 — the six word registrations, and the four hooks that claim no word
+## 3. Tier 3 and Tier 4 — the six word registrations, and the five hooks that claim no word
 
 Each of the six claims a **word** in the lexer and a **grammar position**. All six refuse a core
 keyword (`cannot redefine core keyword`), and all six reserve the word for the *whole program*,
@@ -275,12 +275,26 @@ vocabulary, and the parser says so plainly —
 | `type_alias(name, ty)` | a type word | — | — |
 | `type_new(name, w, a, kind)` | a type word, for a **new** primitive (M24) | — | the type id it returns |
 
+`syntax_type(&f)` reaches the same grammar position without claiming a word, which is what a
+*suffix* on a core type word (`i64[]`) needs; it has its own section below.
+
 In every case the parse is stopped **on the registered word**; consuming it is the handler's job.
 
-`on_stmt(&f)` (M21.5), `on_jump(&f)` (M31), `syntax_lit(&f)` (M24) and `syntax_param(&f)` (M41.5)
-are the four registrations that claim no word — and `intrinsic(name, …)` (M24) claims a *call name*
-rather than a lexeme, so none of the paragraph above applies to it either. They observe, replace or
-own nodes at a position the grammar reaches on its own. Each has its own section below.
+`on_stmt(&f)` (M21.5), `on_jump(&f)` (M31), `syntax_lit(&f)` (M24), `syntax_param(&f)` (M41.5) and
+`syntax_type(&f)` are the five registrations that claim no word — and `intrinsic(name, …)` (M24)
+claims a *call name* rather than a lexeme, so none of the paragraph above applies to it either.
+They observe, replace or own nodes at a position the grammar reaches on its own. Each has its own
+section below.
+
+**A word may be a type and something else at the same time, and that is a contract, not an
+accident.** `tok_add` is idempotent — the same lexeme always gets the same id — so
+`type_new("v8f32", …)` and `syntax_expr("v8f32", &f)` in the same `user_init` name the same token
+twice, and neither registration overwrites the other: they live in different tables, and those
+tables are consulted at **disjoint grammar positions**. `type_of_token` is asked where a type
+belongs (a declaration, a parameter, an `extern`, a cast, `p_type()`); `syntax_expr_find` is asked
+at the head of `parse_primary`, where an expression belongs. The one place they meet is the cast
+`(w)`, and there the type wins by construction: `parse_primary` tests `type_of_token` before it
+parses a parenthesised expression. A module that wants both spellings of one word gets both.
 
 ### `void syntax(uptr word, uptr fn)`
 
@@ -595,6 +609,72 @@ exactly as they apply to what the core reads.
 
 A module that registers `syntax_param` and answers 0 for every parameter must produce
 byte-identical trees and objects to a compiler without the hook; `lib/user_param_nop.mc` is that
+module, and `scripts/check-surface.sh` runs it over the whole `tests/` corpus.
+
+### `void syntax_type(uptr fn)` — the type position
+
+Registers `i64 f(i64 ty)`, consulted **right after the core has read a type word and advanced past
+it**, at every one of the six places that read one:
+
+| site | source |
+|---|---|
+| `p_type()` | whatever a module's own handler reads |
+| a local | `i64[] xs;` |
+| a cast | `(i64[]) p` |
+| a parameter | `i64 f(i64[] xs)` |
+| an `extern` | `extern i64[] memcpy(i64[] d, i64[] s, i64 n);` |
+| a top-level declaration | `i64[] g;` and `i64[] f() { … }` |
+
+All six go through one helper in `src/parse.mc`, so the position is the same in all of them: the
+handler receives **the id the core read**, may consume a **suffix** it owns — `[]`, `?`, `*`,
+whatever it declared — and answers **another type id**, typically one of its own `type_new`. **0**
+means "not mine" and the core keeps `ty`. Handlers run in registration order, the first non-zero
+answer wins, and with none registered there is not even a call.
+
+It is the sibling of `syntax_param`, and it exists for the same reason. `type_new` buys a new
+*spelling* (`f64 x`); it cannot buy `i64[]`, because the word that opens that type is `i64` and
+`word_add` refuses the core type words — no keyed table can ever fire there. This is the position
+a generic container's element type lives in.
+
+```c
+// i64[] — a pointer-sized handle whose element type the CORE spelled
+i64 ta_type(i64 ty) {
+    if (ty != TY_I64) return 0;                  // not ours: `ty` stands
+    if (p_id() != K_LBRACK) return 0;            // no suffix: not ours either
+    p_next();
+    p_expect(K_RBRACK, "expected ] after i64[");
+    return ta_arr;                               // a type_new of the module's
+}
+
+void user_init() {
+    ta_arr = type_new("i64[]", 8, 8, TK_INT);
+    syntax_type(&ta_type);
+}
+```
+
+`lib/user_typearr.mc` is that module, whole. The name `i64[]` is a lexeme the lexer can never
+form, which is exactly why the spelling is free: `type_new` reserves a word nothing can collide
+with, and `--dump-ast` prints `type=i64[]`.
+
+The core is not told what the suffix *means*. What comes back is an ordinary registered type and
+the core reads its `width`, `align`, `name` and `kind`, nothing else — everything a real container
+would carry (a length, bounds, an element table) is the module's.
+
+**Declining is only sound from the position the handler was called at**, the same rule the
+parameter and literal positions have. Three guards, all raised at the **type word's** own position:
+
+| message | when |
+|---|---|
+| `syntax_type handler consumed tokens and returned 0: <word>` | the handler read a suffix and then declined. The core would read the rest of the declaration from the middle of a type |
+| `syntax_type handler consumed no tokens: <word>` | a type came back with the cursor unmoved — there is no suffix, so the answer cannot be about this position |
+| `syntax_type handler returned an invalid type: <word>` | the id is negative or at or past `type_count()`. It goes straight into `type_width` / `type_align` / `type_kind`, so a bad one is a wrong frame layout later, not a diagnostic here |
+
+The checks run once, after the whole chain, not per handler — so a module that registers a
+deliberately broken handler puts it **last** (`lib/user_syntax_demo.mc` does, for
+`tests/err/077`–`079`).
+
+A module that registers `syntax_type` and answers 0 for every type word must produce
+byte-identical trees and objects to a compiler without the hook; `lib/user_type_nop.mc` is that
 module, and `scripts/check-surface.sh` runs it over the whole `tests/` corpus.
 
 ### The lookup side

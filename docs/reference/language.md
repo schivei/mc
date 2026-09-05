@@ -158,6 +158,20 @@ loads `<float>` has no identifier called `f32`. That is why `<float>` is not in
 The name is valid in all seven type positions at once (global, local, parameter, `extern`, cast,
 array element, `p_type()`), because they all end in the same lookup.
 
+### A suffix on a type word the core owns
+
+`type_new` buys a new *name*. It cannot buy `i64[]`, because the word that opens that type is
+`i64` and `word_add` refuses the core type words — so a module that wants an element type spelled
+by the core and a container spelled by itself registers **`syntax_type(&f)`**
+([hooks.md](hooks.md) § 3) instead. The handler is called right after the core read a type word,
+at every one of the six sites that read one — `p_type()`, a local, a cast, a parameter, an
+`extern` and a top-level declaration — receives the id the core read, may consume a suffix of its
+own (`[]`, `?`, `*`) and answers another type id, or 0 for "not mine".
+
+What comes back is an ordinary registered type: the core reads its `width`, `align`, `name` and
+`kind` and nothing else, exactly as it does for a `type_new` the source spelled by name.
+`lib/user_typearr.mc` is the whole thing in twelve lines.
+
 ---
 
 ## 3. Expressions

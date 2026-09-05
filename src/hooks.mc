@@ -403,6 +403,53 @@ i64 run_syntax_param() {
     return 0;
 }
 
+// ---- syntax_type, the type position ----
+// syntax_type(&f) registers `i64 f(i64 ty)`, consulted at every one of the six
+// places the core reads a type word -- p_type(), a local, a cast, a parameter,
+// an `extern` and a top-level declaration -- right AFTER the core read the word
+// and advanced past it. The handler receives the id the core read and may
+// consume a SUFFIX the module owns (`[]`, `?`, `*`, whatever it declared) and
+// answer another type id, typically one of its own type_new(); 0 means "not
+// mine" and the core keeps `ty`.
+//
+// It is the sibling of syntax_param and it exists for the same reason: the type
+// position is keyed by a CORE word, and word_add refuses those, so nothing a
+// module registers can ever fire on `i64`. type_new buys a new SPELLING
+// (`f64 x`); this buys a suffix on a spelling the core owns (`i64[] xs`), which
+// is what a generic container's element type looks like in every language that
+// has one.
+//
+// The core is not told what the suffix means -- width, alignment and kind come
+// from the type the handler returns, exactly as they do for a type_new the
+// source spelled by name. The three guards the answer has to pass live in
+// src/parse.mc, next to the position they defend.
+//
+// Handlers run in registration order, the first non-zero answer wins, and
+// `nsyntype == 0` short-circuits the whole thing in take_type(), so an untaught
+// compiler does not even make the callp.
+uptr syntype_fn;
+i64  syntypecap = 0;
+i64  nsyntype = 0;
+
+uptr syntype_fn_at(i64 i) { return ld64(syntype_fn + i * 8); }
+
+void syntax_type(uptr fn) {
+    syntype_fn = grow(T_SYNTYPE, syntype_fn, nsyntype, &syntypecap, 8);
+    st64(syntype_fn + nsyntype * 8, fn);
+    nsyntype = nsyntype + 1;
+}
+
+i64 run_syntax_type(i64 ty) {
+    i64 i = 0;
+    loop {
+        if (i >= nsyntype) break;
+        i64 t = callp(syntype_fn_at(i), ty);
+        if (t) return t;
+        i = i + 1;
+    }
+    return 0;
+}
+
 // M21. syntax_infix(".+", 9, &f): a binary operator taught by code. There is no
 // new table: the `#infix` entry gains one column (INF_FN), which is what puts a
 // taught operator and a `#infix` one in a SINGLE comparable precedence order.

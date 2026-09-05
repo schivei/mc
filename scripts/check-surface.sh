@@ -445,6 +445,82 @@ for f in syntax_param-default syntax_param-params syntax_param-capsule; do
     fi
 done
 
+# ---- syntax_type: a SUFFIX on a type word the core owns ----
+# `i64[]` is not mc, and it cannot be a type_new: the word that opens the type is
+# `i64` and word_add refuses the core type words. The module teaches the suffix
+# instead, and the source below uses the result in all six places the core reads
+# a type -- a global, an `extern`, a return type, a parameter, a local and a
+# cast. 40 + 2 = 42, through memcpy, so the taught type really is a
+# pointer-sized handle the C ABI accepts.
+six_positions='u64 arr[2] = { 40, 2 };
+i64[] g;
+extern i64[] memcpy(i64[] d, i64[] s, i64 n);
+i64[] same(i64[] p) {
+    i64[] q;
+    q = p;
+    return q;
+}
+i64 main() {
+    u64 dst[2];
+    g = same((i64[]) arr);
+    memcpy((i64[]) dst, g, 16);
+    return ld64(dst) + ld64(dst + 8);
+}'
+hook_case syntax_type-six 42 "$six_positions"
+
+# and every one of the six carries the taught id, not i64: nine nodes in the
+# tree say `type=i64[]` (global, extern, two extern parameters, the function,
+# its parameter, the local, and the two casts)
+ntyped=$("$demo" --dump-ast "$tmp/syntax_type-six.mc" 2>&1 | grep -c 'type=i64\[\]')
+if [ "$ntyped" = 9 ]; then
+    echo "ok syntax_type: all six positions carry the taught type (9 nodes)"
+else
+    echo "FAIL syntax_type: $ntyped nodes carry type=i64[], expected 9"
+    fails=$((fails + 1))
+fi
+
+# The demo also registers syntax_param, and that handler claims every typed
+# parameter -- so in the demo compiler a parameter's type is read by the MODULE,
+# through the public p_type(). lib/user_typearr.mc registers syntax_type and
+# NOTHING else, which is what puts all six sites back in the core, parse_params
+# included. Same source, same 42, same nine nodes.
+ta="build/mc-typearr"
+rm -f "$ta"
+if ! msg=$("$mc1" --exe lib/mc_typearr.mc -o "$ta" 2>&1); then
+    echo "FAIL: compiling lib/mc_typearr.mc: $msg"
+    fails=$((fails + 1))
+elif ! msg=$("$ta" --exe "$tmp/syntax_type-six.mc" -o "$tmp/six-ta" 2>&1); then
+    echo "FAIL: mc-typearr did not compile the six-position source: $msg"
+    fails=$((fails + 1))
+else
+    "$tmp/six-ta"; rc=$?
+    nta=$("$ta" --dump-ast "$tmp/syntax_type-six.mc" 2>&1 | grep -c 'type=i64\[\]')
+    if [ "$rc" = 42 ] && [ "$nta" = 9 ]; then
+        echo "ok syntax_type through the CORE at all six sites (parse_params included)"
+    else
+        echo "FAIL syntax_type via lib/user_typearr.mc (exit $rc, $nta typed nodes)"
+        fails=$((fails + 1))
+    fi
+fi
+
+# the default compiler refuses the same source, at the first taught use
+if msg=$("$mc1" "$tmp/syntax_type-six.mc" -o "$tmp/six.o" 2>&1); then
+    echo "FAIL: the default compiler accepted syntax_type-six"
+    fails=$((fails + 1))
+else
+    echo "ok the default compiler rejects syntax_type-six (${msg##*/})"
+fi
+# ...and `i64[] xs;` in a local is `variable name expected` there, which is the
+# core reading `[` where a name belongs
+printf 'i64 main() { i64[] xs; xs = 0; return 42; }\n' > "$tmp/type-local.mc"
+msg=$("$mc1" "$tmp/type-local.mc" -o "$tmp/type-local.o" 2>&1)
+if [ "${msg##*/}" = "type-local.mc:1: variable name expected" ]; then
+    echo "ok the default compiler rejects a taught type suffix in a local"
+else
+    echo "FAIL: the default compiler on i64[] in a local: $msg"
+    fails=$((fails + 1))
+fi
+
 # ---- M21: the tests/err/ cases, with their exact message ----
 err_case() {                        # err_case FILE EXPECTED-MESSAGE [COMPILER]
     f="$1"; want="$2"; cc="${3:-$demo}"
@@ -494,6 +570,19 @@ err_case tests/err/073-param-consumed-zero.mc \
 # fix this compiled to `return 7;` with the `q` swallowed.
 err_case tests/err/074-lit-consumed-zero.mc \
     "tests/err/074-lit-consumed-zero.mc:14: syntax_lit handler consumed tokens and returned 0: 7"
+
+# ---- syntax_type: the same three guards, one position over ----
+# sd_teat eats `[` `]` after a `u8` and then declines: the core would read the
+# rest of the declaration from the middle of a type.
+err_case tests/err/077-type-consumed-zero.mc \
+    "tests/err/077-type-consumed-zero.mc:18: syntax_type handler consumed tokens and returned 0: u8"
+# sd_tnop answers the taught type on `u16` without reading a token: there is no
+# suffix, so the answer cannot be about this position.
+err_case tests/err/078-type-noadvance.mc \
+    "tests/err/078-type-noadvance.mc:13: syntax_type handler consumed no tokens: u16"
+# sd_tbad consumes and answers 9999: that id goes straight into type_width.
+err_case tests/err/079-type-badid.mc \
+    "tests/err/079-type-badid.mc:13: syntax_type handler returned an invalid type: u32"
 
 # ---- `continue N`: the two level diagnostics, from the DEFAULT compiler ----
 # The feature is core, not taught, so these two are asserted with $mc1: nothing
@@ -1115,6 +1204,36 @@ else
         echo "ok syntax_param returning 0: --dump-ast and objects identical over tests/"
     else
         fails=$((fails + pnfails))
+    fi
+fi
+
+# The same inertness shape for syntax_type: a module whose ONLY registration is
+# syntax_type and whose handler answers 0 for every type word has to produce
+# exactly the tree and exactly the object the compiler without the hook
+# produces. The callp happens at every type of every declaration, parameter,
+# cast and local -- 0 is the handler declining, not the absence of a handler.
+tnop="build/mc-type-nop"
+rm -f "$tnop"
+if ! msg=$("$mc1" --exe lib/mc_type_nop.mc -o "$tnop" 2>&1); then
+    echo "FAIL: compiling lib/mc_type_nop.mc: $msg"
+    fails=$((fails + 1))
+else
+    tnfails=0
+    for f in tests/*.mc; do
+        [ -f "$f" ] || continue
+        "$mc1"  --dump-ast "$f" > "$tmp/tn0.ast" 2>&1
+        "$tnop" --dump-ast "$f" > "$tmp/tn1.ast" 2>&1
+        cmp -s "$tmp/tn0.ast" "$tmp/tn1.ast" || {
+            echo "FAIL syntax_type inert: --dump-ast of $f"; tnfails=$((tnfails + 1)); }
+        "$mc1"  "$f" -o "$tmp/tn0.o" 2>/dev/null
+        "$tnop" "$f" -o "$tmp/tn1.o" 2>/dev/null
+        cmp -s "$tmp/tn0.o" "$tmp/tn1.o" || {
+            echo "FAIL syntax_type inert: object of $f"; tnfails=$((tnfails + 1)); }
+    done
+    if [ "$tnfails" = 0 ]; then
+        echo "ok syntax_type returning 0: --dump-ast and objects identical over tests/"
+    else
+        fails=$((fails + tnfails))
     fi
 fi
 

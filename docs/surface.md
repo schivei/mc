@@ -643,7 +643,7 @@ things a template can't express. Tier 3 is the answer, and it's the same idea as
 user writes a `.mc` module that runs inside the compiler**, this time during *parsing*, using the
 parser's public API.
 
-### The eight registrations
+### The nine registrations
 
 | registration | what you write | when it runs |
 |---|---|---|
@@ -655,9 +655,10 @@ parser's public API.
 | `on_stmt(&f)` | `i64 f(i64 n)` — returns the node, a replacement, or 0 | `parse_stmt`, after **every** statement node exists (M21.5) |
 | `on_jump(&f)` | `i64 f(i64 n, i64 kind, i64 depth)` — same three answers | `parse_stmt_core`, as it builds a `return`/`break`/`continue` (M31) |
 | `syntax_param(&f)` | `i64 f()` — returns an `N_PARAM`, or 0 for "the core handles this one" | `parse_params`, at the head of its loop, **before** `type_of_token` (M41.5) |
+| `syntax_type(&f)` | `i64 f(i64 ty)` — returns another type id, or 0 for "not mine" | right after the core read a type word, at all six sites that read one |
 
 The first five register the word in the lexer (`tok_add`), the same as `#rule` does with its
-dispatch literal, and all five **refuse a core keyword** (`K_U8`..`K_EXTERN`); the last three claim
+dispatch literal, and all five **refuse a core keyword** (`K_U8`..`K_EXTERN`); the last four claim
 no word at all — they observe, replace or own nodes at a position the parser reaches on its own:
 
 ```
@@ -1501,6 +1502,54 @@ parameter of every function, and `scripts/check-surface.sh` checks that its `--d
 objects are byte-identical to the untaught compiler's over the whole `tests/` corpus.
 
 See `docs/specs/M41.5.md` and `docs/reference/hooks.md` § 3.
+
+## The type position
+
+The sibling of `syntax_param`, and it comes from the same consumer: `T[]`, an element type spelled
+by the core and a container spelled by the module. `type_new` cannot buy it — the word that opens
+the type is `i64`, and `word_add` refuses the core type words, so no keyed table can ever fire
+there.
+
+`syntax_type(&f)` registers `i64 f(i64 ty)`, consulted **right after the core has read a type word
+and advanced past it**, at all six places that read one: `p_type()`, a local, a cast, a parameter,
+an `extern` and a top-level declaration. The handler receives the id the core read, may consume a
+suffix it owns — `[]`, `?`, `*` — and answers another type id, typically one of its own
+`type_new`; **0** means "not mine" and the core keeps `ty`. Handlers run in registration order, the
+first non-zero answer wins, and with none registered there is not even a call.
+
+```c
+i64 ta_type(i64 ty) {
+    if (ty != TY_I64) return 0;                  // not ours: `ty` stands
+    if (p_id() != K_LBRACK) return 0;            // no suffix: not ours either
+    p_next();
+    p_expect(K_RBRACK, "expected ] after i64[");
+    return ta_arr;                               // a type_new of the module's
+}
+```
+
+The core is not told what the suffix means: what comes back is an ordinary registered type, and
+the core reads its width, alignment, name and kind and nothing else. `lib/user_typearr.mc` is that
+module whole — twelve lines — and `scripts/check-surface.sh` compiles one source that uses
+`i64[]` in all six positions and runs it (`40 + 2` through `memcpy`, exit 42), with the default
+compiler refusing the same source (`variable name expected`).
+
+Three guards, all at the type word's own position and the same three shapes the parameter position
+has: `syntax_type handler consumed tokens and returned 0: <word>` (declining is only sound from
+where the handler was called), `syntax_type handler consumed no tokens: <word>` (a type with no
+suffix read cannot be about this position) and `syntax_type handler returned an invalid type:
+<word>` (that id goes straight into `type_width`). `tests/err/077`–`079` assert all three.
+
+Inert by construction: `lib/user_type_nop.mc` registers `syntax_type` and answers 0 for every type
+word of every declaration, and its `--dump-ast` and its objects are byte-identical to the untaught
+compiler's over the whole `tests/` corpus.
+
+One more thing this makes explicit, and it is a **contract**: `tok_add` is idempotent, so
+`type_new("w", …)` and `syntax_expr("w", &f)` on the same word coexist. The two tables are
+consulted at disjoint grammar positions — `type_of_token` where a type belongs, `syntax_expr_find`
+at the head of `parse_primary` — and the one place they meet, the cast `(w)`, resolves to the type
+because `parse_primary` tests `type_of_token` first.
+
+See `docs/reference/hooks.md` § 3.
 
 ## M41.5 — and a core operator
 
