@@ -1694,7 +1694,14 @@ i64 do_embed(i64 line, uptr fl) {
     // lexer stack: the `lz` lookahead above may already have popped back to the
     // includer. And when that file came from the bundle, so does the payload.
     uptr data = lex_embed_bundled(fl, rel, &raw, line);
-    if (data == 0) data = read_file(lex_find_path_from(fl, rel), &raw);
+    if (data == 0) {
+        // M44: #embed is the other way a file reads bytes, so the closure rule
+        // applies to it word for word -- otherwise a package could exfiltrate
+        // any file the compiler can open (docs/specs/M44.md § Risks 1).
+        uptr ep = lex_find_path_from(fl, rel);
+        lex_closed(fl, ep, line);
+        data = read_file(ep, &raw);
+    }
     if (raw == 0 || raw > EMBED_MAX) err_at(fl, line, "#embed file is empty or over 16 MiB");
     i64 len = raw;
     if (comp) {

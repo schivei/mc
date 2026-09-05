@@ -175,3 +175,32 @@ void sha256(uptr p, i64 n, uptr out) {
         j++;
     }
 }
+
+// ---- M44: the digest's text form ----
+// 32 raw bytes as 64 lowercase hex characters. It lives here, beside the
+// function that produces the bytes, because THREE files print a digest -- the
+// tree hash in src/deps.mc, an archive's checksum in src/sysroot.mc and both in
+// src/pkg.mc -- and each of them had (or would have had) its own copy of this
+// loop. One digest, one spelling.
+uptr hex64(uptr d) {
+    u8 b[BUF_SIZE];
+    buf_init(b);
+    i64 i = 0;
+    while (i < 32) {
+        i64 v = ld8(d + i);
+        buf_u8(b, ld8("0123456789abcdef" + ((v >> 4) & 15)));
+        buf_u8(b, ld8("0123456789abcdef" + (v & 15)));
+        i = i + 1;
+    }
+    buf_u8(b, 0);
+    return buf_p(b);
+}
+
+// the sha256 of a file's bytes, in hex; the file has to be readable
+uptr sha256_file(uptr path) {
+    i64 len = 0;
+    uptr src = read_file(path, &len);
+    u8 d[32];
+    sha256(src, len, d);
+    return hex64(d);
+}

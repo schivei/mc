@@ -6,3 +6,4 @@ site/public/
 .DS_Store
 dist/
 site/preview/
+tests/pkg/*/deps/

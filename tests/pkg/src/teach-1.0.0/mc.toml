@@ -1,0 +1,6 @@
+# teach 1.0.0 -- a COMPILER-MODULE package. It exports teach_init() and never
+# defines user_init: that is the project's, and it is six lines (D8).
+[package]
+name   = "teach"
+files  = ["mc_teach.mc"]
+module = "mc_teach.mc"

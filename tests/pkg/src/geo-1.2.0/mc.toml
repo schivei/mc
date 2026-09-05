@@ -1,0 +1,9 @@
+# geo 1.2.0 -- a fixture package with a dependency of its own. `lib` is what a
+# bare `#include <geo>` means; `files` is the boundary and the hash's input.
+[package]
+name  = "geo"
+files = ["geo.mc", "vec.mc"]
+lib   = "geo.mc"
+
+[deps]
+mathx = "1.0.0"

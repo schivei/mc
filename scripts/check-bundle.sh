@@ -15,6 +15,9 @@
 # lib/*.mc that was not followed by `make bundle` would make the fixed point
 # prove something about a compiler whose `<mc/core>` is stale. Failing here
 # says exactly what to do; failing in bootstrap would not.
+#   7. src/version.mc still carries the `0.0.0-dev` SENTINEL (M44, D20): a tree
+#      where scripts/set-version.sh has run must fail `make check` rather than
+#      be committed as a release build (docs/ci.md § Versioning)
 mc="${1:-build/mc1}"
 
 if [ ! -x "$mc" ]; then
@@ -64,6 +67,23 @@ if ! cmp "$tmp/a.mc" src/bundle_data.mc; then
 fi
 
 echo "ok src/bundle_data.mc matches tools/bundle.list ($(wc -c < src/bundle_data.mc | tr -d ' ') bytes)"
+
+# M44 (D20): the version is baked into src/version.mc, which is bundled as
+# `mc/version`. The working tree carries the sentinel and only a release runner
+# rewrites it (scripts/set-version.sh, called from release.yml, which never
+# commits). Guarding it HERE is what makes an accidental commit of a release
+# build a red `make check` instead of a compiler that lies about its version --
+# and it belongs here because set-version.sh's second act is `make bundle`, so
+# the rewritten string is inside src/bundle_data.mc as well.
+if ! grep -q '^uptr mc_version() { return "0.0.0-dev"; }$' src/version.mc; then
+    echo "FAIL: src/version.mc does not carry the 0.0.0-dev SENTINEL." >&2
+    echo "  It says: $(grep '^uptr mc_version' src/version.mc)" >&2
+    echo "  scripts/set-version.sh ran in this tree. A release build is never" >&2
+    echo "  committed: restore it with 'scripts/set-version.sh 0.0.0-dev'" >&2
+    echo "  (docs/ci.md § Versioning)." >&2
+    exit 1
+fi
+echo "ok src/version.mc carries the 0.0.0-dev sentinel"
 
 # M21.5: the copy the BINARY regenerates is not the file on disk. `mc/bundle_data`
 # carries the blob as `#embed bundle_blob "bundle.bin"` -- one N_BLOB node --

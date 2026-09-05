@@ -453,6 +453,67 @@ it means and what the two ways out are.
 | `mc: arena exhausted (R MiB reserved, E MiB estimated, asked N bytes) while parsing FILE:LINE -- raise [limits].tolerance or HEAP_SIZE` | the compiler's arena could not grow | the arena starts at a static 32 MiB and grows by `mmap`; this means the kernel refused. The numbers say what was already reserved, what the plan had estimated and what did not fit; `while parsing` is where the parser was, and appears only while it is parsing: the pre-scan, the passes, the codegen and the object writer report no position rather than the last line the lexer happened to reach. Raise `[limits].tolerance` so the estimate reserves more up front, or split the translation unit |
 | `mc: cannot reserve the arena (…) -- raise [limits].tolerance or HEAP_SIZE` | the initial reservation failed | same message, same numbers, at the first `mmap` |
 
+## 13. Packages
+
+Everything here comes from `src/deps.mc` and `src/lex.mc`; the model behind them is
+[packages.md](packages.md). Most of the messages are exit **2** -- "the environment is not ready",
+the same code and the same `run:` block as § 11 -- and the rest are exit 1, because they are about
+the source or about the config.
+
+| message | exit | cause | fix |
+|---|---|---|---|
+| `mc: geo 1.2.0: vec.mc does not match mc.lock` | 2 | the bytes of a file inside a locked package are not the ones the lock pins. The FILE is named when the installation carries a cache manifest (`<libs>/<pack>/v<version>.toml`) to attribute it to | `mc pkg verify`; if the change was yours, re-sync so the lock records it |
+| `mc: geo 1.2.0: mc.toml does not match mc.lock` | 2 | every file line still matches, so what moved is the package's own manifest -- its `[package].files` list | the same |
+| `mc: geo 1.2.0: the tree does not match mc.lock` | 2 | the same disagreement in a VENDORED tree, which has no manifest to attribute it to | the same |
+| `mc: mc.lock is stale: geo` | 2 | `[deps]` names a package the lock lacks, or asks a minimum above the version the lock pins. With no name after the colon, the lock file itself is missing | `mc pkg sync --yes` |
+| `mc: geo 1.2.0 is not fetched` | 2 | the lock names a version that is neither vendored in `deps/geo/` nor installed under `<libs>/geo/v1.2.0/` with its manifest | `mc pkg sync --yes`, or vendor it, or point `--libs-dir` at an installation that has it |
+| `mc: geo 1.2.0: no mc.toml in the package tree` | 2 | the tree was found but carries no manifest at all | the directory is not a package; re-fetch it |
+| `mc: a file the package lists is missing: PATH` | 2 | `[package].files` names a file the tree does not hold, so the hash cannot be computed | the tree is incomplete; re-fetch it |
+| `mc: geo 1.2.0: files entry escapes the package: ../x` | 2 | a `[package].files` entry that is absolute, carries a `.`/`..` or an empty component, holds a backslash or a byte below `0x20`, or resolves outside the package. Raised wherever the list is used: the hash on every build, the cache manifest, `mc pkg vendor`, `mc pkg hash` | the package's bug, or an attack: `files` names files INSIDE the package and nothing else ([packages.md](packages.md) § 3) |
+| `geo/vec.mc:3: package geo reaches outside its tree: PATH` | 1 | a file under a package root tried to `#include` or `#embed` something that is not its own tree, not a library this binary ships and not a declared dependency ([packages.md](packages.md) § 5) | the package's bug: it must declare what it reads in its own `[deps]` |
+| `geo/extra.mc:1: not declared in geo's [package].files` | 1 | the build read a file inside a package that the package did not list | the package's bug, unless the file was planted: `files` is the boundary |
+| `mc.toml:8:6: reserved package name: deps.mc` | 1 | `mc`, `deps` or `build` in `[deps]` or `[replace]`. `mc` is the compiler's own package and can never be pinned | pick another name |
+| `mc.toml:8:7: invalid package name: deps.Geo` | 1 | the name is not `[a-z][a-z0-9_]*` of at most 32 bytes | lower case, digits and `_` |
+| `prog.mc:1: unknown bundled include: geo/geo` | 1 | none of the three resolution steps had the name. In the single-file CLI there is no lock and therefore no step 1 at all | `mc build` with a `[deps]` entry, or `--include=DIR` and a quote include |
+| `mc: --libs-dir requires an argument` | 1 | the flag was last on the command line | give it a directory |
+
+Note the shape of the first three: `<name> <version>: <what> does not match mc.lock`. The middle
+field is a file inside the package, `mc.toml` when the manifest itself moved, and `the tree` when
+there is nothing to attribute it to.
+
+### `mc pkg` and `mc update`
+
+The verbs that resolve, fetch and lock ([packages.md](packages.md) § 10). Exit 2 is again "the
+environment is not ready" -- a transfer that failed, a checksum that did not match -- and exit 1 is
+"what you wrote, or what the registry published, is wrong".
+
+| message | exit | cause | fix |
+|---|---|---|---|
+| `mc: cannot open: /path/to/geo-1.2.0.tar.gz` | 2 | the row's `url` has no scheme, so it is a local path, and it does not open | fix the row, or the directory the registry points at |
+| `mc: the download failed (exit 22): URL` | 2 | the downloader ran and refused; the code is `curl`'s or `wget`'s | the URL, the network, the proxy |
+| `mc: no downloader on this PATH (tried curl, wget)` | 2 | neither program is installed | install one, or fetch by hand and use `--libs-dir` |
+| `mc: tar could not extract geo-1.2.0.tar.gz` | 2 | the archive is not what its name says | the row's `url` |
+| `mc: v1.2.0.tar.gz: archive member is a link: geo-1.2.0/x` | 2 | the archive carries a symbolic or hard link. Nothing is extracted and the archive is unlinked | a package tree is files and directories; a link is a way to read what is outside it |
+| `mc: v1.2.0.tar.gz: member escapes the archive: ../x` | 2 | an archive member that is absolute, carries a `.`/`..` component, or lands outside the destination after `--strip-components` | the row's `strip`, or the archive |
+| `mc: v1.2.0.tar.gz: cannot be listed: tar -t failed` | 2 | `tar` could not read the archive at all, before any extraction | the row's `url` |
+| `mc: v1.2.0.tar.gz: member missing after extraction: x` | 2 | `tar` returned success and did not write a member it listed | the archive, or the disk |
+| `mc: larger than the cap of 67108864 bytes: SOURCE` | 2 | an archive over 64 MiB, or a registry index file over 1 MiB. The downloaded file is unlinked | the row's `url`; the caps are constants in `src/fetch.mc` |
+| `mc: check needs --yes to compare against the published index: geo` | 2 | `mc pkg check` against a URL registry cannot read the published copy without downloading it, and refuses to answer "unchanged" by doing nothing | add `--yes`, or point `--registry` at a directory |
+| `mc: check: cannot read the published index for geo: exit status 7` | 2 | the published index could not be fetched for a reason that is not "there is no such file" (`curl -f` 22, `wget` 8, which mean a NEW package) | the network; a `check` that cannot read the index cannot enforce immutability |
+| `mc: checksum mismatch for geo 1.2.0` + `expected`/`got` | 2 | the tree that arrived is not the tree the row pins. The files THE EXTRACTION WROTE are unlinked -- never the list in the refused tree's own mc.toml -- and no manifest is written | a moved tag, a wrong `sha256` in the index, or a tampered mirror. Never a reason to "just re-run" |
+| `mc: geo 1.2.0: the archive carries no mc.toml at its root` | 2 | `strip` is wrong, or the tag is not a package | the row's `strip` |
+| `mc: nowhere to put a package: no --libs-dir and no HOME` | 2 | there is no `<libs>` to write into | `--libs-dir DIR` |
+| `mc: geo 1.9.0: no such version in the registry` | 1 | a `[deps]` minimum, or an `@VERSION`, that no index row carries | `mc pkg list`, or the index page |
+| `mc: no such package in the registry: geo` | 1 | a DIRECTORY registry with no `index/geo.toml` | the name, or the registry |
+| `mc: mathx: 1.0.0 and 2.0.0: different majors: no solver` | 1 | two requirements of one name whose majors differ. No lock is written | drop one of them, or wait for the dependency to move |
+| `mc: mathx 2.0.1: is yanked: pick another version` | 1 | `mc pkg add name@version` named a row the registry retracted | pick another version; without `@` the newest non-yanked one is chosen for you |
+| `mc: geo: not a dependency of this project` | 1 | `mc update NAME` for a name that is not in `[deps]` | `mc pkg add` it first |
+| `mc: mc pkg add cannot edit this file: [deps] is written more than once` | 1 | the scan that inserts one key found a shape it will not rewrite | edit `[deps]` by hand |
+| `mc: geo 1.2.0: the archive's mc.toml names another package` | 1 | `mc pkg check`: the row and the tree disagree about the name | the index row, or the tag |
+| `mc: geo 1.2.0: the archive requires a package the row does not list: mathx` | 1 | `mc pkg check`: the row's `deps` are not the archive's `[deps]` | regenerate the row |
+| `mc: plot 1.0.0: a published row was edited: only yanked = true may be added` | 1 | `mc pkg check` against the registry's current copy | published rows are immutable; publish a new version |
+| `mc: plot 1.0.0: a published version was removed` | 1 | the same, for a row that vanished from the file | put it back and yank it instead |
+
 ---
 
 ## Reproducing them

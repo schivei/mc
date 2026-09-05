@@ -1,0 +1,13 @@
+# tests/pkg/app-bad -- the closure fixture's consumer: `bad` reads one file
+# above its own directory and mc refuses to compile it.
+[project]
+name  = "app-bad"
+entry = "main.mc"
+out   = "build/bad.o"
+kind  = "obj"
+
+[deps]
+bad = "1.0.0"
+
+[limits]
+tolerance = 1.0

@@ -1,0 +1,12 @@
+# tests/pkg/add -- the file `mc pkg add` edits. It has no [deps] table at all,
+# so the command has to create one; every other byte of this file, this comment
+# included, has to come out unchanged.
+[project]
+name  = "add"
+entry = "main.mc"
+out   = "build/add.o"
+kind  = "obj"
+
+# a comment between the sections, on purpose
+[limits]
+tolerance = 1.0

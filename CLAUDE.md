@@ -1684,6 +1684,107 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `check-inert` identical, four Linux cells RC 0; goldens rewritten once: `mc2.sha256`
   `9e7b803f127cb6f1e059c1e6572a629bfa909cfbecbfae18b01abd1fd7a2d431`, Linux `182a4c6d…036679` /
   `e63d09bc…d99ffa`, Windows `dcaac914…4256c3` / `dfaf002c…a97b861`. PR #23 CI 14/14.
+- M44 step 2 ✔ (`docs/specs/M44.md` § Implementation notes -- step 2; Amendment § A1-A3, A5, A6,
+  D1'/D2'/D10'/D24): **angle brackets are libraries, quotes are my files.** `tok_add(".", 1)`
+  appended LAST in `tok_init` (no id moves; `examples/lang`'s own `tok_add(".")` lands on the same
+  id); `lex_include_name` is three steps through two pointers -- the lock road (`lopen_fn`,
+  `lex_set_libs` from `mc_build_init()`), the bundle (`bopen_fn`, unchanged), the installed `mc`
+  package (`<libs>/mc/v<mc_version()>/` + the `bundle.list` map) -- a trailing `.mc` stripped from
+  every `<...>` name, `<pack>` alone = the lock row's `lib`, the once-only key for a disk-served
+  name its NORMALISED path (no `getcwd` here), never the working directory, never an unlocked
+  directory; `lex_root_of` + the edge list + the closure test for `#include` and `#embed`.
+  `src/deps.mc` (662): the name rule and the reserved set (`mc`, `mc/...`, `deps`, `build`),
+  `[deps]`/`[replace]`/`[registry]`, the lock READER, the tree hash, `libs_open` (vendored
+  `deps/<pack>/` wins, then `<libs>/<pack>/v<version>/`), semver, the refusals (`mc.lock is stale`
+  with the M25 `run:` block, `<pack> <ver>: <file> does not match mc.lock`, `is not fetched`,
+  and -- vendored trees have no manifest for per-file attribution -- `the tree does not match
+  mc.lock`). `src/toml.mc` re-entrant (`toml_push`/`toml_pop`, `toml_occurrences`);
+  `src/driver.mc` `--libs-dir` (default `host_home()/.mc/libs`), `drv_apply_deps` for both halves,
+  `<...>` modules verbatim. Cost **999 added lines in `src/`, 677 code** (spec ~543); globals
+  432 -> **439/512**. **What did not survive**: `check-lex` cannot stay 100% -- `--dump-tokens`
+  processes no directive, so `lib/syntax_demo_test.mc`'s taught `.+` operator now lexes `.` `+` where the
+  seed says `unexpected character` (M44 risk 17, measured); a new `// lex-skip:` header (NOT
+  `seed-skip:`, which `check-asm`/`check-ast` also honour and which would have dropped the file from
+  two gates that still compare it byte for byte) -- 135/135 identical, 3 skipped. Two silent path
+  bugs only a fixture found: `path_norm` drops a trailing slash and macOS `TMPDIR` ends in `/`, so
+  every package root was a prefix of nothing and the closure rule never fired -- `dp_set_dir`
+  normalises once. Fixtures `tests/pkg/` (mathx 1.0.0, geo 1.2.0, teach, bad, float 1.3.0, app,
+  app-float, `nobundle.mc` = every part but `<mc/core_bundle>`, which is what `mc-slim` will be);
+  `scripts/check-pkg.sh` **31/31** inside `make check`, under a `curl`/`wget`/`tar` shim that exits
+  97 if invoked: acceptance 5-11, 18, 19 measured as the spec spells them, and step 3 of A3 --
+  `<mc/host>` + `<mc/core>` + `<user_default>` served from a hand-laid `<libs>/mc/v0.0.0-dev/`
+  compiles to an object `cmp`-identical to `build/mc1 src/mc.mc`. `make check` RC 0 (`check-obj`
+  32/32, `check-ast`/`asm` 137/137, fixed point 1154264 B, `check-docs` 196 symbols / 35 flags /
+  24 TOML keys / 349 links), four Linux cells RC 0, `check-inert` identical everywhere (D24: no
+  `[deps]`, no change). Goldens rewritten once (after the rebase onto 167d540 re-recorded step 1's):
+  `mc2.sha256` `9e00398d7338ad9b53654c7f07e0d16ff21319e79c915b2ac473d20e1411420a`, Linux
+  `67f062a4…7a02fd` / `3c93e81f…debe70`, Windows `2858b236…3f5959` / `c75e23fd…b909322`.
+- M44 step 3 ✔ (`docs/specs/M44.md` § Implementation notes -- step 3; draft § 4-§ 8, D21): **the
+  write and network side.** `src/fetch.mc` (169): `fetch_get` (an `https://` source spawns the
+  host downloader with M25's flags, anything else is a LOCAL PATH copied -- what makes the suite
+  need no network and prices a private registry at zero), `fetch_extract`, `fetch_sha256_line`;
+  `src/sysroot.mc` lost 122 lines and delegates (`check-sysroots`/`check-stubs` unchanged).
+  `hex64` could NOT live in `fetch.mc` (`deps.mc` prints a hash before `driver.mc`, which
+  `fetch.mc` needs): `hex64`/`sha256_file` moved to `src/sha256.mc`, one spelling of a digest
+  instead of three. `src/pkg.mc` (1387) in the new part `<mc/core_pkg>` (`src/core_pkg.mc`):
+  the index reader (`<registry>/index/<name>.toml`, `--registry URL|DIR`, `[registry].url`,
+  default `https://minicompiler.dev/registry` -- **the owner decided the same day that a package
+  SERVER at minicompiler.dev, in the private `schivei/mc-registry`, PRODUCES this exact layout
+  from public git URLs validated in the sandbox; the compiler gains no client code**), MVS with
+  the two-majors refusal and yanked rows skipped, the lock WRITER (sorted, `lib`/`deps` from the
+  archive's own `mc.toml`, `sha256` the tree hash), the archive fetch in M25's order (download,
+  extract, HASH AND COMPARE, manifest last, unlink on refusal), `vendor`, `add` (one `[deps]` line
+  by `lim_fix_write`'s method), `list`, `verify`, `hash`, `check`, and top-level `mc update`
+  (D21: inside its major -- `go get -u` does not cross one; `mc pkg add NAME` with no `@` takes
+  the newest non-yanked of any major). `dep_hash_tree(dir, pk)` is the ONE definition of D5's
+  hash for `mc build`, `mc pkg hash|sync|vendor|check`. `sync` with nothing to download
+  completes without `--yes`; `check` compares against the registry's published copy for
+  immutability. Cost **1673 added lines in `src/`, 1268 code** (spec ~880; the cache-manifest
+  writer, `check`'s immutability half, `vendor`, the plan table); **globals 440/512**.
+  `scripts/check-pkg.sh` 31 -> **63/63**, all offline: a DIRECTORY registry the script builds
+  (tarballs from `tests/pkg/src`, `url` = local file, `sha256` from `scripts/pkg-hash.sh` -- so the
+  two hash implementations cross-check), fixtures `mathx-1.1.0/2.0.0/2.0.1 (yanked)`, `plot`,
+  `heavy` (the other major), `sync/`, `major/`, `add/`; goldens `tests/golden/pkg-list.txt`,
+  `tests/pkg/sync/mc.lock.expect`; `check-parts` covers `<mc/core_pkg>`. Rebased onto 8c31a0e
+  (#26): no code overlap. `make check` RC 0 (`check-obj` 32/32, fixed point 1228304 B, empty
+  `--dump-asm` diff, `check-docs` 197 symbols / 36 flags / 27 TOML keys / 358 links, site 89
+  pages), four Linux cells RC 0, `check-inert` identical. Goldens rewritten once: `mc2.sha256`
+  `cede0b38…07284`, Linux `e4c876dd…dbc02` / `3f036b4d…d2012`, Windows `70a2259d…68309` /
+  `98cf8605…4fde5`. Steps 4-5 (the slim binary, `mc install`, `mc upgrade`) follow the site, per
+  the owner's sequencing of 2026-09-05.
+- M44 review batch ✔ (`docs/specs/M44.md` § Implementation notes -- the supply-chain review): the
+  reviewer's CRITICAL, **reproduced before it was fixed**: `[package].files` of a dependency went
+  to `path_join`/`path_norm` uncontained (`path_join` DISCARDS its base on an absolute `rel`;
+  `path_norm` resolves `..` with no floor) -- arbitrary READ on every `mc build` (`files =
+  ["../../../payload.txt"]` hashed, rc 0), arbitrary WRITE by `mc pkg vendor` (a payload landed
+  outside the project), arbitrary DELETE on a hash MISMATCH (`pkg_unbless` re-read the just-refused
+  tree and unlinked what it listed: a registry row with a wrong `sha256` deleted a canary two
+  directories up -- the attacker never needs a hash that passes). Rule now: ONE reader of
+  `package.files`, `dep_read_files()`, behind `dep_rel_ok` (no empty/absolute, no `.`/`..`/empty
+  component, no backslash, no byte < 0x20) + `dep_under` (normalised-join prefix) ->
+  `<pack> <ver>: files entry escapes the package: <entry>`, exit 2; `pkg_unbless` deletes what the
+  EXTRACTION wrote (the member table) and never reads that list again. HIGH: `fetch_extract`
+  trusted `tar` (a symlink member to `/etc/hosts` was vendored into `deps/`): `fetch_check_members`
+  lists twice (names, then the type column) and refuses links, absolute or `..` members and anything
+  leaving `dest` after `--strip-components` (`member escapes the archive` / `archive member is a
+  link`, exit 2, archive unlinked), every listed regular file checked afterwards; NOT done, on
+  record: the extraction still names no members (a member with a space cannot travel on argv).
+  MEDIUM: the hash line is now injective (`<hex> <len>:<path>\n`; control bytes refused; a forgery
+  was not constructible anyway because line 1 digests `mc.toml`, where the list lives -- measured);
+  `pkg_check_immutable` no longer skips without `--yes` on a URL registry and distinguishes a 404
+  (`curl -f` 22 / `wget` 8 = new) from any other failure (`cannot read the published index`).
+  LOW: the missing-file failure now unblesses first ("collect the error", `dep_hash_soft`);
+  size caps 64 MiB archive / 1 MiB index (`larger than the cap`). Copilot's review of #27 added
+  the characters Windows reserves in a name to `dep_rel_ok` (`:` `<` `>` `"` `|` `?` `*` -- `C:/x`
+  is absolute to a Windows extractor; one rule for the three hosts). `check-pkg` 63 -> **80/80**
+  (four escaping shapes each with a canary asserted untouched, the cross-directory vendor case,
+  the wrong-hash unbless, three crafted archives, the `check` refusals, a 68 MB archive, the line
+  shape). Cost: `deps.mc` +106 code, `fetch.mc` +197, `pkg.mc` +46. `make check` RC 0 (`check-obj`
+  32/32, empty `--dump-asm` diff, `check-lex` 143/143 (3 skipped), `check-docs` 197 symbols),
+  four Linux cells RC 0, `check-inert` identical. Goldens rewritten (final, after the Copilot
+  fix and the lex-skip wording): `mc2.sha256` `5d2db5f9e94d33422d6d812d1143dc1cdd9f3bc2a1e8727a6ea113060e67ae55`, Linux
+  `9161fb1b…e17f8d` / `1ea7dc83…90d1cb`, Windows `831a422a…64b068` / `6224c4a9…9b570b` -- all
+  five in the scripts' `hash  file` format.
 - Next: M18 or M24 (`docs/plan.md`); M40 (the word-size sweep AVR/PIC need) is
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
 - M24 step A ✔ (`docs/specs/M24.md` § M1-M6, M8 and decision D5): **Tier 4 -- the inert half.
@@ -3096,6 +3197,24 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   contract), `docs/reference/diagnostics.md` (three rows), `docs/surface.md` (the nine
   registrations, and a § "The type position"), `docs/reference/language.md` § 2 ("A suffix on a
   type word the core owns").
+- M44 step 1 ✔ (`docs/specs/M44.md` § Implementation notes -- step 1; decision D20, the architect's
+  addition (f)): **the baked version.** `src/version.mc` (`uptr mc_version()` = the literal
+  `0.0.0-dev`, the sentinel; 33 lines, one of code), included by `src/core_min.mc` before `cli.mc`
+  and bundled as `mc/version` -- so a taught compiler reports the version of the binary that built
+  it, proved in both directions (`0.0.0-dev` -> `0.0.0-dev`, `9.9.9` -> `9.9.9`); `mc --version`
+  prints `mc <version>` (no `v`: the tag owns the `v`, and this is the string `release-assets.sh`
+  and a future `[deps]` minimum carry); `scripts/set-version.sh VERSION` rewrites the one literal
+  and runs `make bundle`, refusing anything but `X.Y.Z[-suffix]` -- it CANNOT delegate the whole
+  string to `next-version.sh`, which rejects every suffix on purpose while the sentinel itself is
+  suffixed (deviation 1); `scripts/check-bundle.sh` guards the sentinel (a tree where
+  `set-version.sh` ran FAILS naming it, after the staleness check so a stale-and-versioned tree is
+  reported as stale first); `release.yml`'s "Build the compiler" split in three (seed, bake, build)
+  so all five shipped binaries carry the tag from one call. Cost: **53 added lines in `src/`, 9 of
+  them code**; globals unchanged at 432/512 (a string literal, not a global). `make check` RC 0
+  (`check-obj` 32/32, fixed point 1109608 B, `check-docs` 196 symbols / 34 flags), four Linux cells
+  RC 0, `check-inert` identical everywhere. Goldens rewritten once: `mc2.sha256`
+  `8e5e127dd96e0d125fd8757b662e6bca61b661d415cdd7349afc9791be14e544`, Linux `6002790c…344380` /
+  `1ca2ea58…b15516`, Windows `478e2f28…a50520` / `6d49bfc6…3e70f05`.
 - Next: **M44** (packages, `docs/specs/M44.md`), then **M42 step 2** (PE `--exe`, CI-gated on the
   Windows runners). **M46** only on the owner's request; **M43 Layer 2** after 1.0.0. M13 and M18
   stay in the backlog (`docs/specs/M13.md`: sizing a program's memory at compile time -- the fixed

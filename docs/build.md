@@ -446,6 +446,13 @@ second form of `#include`:
 purpose: `<name>` means "the copy that shipped with this binary", and the answer must not depend
 on the working directory. An unknown name says so and lists nothing else:
 
+Since M44 that sentence has one more clause. `<name>` is served by the LOCK, then by the bundle,
+then by the installed `mc` package -- still never by the working directory, which is the property
+the rule was written for. A project with no `[deps]` reads no lock and behaves exactly as it did
+before; a project that pins a bundled name gets the tree its lock pins, hashed and re-checked on
+every build (`docs/reference/packages.md` § 2). The M15 promise becomes: **the binary alone is the
+toolchain, and a lock is how a project says otherwise, in writing.**
+
 ```
 $ mc prog.mc -o prog.o
 prog.mc:1: unknown bundled include: no/such/module
@@ -1875,6 +1882,41 @@ carry) folded in with `--union`. Run `make sandbox-trace-check` after anything t
 asks the kernel for — a new libc call in a host file, a new step in the driver — because the
 first thing a missing entry does is refuse a legitimate program.
 
+## M44 — packages: `[deps]`, `mc.lock` and `mc pkg`
+
+`mc build` gained one thing and lost none: with a `[deps]` table it reads `mc.lock` beside
+`mc.toml`, resolves each row to a tree (`deps/<pack>/` first, then `<libs>/<pack>/v<version>/`),
+**rehashes it**, registers it as a root the lexer can answer `#include <pack/file.mc>` from, and
+compiles. With no `[deps]` it reads no lock, opens nothing extra, and behaves exactly as it did
+before packages existed.
+
+**It never downloads.** The fetcher, the registry, minimal version selection and the lock writer
+are `mc pkg`'s, in a part of their own — `<mc/core_pkg>` — and a compiler assembled without that
+part has none of them and still builds any project from its lock and its `deps/` tree. That is not
+a claim in a document: `make check-pkg` runs the whole fixture suite with a `curl`, a `wget` and a
+`tar` on `PATH` that fail if they are invoked, and builds the vendored project with
+`tests/pkg/nopkg.mc`, a compiler without the part.
+
+| command | what it writes |
+|---|---|
+| `mc pkg sync [--yes]` | `mc.lock`, and the trees under `<libs>` |
+| `mc pkg add NAME[@VERSION] [--yes]` | one `[deps]` line, then a `sync` |
+| `mc update [NAME] [--yes]` | the same line raised to the newest non-yanked version of its major |
+| `mc pkg vendor` | `deps/<pack>/` |
+| `mc pkg list` / `verify` / `hash DIR` | nothing |
+| `mc pkg check INDEX.toml [--yes]` | nothing — it is the registry's own gate |
+
+The registry is one file per package, `<registry>/index/<name>.toml`, read from
+`--registry`, `[registry].url`, or `https://minicompiler.dev/registry` by default — a package
+server that publishes exactly that layout. **A directory with the same layout is a registry**, so
+a private tap is a `git clone` and one line of TOML, and it is also what the test suite uses:
+`scripts/check-pkg.sh` builds a registry of local tarballs and never touches the network.
+
+Two flags are new to `mc build` itself: `--libs-dir DIR` (where installed packages live, instead
+of `~/.mc/libs`, so no CI job depends on `HOME`) and nothing else. Everything about the model —
+the tree hash, the resolution order, the closure rule, every message — is in
+[reference/packages.md](reference/packages.md).
+
 ## Limits of M14, M15, M16 and M23
 
 - **`[target]` defaults to the host.** With no `[target]` section at all, `os` and `arch` are what
@@ -1921,8 +1963,13 @@ first thing a missing entry does is refuse a legitimate program.
   the same way an unknown `#define` in a source file is only noticed where it is used.
 - **The bundle is a snapshot, not a package manager.** There is no version, no namespace beyond
   the `mc/` prefix, and no way to add to it without regenerating `src/bundle_data.mc` and
-  rebuilding. A project that wants its own library still uses `#include "x"` and
-  `[include].paths`.
+  rebuilding. Since M44 a project that wants a library from somewhere else has `[deps]` and
+  `mc pkg`; one that wants its own still uses `#include "x"` and `[include].paths`.
+- **`mc pkg` has no incremental anything.** `sync` re-resolves from the index every time and
+  rewrites the whole lock; `verify` rehashes every tree. Both are linear in the dependency source,
+  which the lexer is about to read anyway.
+- **There is no `git` transport.** A package is a tarball named by an index row, or a path named
+  by `[replace]`, and nothing in between (`docs/specs/M44.md` § Out of scope).
 - **`<name>` never falls back to disk.** That is deliberate (the answer must not depend on the
   working directory), but it also means a bundled file cannot be shadowed by a local copy for a
   quick experiment; edit `src/`/`lib/` and run `make bundle` instead.

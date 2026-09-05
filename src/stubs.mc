@@ -39,7 +39,7 @@
 // "/usr/lib/libsqlite3.dylib" is "libsqlite3" and a bare "user32" stays
 // "user32"
 uptr stub_base(uptr p) {
-    uptr b = sysroot_basename(p);
+    uptr b = fetch_basename(p);
     i64 n = cstrlen(b);
     if (n > 6 && mem_eq(b + n - 6, ".dylib", 6)) n = n - 6;
     else if (n > 4 && mem_eq(b + n - 4, ".tbd", 4)) n = n - 4;

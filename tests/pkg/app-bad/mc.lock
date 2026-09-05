@@ -1,0 +1,7 @@
+# written by `mc pkg sync` -- do not edit (docs/reference/packages.md)
+[[package]]
+name    = "bad"
+version = "1.0.0"
+lib     = "bad.mc"
+sha256  = "5116436c9b0c3df8a8d5d264ed3b33d381139e46c16d9f31a26a3ee38228788d"
+deps    = []

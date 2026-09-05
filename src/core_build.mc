@@ -1,7 +1,9 @@
 // core_build.mc — `mc build`, `mc limits` and `mc sysroot`: the project driver.
 //
 //   toml.mc     the TOML subset mc.toml is written in (M14)
+//   deps.mc     [deps], mc.lock and `#include <pack/file.mc>` (M44)
 //   driver.mc   `mc build`: reads mc.toml and drives the whole build (M14)
+//   fetch.mc    getting a file and unpacking an archive (M44)
 //   sysroots.mc the pinned list of downloadable sysroots (M25)
 //   sysroot.mc  where a cross link finds its files, and `mc sysroot` (M25)
 //   stubs.mc    .tbd and .def stubs written from the program (M25)
@@ -20,7 +22,9 @@
 
 #include "sha256.mc"
 #include "toml.mc"
+#include "deps.mc"
 #include "driver.mc"
+#include "fetch.mc"
 #include "sysroots.mc"
 #include "sysroot.mc"
 #include "stubs.mc"
@@ -32,13 +36,19 @@
 void mc_plan(uptr src, uptr label) { lim_plan(src, lim_tol, 0, label); }
 
 void mc_build_init() {
+    // M44: the lexer's second door. It is registered HERE and not in
+    // src/core_bundle.mc because the read side of packages is this part's --
+    // a compiler with `mc build` and no bundle at all still resolves `<name>`
+    // from a lock and from the installed `mc` package (D12). With no [deps] and
+    // no <libs> the opener answers 0 to everything and nothing changes.
+    lex_set_libs(&libs_open);
     // M25: the pinned rows `mc sysroot list|fetch` reads. Data only -- no I/O
     // and no network until `fetch --yes` (src/sysroots.mc).
     sysroots_init();
     // M14/M23/M25: the three subcommands, each carrying the exact usage text
     // `mc` with no argument prints for it. `sysroot` carries two lines.
     subcommand("build", &drv_build,
-        "usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits] [--sysroot-dir DIR]\n");
+        "usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits] [--sysroot-dir DIR] [--libs-dir DIR]\n");
     subcommand("limits", &drv_limits,
         "       mc limits [DIR|FILE.mc]\n");
     subcommand("sysroot", &sysroot_cmd,

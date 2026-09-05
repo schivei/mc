@@ -18,6 +18,7 @@ nothing to a running signed binary in about two minutes.
 | [Getting started](guide/00-getting-started.md) | install, first program, `--exe`, the five dumps |
 | [One file, one program](guide/10-single-file.md) | the working tour of the language: types, memory, control flow, `extern`, function pointers |
 | [A project](guide/20-project-toml.md) | `mc build` and every `mc.toml` section by example |
+| [Using a package](guide/25-packages.md) | `[deps]`, `mc.lock`, `#include <pack/file.mc>`, vendoring, and publishing a package of your own |
 | [Teaching the compiler](guide/30-teaching.md) | `#token`/`#infix`/`#prefix`, `#rule` and the prelude, then the syntax hooks with a worked toy language |
 | [Emitting bytes](guide/40-backends.md) | `#section`, `#opcode`, `emit()`/`reloc()`, `pass()`, `backend()`, and the `arm64-surface` proof |
 | [Cross-compiling](guide/50-cross-compile.md) | Linux arm64 targets, sysroots, external linkers |
@@ -39,6 +40,7 @@ nothing to a running signed binary in about two minutes.
 | [directives.md](reference/directives.md) | all ten `#` directives, with errors and examples |
 | [cli.md](reference/cli.md) | every command, flag, dump and exit code |
 | [toml.md](reference/toml.md) | every `mc.toml` key: type, default, meaning |
+| [packages.md](reference/packages.md) | `[deps]` and `mc.lock`: the resolution order, the tree hash, the closure rule, the refusals |
 | [hooks.md](reference/hooks.md) | every public function of the parser and hook API |
 | [sysroot.md](reference/sysroot.md) | where a cross link finds its files: the resolution chain, the cache, the messages |
 | [objects.md](reference/objects.md) | the object model (`sec_*`, `sym_*`, `reloc_add`) and the codegen accessors (`gen_*`) |

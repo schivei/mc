@@ -5,6 +5,7 @@
 // usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules|--dump-machine]
 //         [--backend=NAME|--exe] [--machine=NAME] [--include=DIR]
 //         [--libc=gnu|musl] [--interp=PATH] [--link=dynamic|static] input.mc [-o output]
+//        mc --host   ·   mc --version
 //        mc build [DIR]   ·   mc limits [DIR|FILE.mc]   ·   mc sysroot ...
 // The --dump-* modes write to stdout and do not generate the object.
 //
@@ -72,6 +73,20 @@ void dump_host() {
     out_str(1, "\n");
 }
 
+// `mc --version`: the version this binary was BUILT as, one line, `mc X.Y.Z`.
+// The program name is on the line because that is what every other `--version`
+// on the machine prints and what a bug report gets pasted into; the version
+// itself carries no `v`, because `docs/ci.md` § Versioning says the `v` belongs
+// to the tag name and nothing else -- it is the same string release-assets.sh
+// takes as its first argument. `0.0.0-dev` in any binary built from the working
+// tree (src/version.mc). `--host` is the shape: a one-shot informational flag,
+// stdout, exit 0, answered before anything else is read.
+void dump_version() {
+    out_str(1, "mc ");
+    out_str(1, mc_version());
+    out_str(1, "\n");
+}
+
 // M24 (M9): `--dump-machine` — every registered machine, one line per task, with
 // the ORIGIN of the slot. There is no runtime symbol table, so the origin is
 // read from the registry itself: a slot whose pointer is the same pointer a
@@ -129,6 +144,7 @@ void dump_machine() {
 void usage() {
     out_str(2, "usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules|--dump-machine] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] [--libc=gnu|musl] [--interp=PATH] [--link=dynamic|static] source.mc [-o out]\n");
     out_str(2, "       mc --host\n");
+    out_str(2, "       mc --version\n");
     subcommand_usage();
 }
 
@@ -173,6 +189,7 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
         if (i >= argc) break;
         uptr a = ld64(argv + i * 8);
         if (str_eq(a, "--host"))          { dump_host(); return 0; }
+        else if (str_eq(a, "--version"))  { dump_version(); return 0; }
         else if (str_eq(a, "--dump-tokens")) mode = M_TOKENS;
         else if (str_eq(a, "--dump-ast"))   mode = M_AST;
         else if (str_eq(a, "--dump-asm"))   mode = M_ASM;

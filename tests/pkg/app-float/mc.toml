@@ -1,0 +1,16 @@
+# tests/pkg/app-float -- a bundled name pinned in [deps] (M44 § A5).
+[project]
+name  = "app-float"
+entry = "main.mc"
+out   = "build/appf"
+kind  = "exe"
+
+[deps]
+float = "1.3.0"
+
+[compiler]
+out     = "build/mc-appf"
+modules = ["<float/user_float.mc>", "user.mc"]
+
+[limits]
+tolerance = 1.0

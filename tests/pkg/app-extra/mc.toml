@@ -1,0 +1,13 @@
+# tests/pkg/app-extra -- the [package].files boundary.
+[project]
+name  = "app-extra"
+entry = "main.mc"
+out   = "build/extra.o"
+kind  = "obj"
+
+[deps]
+geo   = "1.2.0"
+mathx = "1.0.0"
+
+[limits]
+tolerance = 1.0

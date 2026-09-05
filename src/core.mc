@@ -9,6 +9,7 @@
 //   <mc/core_writers>   sha256 macho backend_exe backend_elf backend_coff
 //   <mc/core_build>     toml driver sysroots sysroot stubs limits
 //   <mc/core_bundle>    bundle_data bundle — `#include <name>`
+//   <mc/core_pkg>       pkg — `mc pkg`, `mc update` (M44)
 //   <mc/core_sandbox>   sandbox — `mc sandbox run|exec|check` (M43)
 //
 // and then main.mc, which is the `main()` that calls each part's *_init and
@@ -36,5 +37,6 @@
 #include "core_writers.mc"
 #include "core_build.mc"
 #include "core_bundle.mc"
+#include "core_pkg.mc"
 #include "core_sandbox.mc"
 #include "main.mc"

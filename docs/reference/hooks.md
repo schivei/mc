@@ -900,7 +900,7 @@ with `p_push_source` — forward what it does not want to interpret itself to th
 | function | effect |
 |---|---|
 | `void do_directive()` | consumes ONE whole directive, starting at the current `T_DIR` token (`#include`, `#define`, …) through whatever terminates it, and leaves the cursor just past it. It is `parse_unit`'s own dispatch (`if (tok_id(cur) == T_DIR) { do_directive(); continue; }`) pulled out under a name a handler can call: a container that wants `#include`/`#define` to work inside its `{ … }` adds the same test to its own loop, right beside the `parse_top()` call above |
-| `i64 lex_include(uptr rel, i64 line)` | what `#include "rel"` does: resolve `rel` against the including file's own directory, then — only if that fails — against each `[include].paths` root in order (`lex_find_path`); once the path has already been seen (`lex_seen`/`lex_remember`, the same once-only list `#include` itself uses) return `0` and do nothing; otherwise push the file as a new lexer frame and return `1`. The bundled `<name>` form is a different function, `lex_include_name`, reached through `do_directive` when the token after `#include` is `<` rather than a string |
+| `i64 lex_include(uptr rel, i64 line)` | what `#include "rel"` does: resolve `rel` against the including file's own directory, then — only if that fails — against each `[include].paths` root in order (`lex_find_path`); once the path has already been seen (`lex_seen`/`lex_remember`, the same once-only list `#include` itself uses) return `0` and do nothing; otherwise push the file as a new lexer frame and return `1`. The library form `<name>` is a different function, `lex_include_name`, reached through `do_directive` when the token after `#include` is `<` rather than a string. Since M44 `lex_include` also enforces the package closure rule: a file under a package root that resolves a path outside its own tree is refused rather than pushed ([packages.md](packages.md) § 5) |
 
 `lex_include` only pushes a lexer frame — the same one `#include` at the top of a file pushes —
 it parses nothing: whoever called it (`do_directive`, or a handler calling `lex_include` directly)
@@ -1032,6 +1032,23 @@ independent.
 Too many entries for one frame is `too many substitutions`.
 
 ---
+
+### The library door and the package roots (M44)
+
+Four more functions in `src/lex.mc`. They are the seam packages hang from, and a module may use
+them for the same reason `lex_set_bundle` exists: the lexer must depend on nothing.
+
+| function | effect |
+|---|---|
+| `void lex_set_libs(uptr openfn)` | register the opener `#include <name>` consults BEFORE the bundle and, on a bundle miss, after it. The signature is the bundle's plus a stage: `uptr f(uptr name, i64 stage, uptr pcanon, uptr plen)`, `stage == 0` the lock road and `stage == 1` the installed `mc` package; it returns the source or 0, and on a hit writes the once-only key through `pcanon` and the length through `plen`. `src/core_build.mc` registers `libs_open` here, which is why a compiler assembled without `<mc/core_build>` resolves `<name>` from its bundle alone |
+| `i64 lex_root_of(uptr path)` | the index of the longest registered package root that is a string prefix of `path`, or -1. This is what "is this file inside a package, and which one" means |
+| `i64 lex_root_count()`, `uptr lex_root_name(i64 i)`, `uptr lex_root_dir(i64 i)` | the roots themselves: the package's name and its directory, which always carries a trailing `/` and is normalised |
+| `i64 lex_inc_count()`, `uptr lex_inc_at(i64 i)` | the once-only list — every path and every library name the build actually READ, in the order they were first seen, with the entry point at index 0. `src/deps.mc` walks it after the parse to enforce `[package].files`; a module can walk it for the same kind of question ("what did this build touch") |
+
+The roots and the edges between them are registered by `src/deps.mc` from `mc.lock`, through
+`lex_pkg_reserve`/`lex_add_root`/`lex_add_edge`/`lex_set_root_dir`; both tables are sized once,
+from the lock, and never grow. With none registered `lex_root_of` answers -1 for everything and
+the closure rule costs nothing.
 
 ## 5. A worked example
 

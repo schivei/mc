@@ -518,6 +518,71 @@ void toml_err_val(i64 i, uptr msg) {
 // M23: a float in basis points. An integer is accepted as well (`0` and `1` are
 // the two ends of the range the caller wants), and the range is the caller's:
 // out of [lo, hi] is an error at the value's own file:line:col.
+// ---- M44 § 9: one parser, re-entrant ----
+// toml_parse fills ONE global table, and `mc build` now has three kinds of TOML
+// to read in one process: the project's mc.toml, the lock beside it, and one
+// mc.toml per locked package. A second bespoke reader was the road not to take
+// (src/limits.mc's lim_read_usage says so in its own comment), so the eight
+// globals that ARE the table are saved into an arena frame and zeroed; the
+// caller parses whatever it likes, copies out what it needs, and restores.
+//
+// Every parse of a foreign file is wrapped in one function that pops before it
+// returns or dies -- and dying is `_exit`, where the table no longer matters
+// (docs/specs/M44.md § Risks 6).
+#define TF_ENTS 0
+#define TF_CAP  8
+#define TF_N    16
+#define TF_ANAM 24
+#define TF_ANUM 32
+#define TF_ACAP 40
+#define TF_NAOT 48
+#define TF_FILE 56
+#define TF_SIZE 64
+
+uptr toml_push() {
+    uptr f = xalloc(TF_SIZE);
+    st64(f + TF_ENTS, tm_ents);
+    st64(f + TF_CAP,  tm_entcap);
+    st64(f + TF_N,    tm_n);
+    st64(f + TF_ANAM, tm_aot_name);
+    st64(f + TF_ANUM, tm_aot_n);
+    st64(f + TF_ACAP, tm_aotcap);
+    st64(f + TF_NAOT, tm_naot);
+    st64(f + TF_FILE, tm_file);
+    tm_ents = 0;
+    tm_entcap = 0;
+    tm_n = 0;
+    tm_aot_name = 0;
+    tm_aot_n = 0;
+    tm_aotcap = 0;
+    tm_naot = 0;
+    tm_file = 0;
+    return f;
+}
+
+void toml_pop(uptr f) {
+    tm_ents     = ld64(f + TF_ENTS);
+    tm_entcap   = ld64(f + TF_CAP);
+    tm_n        = ld64(f + TF_N);
+    tm_aot_name = ld64(f + TF_ANAM);
+    tm_aot_n    = ld64(f + TF_ANUM);
+    tm_aotcap   = ld64(f + TF_ACAP);
+    tm_naot     = ld64(f + TF_NAOT);
+    tm_file     = ld64(f + TF_FILE);
+}
+
+// how many times `[[name]]` appeared: the row count of an array of tables, which
+// is what makes `[[package]]` in mc.lock and `[[file]]` in a cache manifest
+// readable without scanning for the highest index that happens to exist.
+i64 toml_occurrences(uptr name) {
+    i64 i = 0;
+    while (i < tm_naot) {
+        if (str_eq(ld64(tm_aot_name + i * 8), name)) return ld64(tm_aot_n + i * 8);
+        i = i + 1;
+    }
+    return 0;
+}
+
 i64 toml_bp(uptr path, i64 dflt, i64 lo, i64 hi, uptr msg) {
     i64 i = toml_find(path);
     if (i < 0) return dflt;

@@ -249,35 +249,9 @@ uptr sysroot_find(uptr os, uptr arch) {
 // One text, shared by `mc build` and by `mc sysroot path|fetch`, so there is one
 // thing to get right and one thing to document
 // (docs/reference/diagnostics.md § no sysroot).
-// last path component of a URL or a path
-uptr sysroot_basename(uptr p) {
-    i64 last = -1;
-    i64 i = 0;
-    loop {
-        i64 c = ld8(p + i);
-        if (c == 0) break;
-        if (c == '/') last = i;
-        i = i + 1;
-    }
-    return p + last + 1;
-}
-
-// 1 when `s` ends with `suf`
-i64 sysroot_ends(uptr s, uptr suf) {
-    i64 n = cstrlen(s);
-    i64 m = cstrlen(suf);
-    if (m > n) return 0;
-    return mem_eq(s + n - m, suf, m);
-}
-
-// which `tar` does this archive need. An Alpine `.apk` is a gzip tar (three
-// concatenated gzip members) and `-xzf` reads it on all three hosts; `.zip` is
-// only ever a row for a Windows host, whose bundled tar.exe is libarchive.
-uptr sysroot_tar_flag(uptr url) {
-    if (sysroot_ends(url, ".zip")) return "-xf";
-    if (sysroot_ends(url, ".tar.xz")) return "-xJf";
-    return "-xzf";
-}
+// M44: the last path component, the `.zip`/`.tar.xz` test and the tar flag are
+// src/fetch.mc's (fetch_basename, fetch_ends, fetch_tar_flag). They were never
+// about sysroots.
 
 // where a fetched sysroot would go, as text, for a message that must print
 // something even when there is no HOME
@@ -316,9 +290,9 @@ void sysroot_manual(uptr os, uptr arch) {
     out_str(2, "\n         sha256  ");
     out_str(2, ss_sha_at(r));
     out_str(2, "\n         tar ");
-    out_str(2, sysroot_tar_flag(url));
+    out_str(2, fetch_tar_flag(url));
     out_str(2, " ");
-    out_str(2, sysroot_basename(url));
+    out_str(2, fetch_basename(url));
     out_str(2, " -C ");
     out_str(2, dest);
     out_str(2, " --strip-components=");
@@ -426,92 +400,12 @@ i64 sysroot_path_cmd(uptr name) {
 }
 
 // ---- fetch ----
-// 32 raw bytes of digest as 64 lowercase hex characters
-uptr sysroot_hex(uptr d) {
-    u8 b[BUF_SIZE];
-    buf_init(b);
-    i64 i = 0;
-    while (i < 32) {
-        i64 v = ld8(d + i);
-        buf_u8(b, ld8("0123456789abcdef" + ((v >> 4) & 15)));
-        buf_u8(b, ld8("0123456789abcdef" + (v & 15)));
-        i = i + 1;
-    }
-    buf_u8(b, 0);
-    return buf_p(b);
-}
-
-// curl first, then the host's alternative. -1 says neither program is on PATH,
-// which is a case with its own message and not a failed spawn.
-//
-// `--proto =https --proto-redir =https` is the HTTPS-only rule of
-// docs/specs/M25.md § 2 stated to the program that does the transfer, and not
-// only to the table: every row is an `https://` URL, but `-L` follows redirects
-// and without those two flags a 3xx to an `http://` mirror would be followed
-// silently. The sha256 check below still guards the BYTES; this guards the
-// connection. The `wget` fallback keeps its two flags: busybox's `wget` is what
-// an Alpine host has and it knows neither `--https-only` nor `--proto`, so
-// refusing plaintext there would cost the fallback itself. That difference is
-// written down in docs/reference/sysroot.md § 7.
-i64 sysroot_download(uptr file, uptr url) {
-    uptr d = host_downloader();
-    u8 av[10 * 8];
-    st64(av + 0, d);
-    st64(av + 8, "--proto");
-    st64(av + 16, "=https");
-    st64(av + 24, "--proto-redir");
-    st64(av + 32, "=https");
-    st64(av + 40, "-fLsS");
-    st64(av + 48, "-o");
-    st64(av + 56, file);
-    st64(av + 64, url);
-    st64(av + 72, 0);
-    i64 rc = drv_spawn_ok(d, av, 0);
-    if (rc >= 0) return rc;
-    uptr a = host_downloader_alt();
-    if (a == 0) return -1;
-    st64(av + 0, a);
-    st64(av + 8, "-q");
-    st64(av + 16, "-O");
-    st64(av + 24, file);
-    st64(av + 32, url);
-    st64(av + 40, 0);
-    return drv_spawn_ok(a, av, 0);
-}
-
-// `tar <flag> ARCHIVE -C DEST --strip-components=N MEMBER...`, the members read
-// off the row as a space-separated list. One spawn, no shell.
+// M44: the download and the extraction are src/fetch.mc's (fetch_get,
+// fetch_extract) -- the same flags, the same one spawn, the same wget fallback,
+// now shared with `mc pkg`. What stays here is what a SYSROOT row says: which
+// members to ask `tar` for and how many components to strip.
 i64 sysroot_extract(i64 r, uptr archive, uptr dest) {
-    u8 av[DRV_MAXARG * 8];
-    i64 n = 0;
-    st64(av + n * 8, "tar");                        n = n + 1;
-    st64(av + n * 8, sysroot_tar_flag(ss_url_at(r))); n = n + 1;
-    st64(av + n * 8, archive);                      n = n + 1;
-    st64(av + n * 8, "-C");                         n = n + 1;
-    st64(av + n * 8, dest);                         n = n + 1;
-    st64(av + n * 8, tm_cat("--strip-components=", tm_num_str(ss_strip_at(r)))); n = n + 1;
-    uptr m = ss_member_at(r);
-    u8 b[BUF_SIZE];
-    buf_init(b);
-    i64 i = 0;
-    loop {
-        i64 c = ld8(m + i);
-        if (c == 0 || c == ' ') {
-            if (buf_len(b) > 0) {
-                buf_u8(b, 0);
-                if (n >= DRV_MAXARG - 1) die("too many archive members");
-                st64(av + n * 8, buf_p(b));
-                n = n + 1;
-                buf_init(b);
-            }
-            if (c == 0) break;
-        } else {
-            buf_u8(b, c);
-        }
-        i = i + 1;
-    }
-    st64(av + n * 8, 0);
-    return drv_spawn_ok("tar", av, 0);
+    return fetch_extract(archive, dest, ss_strip_at(r), ss_member_at(r));
 }
 
 // where a member lands: its archive path with the row's --strip-components
@@ -674,8 +568,16 @@ i64 sysroot_fetch(uptr name, i64 yes) {
         return 0;
     }
     drv_mkdirs(tm_cat(dest, "/x"));
-    uptr file = tm_cat(tm_cat(dest, "/"), sysroot_basename(ss_url_at(r)));
-    i64 rc = sysroot_download(file, ss_url_at(r));
+    uptr file = tm_cat(tm_cat(dest, "/"), fetch_basename(ss_url_at(r)));
+    i64 rc = fetch_get(ss_url_at(r), file, FETCH_MAXARCHIVE);
+    if (rc == FETCH_TOOBIG) {
+        out_str(2, "mc: larger than the cap of ");
+        out_str(2, tm_num_str(FETCH_MAXARCHIVE));
+        out_str(2, " bytes: ");
+        out_str(2, ss_url_at(r));
+        out_str(2, "\n");
+        sysroot_fetch_failed(os, arch);
+    }
     if (rc < 0) {
         out_str(2, "mc: no downloader on this PATH (tried ");
         out_str(2, host_downloader());
@@ -699,11 +601,11 @@ i64 sysroot_fetch(uptr name, i64 yes) {
     uptr p = read_file(file, &len);
     u8 dg[32];
     sha256(p, len, dg);
-    uptr got = sysroot_hex(dg);
+    uptr got = hex64(dg);
     if (!str_eq(got, ss_sha_at(r))) {
         unlink(file);
         out_str(2, "mc: checksum mismatch for ");
-        out_str(2, sysroot_basename(ss_url_at(r)));
+        out_str(2, fetch_basename(ss_url_at(r)));
         out_str(2, "\n  expected ");
         out_str(2, ss_sha_at(r));
         out_str(2, "\n  got      ");
@@ -714,14 +616,14 @@ i64 sysroot_fetch(uptr name, i64 yes) {
     if (len != ss_size_at(r)) {
         unlink(file);
         out_str(2, "mc: wrong size for ");
-        out_str(2, sysroot_basename(ss_url_at(r)));
+        out_str(2, fetch_basename(ss_url_at(r)));
         out_str(2, "\n");
         sysroot_fetch_failed(os, arch);
     }
     if (sysroot_extract(r, file, dest) != 0) {
         unlink(file);
         out_str(2, "mc: tar could not extract ");
-        out_str(2, sysroot_basename(ss_url_at(r)));
+        out_str(2, fetch_basename(ss_url_at(r)));
         out_str(2, "\n");
         sysroot_fetch_failed(os, arch);
     }

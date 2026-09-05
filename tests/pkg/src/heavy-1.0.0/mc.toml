@@ -1,0 +1,9 @@
+# heavy 1.0.0 -- requires mathx 2.0.0, so a project that also asks for 1.x has
+# two majors of one name in one build: refused, never solved (M44 D6).
+[package]
+name  = "heavy"
+files = ["heavy.mc"]
+lib   = "heavy.mc"
+
+[deps]
+mathx = "2.0.0"

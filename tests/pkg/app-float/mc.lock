@@ -1,0 +1,7 @@
+# written by `mc pkg sync` -- do not edit (docs/reference/packages.md)
+[[package]]
+name    = "float"
+version = "1.3.0"
+lib     = "float.mc"
+sha256  = "3657fe2eb1212151d8c2208b235e7a62220a8e42d6e28bffb3595f8d72ce4e27"
+deps    = []

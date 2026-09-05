@@ -19,9 +19,9 @@ i64 main() {
 }
 ```
 
-`<name>` is served by the bundle **or it is an error** — there is no filesystem fallback, on
-purpose: `<name>` means "the copy that shipped with this binary", and the answer must not depend
-on the working directory.
+`<name>` is served by the bundle **or it is an error** — there is no fallback to the working
+directory, on purpose: `<name>` means "a library that is not in my tree", and the answer must be a
+function of *(this binary, this project's lock, the installed packages)* and of nothing else.
 
 ```
 $ mc prog.mc -o prog.o
@@ -29,7 +29,14 @@ prog.mc:1: unknown bundled include: no/such/module
 ```
 
 `#include "path"` is unchanged: the includer's own directory first, then each `[include].paths`
-root in order.
+root in order. **Angle brackets are libraries, quotes are my files.**
+
+Since M44 the bundle is the SECOND of three places a `<name>` can come from. Before it comes a
+package `mc.lock` pins, which is why a project may override a bundled name — `[deps] float =
+"1.3.0"` makes `<float>` that tree instead of this blob, pinned by a content hash and re-checked on
+every build. After it comes the installed copy of the compiler's own package, which a binary that
+carries the blob never reaches. A project with no `[deps]` never leaves the blob, and its output is
+byte for byte what it was. See [packages.md](packages.md) § 2.
 
 ---
 
@@ -96,6 +103,9 @@ and supplying that function *is* a taught compiler ([hooks.md](hooks.md)).
 | `<mc/sha256>` | `src/sha256.mc` |
 | `<mc/toml>` | `src/toml.mc` |
 | `<mc/driver>` | `src/driver.mc` |
+| `<mc/deps>` | `src/deps.mc` — `[deps]`, `mc.lock`, the tree hash (M44) |
+| `<mc/fetch>` | `src/fetch.mc` — getting a file, unpacking an archive (M44) |
+| `<mc/pkg>` | `src/pkg.mc` — the registry, MVS, the lock writer (M44) |
 | `<mc/sysroot>` | `src/sysroot.mc` |
 | `<mc/sysroots>` | `src/sysroots.mc` |
 | `<mc/stubs>` | `src/stubs.mc` |
@@ -105,9 +115,22 @@ and supplying that function *is* a taught compiler ([hooks.md](hooks.md)).
 | `<mc/sysno_linux_aarch64>` | `src/sysno_linux_aarch64.mc` — `sys6` and the AArch64 numbers |
 | `<mc/sysno_linux_x86_64>` | `src/sysno_linux_x86_64.mc` — `sys6` and the x86-64 numbers |
 | `<mc/bundle>` | `src/bundle.mc` |
+| `<mc/version>` | `src/version.mc` — `mc_version()`, the one string this binary reports (M44) |
 | `<mc/cli>` | `src/cli.mc` — `mc_main()` (M41) |
 | `<mc/main>` | `src/main.mc` |
 | `<mc/bundle_data>` | `src/bundle_data.mc` — see below |
+
+#### `<mc/version>`, and why the version is in the bundle (M44)
+
+`src/version.mc` is one function, `mc_version()`, returning a string literal: `0.0.0-dev` in the
+repository and the tag in a released binary, rewritten by `scripts/set-version.sh` in the release
+job and never committed. It is bundled for the same reason `<mc/host>` is resolved per binary:
+**a taught compiler must report the version of the binary that built it**. `mc --exe` over
+`<mc/host>` + `<mc/core>` + a module produces a compiler out of the blob, so if the blob's copy
+said `0.0.0-dev` a release binary would build compilers that lie about their version — and, from
+M44's install step, look in the wrong `~/.mc/libs/mc/v<version>/`. That is why
+`scripts/set-version.sh`'s second act is `make bundle`, and why `scripts/check-bundle.sh` guards
+the sentinel. See [../ci.md](../ci.md) § Versioning.
 
 #### `<mc/host>`, the one name that is not an entry
 
@@ -193,18 +216,19 @@ downloaded binary with no checkout:
 
 ### The parts of the core (M41)
 
-`<mc/core>` is the **sum of six parts**, each a bundled name of its own. A recreated compiler
-names the parts it wants and writes its own `main()`; `src/core.mc` is literally those six plus
+`<mc/core>` is the **sum of seven parts**, each a bundled name of its own. A recreated compiler
+names the parts it wants and writes its own `main()`; `src/core.mc` is literally those seven plus
 `src/main.mc`, and `scripts/check-parts.sh` compiles both spellings and `cmp`s the two objects, so
 this table cannot drift from the code.
 
 | name | file | members, in order | what it gives you |
 |---|---|---|---|
-| `<mc/core_min>` | `src/core_min.mc` | `arena` `lz` `objmodel` `lex` `ast` `parse` `gen_resolve` `gen_walk` `hooks` `cli` | the compiler that has no target: lexer, parser, resolver, walker, every registry, and `mc_main()` |
+| `<mc/core_min>` | `src/core_min.mc` | `arena` `lz` `objmodel` `lex` `ast` `parse` `gen_resolve` `gen_walk` `hooks` `version` `cli` | the compiler that has no target: lexer, parser, resolver, walker, every registry, `mc_version()`, and `mc_main()` |
 | `<mc/core_machines>` | `src/core_machines.mc` | `machine_arm64` `machine_x86_64` | `mc_machines_init()` — the two host machines |
 | `<mc/core_writers>` | `src/core_writers.mc` | `sha256` `macho` `backend_exe` `backend_elf` `backend_elf_exe` `backend_coff` | `mc_writers_init()` — the eight `backend()` and five `target()` registrations |
-| `<mc/core_build>` | `src/core_build.mc` | `sha256` `toml` `driver` `sysroots` `sysroot` `stubs` `limits` | `mc_build_init()` — `mc build`, `mc limits`, `mc sysroot`, and the pre-scan |
+| `<mc/core_build>` | `src/core_build.mc` | `sha256` `toml` `deps` `driver` `fetch` `sysroots` `sysroot` `stubs` `limits` | `mc_build_init()` — `mc build`, `mc limits`, `mc sysroot`, the pre-scan, and the READ side of packages |
 | `<mc/core_bundle>` | `src/core_bundle.mc` | `bundle_data` `bundle` | `mc_bundle_init()` — `#include <name>` itself |
+| `<mc/core_pkg>` | `src/core_pkg.mc` | `core_build` `pkg` | `mc_pkg_init()` — `mc pkg` and `mc update` ([packages.md](packages.md)) |
 | `<mc/core_sandbox>` | `src/core_sandbox.mc` | `sandbox` | `mc_sandbox_init()` — `mc sandbox run\|exec\|check` ([sandbox.md](sandbox.md)) |
 
 The two files M41 split out are bundled under their own names too: `<mc/objmodel>`
@@ -226,6 +250,7 @@ Spelled out, the whole compiler is:
 #include <mc/core_writers>
 #include <mc/core_build>
 #include <mc/core_bundle>
+#include <mc/core_pkg>
 #include <mc/core_sandbox>
 #include <mc/main>
 #include <user_default>
@@ -234,7 +259,16 @@ Spelled out, the whole compiler is:
 and `docs/guide/98-recreating-the-compiler.md` is what each omitted line costs, in bytes and in
 capability.
 
-**A part stands on `<mc/core_min>` alone**, and `scripts/check-parts.sh` compiles each of the five
+`<mc/core_pkg>` (M44) is the one part that names another: it `#include`s `core_build.mc`, because
+resolving a dependency needs the driver that reads `mc.toml`. The split is deliberate and it is
+where the milestone's debloat lives — the READ side of packages (`[deps]`, `mc.lock`, the tree
+hash, `#include <pack/file.mc>`, the refusals) is `<mc/core_build>`'s `src/deps.mc`, so a compiler
+WITHOUT `<mc/core_pkg>` still builds a project from its lock and its `deps/` tree. That compiler
+has no fetcher, no registry, no MVS and no lock writer at all, and it advertises neither `mc pkg`
+nor `mc update`: the usage IS the subcommand table. `tests/pkg/nopkg.mc` is that compiler, and
+`scripts/check-pkg.sh` builds the vendored fixture project with it.
+
+**A part stands on `<mc/core_min>` alone**, and `scripts/check-parts.sh` compiles each of the six
 optional parts on top of the minimal one to say so. It is not free: four names had to move when M41
 landed, because the full assembly hides a cross-part dependency completely. `tm_cat` and
 `tm_num_str` went from `src/toml.mc` to `src/arena.mc` (`src/cli.mc` needs the first for

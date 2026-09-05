@@ -1,0 +1,10 @@
+# plot 1.0.0 -- the MVS fixture: it asks for a HIGHER minimum of mathx than the
+# consumer does, so the version selected is neither the consumer's nor the
+# newest one registered.
+[package]
+name  = "plot"
+files = ["plot.mc"]
+lib   = "plot.mc"
+
+[deps]
+mathx = "1.1.0"

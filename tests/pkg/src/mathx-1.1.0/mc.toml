@@ -1,0 +1,5 @@
+# mathx 1.1.0 -- a fixture package: the versions MVS has to choose between.
+[package]
+name  = "mathx"
+files = ["mathx.mc"]
+lib   = "mathx.mc"

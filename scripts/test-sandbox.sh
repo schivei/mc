@@ -232,16 +232,22 @@ fi
 # eight-gibibyte mapping was never made.
 procs_after=$(ls /proc | grep -c '^[0-9]')
 mem_after=$(awk '/^MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo)
-# A window of eight, because the machine is not idle -- a timer, a login shell
-# or the test harness itself moves the count by one or two between the two
-# readings. What this rules out is what the case is about: the fork bomb asks
-# for two hundred, and with --allow=threads for sixty-five.
-procs_moved=$((procs_after - procs_before))
-[ "$procs_moved" -lt 0 ] && procs_moved=$((0 - procs_moved))
-if [ "$procs_moved" -lt 8 ]; then
-    say_ok "the host process count is unchanged ($procs_before -> $procs_after)"
+# The property is that nothing the BOX created is still running on the host:
+# the fork bomb's two hundred children, the sixty-four of the --allow=threads
+# half, the linkbomb's, the sleeper. So count the survivors BY NAME -- every
+# isolation program runs under its own basename inside the box, and a survivor
+# would carry it here -- and require zero. The global count was the first shape
+# of this check (a window of eight) and it was a flake: on a shared CI runner
+# unrelated processes come and go by the dozen between the two readings
+# (measured on PR #27: 153 -> 166, then 154 -> 177, with nothing of the box's
+# among them). It is printed for the record and no longer judged.
+survivors=$(cat /proc/[0-9]*/comm 2>/dev/null \
+    | grep -c -E '^(forkbomb|sleeper|forever|bomb|nsclone|nsclone3|eightgib|shadow|connect|clean|rocwd|libcuser)$')
+if [ "$survivors" = 0 ]; then
+    say_ok "no process of the box survives on the host (global count $procs_before -> $procs_after, informational)"
 else
-    say_fail "the host process count moved: $procs_before -> $procs_after"
+    say_fail "$survivors process(es) of the box survive on the host"
+    cat /proc/[0-9]*/comm 2>/dev/null | grep -E '^(forkbomb|sleeper|forever|bomb|nsclone|nsclone3|eightgib|shadow|connect|clean|rocwd|libcuser)$' | sort | uniq -c | sed 's/^/     /'
 fi
 # a 64 MiB window: the machine is doing other things, and 8 GiB is not 64 MiB
 mem_lost=$((mem_before - mem_after))

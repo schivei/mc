@@ -1,0 +1,20 @@
+# written by `mc pkg sync` -- do not edit (docs/reference/packages.md)
+[[package]]
+name    = "geo"
+version = "1.2.0"
+lib     = "geo.mc"
+sha256  = "6679544228e04f402ad2633d85b567bfdc65bc66609964e5de6c12c87ebff1a1"
+deps    = ["mathx"]
+
+[[package]]
+name    = "mathx"
+version = "1.0.0"
+lib     = "mathx.mc"
+sha256  = "9ff0300141b7a6f820ca145c716dcc70333de68d30524630a65fc97a55d819e1"
+deps    = []
+
+[[package]]
+name    = "teach"
+version = "1.0.0"
+sha256  = "5987dcdb414c2ffe3c2130bf61133b934de9ce3297e4478a56c80a72d38e6d22"
+deps    = []

@@ -1,0 +1,9 @@
+# geo 1.0.0 -- the version the lock does NOT name. It exists so that a
+# <libs>/geo/v1.0.0/ sitting beside v1.2.0/ can be proved never to be opened.
+[package]
+name  = "geo"
+files = ["geo.mc", "vec.mc"]
+lib   = "geo.mc"
+
+[deps]
+mathx = "1.0.0"

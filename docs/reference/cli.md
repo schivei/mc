@@ -8,6 +8,7 @@ prints exactly this and exits 1:
 ```
 usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules|--dump-machine] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] source.mc [-o out]
        mc --host
+       mc --version
 usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits] [--sysroot-dir DIR]
        mc limits [DIR|FILE.mc]
        mc sysroot list|path <target>|fetch <target> [--yes] [--sysroot-dir DIR]
@@ -37,6 +38,7 @@ Arguments are read left to right. The first non-flag argument is the source; a s
 | `--backend=NAME` | pick a registered backend. Built in: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64`, `elf-exe`, `elf-exe-x86_64`, `coff-obj-arm64`, `coff-obj-x86_64`. The default is the HOST's object backend — the object slot of the host's `target()` registration, `macho` on macOS and `elf-obj`/`elf-obj-x86_64` on Linux (M37) — resolved after `user_init()` like `--exe`'s (post-M41 review), so a module that re-registers the host pair is honoured here too. A host registered with 0 in that slot has no object step at all, and the default is refused with `<os>/<arch> has no object backend: use --exe`. A taught compiler adds its own with `backend("name", &f)`. An unknown name lists what exists and exits 1. |
 | `--include=DIR` | add one `#include "…"` search root, exactly like a `[include].paths` entry does for `mc build`. Repeatable; roots are tried in the order given, after the includer's own directory. It is what lets one source tree carry two platform layers in different directories and pick one without a `mc.toml` (`examples/conc/lib/macos`, `lib/linux`). |
 | `--host` | print what this binary is and exit 0 — three lines, no source needed. |
+| `--version` | print `mc <version>` and exit 0 — one line, no source needed. |
 | `--machine=NAME` | pick the machine the `--dump-*` modes lower with: `arm64` (the host's, default), `x86_64` (System V) or `x86_64-win` (Win64 — the same instruction set, the Windows calling convention). A compile does **not** need it — an object backend names its own machine, because the file records the architecture — so this flag exists for looking at what a machine selects (`--dump-asm --machine=x86_64-win`). An unknown name is `mc: unknown machine: NAME`. |
 
 ```
@@ -50,6 +52,23 @@ sys sys
 picks the default backend (`macho` on macOS, `elf-obj` / `elf-obj-x86_64` on Linux); `sys` is the
 bundled system layer a program on this host includes for its I/O (`<sys>` or `<sys_linux>`). The
 same binary built for a Linux host answers `linux`, its architecture, and `sys_linux` — see [../guide/90-linux-host.md](../guide/90-linux-host.md).
+
+```
+$ mc --version
+mc 0.0.0-dev
+```
+
+The version is a **constant compiled into the binary** — `mc_version()` in `src/version.mc`,
+which `<mc/core_min>` includes and the bundle carries as `mc/version` (M44). Anything built from
+the working tree says `0.0.0-dev`, the sentinel; a released binary says the tag it was built
+from, minus the `v`, because `scripts/set-version.sh` rewrites that one literal in the release
+job and never commits the result. The program name is on the line so that the output can be
+pasted into a bug report as it stands.
+
+Because the string is in the bundle and not only in the binary, a **taught compiler reports the
+version of the binary that built it**: `mc --exe` over `<mc/host>` + `<mc/core>` + a module gives
+a compiler whose own `--version` is the same line. See [../ci.md](../ci.md) § Versioning and
+[bundle.md](bundle.md).
 
 Backends are documented in [objects.md](objects.md) and in [../guide/40-backends.md](../guide/40-backends.md).
 
@@ -209,7 +228,7 @@ symbol name; the source file is required only because `user_init()` runs after `
 ## 2. `mc build` — the project driver
 
 ```
-mc build [DIR] [--config FILE] [--entry-only] [--compiler-only] [--limits | --fix-limits] [--sysroot-dir DIR]
+mc build [DIR] [--config FILE] [--entry-only] [--compiler-only] [--limits | --fix-limits] [--sysroot-dir DIR] [--libs-dir DIR]
 ```
 
 `DIR` defaults to `.`, the config to `DIR/mc.toml`. Every path inside the file is relative to the
@@ -223,6 +242,7 @@ thing as `mc build` from inside `examples/api`. Every key is in [toml.md](toml.m
 | `--compiler-only` | build the taught compiler from `[compiler].modules`, print its path on stdout and stop — no spawn, no entry. This is the flag a `test.sh` wants when it drives the taught compiler over its own suite, and the one an editor server needs. Without a `[compiler].modules` it is an error (`missing key: compiler.modules`), not a silent full build; together with `--entry-only` it is `mc: --entry-only and --compiler-only are exclusive`. |
 | `--limits` | after the build, print the table report and return a verdict (see below). |
 | `--fix-limits` | the same report, and rewrite **only** the `[limits]` section of `mc.toml` with the smallest tolerance that would have avoided `grew` and `tight`. |
+| `--libs-dir DIR` | where an installed package lives, instead of `$HOME/.mc/libs`. It is the second road a `#include <pack/file.mc>` takes, after a vendored `deps/<pack>/`, and it is also where the installed `mc` package is looked for. CI passes it so that no job depends on `HOME`, exactly as `--sysroot-dir` does. Missing argument: `mc: --libs-dir requires an argument`. See [packages.md](packages.md). |
 | `--sysroot-dir DIR` | DIR **is** the sysroot for `[target]`, ahead of `[sysroot].cache` and of `~/.mc/sysroots` in the resolution chain — but behind `[sysroot].path`, which still wins. CI passes it so that no job depends on `HOME`. Missing argument: `mc: --sysroot-dir requires an argument`. See [sysroot.md](sysroot.md). |
 
 A second bare argument is `mc: duplicate directory: <arg>`; any other `-flag` reprints the usage
@@ -284,10 +304,50 @@ mc sysroot stub [DIR] [--config FILE]
 | `--sysroot-dir DIR` | DIR is the destination (`fetch`) or the candidate (`path`), instead of `~/.mc/sysroots/<os>-<arch>` |
 
 `mc sysroot stub` is the same thing `{stubs}` in `[linker].args` does on its own during a build,
-without the build. `fetch` is the **only** thing in `mc` that reaches the network, and it does it by spawning
-`curl`/`wget`/`curl.exe` — there is no HTTP and no TLS in this language. `mc build` never
-downloads. Everything about the chain, the cache and the pinned rows is in
+without the build. `fetch` reaches the network by spawning `curl`/`wget`/`curl.exe` — there is no
+HTTP and no TLS in this language — and it and `mc pkg` are the **only** two things in `mc` that do.
+`mc build` never downloads. Everything about the chain, the cache and the pinned rows is in
 [sysroot.md](sysroot.md).
+
+## 3d. `mc pkg` and `mc update` — dependencies
+
+```
+mc pkg sync   [DIR] [--config FILE] [--yes] [--registry URL|DIR] [--libs-dir DIR]
+mc pkg add    NAME[@VERSION] [DIR] [--config FILE] [--yes] [--registry URL|DIR] [--libs-dir DIR]
+mc pkg list   [DIR] [--config FILE] [--libs-dir DIR]
+mc pkg vendor [DIR] [--config FILE] [--libs-dir DIR]
+mc pkg verify [DIR] [--config FILE] [--libs-dir DIR]
+mc pkg hash   DIR
+mc pkg check  INDEX.toml [--yes] [--registry URL|DIR] [--libs-dir DIR]
+mc update     [NAME] [DIR] [--config FILE] [--yes] [--registry URL|DIR] [--libs-dir DIR]
+```
+
+Registered by `<mc/core_pkg>` ([bundle.md](bundle.md) § The parts), which is a part a compiler can
+leave out: without it these two subcommands do not exist, and `mc build` still builds a project
+from its `mc.lock` and its `deps/` tree.
+
+| subcommand | Go analogue | what it does |
+|---|---|---|
+| `sync` | `go mod tidy` + `go mod download` | read `[deps]`, read the index rows it needs, run minimal version selection, fetch the trees that are missing, write `mc.lock`. Rows nothing requires are dropped |
+| `add NAME[@VERSION]` | `go get pkg@v` | write one `[deps]` line — the newest non-yanked version when there is no `@` — then `sync` |
+| `list` | `go list -m all` | one line per lock row: name, version, the first 12 characters of the hash, and `vendored`/`cache`/`path`. No absolute path, so it is a golden |
+| `vendor` | `go mod vendor` | copy each locked tree into `deps/<name>/` — `mc.toml` plus `[package].files` — then verify |
+| `verify` | `go mod verify` | rehash every locked tree and check it against `mc.lock`; exit 0 or 2 |
+| `hash DIR` | `dirhash.Hash1` | print the tree hash of a checkout: what a registry row's `sha256` has to carry |
+| `check INDEX.toml` | — | the registry-side gate: with `--yes` it downloads every row, re-derives the hash, and compares the row against the archive's own `mc.toml` |
+| `mc update [NAME]` | `go get -u` | raise the `[deps]` minimum(s) to the newest non-yanked version **of the same major**, then `sync` |
+
+| flag | meaning |
+|---|---|
+| `--yes` | actually download. Without it, anything that would fetch prints the plan — source, expected tree hash, destination — says `nothing was downloaded: re-run with --yes` and exits 0. There is no prompt: `mc` has no `isatty` |
+| `--registry URL\|DIR` | where the index lives, instead of `[registry].url` or the default `https://minicompiler.dev/registry`. A directory is read in place; a URL is fetched into `<libs>/index/<name>.toml`, the offline snapshot |
+| `--libs-dir DIR` | where installed packages live, instead of `~/.mc/libs`. `mc build` takes it too, so no CI job depends on `HOME` |
+| `--config FILE` | the project file, instead of `DIR/mc.toml` |
+
+`mc pkg` is the only thing that writes `mc.lock`, the only thing that writes under `<libs>`, and —
+with `mc sysroot fetch` — one of the two that spawn a downloader. Everything about what a package
+is, how `#include <pack/file.mc>` is resolved and what a build refuses is in
+[packages.md](packages.md).
 
 ## 3c. `mc sandbox` — compile and run something you do not trust
 
@@ -368,7 +428,7 @@ sandbox: refused: open /etc/shadow
 |---|---|
 | `0` | success — and, under `--limits`, verdict `ok` |
 | `1` | any diagnostic: a compile error, a TOML error, a spawned tool that failed |
-| `2` | the environment is not ready: no sysroot for the target ([sysroot.md](sysroot.md) § 5) |
+| `2` | the environment is not ready: no sysroot for the target ([sysroot.md](sysroot.md) § 5), or a dependency that does not match `mc.lock`, is not fetched, or a lock that is stale ([packages.md](packages.md) § 8) |
 | `3` | verdict `tight` or `grew` (`--limits` / `mc limits` only) |
 | `124` | `mc sandbox`: a cap stopped the program (CPU or wall clock) |
 | `125` | `mc sandbox`: a refusal stopped it — a system call outside the profile, a path outside the box's roots, an `mmap` over `--mem`, a process over the cap, an `execve` too many ([sandbox.md](sandbox.md) § The explain channel) |
@@ -377,9 +437,11 @@ sandbox: refused: open /etc/shadow
 `--fix-limits` exits 0 when it managed to write a tolerance that fits, and 3 when even `1.0`
 would not have been enough (the file is left alone in that case).
 
-Code **2** is one message and nothing else — the `no sysroot for <os>-<arch>` block of
-[sysroot.md](sysroot.md) § 5. It is a separate code so that a script can tell "your machine is
-missing files" from "your program does not compile" without reading the text.
+Code **2** is always "your machine is not ready", never "your program does not compile", and that
+is why it is a separate code: a script can tell them apart without reading the text. Two families
+use it — the `no sysroot for <os>-<arch>` block of [sysroot.md](sysroot.md) § 5, and the package
+refusals of [packages.md](packages.md) § 8. Both carry a `run:` line naming the command that would
+fix it.
 
 ---
 

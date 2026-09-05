@@ -1,5 +1,5 @@
 // core_min.mc — the MINIMAL core: everything a compiler for any target needs,
-// and nothing that names a target. Ten files, in dependency order:
+// and nothing that names a target. Eleven files, in dependency order:
 //
 //   arena.mc      xalloc/buf_*/out_*/die/err_at/read_file/write_file, the growable
 //                 tables and the shared limits (MAXPARAMS), the role of mc.h
@@ -14,6 +14,7 @@
 //                 and the machine task table it drives
 //   hooks.mc      every registry: passes, backends, machines, targets, syntax,
 //                 types, intrinsics, subcommands
+//   version.mc    mc_version(): the one string this binary reports (M44)
 //   cli.mc        mc_main(): the flags, the dump modes and the pipeline
 //
 // objmodel.mc comes before lex.mc because parse.mc uses sec_new (via sec_make)
@@ -55,4 +56,5 @@
 #include "gen_resolve.mc"
 #include "gen_walk.mc"
 #include "hooks.mc"
+#include "version.mc"
 #include "cli.mc"

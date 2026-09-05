@@ -1,0 +1,16 @@
+# the object road, for the byte-for-byte comparisons
+[project]
+name  = "app-float"
+entry = "main.mc"
+out   = "build/appf.o"
+kind  = "obj"
+
+[deps]
+float = "1.3.0"
+
+[compiler]
+out     = "build/mc-appf"
+modules = ["<float/user_float.mc>", "user.mc"]
+
+[limits]
+tolerance = 1.0
