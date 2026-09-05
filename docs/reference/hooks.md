@@ -813,6 +813,18 @@ middle is refused (`region crosses a file boundary`) rather than returning a bog
 The span lives in the arena for the whole compilation, so a module may keep it and push it back
 as many times as it likes.
 
+The boundary test compares the `#include` frame the **opening** delimiter was read in against the
+one the **closing** delimiter was read in — not the frame the parser is in once it has moved past
+the closer. The two differ at exactly one place, and it is a common one: a region that ends on the
+last token of an included file. `lex_next` pops an exhausted frame *before* it produces the next
+token, so the lookahead past the closer already belongs to the includer. A region that ends flush
+with the end of a file is therefore accepted (it is a slice of one buffer, which is all the rule
+ever meant), and one whose `{` is in an include and whose `}` is in the includer — or the reverse —
+is still refused, at the opening token's position. An `#include` opened *and* closed inside the
+region is fine and always was: the frame depth goes up and comes back down. Fixed in M45; before
+it, a `tmpl`-style module could not put a template in a file of its own without a trailing token
+after it.
+
 `p_push_source` has one contract worth memorising: the push does **not** touch the pending
 lookahead token, so the `p_next()` after it discards the lookahead and reads the first token of
 the pushed source. A handler must therefore sit on the **last** token of its own construct when
@@ -967,6 +979,15 @@ on macOS, `0x40`/`0x200` on Linux, `0x100`/`0x200` on Windows). On macOS and Lin
 names are in libSystem and in musl; on Windows none of them exists, and they are shims over
 kernel32 in `lib/sys_windows_host.mc`, compiled once into `build/mcrt-windows-<arch>.obj` and
 linked next to the compiler ([../guide/95-windows-host.md](../guide/95-windows-host.md) § 3).
+
+Those declarations say `i64` where C says `int` — `open`, `creat`, `close`, `waitpid`, `mkdir`,
+`unlink`, `chmod` — because the files that carry them are also compiled by the frozen C seed,
+which has no 32-bit type. The sign therefore comes from **`c_int(v)`** (`src/arena.mc`): the low 32
+bits of `v`, sign-extended from bit 31, which is what a C `int` result is worth once the
+unspecified bits above it are discarded. `if (c_int(waitpid(...)) < 0)` and
+`i64 fd = c_int(open(...))` are the whole of its use in the compiler. Code outside the seed set
+declares the width instead — `extern i32 f(...)` — and the compiler extends at the call site
+([language.md](language.md) § 6).
 
 What the host layer decides, in the driver and the CLI:
 

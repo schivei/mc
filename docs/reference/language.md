@@ -417,6 +417,30 @@ and cannot spell `i32` at all. A program wanting the truthful declaration writes
 `extern i32 open(uptr, i64, i64);` and does not include `<sys>`, since two disagreeing
 declarations of one name are `declaration does not match prototype`.
 
+**`c_int(v)` — the same answer without the declaration.** The compiler's own arena
+(`src/arena.mc`, part `<mc/core_min>`) exports one function for the case where the truthful
+declaration is not available:
+
+```
+i64 c_int(i64 v);      // the low 32 bits of v, sign-extended from bit 31
+```
+
+It is the value of a C `int` result read as a signed 32-bit quantity: `c_int(0xffffffff)` is `-1`,
+`c_int(0x7fffffff)` is `2147483647`, and `c_int(0x00000000ffffffff)` and
+`c_int(0xffffffffffffffff)` are both `-1` — which is the point. Bits 63..32 of a 32-bit return are
+unspecified on every ABI `mc` targets, so `c_int` is correct whether the callee sign-extended, zero-
+extended or left rubbish there, and it is pure arithmetic, so it needs no support from the machine.
+
+`src/` uses it instead of narrow declarations, and that is a constraint rather than a preference:
+`src/*.mc` and `lib/sys.mc` are compiled by the frozen C seed, which cannot spell `i32` at all, and
+declaring those results `u32` would make this compiler emit an extension the seed cannot emit —
+`scripts/check-asm.sh` compares the two over exactly those files. The call sites are
+`c_int(open(...))`, `c_int(creat(...))` and `c_int(waitpid(...))`. `<sys>` (`lib/sys.mc`) keeps
+`i64` for the same reason and does not need `c_int`, on the measurement recorded above.
+
+A program that can be compiled by `mc` itself — anything outside the seed set — has no reason to
+use `c_int`: it writes `extern i32 f(...)` and the compiler does the extension at the call.
+
 ---
 
 ## 7. Function pointers

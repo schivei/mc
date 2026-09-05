@@ -1878,6 +1878,13 @@ uptr p_skip_balanced(i64 open, i64 close, uptr plen) {
     i64 d0 = nopen;
     i64 depth = 0;
     uptr e = s;
+    // the frame the LAST token consumed was read in. M45 (review): it has to be
+    // sampled before the lookahead next(), not after -- lex_next pops an
+    // exhausted #include frame BEFORE it produces a token, so a region whose
+    // closer is the last token of an included file was read entirely inside
+    // that file and yet left `nopen` one lower by the time the loop exits.
+    // Reading nopen after the loop refused such a region as if it had crossed.
+    i64 dend = d0;
     loop {
         // unterminated is reported at the OPENING token: that is the position
         // that tells the reader which region never closed
@@ -1885,12 +1892,16 @@ uptr p_skip_balanced(i64 open, i64 close, uptr plen) {
         if (tok_id(cur) == open) depth = depth + 1;
         else if (tok_id(cur) == close) depth = depth - 1;
         e = tok_start(cur) + tok_len(cur);
+        dend = nopen;
         next();
         if (depth == 0) break;
     }
     // the span is a slice of ONE buffer: a region that ended in the includer
-    // (the file ran out in the middle) has no byte range at all
-    if (nopen != d0) err_at(fl, line, "region crosses a file boundary");
+    // (the file ran out in the middle) has no byte range at all. The comparison
+    // is opener-frame against CLOSER-frame, which is exactly "both delimiters
+    // live in the same buffer" -- an #include opened and closed inside the
+    // region moves nopen up and back down and is fine.
+    if (dend != d0) err_at(fl, line, "region crosses a file boundary");
     st64(plen, e - s);
     return s;
 }

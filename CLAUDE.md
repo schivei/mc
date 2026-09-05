@@ -2422,7 +2422,7 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
     implement it says `type_disable(ty_i32)`. Four machines updated: `src/machine_arm64.mc`
     (`I_LDRSB/LDRSH/LDRSW`, `I_SXTB/SXTH/SXTW`), `src/machine_x86_64.mc` (`X_LDS8/16/32`,
     `X_MOVSXB/W/D`, both forms), `lib/backend_arm64.mc` (the surface encoder, same rows) and
-    `examples/kernel/machine_riscv64.mc` (`lb`/`lh`/`lw`, `srai` through a new funct7 column,
+    `examples/kernel/machine_riscv64.mc` (`lb`/`lh`/`lw`, `srai` through a new funct6 column,
     `sext.w` as `V_ADDIW`); `examples/avr/mc-avr.mc` calls `type_disable(ty_i32)` instead.
   * **Acceptance 1 was MEASURED before anything changed** and is in `docs/specs/M45.md`
     § Implementation notes 1. `open`/`close(-1)`/`waitpid(-1)` return a full 64-bit -1 on musl and
@@ -2433,12 +2433,25 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
     reads back `0x00000000ffffffff` too. That measurement is why `lib/sys.mc` keeps its `i64`
     declarations (§ 5's row, decided by measurement) and why `tests/linux/072` declares three
     functions rather than one.
-  — **Inertness is the gate and it held.** `scripts/check-inert.sh` between the `build/mc1` of
-  `6fab014` and this one: 33 objects identical (`tests/*.mc` + `src/mc.mc`) and `api`/`lang`/
-  `conc`/`desktop` identical through the taught compiler each builds; `examples/kernel`'s image
-  (3304 B) and `examples/avr`'s ELF compared by hand, pre compiler + pre machine against post +
-  post -- **identical** (the script's kernel case cannot run across this milestone: the pre
-  compiler's bundle has no `TK_SINT`). Sweep: 16 distinct new instructions re-assemble byte for
+  — **Inertness is the gate and it held where the milestone claims it.**
+  `scripts/check-inert.sh` between the `build/mc1` of `6fab014` and this one: **33 objects
+  identical** (`tests/*.mc` + `src/mc.mc`) and `lang`/`conc`/`desktop` identical through the taught
+  compiler each builds; `examples/kernel`'s image (3304 B) and `examples/avr`'s ELF compared by
+  hand, pre compiler + pre machine against post + post -- **identical** (the script's kernel case
+  cannot run across this milestone: the pre compiler's bundle has no `TK_SINT`).
+  **Correction (review, 2026-09-05): `examples/api` is a `DIFF`, not an `ok`** -- the entry here
+  and `docs/specs/M45.md` § Implementation notes 3 both said `ok` and were wrong. The corpus grep
+  that found "no narrow-declared callee anywhere" is over SOURCE TEXT, and a Tier 3 module can
+  declare a narrow function without writing one: `examples/api/oop.mc`'s `class` handler builds
+  `u8 todo_done(uptr self)` out of AST nodes for the field `bool done;` (`bool` is
+  `type_alias("bool", TY_U8)`). D5 then applies on both sides, which is the design. Measured:
+  `--dump-asm` of `examples/api/main.mc` through the taught `mc-api` each compiler builds differs
+  by **exactly two instructions**, both `and x9, x9, #255` -- one after the `ldrb w9, [x9]` that is
+  `todo_done`'s body (the return side, `walk_fn_ret`), one after the `mov x9, x0` that follows
+  `bl _todo_done` (the call side, `res_type`). Both are no-ops on the value -- `ldrb` already
+  zero-extends -- so `build/api` is the same 55632 bytes and the eleven route checks stay green.
+  Read the rule as: the return-side and call-side narrowing move bytes for EVERY narrow-returning
+  function, written or synthesized, and a grep over sources cannot enumerate the synthesized ones. Sweep: 16 distinct new instructions re-assemble byte for
   byte under `llvm-mc` on each of mach-o arm64, elf aarch64, coff aarch64, elf x86-64 and coff
   x86-64; `examples/kernel`'s own sweep goes 262 -> 285 with 0 mismatches, plus a scratch run with
   `i8`/`i16` registered (62, 0 mismatches, `lb`/`lh`/`srai` present).
@@ -2527,6 +2540,93 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `mc2-linux-x86_64` `68b2c57d1b9ac8787abce3647ac545c70978376247010f7af6fda3637bf12659`,
   `mc2-windows-arm64` `2877458c375b72018b2b9a62d30bb30cd7ee84488a938a1bcacf05653388f3b8`,
   `mc2-windows-x86_64` `97e02abd56e1e11d595d54f2586437f56bb45596e2c0cf2b5a852a5ab2c3629f`.
+- Post-M45 batch (review, `docs/specs/M45.md` § Implementation notes 6): the four findings the
+  reviewer of the branch raised. One is a correction to the record, one is a documentation gap the
+  gate could not see, one is a name that was wrong about the hardware, and one is a real defect a
+  consumer hit. `stage0/` untouched (2848/3000). The only compiled change is
+  **`src/parse.mc` +15/-2, 3 of the added lines code**.
+  1. **The record was wrong about commit 1's inertness in `examples/api`** -- corrected in
+     `docs/specs/M45.md` (§ 3 of the Design and § Implementation notes 3) and in the M45 step 1
+     entry above, both of which said `ok taught examples/api`. Reproduced first, with `mc1.pre`
+     rebuilt from `6fab014` and `mc1` from `9e27e06`: `DIFF taught examples/api -> build/api`. The
+     reason is the general one and matters more than the row: **the grep that established "no
+     narrow-declared callee anywhere in the corpus" is over SOURCE TEXT, and a Tier 3 module can
+     declare a narrow function without writing one.** `examples/api/oop.mc`'s `class` handler
+     builds a getter per field out of AST nodes (`oop_getter` -> `oop_func(ty, ...)`), so
+     `bool done;` in `class Todo` -- `bool` being `type_alias("bool", TY_U8)` -- is a declaration
+     of `u8 todo_done(uptr self)` that no grep over `examples/` can find. D5 then applies on both
+     sides, by design. Measured: `--dump-asm` of `examples/api/main.mc` through the taught `mc-api`
+     each compiler builds differs by **exactly two instructions**, both `and x9, x9, #255` -- one
+     after the `ldrb w9, [x9]` that IS `todo_done`'s body (the return side, `walk_fn_ret`), one
+     after the `mov x9, x0` that follows `bl _todo_done` (the call side, `res_type`). Both are
+     no-ops on the value, since `ldrb` already zero-extends; `build/api` is the same 55632 bytes.
+     What is identical and stays identical: the 33 objects (`tests/*.mc` + `src/mc.mc`), `lang`,
+     `conc`, `desktop`, `kernel` and the AVR image. D5 is not weakened -- the cast is the design.
+  2. **`c_int` was not in `docs/reference/`.** Acceptance 8 promised it documented; it existed only
+     in the spec and in this file, and `scripts/check-docs.sh`'s symbol regex had no prefix that
+     reached it. Documented in `docs/reference/language.md` § 6, right after the `extern` rule that
+     tells a program to declare `i32` -- with the exact contract (the low 32 bits sign-extended
+     from bit 31; correct whether the callee sign-extended, zero-extended or left rubbish above;
+     pure arithmetic, so no machine support) and the reason `src/` uses it instead of a narrow
+     declaration (the frozen seed cannot spell `i32`, and `u32` would make `mc1` emit an extension
+     the seed cannot, which `check-asm` compares over exactly those files) -- and cross-referenced
+     from `docs/reference/hooks.md` § The host layer, where the `open`/`creat`/`waitpid`
+     declarations it exists for are described. The extraction regex gained `c_`, the same widening
+     `on_` and `decl_` got (`docs/specs/M26.md`); `c_int` is the only symbol it adds. Verified in
+     both directions: with the two mentions renamed, `check-docs` prints
+     `FAIL undocumented public symbols`; with them, `docs ok: 187 symbols`.
+  3. **`rv_if7[]` was a funct6.** RV64I's shift-immediate forms take a 6-bit shamt (bits 25:20), so
+     the differentiator above it is a funct6 at bits 31:26, not the funct7 the register forms carry
+     at 31:25. The one value in the column, `0x20 << 5`, lands on bit 30 -- exactly where
+     `0x10 << 6` lands -- so the encoding was right and only the name and the shift were wrong; a
+     second, multi-bit value would have been misplaced. Renamed to `rv_if6`/`rv_if6_at`, `0x10`,
+     `<< 6` (`examples/kernel/machine_riscv64.mc` +12/-8, all comment but three lines).
+     `examples/kernel/build/kernel.bin` is **`cmp`-identical before and after** (3304 bytes, same
+     compiler, both machines) and `make check-kernel` is green with QEMU 11.0.1. The kernel corpus
+     has no `srai` at all -- it comes only from `rv_cast`'s sign-extension pair, which needs a 1-
+     or 2-byte `TK_SINT` -- so the arm was re-proved on the scratch compiler of § Implementation
+     notes 3 (`mc-kernel` + `type_new("i16", 2, 2, TK_SINT)` + `i8`): **36 distinct instructions,
+     0 mismatches** under `llvm-mc -triple=riscv64 -mattr=+m`, with `srai t3, t3, 48` =
+     `135e0e43` and `srai t4, t4, 56` = `93de8e43`.
+  4. **`p_skip_balanced` refused a region that ends flush with the end of an included file**
+     (reported by the teko/ngen consumer). The frame depth was compared AFTER the lookahead
+     `next()` that follows the closing delimiter, and `lex_next` pops an exhausted `#include` frame
+     BEFORE it produces a token -- so a perfectly balanced region whose `}` was the include's last
+     token left `nopen` one lower and came out as `region crosses a file boundary`. It is now
+     sampled at the CLOSER, inside the loop (`i64 dend`), which is exactly the "both delimiters
+     live in one buffer" the rule always meant; an `#include` opened and closed inside the region
+     still moves `nopen` up and back down and is still fine, and a region that really does cross is
+     still refused, with the same message at the same position (the OPENING token). Reproduced
+     first: a `tmpl t<T, N> { ... }` alone in `tpl.mc`, `#include`d, was refused at `tpl.mc:1`;
+     with the fix it compiles and the program exits 42. Two new cases in
+     `scripts/check-surface.sh` -- `p_skip_balanced-include-eof` (compiled with the demo compiler
+     and RUN) and `p_skip_balanced-cross` (the message asserted by suffix, since `$TMPDIR` may end
+     in a slash and the compiler prints the path it opened, normalized). **The message had no test
+     at all before.** Docs: `docs/reference/hooks.md` § Record and replay,
+     `docs/reference/diagnostics.md` and `docs/surface.md`.
+  -- `make bundle` re-run BEFORE bootstrapping (`src/parse.mc` is `mc/parse`): 78 files, raw
+  861794 -> LZ 402157, blob 403110 B. `make check` green end to end (**RC 0, zero FAIL, 5m01s**):
+  `budget` 2848/3000, `test` 32/32, `check-lex` 126/126 (2 skipped), `check-ast` 126/126,
+  `check-asm` 126/126, `check-obj` **32/32 identical to the frozen seed**, `check-bundle`,
+  `bootstrap` at a fixed point (`mc2.o == mc3.o`, 931696 B; the `--dump-asm` diff between `mc1` and
+  `mc2` is **empty**), `check-surface` 32/32 + 116 ok lines including the two new ones,
+  `test-exe` 32/32, `check-mc` 11/11, `check-standalone`, `check-parts`, `check-toml` 10/10,
+  `check-build` 31/31, `check-stubs` 9/9, `check-sysroots`, `check-limits` 17/17 under 90%,
+  `check-minimal`, `test-linux` 39/39, `test-linux-x86_64` 36/36, `test-linux-exe` 42/42 musl +
+  42/42 glibc, `test-linux-x86_64-exe` 39/39 + 39/39, `test-windows` 40/40 objects,
+  `test-windows-x86_64` 38/38, `check-examples`, `check-lang`, `check-conc`, `check-desktop`,
+  `check-float`, `check-wide`, `check-kernel` (QEMU 11.0.1, exit 0), `check-docs`
+  (**187 symbols**, 19 flags, 19 TOML keys, 10 directives, 48 samples, 275 links), `site` 85 pages
+  + `check-site` 0 link problems.
+  `scripts/check-inert.sh build/mc1.pre build/mc1` (pre = the branch's HEAD compiler, before these
+  edits): **33 objects identical** (`tests/*.mc` + `src/mc.mc`) and all five taught examples
+  identical -- `api`, `lang`, `conc`, `desktop` and `kernel`. Item 4 is the only change to a
+  compiled byte in `src/`, and it changes no byte the compiler EMITS.
+  `tests/golden/mc2.sha256` rewritten once, only after the empty `--dump-asm` diff and
+  `cmp build/mc2.o build/mc3.o`: `60b21acb...c8db6c` ->
+  `26c9a7c8070e64471bafecfeb42917ba43dec6e2413374a5ea25b0ebc9923c06`. The four foreign goldens are
+  deliberately NOT re-recorded here: they move with the same `src/parse.mc` edit and the same
+  bundle, and the architect asked for one re-recording after the rebase.
 - Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
   `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
   from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:

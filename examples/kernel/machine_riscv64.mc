@@ -105,7 +105,7 @@
 // M45: the signed halves. A TK_SINT load sign-extends (lb/lh/lw against
 // lbu/lhu/lwu) and a cast to one fills the bytes above its width with the sign
 // -- a shift pair at 1 and 2 bytes, and `sext.w` (addiw rd, rn, 0) at 4.
-#define V_SRAI  41                    // srai rd, rn, shamt    (funct7 0x20)
+#define V_SRAI  41                    // srai rd, rn, shamt    (funct6 0x10)
 #define V_ADDIW 42                    // addiw rd, rn, imm     opcode 0x1b
 #define V_LB    43
 #define V_LH    44
@@ -121,11 +121,16 @@ i64  rv_rf3[]   = { 0, 0, 0, 4, 5, 6, 7, 7, 6, 4, 1, 5, 5, 2, 3 };
 uptr rv_rname[] = { "add", "sub", "mul", "div", "divu", "rem", "remu", "and",
                     "or", "xor", "sll", "srl", "sra", "slt", "sltu" };
 // I-type, register + 12-bit immediate
-// M45 adds a funct7 column, 0 for every row that existed: srai is srli with
-// 0x20 in the high seven bits of the immediate field.
+// M45 adds a funct6 column, 0 for every row that existed: srai is srli with
+// 0x10 in the high SIX bits of the immediate field. RV64I's shift-immediate
+// forms take a 6-bit shamt (bits 25:20), so the differentiator above it is a
+// funct6 at bits 31:26 -- not the funct7 the REGISTER forms (sll/srl/sra) carry
+// at 31:25. The single value used lands on bit 30 either way, so the encoding
+// was right when this column was called funct7 and shifted by 5; a multi-bit
+// value would not have been, which is why the column now says what it is.
 i64  rv_iop[]   = { V_ADDI, V_XORI, V_SLTIU, V_ANDI, V_SLLI, V_SRLI, V_SRAI, 0 };
 i64  rv_if3[]   = { 0, 4, 3, 7, 1, 5, 5 };
-i64  rv_if7[]   = { 0, 0, 0, 0, 0, 0, 0x20 };
+i64  rv_if6[]   = { 0, 0, 0, 0, 0, 0, 0x10 };
 uptr rv_iname[] = { "addi", "xori", "sltiu", "andi", "slli", "srli", "srai" };
 // memory, widest to narrowest, load then store at each width; M45 appends the
 // three SIGNED loads, each sharing the store of its width
@@ -160,7 +165,7 @@ i64  rv_rf3_at(i64 i)    { return ld64(rv_rf3 + i * 8); }
 uptr rv_rname_at(i64 i)  { return ld64(rv_rname + i * 8); }
 i64  rv_iop_at(i64 i)    { return ld64(rv_iop + i * 8); }
 i64  rv_if3_at(i64 i)    { return ld64(rv_if3 + i * 8); }
-i64  rv_if7_at(i64 i)    { return ld64(rv_if7 + i * 8); }
+i64  rv_if6_at(i64 i)    { return ld64(rv_if6 + i * 8); }
 uptr rv_iname_at(i64 i)  { return ld64(rv_iname + i * 8); }
 i64  rv_mop_at(i64 i)    { return ld64(rv_mop + i * 8); }
 i64  rv_mf3_at(i64 i)    { return ld64(rv_mf3 + i * 8); }
@@ -634,7 +639,7 @@ void rv_put(uptr e, i64 pc, uptr lab, uptr o) {
             return;
         }
         if (!rv_fits12(im)) die("riscv immediate out of 12 bits");
-        rv_put_i(o, 0x13, im | (rv_if7_at(k) << 5), rn, rv_if3_at(k), rd);
+        rv_put_i(o, 0x13, im | (rv_if6_at(k) << 6), rn, rv_if3_at(k), rd);
         return;
     }
     if (op == V_ADDIW) {                          // M45: sext.w is addiw rd, rn, 0

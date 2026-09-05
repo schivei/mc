@@ -222,6 +222,56 @@ hook_case p_subst_hygiene 42 'tmpl t<T, N> { i64 T_tag = N; uptr k = "T is T"; r
 make t<i64, 2>;
 i64 main() { return t__i64__2() - 44; }'
 
+# M45 (review): a recorded region whose closing delimiter is the LAST token of
+# an included file. p_skip_balanced used to read `nopen` after the lookahead
+# next(), and lex_next pops an exhausted #include frame BEFORE it produces the
+# next token -- so a perfectly balanced region was refused with `region crosses
+# a file boundary`. The two halves are asserted together: the balanced one has
+# to compile and run, the one that really does cross has to be refused, at the
+# OPENING token's position.
+mkdir -p "$tmp/inc"
+printf 'tmpl t<T, N> { T a[N]; return N + bits T / 8; }\n' > "$tmp/inc/tpl.mc"
+cat > "$tmp/inc/eof.mc" <<'EOF'
+#include "tpl.mc"
+make t<i64, 3>;
+i64 main() { return t__i64__3() * 4 - 2; }
+EOF
+if ! msg=$("$demo" --exe "$tmp/inc/eof.mc" -o "$tmp/inc/eof" 2>&1); then
+    echo "FAIL p_skip_balanced-include-eof (compilation: $msg)"; fails=$((fails + 1))
+else
+    "$tmp/inc/eof"
+    rc=$?
+    if [ "$rc" != 42 ]; then
+        echo "FAIL p_skip_balanced-include-eof (exit $rc, expected 42)"; fails=$((fails + 1))
+    else
+        echo "ok p_skip_balanced-include-eof"
+    fi
+fi
+
+# the region really does cross: the `{` is in the include, the `}` in the includer
+printf 'tmpl t<T, N> { T a[N]; return N + bits T / 8;\n' > "$tmp/inc/open.mc"
+cat > "$tmp/inc/cross.mc" <<'EOF'
+#include "open.mc"
+}
+make t<i64, 3>;
+i64 main() { return t__i64__3(); }
+EOF
+# the path is compared by suffix: $tmp comes from TMPDIR, which may end in a
+# slash, and the compiler prints the path it opened, normalized.
+if msg=$("$demo" --exe "$tmp/inc/cross.mc" -o "$tmp/inc/cross" 2>&1); then
+    echo "FAIL p_skip_balanced-cross (the taught compiler accepted it)"; fails=$((fails + 1))
+else
+    case "$msg" in
+        *"/inc/open.mc:1: region crosses a file boundary")
+            echo "ok p_skip_balanced-cross (open.mc:1: region crosses a file boundary)" ;;
+        *)
+            echo "FAIL p_skip_balanced-cross"
+            echo "  expected: .../inc/open.mc:1: region crosses a file boundary"
+            echo "  got:      $msg"
+            fails=$((fails + 1)) ;;
+    esac
+fi
+
 # ---- M21.5: on_stmt and the block dispatch ----
 # The counts are RELATIVE (stmtcount - base) on purpose: the module pushes its
 # own runtime as a second source at user_init, so the absolute count depends on

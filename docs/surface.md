@@ -1187,8 +1187,10 @@ Counting with the lexer instead of scanning bytes is what makes a `}` inside a s
 harmless. An unterminated region is reported at the **opening** token — the position that says
 which region never closed. The span is a slice of **one** buffer, so a region whose file ran out
 in the middle (the closing token was found back in the includer) has no byte range at all and is
-refused with `region crosses a file boundary`. What remains lives in the arena for the whole
-compilation, so a module may keep it and replay it as often as it likes.
+refused with `region crosses a file boundary`. The frame compared is the one the CLOSING token was
+read in, not the one the parser lands in afterwards, so a region that ends flush with the end of an
+included file — the closer being that file's last token — is accepted (M45). What remains lives in
+the arena for the whole compilation, so a module may keep it and replay it as often as it likes.
 
 ### `p_push_source(name, text, len)` — a second source
 

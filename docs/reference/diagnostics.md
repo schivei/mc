@@ -183,7 +183,7 @@ notatype main() { return 0; }
 | `too many on_plan hooks` | M41: more than 8 `on_plan()` registrations | same |
 | `p_skip_balanced expects the opening token` | the parse was not sitting on the opening token | position the handler on the `{`/`<`/`(` before calling |
 | `unterminated region` | `p_skip_balanced` reached end of file — reported at the **opening** token | close the region; the position points at what never closed |
-| `region crosses a file boundary` | the region began in one source and ended in another | a span is a slice of one buffer; keep a recorded region inside one file |
+| `region crosses a file boundary` | the OPENING delimiter of a recorded region was read in one `#include` frame and the CLOSING one in another — a `{` in an include and its `}` in the includer, or the reverse. Reported at the opening token. A region that merely ENDS on the last token of an included file is not this: it is a slice of one buffer and is accepted (M45) | a span is a slice of one buffer; keep both delimiters of a recorded region inside one file |
 | `p_take_lit outside the source token` | M24: a `syntax_lit` handler said its literal ends before the cursor, past the end of the source, or on a token that was not just lexed from the source being read | same rule as `p_resplit_punct`: never a string, never a substituted identifier |
 | `p_resplit_punct expects a longer punctuation token` | the current token is not a punctuation token longer than `n`, freshly lexed from the source | it works only on a token just read from the source being lexed — never a string, never a substituted identifier |
 | `p_resplit_punct: unknown punctuation` | the first `n` bytes are not a registered lexeme | split at a boundary that is a real token, as `>>` → `>` |
