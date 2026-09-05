@@ -54,6 +54,12 @@
 // what `--allow=threads` means and what a fork bomb is not.
 #define SB_CLONE_THREAD       0x00010000
 #define SB_CLONE_NEWANY       0x7E020000  // NEWNS|NEWCGROUP|NEWUTS|NEWIPC|NEWUSER|NEWPID|NEWNET
+// clone3 takes its flags in a struct and has one more of them: CLONE_NEWTIME,
+// which is bit 7 -- a bit that in clone(2) is part of the exit SIGNAL and must
+// never be tested there. Hence two masks, and the second is only ever applied
+// to a clone3.
+#define SB_CLONE_NEWTIME            0x80
+#define SB_CLONE_NEWANY3      0x7E020080
 
 // how the filter treats clone(2), decided per step
 #define SB_CLONE_PROF    0               // whatever the profile says (compile)
@@ -116,16 +122,34 @@ i64 sb_prof_has(i64 nr) {
 // `refused: mmap N bytes over the cap` possible at all. The cost is a round
 // trip per call and it is the overhead docs/reference/sandbox.md reports.
 //
-// clone and clone3 are NOT here: the compile step has to fork (`mc build`
-// writes a compiler and runs it), so when they are in a profile they are
-// plainly allowed, and when they are not -- every run step without
-// --allow=threads -- they fall through to the notification anyway.
+// The four process-creating calls are here too, and that is the post-M43
+// review's finding. They used to be left to the profile: the compile step has
+// to fork (`mc build` writes a compiler and runs it), so `clone` -- and
+// `clone3` in the glibc delta -- were measured and written into the compile
+// list as a PLAIN ALLOW. A plain allow is a call the supervisor never sees,
+// and `mc build` runs `[linker].cmd` out of the source tree's own mc.toml, so
+// a hostile tree shipped a static binary, named it as its linker, and forked
+// in a loop inside the compile step: twelve children, no `refused:` line, and
+// a report that said only `compile: exit 1`. Nothing escaped -- the children
+// were in the pid namespace and died with it -- but nothing NAMED it either,
+// and `clone(CLONE_NEWUSER|...)` was equally allowed.
+//
+// So a call that makes a process is never a plain allow in any profile. Each
+// one reaches P, which reads the flags (§ 4) and answers: a namespace flag is
+// `refused: clone with namespace flags`, and anything else is counted against
+// the step's process limit. With --allow=threads the filter still short-cuts a
+// REAL thread by its flags (sb_filter_build), so a threaded program pays no
+// round trip per thread; a new process always does.
 i64 sb_notified(i64 nr) {
     if (nr == host_sysno(SN_OPENAT)) return 1;
     if (nr == host_sysno(SN_OPEN)) return 1;
     if (nr == host_sysno(SN_MMAP)) return 1;
     if (nr == host_sysno(SN_MUNMAP)) return 1;
     if (nr == host_sysno(SN_EXECVE)) return 1;
+    if (nr == host_sysno(SN_CLONE)) return 1;
+    if (nr == host_sysno(SN_CLONE3)) return 1;
+    if (nr == host_sysno(SN_FORK)) return 1;
+    if (nr == host_sysno(SN_VFORK)) return 1;
     return 0;
 }
 
@@ -192,9 +216,15 @@ i64 sb_filter_build(i64 mode) {
     }
 
     if (c) {
-        // clone is the one row whose ARGUMENT decides. clone3 is not here and
-        // cannot be: its flags live in a struct in the caller's memory, which
-        // BPF cannot read -- it stays a notification, and P counts it.
+        // clone is the one row whose ARGUMENT decides, and it is never one of
+        // the m allowed numbers above: sb_notified() keeps every
+        // process-creating call out of the profile. What this block buys is a
+        // fast path for a REAL thread -- CLONE_THREAD set and no CLONE_NEW*
+        // bit -- so a threaded program does not pay a round trip to the
+        // supervisor per thread. Everything else falls to the notification,
+        // where P reads the flags and either names the namespace or counts the
+        // process. clone3 has no block and cannot have one: its flags live in
+        // a struct in the caller's memory, which BPF cannot read.
         i = sb_bpf_at(i, BPF_JEQ_K, 0, 3, host_sysno(SN_CLONE));
         i = sb_bpf_at(i, BPF_LD_W_ABS, 0, 0, SD_ARG0);
         i = sb_bpf_at(i, BPF_JSET_K, 0, 1, SB_CLONE_THREAD);   // no THREAD -> notify
@@ -396,6 +426,28 @@ uptr sb_vm_read(i64 pid, i64 addr) {
     return sb_rpath();
 }
 
+// clone3(2) hands its flags in a struct the caller owns -- `struct clone_args`,
+// whose first field is the u64 `flags` -- and args[1] of the call is that
+// struct's size, which is how the kernel versions it. BPF cannot follow a
+// pointer, so this is the only way to know whether a clone3 is asking for a
+// namespace, and it is the reason clone3 is always a notification.
+//
+// The answer is -1 when the struct could not be read, which the caller treats
+// as a refusal: a process-creating call whose flags cannot be inspected is not
+// one to let through. No clone3 flag reaches bit 63 (the highest defined is
+// CLONE_INTO_CGROUP, 0x200000000), so -1 cannot be a real value.
+i64 sb_clone3_flags(i64 pid, i64 addr, i64 size) {
+    if (size < 8) return 0;                  // too small to have a flags field
+    st64(sb_rpath(), 0);
+    st64(sb_iovp(), sb_rpath());             // local iovec
+    st64(sb_iovp() + 8, 8);
+    st64(sb_iovp() + 16, addr);              // remote iovec
+    st64(sb_iovp() + 24, 8);
+    i64 n = sb_sys(SN_PROCESS_VM_READV, pid, sb_iovp(), 1, sb_iovp() + 16, 1, 0);
+    if (n != 8) return -1;
+    return ld64(sb_rpath());
+}
+
 // ---- the explain channel, P's policy (§ 4) ---------------------------------
 // One table, and it is the whole difference between step B and step C: a
 // program that reaches outside the box is not killed by a number any more, it
@@ -406,8 +458,10 @@ uptr sb_vm_read(i64 pid, i64 addr) {
 //                        refused: open PATH             -EACCES
 //   mmap / munmap        a running total against --mem;
 //                        refused: mmap N bytes over the cap (M)   -ENOMEM
-//   clone / clone3       counted, with --allow=threads;
-//                        refused: process limit (64)    -EAGAIN
+//   clone / clone3 /     a namespace flag ->
+//   fork / vfork         refused: clone with namespace flags     -EPERM
+//                        otherwise counted against the step's limit:
+//                        refused: process limit (N)              -EAGAIN
 //   execve               counted per step;  refused: execve       -EPERM
 //
 // Everything here is a DIAGNOSIS. The enforcement is elsewhere and does not
@@ -557,15 +611,34 @@ void sb_notif_decide() {
     // about which entry point asked for one.
     if (nr == host_sysno(SN_CLONE) || nr == host_sysno(SN_CLONE3)
         || nr == host_sysno(SN_FORK) || nr == host_sysno(SN_VFORK)) {
-        // Without --allow=threads neither is in the profile and neither is
-        // counted: a fork bomb stops at its FIRST fork, named. With the flag,
-        // a real thread never gets here (the filter's own flag test allows
-        // it) and what does get here is a new PROCESS, which is what the cap
-        // is about.
-        if (!sb_threads()) { sb_refuse(sb_callname(nr), 0 - E_PERM); return; }
+        // None of the four is ever a plain ALLOW (sb_notified), so all four
+        // arrive here, in every step and in every profile. Two questions, in
+        // this order.
+        //
+        // First: does it ask for a NAMESPACE? The box is a set of namespaces
+        // and a program that makes its own is asking for a view the sandbox
+        // was built to deny -- a fresh user namespace inside the box is where
+        // an unprivileged process gets capabilities it did not have. It is
+        // refused by name, whatever the step and whatever the limit.
+        //
+        // Then: how many processes has this step made? The cap is P's and it
+        // is per step (sb_fetch_listener): 16 for the compile step, which has
+        // to fork -- `mc build` writes a compiler, runs it, and may run
+        // [linker].cmd out of the project's own mc.toml -- and 0 for a run
+        // step, or 64 with --allow=threads. RLIMIT_NPROC is the wall behind
+        // this one and is deliberately looser, so the sentence arrives before
+        // the kernel's EAGAIN.
+        i64 flags = a0 & SB_CLONE_NEWANY;
+        if (nr == host_sysno(SN_CLONE3)) {
+            i64 f = sb_clone3_flags(pid, a0, a1);
+            if (f < 0) { sb_refuse("clone3 with unreadable arguments", 0 - E_PERM); return; }
+            flags = f & SB_CLONE_NEWANY3;
+        }
+        if (nr == host_sysno(SN_FORK) || nr == host_sysno(SN_VFORK)) flags = 0;
+        if (flags) { sb_refuse("clone with namespace flags", 0 - E_PERM); return; }
         set_sb_nclone(sb_nclone() + 1);
-        if (sb_nclone() > SB_NPROC_THREADS) {
-            sb_refuse(tm_cat("process limit (", tm_cat(tm_num_str(SB_NPROC_THREADS), ")")),
+        if (sb_nclone() > sb_procmax()) {
+            sb_refuse(tm_cat("process limit (", tm_cat(tm_num_str(sb_procmax()), ")")),
                       0 - E_AGAIN);
             return;
         }

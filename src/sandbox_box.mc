@@ -290,8 +290,13 @@ void sb_caps_step(i64 step) {
     // --entry-only, § 5), so a project needs a handful of processes to build at
     // all. Sixteen is more than the three execs a taught build takes and far
     // less than a bomb.
+    //
+    // Since the post-M43 review this rlimit is the SECOND wall in the compile
+    // step, not the first: P counts every clone against SB_NPROC_COMPILE (16)
+    // on the notification, so the named refusal has to arrive before the
+    // kernel's EAGAIN and the limit here is deliberately looser (32).
     i64 np = 0;
-    if (step == SB_STEP_COMPILE) np = SB_NPROC_COMPILE;
+    if (step == SB_STEP_COMPILE) np = SB_NPROC_COMPILE_WALL;
     if (sb_threads()) np = SB_NPROC_BACKSTOP;
     sb_rlimit(SB_RLIMIT_NPROC, np);
 }

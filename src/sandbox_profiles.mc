@@ -20,15 +20,21 @@
 //   sbp_program_*   the run step: what an mc program plus its loader issues
 //   sbp_gnu_*_*     what glibc's ld.so and libc need that musl's do not, per
 //                   step -- the two are NOT the same list
-//   sbp_threads     what --allow=threads adds (clone is not here: the filter
-//                   gives it a flag test of its own, src/seccomp.mc)
+//   sbp_threads     what --allow=threads adds
 //
 // Each list is terminated by -1. An entry this architecture does not have
 // answers -1 from host_sysno() and is skipped when the filter is built.
+//
+// A call that MAKES A PROCESS -- clone, clone3, fork, vfork -- appears as a
+// comment and never as a row: no profile allows one. They reach the supervisor
+// instead, which refuses a namespace flag by name and counts everything else
+// against the step's process limit (src/seccomp.mc, sb_notified). With
+// --allow=threads the filter still short-cuts a real thread by its flags, so
+// only a new PROCESS costs a round trip.
 
 i64 sbp_compile_aarch64[] = {
     SN_BRK,
-    SN_CLONE,
+    // SN_CLONE  notified, never allowed (src/seccomp.mc)
     SN_CLOSE,
     SN_EXECVE,
     SN_EXIT_GROUP,
@@ -49,7 +55,7 @@ i64 sbp_compile_aarch64[] = {
 };
 
 i64 sbp_gnu_compile_aarch64[] = {
-    SN_CLONE3,
+    // SN_CLONE3  notified, never allowed (src/seccomp.mc)
     SN_FACCESSAT,
     SN_FSTAT,
     SN_GETRANDOM,
@@ -97,7 +103,7 @@ i64 sbp_compile_x86_64[] = {
     SN_ARCH_PRCTL,
     SN_BRK,
     SN_CHMOD,
-    SN_CLONE,
+    // SN_CLONE  notified, never allowed (src/seccomp.mc)
     SN_CLOSE,
     SN_EXECVE,
     SN_EXIT_GROUP,
@@ -118,7 +124,7 @@ i64 sbp_compile_x86_64[] = {
 
 i64 sbp_gnu_compile_x86_64[] = {
     SN_ACCESS,
-    SN_CLONE3,
+    // SN_CLONE3  notified, never allowed (src/seccomp.mc)
     SN_CREAT,
     SN_FSTAT,
     SN_GETRANDOM,
@@ -167,6 +173,8 @@ i64 sbp_gnu_program_x86_64[] = {
 
 i64 sbp_threads[] = {
     SN_CLOCK_NANOSLEEP,
+    // SN_CLONE  notified, never allowed (src/seccomp.mc)
+    // SN_CLONE3  notified, never allowed (src/seccomp.mc)
     SN_EXIT,
     SN_FUTEX,
     SN_MADVISE,

@@ -343,11 +343,17 @@ emit() {   # emit > FILE
 //   sbp_program_*   the run step: what an mc program plus its loader issues
 //   sbp_gnu_*_*     what glibc's ld.so and libc need that musl's do not, per
 //                   step -- the two are NOT the same list
-//   sbp_threads     what --allow=threads adds (clone is not here: the filter
-//                   gives it a flag test of its own, src/seccomp.mc)
+//   sbp_threads     what --allow=threads adds
 //
 // Each list is terminated by -1. An entry this architecture does not have
 // answers -1 from host_sysno() and is skipped when the filter is built.
+//
+// A call that MAKES A PROCESS -- clone, clone3, fork, vfork -- appears as a
+// comment and never as a row: no profile allows one. They reach the supervisor
+// instead, which refuses a namespace flag by name and counts everything else
+// against the step's process limit (src/seccomp.mc, sb_notified). With
+// --allow=threads the filter still short-cuts a real thread by its flags, so
+// only a new PROCESS costs a round trip.
 EOF
     for a in aarch64 x86_64; do
         for k in compile program; do
@@ -374,7 +380,7 @@ EOF
             echo "};"
         done
     done
-    t=$(cat tools/sandbox/*-threads.list 2>/dev/null | sort -u | grep -vE '^(clone|clone3)$')
+    t=$(cat tools/sandbox/*-threads.list 2>/dev/null | sort -u)
     echo
     echo "i64 sbp_threads[] = {"
     emit_rows "$t"
@@ -405,11 +411,23 @@ uptr sbp_gnu_program() {
 EOF
 }
 
+# One row per measured call -- except the four that make a PROCESS. They stay
+# in the .list files, because the lists are what the trace SAW and `mc build`
+# really does fork, but they are written into the table as a comment: since the
+# post-M43 review, clone, clone3, fork and vfork are never allowed by any
+# profile (src/seccomp.mc, sb_notified). Each one reaches the supervisor, which
+# reads the flags and either names the namespace or counts the process against
+# the step's limit. Leaving them as plain rows is what let a hostile mc.toml
+# fork a bomb inside the compile step with nothing in the report.
 emit_rows() {   # emit_rows "name name ..."
     if [ -z "$1" ]; then echo "    -1"; return; fi
     for s in $1; do
         u=$(echo "$s" | tr 'a-z' 'A-Z')
-        printf '    SN_%s,\n' "$u"
+        case "$s" in
+            clone|clone3|fork|vfork)
+                printf '    // SN_%s  notified, never allowed (src/seccomp.mc)\n' "$u" ;;
+            *)  printf '    SN_%s,\n' "$u" ;;
+        esac
     done
     echo "    -1"
 }

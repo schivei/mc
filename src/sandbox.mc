@@ -86,6 +86,7 @@
 
 #define SB_LANDLOCK_ABI_VERSION        1   // LANDLOCK_CREATE_RULESET_VERSION
 #define SB_LANDLOCK_ABI_MIN            4   // ABI 4 is the floor (§ 0)
+#define SB_LANDLOCK_ABI_SCOPE          6   // ABI 6 added the scoped field
 #define SB_SECCOMP_GET_ACTION_AVAIL    2
 #define SB_RET_USER_NOTIF     0x7FC00000   // SECCOMP_RET_USER_NOTIF
 
@@ -108,7 +109,18 @@
 #define SB_RLIMIT_NOFILE               7
 #define SB_RLIMIT_AS                   9
 #define SB_NOFILE                     32
+// How many processes each step may CREATE, counted by P on the notifications
+// (src/seccomp.mc). The compile step needs a handful -- `mc build` writes a
+// compiler, spawns it, and may spawn [linker].cmd -- and sixteen is far more
+// than the two or three a taught build takes; the run step gets none unless
+// --allow=threads is given.
+//
+// Behind each counter is an RLIMIT_NPROC that has to be LOOSER, or the
+// kernel's EAGAIN arrives before the supervisor's sentence (measured at step
+// C, note 13: with both at 64 the fork bomb printed `forked 60` and was never
+// refused). SB_NPROC_COMPILE_WALL is that backstop for the compile step.
 #define SB_NPROC_COMPILE              16
+#define SB_NPROC_COMPILE_WALL         32
 // The process cap with --allow=threads is counted by P, on the clone
 // notifications, so that the refusal has a NAME (`refused: process limit
 // (64)`). RLIMIT_NPROC is the backstop behind it and is deliberately looser:
@@ -125,6 +137,14 @@
 #define SB_UTS_FIELD  65
 #define SB_UTS_SIZE  390
 #define SB_UTS_RELEASE 130                 // 2 * SB_UTS_FIELD
+
+// ---- the maxima of the four caps (§ 6, docs/reference/cli.md § 3c) ----
+// A day, a tebibyte, sixty-four gibibytes. Bigger than anything the playground
+// or the suite asks for and small enough that the products below -- MiB times
+// 1048576 for RLIMIT_AS and RLIMIT_FSIZE -- stay far inside an i64.
+#define SB_SECS_MAX     86400              // --time and --wall, in seconds
+#define SB_MEM_MAX    1048576              // --mem, in MiB: 1 TiB
+#define SB_OUT_MAX      65536              // --out, in MiB: 64 GiB
 
 // ---- the exit codes of § 6 ----
 #define SB_EXIT_CAP     124                // a cap stopped it (cpu, wall)
@@ -251,7 +271,8 @@
 #define SB_PROF     6760    // SB_MAXPROF * 8: the profile, as kernel numbers
 #define SB_BPF      7784    // 2048: the filter, 256 struct sock_filter
 #define SB_RPATH    9832    // 4104: a path read out of the step
-#define SB_SIZE    13936
+#define SB_PROCMAX 13936    // how many processes this step may create
+#define SB_SIZE    13944
 
 #define SB_MAXPROF 128
 
@@ -328,6 +349,7 @@ i64  sb_nclone()   { return ld64(sb_rec() + SB_NCLONE); }
 i64  sb_nexec()    { return ld64(sb_rec() + SB_NEXEC); }
 i64  sb_execmax()  { return ld64(sb_rec() + SB_EXECMAX); }
 i64  sb_nprof()    { return ld64(sb_rec() + SB_NPROF); }
+i64  sb_procmax()  { return ld64(sb_rec() + SB_PROCMAX); }
 
 void set_sb_time(i64 v)    { st64(sb_rec() + SB_TIME, v); }
 void set_sb_wall(i64 v)    { st64(sb_rec() + SB_WALL, v); }
@@ -382,6 +404,7 @@ void set_sb_nclone(i64 v)  { st64(sb_rec() + SB_NCLONE, v); }
 void set_sb_nexec(i64 v)   { st64(sb_rec() + SB_NEXEC, v); }
 void set_sb_execmax(i64 v) { st64(sb_rec() + SB_EXECMAX, v); }
 void set_sb_nprof(i64 v)   { st64(sb_rec() + SB_NPROF, v); }
+void set_sb_procmax(i64 v) { st64(sb_rec() + SB_PROCMAX, v); }
 
 // the buffers, by address
 uptr sb_env()   { return sb_rec() + SB_ENV; }
@@ -471,18 +494,31 @@ uptr sb_signame(i64 s) {
     return "signal";
 }
 
-// a non-negative decimal, or -1. Used for --time/--wall/--mem/--out, where a
-// bad value has to be a diagnostic and not a silent 0.
+// a non-negative decimal, -1 when it is not a number at all, -2 when it is
+// too big to be one. Used for --time/--wall/--mem/--out, where a bad value has
+// to be a diagnostic and not a silent 0 -- and, since the post-M43 review, not
+// a WRAPPED one either: the accumulation used to run unbounded, so
+// `--mem 999999999999999999999999` came back as whatever the low 64 bits of
+// that were and was then multiplied by 1048576 for RLIMIT_AS.
+//
+// The ceiling is one number for all four options and it is far above every
+// per-option maximum below (SB_MEM_MAX is the largest, a million); what it
+// bounds is the arithmetic, so `v * 10 + d` can never reach 2^63.
+#define SB_NUM_CEIL 1000000000000
+#define SB_NUM_BAD  -1
+#define SB_NUM_BIG  -2
+
 i64 sb_num(uptr s) {
-    if (s == 0) return -1;
-    if (ld8(s) == 0) return -1;
+    if (s == 0) return SB_NUM_BAD;
+    if (ld8(s) == 0) return SB_NUM_BAD;
     i64 v = 0;
     i64 i = 0;
     loop {
         i64 c = ld8(s + i);
         if (c == 0) break;
-        if (c < '0' || c > '9') return -1;
+        if (c < '0' || c > '9') return SB_NUM_BAD;
         v = v * 10 + (c - '0');
+        if (v > SB_NUM_CEIL) return SB_NUM_BIG;
         i = i + 1;
     }
     return v;
@@ -705,6 +741,15 @@ i64 sb_check_landlock() {
     out_str(1, "abi ");
     out_num(1, abi);
     if (abi < SB_LANDLOCK_ABI_MIN) { out_str(1, " (below the minimum 4)\n"); return 0; }
+    // ABI 6 is what added the `scoped` field -- abstract unix sockets and
+    // signals scoped to the Landlock domain. Below it the ruleset simply does
+    // not carry that word, so the box loses one restriction silently: a
+    // program could signal a process outside the box if one were visible to
+    // it, and could name an abstract unix socket. Nothing in the box makes
+    // either reachable (the pid namespace hides every other process and the
+    // network namespace is empty), which is why 4 and not 6 is the floor --
+    // but a missing wall is said out loud rather than assumed away.
+    if (abi < SB_LANDLOCK_ABI_SCOPE) { out_str(1, " (no scoped signals below 6)\n"); return 1; }
     out_str(1, "\n");
     return 1;
 }
@@ -832,7 +877,22 @@ i64 sb_parse(i64 argc, uptr argv, i64 i) {
         uptr w = ld64(argv + (i + 1) * 8);
         if (num) {
             i64 n = sb_num(w);
+            if (n == SB_NUM_BIG) { sb_err2(a, "number too large"); return 2; }
             if (n < 0) { sb_err2("not a number", w); return 2; }
+            // Every cap has a maximum, and every cap has a minimum of one.
+            // The maxima are documented in docs/reference/cli.md § 3c: a day
+            // of CPU or of wall clock, a tebibyte of address space, sixty-four
+            // gibibytes of output. They are not the kernel's limits -- they
+            // are the largest values that still MEAN something here, and a
+            // value past one of them is a typo or an attack, never a request.
+            // Zero is refused for all four: --time 0 or --wall 0 kills the box
+            // before it runs, --mem 0 is an RLIMIT_AS nothing can start under,
+            // and --out 0 is a tmpfs the mount refuses.
+            i64 max = SB_SECS_MAX;
+            if (str_eq(a, "--mem")) max = SB_MEM_MAX;
+            if (str_eq(a, "--out")) max = SB_OUT_MAX;
+            if (n > max) { sb_err2(a, tm_cat("at most ", tm_num_str(max))); return 2; }
+            if (n < 1) { sb_err2(a, "must be at least 1"); return 2; }
             if (str_eq(a, "--time")) set_sb_time(n);
             if (str_eq(a, "--wall")) set_sb_wall(n);
             if (str_eq(a, "--mem"))  set_sb_mem(n);
@@ -1211,6 +1271,14 @@ void sb_fetch_listener(i64 jfd) {
     i64 mx = 1;
     if (sb_step() == SB_STEP_COMPILE) mx = 3;
     set_sb_execmax(mx);
+    // And how many PROCESSES. Every clone, clone3, fork and vfork is a
+    // notification (src/seccomp.mc, sb_notified) and is counted here, so this
+    // is the named wall a fork bomb hits -- in the compile step too, which is
+    // where `mc build` runs whatever [linker].cmd the source tree named.
+    i64 pm = 0;
+    if (sb_step() == SB_STEP_COMPILE) pm = SB_NPROC_COMPILE;
+    if (sb_step() == SB_STEP_RUN && sb_threads()) pm = SB_NPROC_THREADS;
+    set_sb_procmax(pm);
 
     sb_sys(SN_WRITE, sb_syncw(), "1", 1, 0, 0, 0);
 }

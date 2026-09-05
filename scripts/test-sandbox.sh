@@ -14,6 +14,9 @@
 #
 #   1  mc sandbox check          the guard: without it the rest is skipped
 #   2  tests/sandbox/*.mc        the isolation cases, each with its own headers
+#   2b tests/sandbox/linkbomb/  a hostile project: mc.toml names a fork bomb as
+#                               its [linker].cmd, so the bomb runs in the
+#                               COMPILE step
 #   3  tests/*.mc                the whole suite, compiled AND run inside the box
 #   4  mc sandbox exec           on binaries built outside it, one of them
 #                                dynamic (it reaches libc through the bind of
@@ -33,6 +36,8 @@
 #   // sandbox-report-<arch>: LINE   the same, when the two architectures
 #                            disagree -- a refusal names a system call NUMBER,
 #                            and `socket` is 198 on AArch64 and 41 on x86-64
+#                            (a refused fork does NOT need one any more: since
+#                            the post-M43 review it is counted, not named)
 #   // sandbox-opts: OPTS    extra options for this case
 #   // sandbox-alt-*:        a SECOND run of the same source with other options,
 #                            for the case that has two answers: a fork bomb is
@@ -106,6 +111,13 @@ if [ ! -x "$mc" ]; then
     exit 1
 fi
 if [ -e "/lib/ld-musl-$arch.so.1" ]; then libc=musl; else libc=gnu; fi
+# The flag every `--exe` build in this script needs, and it is set HERE rather
+# than beside the first use: part 2b builds a program too, and building it for
+# the wrong C library gives a binary this host cannot execute -- measured, the
+# box then stops at `refused: syscall 95 (waitid)`, which is glibc's posix_spawn
+# reaping a child that never exec'd, and the case under test never happens.
+lf=
+[ "$libc" = gnu ] && lf=--libc=gnu
 
 out=build/sandbox
 rm -rf "$out"; mkdir -p "$out"
@@ -187,6 +199,34 @@ for f in tests/sandbox/*.mc; do
     fi
 done
 
+# ---- 2b. a hostile project: the fork bomb in the COMPILE step --------------
+# The reproduction of the post-M43 review's first finding (docs/specs/M43.md
+# § Implementation notes -- the review). `mc build` runs whatever
+# [linker].cmd names, and that name comes out of the source tree's own
+# mc.toml -- so an untrusted tree chooses a binary the COMPILE step executes.
+# The bomb is compiled here, with the compiler under test, into a copy of the
+# project under build/: nothing binary is checked in, and the host tree is
+# untouched (the marker above covers it).
+echo "-- a hostile project (the compile step's own fork bomb)"
+lbdir="$out/linkbomb"
+rm -rf "$lbdir"; mkdir -p "$lbdir"
+cp tests/sandbox/linkbomb/mc.toml tests/sandbox/linkbomb/app.mc tests/sandbox/linkbomb/bomb.mc "$lbdir/"
+# shellcheck disable=SC2086
+if ! "$mc" --exe $lf "$lbdir/bomb.mc" -o "$lbdir/bomb" > "$lbdir/bomb.build" 2>&1; then
+    say_fail "linkbomb (the bomb could not be built)"; sed 's/^/     /' "$lbdir/bomb.build"
+else
+    "$mc" sandbox run --report "$out/linkbomb.report" "$lbdir" \
+          > "$out/linkbomb.out" 2> "$out/linkbomb.err"
+    rc=$?
+    ok=1
+    [ "$rc" = 125 ] || { ok=0; echo "     exit $rc, want 125"; sed 's/^/       /' "$out/linkbomb.report"; }
+    grep -qx "sandbox: refused: process limit (16)" "$out/linkbomb.report" || {
+        ok=0; echo "     report has no line 'sandbox: refused: process limit (16)':"
+        sed 's/^/       /' "$out/linkbomb.report"; }
+    if [ "$ok" = 1 ]; then say_ok "linkbomb (the compile step is bounded and named)"
+    else say_fail "linkbomb"; fi
+fi
+
 # What the isolation cases must NOT have done to the host (acceptance 2): the
 # fork bomb's children were inside the pid namespace and died with it, and the
 # eight-gibibyte mapping was never made.
@@ -250,8 +290,6 @@ done
 # none of the box's roots is `refused: open ...`, exit 125 (§ 4). The box does
 # not answer ENOENT for a path it will not look at.
 echo "-- mc sandbox exec"
-lf=
-[ "$libc" = gnu ] && lf=--libc=gnu
 for pair in "013-putnum tests/013-putnum.mc 46368" "libcuser tests/sandbox/libcuser.mc libc ok"; do
     set -- $pair
     n=$1; src=$2; shift 2; want="$*"
