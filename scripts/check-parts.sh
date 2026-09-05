@@ -195,6 +195,39 @@ else
     fi
 fi
 
+# ------------------------------------------ 4b. the part that is not there (M43)
+# Acceptance 9 of M43: a compiler assembled without <mc/core_sandbox> has no
+# `sandbox` subcommand at all -- not a stub, not a refusal it has to keep true.
+# It prints one usage line fewer (the usage text IS the subcommand table, since
+# M41: each registration carries its own line), and the word `sandbox` on its
+# command line is an ordinary file name, refused exactly as any other unknown
+# argument is.
+if [ -x "$tmp/mcmin" ]; then
+    if "$tmp/mcmin" 2>&1 | grep -q sandbox; then
+        fail "the core_min-only compiler still prints a sandbox usage line"
+    else
+        echo "ok   no <mc/core_sandbox>: no sandbox usage line"
+    fi
+    msg=$("$tmp/mcmin" sandbox 2>&1); rc=$?
+    if [ "$rc" = 1 ] && [ "$msg" = "mc: cannot open: sandbox" ]; then
+        echo "ok   no <mc/core_sandbox>: 'mc sandbox' is 'mc: cannot open: sandbox', exit 1"
+    else
+        fail "no <mc/core_sandbox>: 'mc sandbox' said [$msg], exit $rc"
+    fi
+    msg=$("$tmp/mcmin" sandbox check 2>&1); rc=$?
+    if [ "$rc" = 1 ] && [ "$msg" = "mc: duplicate entry: check" ]; then
+        echo "ok   no <mc/core_sandbox>: 'mc sandbox check' is 'mc: duplicate entry: check', exit 1"
+    else
+        fail "no <mc/core_sandbox>: 'mc sandbox check' said [$msg], exit $rc"
+    fi
+    # and the whole compiler, for contrast: the same two words are a subcommand
+    if "$mc" 2>&1 | grep -q 'mc sandbox run|exec'; then
+        echo "ok   with the part: the usage carries the two sandbox lines"
+    else
+        fail "the whole compiler does not print the sandbox usage lines"
+    fi
+fi
+
 # ------------------------------------------------------------- 5. the removals
 cat > "$tmp/uses_ld64.mc" <<'EOF'
 i64 main() {
