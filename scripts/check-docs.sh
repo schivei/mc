@@ -71,10 +71,19 @@ cat docs/reference/*.md > "$refs" 2>/dev/null || { echo "FAIL: docs/reference/ i
 # on its own and fits none of the prefixes above, and M45's c_* (c_int, the value
 # of a C `int` result), which the M26 list could not name because it did not exist
 # and which no other prefix reaches.
+# Four EXACT names, not a prefix: parse_unary, parse_top, do_directive and
+# lex_include (docs/reference/hooks.md § 4) are public, but `parse_` and `lex_`/
+# `do_` are not prefixes here -- the M26 list predates all four, which is why
+# they were never required. A `parse_` prefix would also drag in parse_call,
+# parse_dim, parse_extern, parse_global, parse_initlist, parse_postfix,
+# parse_primary, parse_stmt_core, parse_unit and parse_var, and `lex_include`
+# alone (matched as a prefix) would drag in lex_include_name and
+# lex_include_bundled -- all of them deliberately internal. Named exactly
+# instead, so only the four the consumer actually depends on are required.
 # A symbol counts as documented when the reference mentions it
 # as a call (`name(`), which is how every entry in hooks.md and objects.md is
 # written; a bare word in prose is not enough.
-grep -hoE '^(void|i64|uptr|u8|u16|u32|u64) +(p_|syntax|type_|pass|backend|machine|sec_|sym_|reloc_add|gen_|on_|decl_|host_|intrinsic|walk_|subcommand|c_)[A-Za-z_0-9]*\(' src/*.mc \
+grep -hoE '^(void|i64|uptr|u8|u16|u32|u64) +((p_|syntax|type_|pass|backend|machine|sec_|sym_|reloc_add|gen_|on_|decl_|host_|intrinsic|walk_|subcommand|c_)[A-Za-z_0-9]*|parse_unary|parse_top|do_directive|lex_include)\(' src/*.mc \
     | sed -E 's/^[a-z0-9]+ +//; s/\($//' | sort -u > "$tmp/syms"
 
 missing=""
