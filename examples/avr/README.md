@@ -21,7 +21,7 @@ too, and that a compiler can be smaller than `mc` by what it omits.
 | file | lines | what |
 |---|---|---|
 | `machine_avr.mc` | 995 | the ATmega328P machine: the same 31 task slots `src/machine_arm64.mc` fills |
-| `image_avr.mc` | 537 | `backend("avr-image", ...)`: ELF32 `EM_AVR`, the vector table, the reset stub, `.mmcu` |
+| `image_avr.mc` | 556 | `backend("avr-image", ...)`: ELF32 `EM_AVR`, the vector table, the reset stub, `.mmcu` |
 | `avr_syntax.mc` | 132 | `sfr`, `sbi`, `cbi`, `bit` — one `syntax`, two `syntax_stmt`, one `syntax_expr` |
 | `mc-avr.mc` | 70 | the recreated compiler: the parts it is made of, and the five registrations |
 | `lib/sys_avr.mc` | 150 | the UART, `halt`, `_start` and the flash-to-SRAM copy |
@@ -29,7 +29,9 @@ too, and that a compiler can be smaller than `mc` by what it omits.
 | `lib/isr.mc` | 103 | the interrupt frame: `#opcode` only, ending in `reti` |
 | `main.mc` | 80 | the firmware |
 | `tests/sweep_a.mc`, `tests/sweep_b.mc` | 230 | every task of the machine, checked by the program itself |
-| `test.sh` | 561 | the gate: two oracles, two toolchains, ten steps |
+| `test.sh` | 633 | the gate: three oracles, two toolchains, ten steps |
+| `oracle/simavr-run.sh` | 164 | one run under one simavr, judged; shared with the CI leg |
+| `oracle/Dockerfile` | 31 | `ubuntu:latest` + `simavr qemu-system-misc`: the version CI has |
 
 (About half of the `.mc` lines are comment: this directory is also the worked
 example `docs/guide/97-a-new-architecture.md` sends people to.)
@@ -137,23 +139,58 @@ the source. The cost is SRAM: a literal occupies both.
 flash 0x0000  the interrupt vector table, 26 x jmp, synthesized
       0x0068  the reset stub: SP = RAMEND, then jmp _start
       0x0078  __TEXT,__text
-              .mmcu, the simavr blob
               the LOAD image of __TEXT,__cstring and __DATA,__data
+              .mmcu, the simavr blob -- last, and in no LOAD segment
 sram  0x0100  __TEXT,__cstring, __DATA,__data, __DATA,__bss
       0x08FF  RAMEND: _stack_top
 ```
+
+The load image of the data comes immediately after the code, with nothing in
+between, and that order is not cosmetic: simavr 1.6 builds its flash from the
+CONTENTS of `.text` immediately followed by the contents of `.data` and ignores
+every address in the file. See § The three oracles.
 
 The reset stub is there for the same reason M39's was: the compiler's frame
 record is unconditional, so `_start`'s own `push r29` is the first instruction of
 the program and SP has to mean something before it.
 
-## The two oracles
+## The three oracles
 
-| | simavr (primary) | qemu-system-avr (second) |
-|---|---|---|
-| invocation | `simavr build/avr.elf` | `qemu-system-avr -machine arduino-uno -bios build/avr.elf -nographic` |
-| transcript | UART0, wrapped in an ANSI colour per line | UART0, plain |
-| exit | the `.mmcu` command register: 4 exits 0, 5 exits 1 | none — the run is ended by the watchdog |
+| | simavr master | simavr 1.6 | qemu-system-avr |
+|---|---|---|---|
+| where | Homebrew, or a source build | Debian/Ubuntu `apt`, and therefore CI | Homebrew, `apt`, CI |
+| how it loads | the `PT_LOAD` program headers | the CONTENTS of `.text`, then `.data`; addresses ignored | the program headers |
+| transcript | **stdout**, `ESC[32m` per line | **stderr**, `ESC[32m` per line, the `\n` drawn as a trailing `.` | stdout, plain |
+| exit | the `.mmcu` command register: 4 exits 0, 5 exits 1 | the register has no handler: always 0 | none — the run is ended by the watchdog |
+
+**There are two simavrs and they are not interchangeable.** 1.6 is the one CI
+has, and it was 1.6 that caught an ALLOC `.mmcu` sitting between the code and the
+load image of the data: it copies `.text` and then `.data` by name, so the data
+landed 78 bytes low, every pointer in `__data` came out `0xffff`, and the
+firmware died on its first string — as a fifteen-minute hang, because 1.6
+answers a bad access by starting a GDB stub and waiting. The layout above
+satisfies both loaders, `.mmcu` sits at 0x910000 with no flags and in no segment
+(which is also what stops master warning `ELF .mmcu section at 0 may be loaded`),
+and the whole story is `docs/specs/M40.md` finding 11.
+
+Because the two versions disagree about the stream, about the line ending and
+about whether the exit code can carry anything at all, no caller compares raw
+output. Every run goes through **`oracle/simavr-run.sh`**, which is called by
+`test.sh` and by the `baremetal-avr` CI leg and by nothing else: it separates the
+firmware's bytes from the simulator's log by the ANSI colour (neither version
+colours its own lines), reads the verdict off the `.mmcu` command register at
+`-v -v -v` (`0x04` for `halt(0)`, `0x05` for `halt(1)`, logged by BOTH versions)
+and additionally requires the process status to match on the version that
+implements it — detected from the `has no handler` line, never assumed from a
+version string. It also fails on any `Invalid read`, `Invalid write` or
+`avr_sadly_crashed` line, and carries a 60-second watchdog, so what used to be a
+CI hang is now a ten-second failure with the crash line quoted.
+
+**Running 1.6 on macOS**: `oracle/Dockerfile` is `ubuntu:latest` plus
+`simavr qemu-system-misc`. `test.sh` builds it on demand
+(`docker build --platform linux/amd64 -t mc-avr-oracle examples/avr/oracle`),
+caches it by tag, runs the four images under it, and prints `SKIP` with a reason
+when there is no Docker.
 
 **One image and one transcript channel, no `#define`.** `docs/specs/M40.md` § 4
 expected the two simulators to disagree about stdout and priced a `#define`
@@ -208,15 +245,16 @@ touches no flag. The two `pop`s at the bottom of the body undo it.
 ## The gate
 
 `make check-avr` (inside `make check`) runs `test.sh`: `mc build` and the
-single-file CLI agreeing byte for byte, the transcript and the exit code under
-simavr, the same transcript under QEMU, the two sweeps run under BOTH simulators,
-two builds byte-identical, the default compiler refusing all three halves, the
-ABI asserted over `--dump-asm --machine=avr`, the four things the machine refuses
-rather than truncates, the **1980 distinct instructions** of the three images
-re-assembled byte for byte under `llvm-mc -triple=avr` with every relative and
-absolute target recomputed, the ELF compared field by field against the same
-program built by `avr-gcc` (header, the three LOAD segments, the four section
-headers, and the vector table), and `mc limits` cold and remembered.
+single-file CLI agreeing byte for byte, the transcript and the verdict under
+simavr and again under simavr 1.6 in Docker, the same transcript under QEMU, the
+two sweeps run under all three, two builds byte-identical, the default compiler
+refusing all three halves, the ABI asserted over `--dump-asm --machine=avr`, the
+four things the machine refuses rather than truncates, the **1979 distinct
+instructions** of the three images re-assembled byte for byte under
+`llvm-mc -triple=avr` with every relative and absolute target recomputed, the ELF
+compared field by field against the same program built by `avr-gcc` (header, the
+three LOAD segments, the three sections both toolchains emit, `.mmcu`'s placement
+and the vector table), and `mc limits` cold and remembered.
 
-Every external tool is optional: without simavr, QEMU, `llvm-mc` or avr-binutils
-the corresponding step prints `SKIP` and the rest still runs.
+Every external tool is optional: without simavr, Docker, QEMU, `llvm-mc` or
+avr-binutils the corresponding step prints `SKIP` and the rest still runs.

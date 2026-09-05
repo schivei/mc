@@ -1654,6 +1654,13 @@ The machine's own limits are the part's, not the language's, and each is a diagn
 `avr frame too large for 2 KiB of SRAM` at 1024 bytes of frame,
 `avr: the image does not fit in 32 KiB of flash`, and
 `avr rjmp out of range` past ±4 KiB of code in one function.
+
+**The image is laid out for the older simavr as well as the newer one**: the load image of the
+data follows the code immediately and `.mmcu` goes last, outside every `PT_LOAD`, because simavr
+1.6 — the version Debian and Ubuntu ship, and therefore the one CI runs — builds its flash from
+the contents of `.text` followed by the contents of `.data` and ignores every address in the file
+(`docs/specs/M40.md` finding 11). `make check-avr` runs both simavr versions, the older one in
+Docker through `examples/avr/oracle/`, using the same script the CI leg calls.
 [`examples/avr/README.md`](../examples/avr/README.md) has the whole list, and
 [`reference/machine.md`](reference/machine.md) § The AVR implementation the ABI beside the other
 three.

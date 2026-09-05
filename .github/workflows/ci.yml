@@ -1166,12 +1166,25 @@ jobs:
   # carries both (`simavr` in universe, `qemu-system-avr` in qemu-system-misc,
   # the same package the RISC-V job already installs). Nothing is compiled here:
   # the four images travel as an artifact from the macOS job.
+  #
+  # The apt package is simavr 1.6, which is NOT the simavr a developer installs
+  # by hand (Homebrew builds master): it writes the firmware's transcript to
+  # stderr with the newline rendered as a trailing `.`, and its command enum has
+  # no exit code at all. So nothing here compares raw output. Every run goes
+  # through `examples/avr/oracle/simavr-run.sh`, the same script
+  # `examples/avr/test.sh` calls -- and `make check-avr` runs that script
+  # against THIS version too, in Docker, so a green run here follows from a
+  # green run there. See the script's header, and docs/specs/M40.md finding 11.
   baremetal-avr:
     name: Run the firmware (bare-metal avr)
     runs-on: ubuntu-latest
     needs: check
     timeout-minutes: 15
     steps:
+      # for examples/avr/oracle/simavr-run.sh; the images themselves are the
+      # artifact, nothing is compiled here
+      - uses: actions/checkout@v4
+
       - name: Download the images
         uses: actions/download-artifact@v4
         with:
@@ -1182,52 +1195,38 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends simavr qemu-system-misc
-          simavr --help 2>&1 | head -1 || true
+          dpkg-query -W -f '${Package} ${Version}\n' simavr
           qemu-system-avr --version | head -1
 
-      # simavr, the primary oracle: the exact transcript AND the exit code. The
-      # colour simavr wraps each console line in comes off first -- the
-      # transcript is the bytes the firmware wrote. `timeout` exists here (it
-      # does not on macOS, which is why examples/avr/test.sh has its own
-      # watchdog); 124 is its own failure, distinct from a wrong transcript.
-      - name: simavr -- the transcript and the exit code
+      # The exact transcript and the verdict the firmware halted with. On this
+      # simavr the verdict is the byte the firmware wrote to the .mmcu command
+      # register (0x04 for halt(0), 0x05 for halt(1)), because 1.6 answers that
+      # register with `has no handler` and exits 0 whatever was asked; where the
+      # command IS implemented -- a developer's simavr -- the script requires
+      # the process status to match as well. It also fails on any `Invalid
+      # read`/`Invalid write`/`avr_sadly_crashed` line, which is the class of
+      # failure that used to show up here as a fifteen minute hang.
+      - name: simavr -- the transcript and the verdict
         run: |
           set -u
-          esc=$(printf '\033')
-          run() {
-            timeout 60 simavr "$1" < /dev/null > out.txt 2> err.txt
-            echo $?
-          }
-          st=$(run avr/avr.elf)
-          sed "s/${esc}\[[0-9;]*m//g" out.txt > plain.txt
-          echo "--- transcript ---"; cat plain.txt; echo "--- exit $st ---"
-          if [ "$st" = "124" ]; then echo "::error::the firmware hung"; exit 1; fi
-          expected=$(printf 'boot\nblink\ntick\nsum 352\nok')
-          if [ "$(cat plain.txt)" != "$expected" ]; then
-            echo "::error::wrong transcript"; cat err.txt; exit 1
-          fi
-          if [ "$st" != "0" ]; then echo "::error::exit $st, expected 0"; exit 1; fi
-          st=$(run avr/avr1.elf)
-          if [ "$st" != "1" ]; then echo "::error::exit $st, expected 1"; exit 1; fi
-          echo "ok: transcript, exit 0, and halt(1) -> exit 1"
+          T=$(printf 'boot\nblink\ntick\nsum 352\nok')
+          bad=0
+          sh examples/avr/oracle/simavr-run.sh simavr avr/avr.elf work/a exact "$T" 0 || bad=1
+          echo "--- transcript ---"; cat work/a/transcript
+          sh examples/avr/oracle/simavr-run.sh simavr avr/avr1.elf work/b exact "$T" 1 || bad=1
+          if [ "$bad" != "0" ]; then echo "::error::the simavr oracle disagreed"; exit 1; fi
 
       # The two sweeps check their own answers on the device: 40 of them, over
       # every task of the machine. A wrong encoding usually still assembles.
       - name: simavr -- the two on-device sweeps
         run: |
           set -u
-          esc=$(printf '\033')
+          bad=0
           for s in sweep_a sweep_b; do
-            timeout 120 simavr "avr/$s.elf" < /dev/null > out.txt 2> err.txt
-            st=$?
-            sed "s/${esc}\[[0-9;]*m//g" out.txt > plain.txt
-            cat plain.txt
-            if [ "$st" = "124" ]; then echo "::error::$s hung"; exit 1; fi
-            if ! grep -q "^$s 0 failed" plain.txt; then
-              echo "::error::$s reported a wrong answer"; exit 1
-            fi
+            sh examples/avr/oracle/simavr-run.sh simavr "avr/$s.elf" "work/$s" sweep "$s" || bad=1
+            cat "work/$s/transcript"
           done
-          echo "ok: every check agreed, under simavr"
+          if [ "$bad" != "0" ]; then echo "::error::a sweep disagreed"; exit 1; fi
 
       # qemu-system-avr, the second oracle: the same five lines out of UART0 on
       # an independent model of the part. An arduino-uno has no exit device, so

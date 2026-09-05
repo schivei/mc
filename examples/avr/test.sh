@@ -18,10 +18,15 @@
 #      image that halts with 1 must exit 1 -- otherwise the exit channel proves
 #      nothing. A run that has to be killed is reported as `hung`, which is a
 #      different failure from `ran and misbehaved`.
+#   2b. the STRICT oracle: the same images under simavr 1.6, the version Debian
+#      and Ubuntu ship and therefore the one the CI leg runs, inside Docker. It
+#      loads an ELF by a different model than master does and it is what caught
+#      the .mmcu placement (docs/specs/M40.md finding 11). Both versions are
+#      also required to log no bad access at `-v -v -v`.
 #   3. qemu-system-avr, the second oracle: the same five lines on UART0, ended
 #      by the watchdog because an Arduino Uno has no exit device.
 #   4. the two on-device sweeps: every task of the machine, checked by the
-#      program itself, under both oracles.
+#      program itself, under all three oracles.
 #   5. determinism: two builds byte-identical, no host path in the image.
 #   6. the default compiler refuses all three halves.
 #   7. the ABI the machine states, asserted over `--dump-asm --machine=avr` and
@@ -32,17 +37,28 @@
 #   9. the encoder against llvm-mc, and the ELF against avr-gcc, field by field.
 #  10. `mc limits examples/avr`, cold and remembered.
 #
-# Self-skipping: without simavr steps 2 and 4a are skipped, without
-# qemu-system-avr step 3, without llvm-mc/avr-objcopy the encoder sweep, without
-# avr-gcc/avr-readelf the toolchain comparison -- and the rest still runs. THERE
-# IS NO `timeout` ON macOS and no script in this repository uses one: the
-# watchdog below is POSIX sh.
+# Steps 2, 2b and 4 do not judge anything themselves: they hand each run to
+# `oracle/simavr-run.sh`, which is the SAME script the `baremetal-avr` CI leg
+# calls. The two simavr versions disagree about which stream the transcript goes
+# to and about whether the exit code can carry a verdict at all, and that
+# knowledge belongs in one place, used by both callers, rather than in two shell
+# snippets that have to be kept in step by hand.
+#
+# Self-skipping: without simavr steps 2 and 4a are skipped, without Docker step
+# 2b, without qemu-system-avr step 3, without llvm-mc/avr-objcopy the encoder
+# sweep, without avr-gcc/avr-readelf the toolchain comparison -- and the rest
+# still runs. THERE IS NO `timeout` ON macOS and no script in this repository
+# uses one: the watchdog is POSIX sh, and it lives in `oracle/simavr-run.sh`.
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 dir="$root/examples/avr"
 mc="$root/build/mc1"
 mca="$dir/build/mc-avr"
 img="$dir/build/avr.elf"
+img1="$dir/build/avr1.elf"
+oracle="$dir/oracle/simavr-run.sh"
+dkimg=mc-avr-oracle
+dkok=no
 tmp="/tmp/mc_avr_test_$$"
 limit=25
 fails=0
@@ -74,6 +90,35 @@ ok() { echo "  ok    $1"; }
 skip() {
     echo "  SKIP  $1"
     skips=$((skips + 1))
+}
+
+# The container sees the repository at /w, so a path handed to it has to be
+# relative to the root; nothing is written inside the mount (the scratch
+# directory is /tmp/o, in the container).
+dkrun() {
+    elf=$1
+    shift
+    docker run --rm --platform linux/amd64 -v "$root:/w" -w /w "$dkimg" \
+        sh examples/avr/oracle/simavr-run.sh simavr "${elf#$root/}" /tmp/o "$@"
+}
+
+# ---- one run under one simavr ----
+# Everything after the label is the command that runs oracle/simavr-run.sh --
+# `sh $oracle ...` for a simavr on this host, `docker run ... sh ...` for the
+# one in the container. The script prints `ok ...` or one `FAIL ...` line per
+# problem and says so in its exit code; this only translates that into the
+# report the rest of the file writes.
+run_oracle() {
+    label=$1
+    shift
+    "$@" > "$tmp/oc" 2>&1
+    if [ "$?" = "0" ]; then
+        ok "$label: $(sed -n 's/^ok  *[^ ]*: //p' "$tmp/oc" | head -1)"
+    else
+        echo "  FAIL  $label"
+        sed 's/^/        /' "$tmp/oc"
+        fails=$((fails + 1))
+    fi
 }
 
 # ---- the watchdog ----
@@ -140,40 +185,55 @@ for s in sweep_a sweep_b; do
         "tests/$s.mc" -o "build/$s.elf" ) || fail "could not build tests/$s.mc"
 done
 
+# the same firmware halting with 1: the exit channel has to carry a verdict, or
+# steps 2 and 2b are asserting a constant. Built here, next to the sweeps,
+# because both oracles want it and because the CI leg gets it as an artifact.
+rm -f "$img1"
+sed 's/    halt(0);/    halt(1);/' "$dir/main.mc" > "$dir/build/main1.mc"
+( cd "$dir" && ./build/mc-avr --backend=avr-image --include=lib \
+    build/main1.mc -o build/avr1.elf ) || fail "could not build the halt(1) image"
+
 # ---- 2. simavr, the primary oracle ----
 transcript=$(printf 'boot\nblink\ntick\nsum 352\nok')
 
 if [ -z "$simavr" ]; then
     skip "simavr not found: the image was built but not run"
 else
-    echo "== simavr =="
-    run_guarded "$simavr" "$img"
-    if [ -f "$tmp/hung" ]; then
-        fail "the firmware hung (killed after ${limit}s)" "$(cat "$tmp/plain")"
-    elif [ "$status" -ne 0 ]; then
-        fail "exit code $status, expected 0" "$(cat "$tmp/plain")" "$(head -3 "$tmp/err")"
-    elif [ "$(cat "$tmp/plain")" != "$transcript" ]; then
-        fail "transcript" "got:      $(tr '\n' '|' < "$tmp/plain")" \
-                          "expected: $(printf '%s' "$transcript" | tr '\n' '|')"
-    else
-        ok "transcript and exit 0"
-        sed 's/^/        | /' "$tmp/plain"
-    fi
+    echo "== $simavr =="
+    run_oracle "the firmware" sh "$oracle" "$simavr" "$img" "$tmp/o" exact "$transcript" 0
+    sed 's/^/        | /' "$tmp/o/transcript" 2>/dev/null
+    run_oracle "the same firmware halting with 1" \
+        sh "$oracle" "$simavr" "$img1" "$tmp/o" exact "$transcript" 1
+fi
 
-    # the same firmware halting with 1: the exit channel has to carry a verdict,
-    # or step 2 is asserting a constant
-    sed 's/    halt(0);/    halt(1);/' "$dir/main.mc" > "$dir/build/main1.mc"
-    ( cd "$dir" && ./build/mc-avr --backend=avr-image --include=lib \
-        build/main1.mc -o build/avr1.elf ) > /dev/null 2>&1 \
-        || fail "could not build the halt(1) image"
-    if [ -f "$dir/build/avr1.elf" ]; then
-        run_guarded "$simavr" "$dir/build/avr1.elf"
-        if [ -f "$tmp/hung" ]; then fail "the halt(1) image hung"
-        elif [ "$status" -ne 1 ]; then fail "exit code $status, expected 1"
-        else ok "halt(1) gives exit 1 (SIMAVR_CMD_EXIT_CODE_1)"
-        fi
+# ---- 2b. the STRICT oracle: simavr 1.6, in Docker ----
+# Homebrew builds simavr from master; Debian and Ubuntu ship 1.6, and 1.6 builds
+# its flash from the CONTENTS of .text immediately followed by the contents of
+# .data, ignoring every section address. An image master runs happily can
+# therefore be unrunnable on the version the CI leg has -- which is exactly what
+# happened here (docs/specs/M40.md finding 11), and it showed up as a fifteen
+# minute CI hang, because 1.6 answers a bad access by starting a GDB stub and
+# waiting. So the strict oracle runs on every developer machine that has Docker,
+# with the SAME script the CI leg uses.
+if ! command -v docker > /dev/null 2>&1; then
+    skip "docker not found: the strict oracle (simavr 1.6) did not run"
+elif ! docker info > /dev/null 2>&1; then
+    skip "docker is not running: the strict oracle (simavr 1.6) did not run"
+else
+    if ! docker image inspect "$dkimg" > /dev/null 2>&1; then
+        echo "== building the oracle image ($dkimg) =="
+        docker build --platform linux/amd64 -t "$dkimg" "$dir/oracle" \
+            || fail "docker build $dir/oracle"
     fi
-    rm -f "$dir/build/main1.mc" "$dir/build/avr1.elf"
+    if docker image inspect "$dkimg" > /dev/null 2>&1; then
+        echo "== simavr $(docker run --rm --platform linux/amd64 "$dkimg" \
+            dpkg-query -W -f '${Version}' simavr) (ubuntu, in docker) =="
+        run_oracle "the firmware, on the version the CI leg has" \
+            dkrun examples/avr/build/avr.elf exact "$transcript" 0
+        run_oracle "the same firmware halting with 1" \
+            dkrun examples/avr/build/avr1.elf exact "$transcript" 1
+        dkok=yes
+    fi
 fi
 
 # ---- 3. qemu-system-avr, the second oracle ----
@@ -197,24 +257,13 @@ else
 fi
 
 # ---- 4. the two sweeps, on the device ----
-sweep_run() {
-    name="$2"
-    run_guarded "$1" "$dir/build/$name.elf"
-    if [ -f "$tmp/hung" ]; then
-        fail "$3: $name hung" "$(cat "$tmp/plain")"
-    elif grep -q FAIL "$tmp/plain"; then
-        fail "$3: $name reported a wrong answer" "$(grep FAIL "$tmp/plain")"
-    elif ! grep -q "^$name 0 failed" "$tmp/plain"; then
-        fail "$3: $name did not finish" "$(cat "$tmp/plain")"
-    else
-        ok "$3: $name, every check agreed"
-    fi
-}
-
 echo "== the machine, checked by the programs themselves =="
 for s in sweep_a sweep_b; do
     [ -f "$dir/build/$s.elf" ] || continue
-    [ -z "$simavr" ] || sweep_run "$simavr" "$s" simavr
+    [ -z "$simavr" ] || run_oracle "simavr: $s" \
+        sh "$oracle" "$simavr" "$dir/build/$s.elf" "$tmp/o" sweep "$s"
+    [ "$dkok" = "yes" ] && run_oracle "simavr 1.6: $s" \
+        dkrun "$dir/build/$s.elf" sweep "$s"
 done
 if [ -n "$qemu" ]; then
     for s in sweep_a sweep_b; do
@@ -490,16 +539,39 @@ REFEOF
         else
             fail "the program headers differ" "$(cat "$tmp/p.diff")"
         fi
+        # The bracketed index is stripped FIRST: readelf writes `  [ 1] .text`,
+        # so `[` and `1]` are two awk fields and a filter on $2 matches nothing
+        # at all -- which is what this comparison used to do, on two empty
+        # files. Only the three sections both toolchains emit are compared;
+        # .mmcu has no counterpart in a plain avr-gcc link and is asserted on
+        # its own, below.
         elf_sec() {
-            "$readelf" -S "$1" | awk '$2 ~ /^\.(text|data|bss|mmcu)$/ { print $2, $4, $8, $NF }' \
+            "$readelf" -S "$1" | sed 's/^ *\[[ 0-9]*\] *//' \
+                | awk '$1 ~ /^\.(text|data|bss)$/ { print $1, $2, $7, $NF }' \
                 | sort > "$2"
         }
         elf_sec "$tmp/ref.elf" "$tmp/s.ref"
         elf_sec "$img" "$tmp/s.mine"
-        if diff "$tmp/s.ref" "$tmp/s.mine" > "$tmp/s.diff" 2>&1; then
-            ok "the four sections agree on type, flags and alignment"
+        if [ -s "$tmp/s.mine" ] && diff "$tmp/s.ref" "$tmp/s.mine" > "$tmp/s.diff" 2>&1; then
+            ok "the three sections agree on type, flags and alignment: $(tr '\n' ';' < "$tmp/s.mine")"
         else
             fail "a section header differs" "$(cat "$tmp/s.diff")"
+        fi
+
+        # .mmcu is where finding 11 lives: metadata, not firmware. A section
+        # with no flags has one column FEWER than one with them, so the field
+        # count is what says the ALLOC bit is off.
+        mm=$("$readelf" -S "$img" | sed 's/^ *\[[ 0-9]*\] *//' \
+             | awk '$1 == ".mmcu" { print $3, NF }')
+        if [ "$mm" = "00910000 9" ]; then
+            ok ".mmcu is PROGBITS at 0x910000 with no flags"
+        else
+            fail ".mmcu is [$mm], expected [00910000 9] (address, then no flag column)"
+        fi
+        if "$readelf" -l "$img" | awk '/Section to Segment/,0' | grep -q '\.mmcu'; then
+            fail ".mmcu is inside a LOAD segment: simavr 1.6 will shift the data image"
+        else
+            ok ".mmcu is in no segment, and the three LOADs are code, data, bss"
         fi
         # the vector table: the numbers come from the datasheet, and this is
         # what says they were read right -- TIMER1_OVF is entry 13 in both
