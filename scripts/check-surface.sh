@@ -1327,6 +1327,31 @@ dup_case() {
 dup_case user_dupop.mc     "mc: operator already taught: .+"
 dup_case user_dupcoreop.mc "mc: operator already taught: +"
 
+# ---- M43 step A: the AArch64 system-call shim, word by word ----
+# src/sysno_linux_aarch64.mc is eight #opcode words and nothing else, and every
+# claim the sandbox makes stands on them. They are asserted here against
+# --dump-asm rather than trusted: what is checked is that the NUMBER goes to x8
+# BEFORE x0 is overwritten and that each argument slides down by exactly one
+# register, in ascending order (docs/reference/objects.md § 4 -- the prologue
+# leaves the argument registers alone). Each word was produced by
+# `llvm-mc -triple=aarch64-linux-musl --show-encoding` (docs/specs/M43.md § 2).
+sys6_want='  .word 0xaa0003e8
+  .word 0xaa0103e0
+  .word 0xaa0203e1
+  .word 0xaa0303e2
+  .word 0xaa0403e3
+  .word 0xaa0503e4
+  .word 0xaa0603e5
+  .word 0xd4000001'
+sys6_got=$("$mc1" --dump-asm src/sysno_linux_aarch64.mc 2>&1 | grep '^  \.word ')
+if [ "$sys6_got" = "$sys6_want" ]; then
+    echo "ok sys6 (aarch64): mov x8,x0 / mov x0..x5,x1..x6 / svc #0"
+else
+    echo "FAIL sys6 (aarch64): the shim's words moved"
+    printf '%s\n' "$sys6_got"
+    fails=$((fails + 1))
+fi
+
 # ---- M21 acceptance 6(5): inert by construction ----
 # With nothing registered, the compiler has to produce exactly what a compiler
 # with no Tier 3 at all produces. `$mc0` IS that compiler: the frozen C seed

@@ -133,6 +133,14 @@ check-standalone: build/mc-exe bootstrap
 check-parts: build/mc1
 	scripts/check-parts.sh build/mc1
 
+# M43 step A: acceptance 1 -- the raw system-call shim is right before anything
+# uses it. It EXECUTES a probe, so it only means anything on a Linux host; on
+# macOS and Windows the script prints one SKIPPED line and returns 0. The x86-64
+# half of the same shim is asserted statically by check-parts and the AArch64
+# half by check-surface, which is what covers it from a macOS host.
+check-shim: $(MC)
+	sh scripts/check-shim.sh $(MC)
+
 # M11: the whole suite via the direct executable (--exe), no ld. Only the
 # .mc compiler has this backend, so the target depends on $(MC) -- which is
 # build/mc1 on macOS and, since M42, the bootstrapped build/mc2l on a Linux
@@ -495,6 +503,7 @@ check-skipped:
 	@echo "test-windows/test-windows-x86_64: SKIPPED (cross-compilation from macOS; here the suite is native)"
 	@echo "check-examples/check-lang/check-conc/check-desktop: SKIPPED (macOS dylibs and --exe)"
 	@echo "check-docs/site/check-site: SKIPPED (their samples are built with --exe)"
+	@echo "check-shim: SKIPPED (M43 acceptance 1 runs a Linux binary; the shim's words are asserted by check-parts and check-surface)"
 else
 check-skipped:
 	@echo "budget/stage0: the C seed is macOS-first -- it emits Mach-O only (docs/bootstrap.md)"
@@ -512,7 +521,7 @@ check-skipped:
 endif
 
 ifeq ($(HOST),Linux)
-check: budget bootstrap-linux check-lex check-ast check-asm check-obj check-bundle check-mc test-exe check-toml check-sysroots check-limits check-skipped
+check: budget bootstrap-linux check-lex check-ast check-asm check-obj check-bundle check-mc test-exe check-toml check-sysroots check-limits check-shim check-skipped
 else ifneq (,$(WINHOST))
 # M38: the Windows subset. Everything not here needs `mc` plus something this
 # host does not have -- the C seed, the Mach-O direct-executable backend, GTK4,
@@ -529,7 +538,7 @@ clean:
 	rm -rf build
 
 .PHONY: bootstrap-linux mc-linux mc-linux-x86_64 mc-linux-obj mc-linux-x86_64-obj
-.PHONY: check-linux-host check-skipped
+.PHONY: check-linux-host check-skipped check-shim
 .PHONY: bootstrap-windows mc-windows mc-windows-x86_64 mc-windows-obj mc-windows-x86_64-obj
 .PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-parts check-toml check-build check-sysroots check-stubs check-limits sysroot-linux sysroot-linux-x86_64 sysroot-windows sysroot-windows-x86_64 test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal mcrt-windows mcrt-windows-x86_64 check-float check-wide check-kernel check-avr test-linux-exe test-linux-x86_64-exe
 
