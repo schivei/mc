@@ -33,9 +33,13 @@
 //   every one of them has a non-variadic replacement used below.
 //
 // * `gboolean` is a C `int`: the callee leaves it in w0 and the top half of x0
-//   is undefined. A `u32` cast is what makes the value trustworthy, so the two
-//   `gboolean` calls go through the `gtk_check_active` wrapper at the bottom
-//   instead of being read as `i64` directly.
+//   is undefined. Until M45 that had to be handled by hand -- a `(u32)` cast at
+//   each of the two call sites -- and now it is the DECLARATION that says so:
+//   `extern i32 gtk_check_button_get_active(...)` and
+//   `extern i32 g_application_run(...)`, and the compiler extends the result
+//   itself (docs/reference/language.md § 6). The two casts are gone; the
+//   `gtk_check_active` wrapper stays, because 0/1 out of an arbitrary non-zero
+//   is still its job.
 //
 // * A signal handler is an ordinary `mc` function. GTK calls it with
 //   (widget, user_data) in x0/x1, so `void on_plus(uptr w, uptr data)` matches
@@ -49,7 +53,7 @@
 // ---- lifecycle (gtk4 / gio / gobject) ----
 extern void gtk_init();
 extern uptr gtk_application_new(uptr app_id, i64 flags);
-extern i64  g_application_run(uptr app, i64 argc, uptr argv);
+extern i32  g_application_run(uptr app, i64 argc, uptr argv);   // M45: an int
 extern void g_object_unref(uptr obj);
 
 // g_signal_connect(x, sig, cb, data) is a C MACRO over this function; the macro
@@ -89,7 +93,7 @@ extern void gtk_entry_set_placeholder_text(uptr entry, uptr text);
 extern uptr gtk_editable_get_text(uptr editable);
 extern void gtk_editable_set_text(uptr editable, uptr text);
 extern uptr gtk_check_button_new_with_label(uptr text);
-extern i64  gtk_check_button_get_active(uptr button);
+extern i32  gtk_check_button_get_active(uptr button);          // M45: a gboolean
 extern void gtk_check_button_set_active(uptr button, i64 active);
 extern void gtk_widget_set_margin_top(uptr w, i64 n);
 extern void gtk_widget_set_margin_bottom(uptr w, i64 n);
@@ -105,10 +109,10 @@ extern void g_free(uptr p);
 
 // ---- the two thin wrappers ----
 
-// gboolean -> 0/1. The u32 cast is the whole reason this function exists:
-// see the ABI note at the top.
+// gboolean -> 0/1. Since M45 the extension comes from the `i32` declaration and
+// not from a cast here; what is left is the normalisation of any non-zero to 1.
 i64 gtk_check_active(uptr button) {
-    if ((u32) gtk_check_button_get_active(button) != 0) return 1;
+    if (gtk_check_button_get_active(button) != 0) return 1;
     return 0;
 }
 

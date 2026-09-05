@@ -13,6 +13,21 @@
 // open is variadic in libSystem and on Apple's arm64 the mode goes on the
 // stack, which the core does not set up: to create a file with permissions
 // use creat, which is not variadic.
+//
+// M45, and this is a MEASUREMENT and not a preference: these five return a C
+// `int` (`read`/`write` a `ssize_t`), and after M45 the truthful declaration
+// would be a four-byte one. They stay `i64` because libSystem's syscall
+// wrappers hand back a FULL 64-bit -1 -- measured on this host with the
+// pre-milestone compiler: open("/nonexistent") = 0xffffffffffffffff,
+// close(-1) = 0xffffffffffffffff, waitpid(-1) = 0xffffffffffffffff
+// (docs/specs/M45.md § Implementation notes 1c) -- so nothing here is wrong,
+// and `u32` would cost a mask on every I/O call in every program that includes
+// this file, including the ten tests/*.mc the frozen seed cross-checks.
+//
+// That is NOT true of an ordinary C function: `int f(void) { return -1; }`
+// compiled by clang is `mov w0, #-0x1; ret`, and a program that calls one
+// writes its own `extern i32 f();` -- which works, because a program is not a
+// file the seed compiles.
 extern i64 open(uptr path, i64 flags, i64 mode);
 extern i64 creat(uptr path, i64 mode);
 extern i64 read(i64 fd, uptr buf, i64 n);

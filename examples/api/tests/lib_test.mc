@@ -14,7 +14,7 @@
 #include "../lib/http.mc"
 
 // after sqlite.mc's `#dylib ""` this extern goes back to libSystem
-extern i64 unlink(uptr path);
+extern i32 unlink(uptr path);            // M45: a C `int`
 
 void perr(uptr s) {
     write(2, s, str_len(s));

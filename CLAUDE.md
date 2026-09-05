@@ -2455,6 +2455,55 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `mc2-linux-x86_64` `067cfbc824ec1fbdabdccddee85aab1d454b6945e8dacb4dabe388a98e6087a2`,
   `mc2-windows-arm64` `f778e38a8fcfb32626a0b0f6fa786d6c122bbc8506ba95eb68534369d67e161d`,
   `mc2-windows-x86_64` `73c904a1a70fd5791f78d76b874572c571d42180de53f5878ea500ae7117fa88`.
+- M45 step 2 (the declarations) ✔ (`docs/specs/M45.md` § 5 + § Implementation notes 4):
+  **the truthful declarations, and the one place D8 did not survive contact with the code.**
+  `stage0/` untouched.
+  * **D8 as written is incompatible with `check-asm`.** § 5 asks `src/*.mc` and the seed-compiled
+    libraries to declare an `int` result as `u32`. Implemented literally, `make check` came back
+    **RC 2 with 23 FAILs** and `check-asm` at 103/126: that script compares `mc0 --dump-asm`
+    against `mc1 --dump-asm` over `tests/ lib/ src/`, and a narrow declaration makes `mc1` emit a
+    `mov w9, w9` the frozen seed has no way to emit -- **27 of them over `src/mc.mc`, and nothing
+    else**. Both escapes are closed by the task's own rules (no `seed-skip` in the seed set,
+    `stage0/` frozen). Resolution: **D8's own named alternative** -- `c_int()` alone in the seed
+    set, `i32` everywhere else. Not weaker: `c_int(v)` is the low 32 bits sign-extended from bit
+    31, so it is right whether the callee left the sign there or not, on every host and under
+    every seed; what is lost is only that the declaration would have carried the information.
+  * `c_int()` in `src/arena.mc` and four call sites: `c_int(open(...))` and `c_int(creat(...))` in
+    `read_file`/`write_file`, `c_int(open(...))` in `src/sysroot.mc`, `c_int(creat(...))` in
+    `src/backend_exe.mc`, and `c_int(waitpid(...))` at **both** sites in `src/driver.mc` -- the
+    same latent defect as `open`, and the one a spawned tool's `pid_t` would hit. The host layers
+    and `lib/sys_windows*.mc` keep their declarations with the reason written in a comment; the
+    `& BOOL_MASK` masks stay (D9).
+  * **`lib/sys.mc` stays `i64` BY MEASUREMENT** (Acceptance 1c), with the numbers in its header:
+    libSystem's wrappers hand back a full 64-bit -1 for `open`, `close(-1)` and `waitpid(-1)`.
+    The header also says what is not true of an ordinary C function, and
+    `docs/reference/language.md` § `extern` says a program wanting the truthful declaration writes
+    its own `extern i32 open(...)`.
+  * **`i32` where the seed never looks**: `examples/api/lib/sqlite.mc` (11 declarations;
+    `sqlite3_last_insert_rowid` stays `i64`), `examples/api/lib/http.mc` (5, and its three `< 0`
+    tests are now sound), `examples/api/tests/lib_test.mc`, `examples/conc/lib/{macos,linux}/
+    thread.mc` (12 each), `examples/desktop/lib/gtk.mc` + `main.mc` -- where **both `(u32)` casts
+    are gone**, because the declaration now says what the cast used to.
+    `examples/api/test_sqlite_lib.mc` was left alone and the reason recorded: nothing builds it and
+    it does not compile (`call to unknown function` -- `sqlite3_libversion_number` is declared
+    nowhere).
+  — Measured: `check-inert` between the pre-milestone `build/mc1` and this one keeps **the 33 core
+  objects identical** (that is what leaving the seed set alone buys) while `api`/`conc`/`desktop`
+  now REFUSE to build under the old compiler, which is the fix; `bl _sqlite3_step` is followed by
+  `sxtw x9, w9`; the `--dump-asm` diff over `src/mc.mc` between the two compilers is **empty**, so
+  the golden moves because `c_int` is a new function and not because instruction selection did;
+  and a pre-M45 compiler -- what a published release is -- produces **byte-identical objects** for
+  `src/mc_windows.mc`, `src/mc_windows_x86_64.mc`, `src/mc_linux.mc` and `src/mc_linux_x86_64.mc`,
+  so both foreign chains bootstrap from 0.12.0 unchanged. `mc-linux-arm64` (musl) and
+  `mc-linux-arm64-gnu` (glibc) both answer `mc: cannot open`, exit 1.
+  `make check` RC 0, zero FAIL, `check-asm` back at 126/126 and `check-obj` 32/32;
+  `make check-linux-host` RC 0 on both architectures with the cross proof on musl and glibc.
+  Goldens rewritten a second time: `mc2.sha256`
+  `0c26544589966095fc795ffcf7f7cb0602495229f8bae7f72a35ed64def62fec`,
+  `mc2-linux-arm64` `06165599f9de9e3413e4a05e1371fdc26ef02494615d1c1da76916b26beded44`,
+  `mc2-linux-x86_64` `02eec99d84119a077c806ca14230bfa58aba63affd4591efbf06b3b54ed94893`,
+  `mc2-windows-arm64` `57b2a7e174f6be3f3ca8063d503a8dffc7fd650cbce2e4b83d41ce0540879ce6`,
+  `mc2-windows-x86_64` `24b994e706bc37d9533898331da538fdab4814ee1097f78fe04e8ac2e5a2bb45`.
 - Next: **M40** (`docs/specs/M40.md` § Amendment, `docs/plan.md`): the narrow word --
   `examples/avr` under the owner's override direction, where the AVR module declares `uptr = 2`
   from the surface and the recreated compiler is debloated. Both of its prerequisites are now in:

@@ -407,6 +407,16 @@ That difference is deliberate: `--exe` would have to read the SDK's `.tbd` files
 and there is no built-in list of known symbols. Use the `.o` path when you want the error at
 build time. `#dylib` ([directives.md](directives.md)) says which library an `extern` comes from.
 
+**Declare the width C declares.** A C function returning `int` is `extern i32 f(...)`, not
+`extern i64 f(...)`: the extra bits are unspecified and § 6 above says what the compiler does with
+the truthful declaration. `<sys>` (`lib/sys.mc`) is the one place in this repository that keeps
+`i64` for a set of `int`-returning functions, and it does so on a measurement rather than a
+preference — libSystem's syscall wrappers hand back a full 64-bit `-1`
+([M45](../specs/M45.md) § Implementation notes) — and because the frozen seed compiles that file
+and cannot spell `i32` at all. A program wanting the truthful declaration writes its own
+`extern i32 open(uptr, i64, i64);` and does not include `<sys>`, since two disagreeing
+declarations of one name are `declaration does not match prototype`.
+
 ---
 
 ## 7. Function pointers

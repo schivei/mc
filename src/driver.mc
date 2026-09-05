@@ -233,7 +233,7 @@ i64 drv_spawn_ok(uptr file, uptr av, uptr fa) {
         die2("cannot spawn", tm_cat(file, tm_cat(" (error ", tm_cat(tm_num_str(e), ")"))));
     u8 st[8];
     st64(st, 0);
-    if (waitpid(ld64(pid), st, 0) < 0) die2("waitpid failed", file);
+    if (c_int(waitpid(ld64(pid), st, 0)) < 0) die2("waitpid failed", file);   // M45: pid_t is an int
     i64 s = ld32(st);
     if ((s & 127) != 0) return 128 + (s & 127);
     return (s >> 8) & 255;
@@ -246,7 +246,7 @@ i64 drv_spawn(uptr file, uptr av, uptr fa) {
         die2("cannot run", file);
     u8 st[8];
     st64(st, 0);
-    if (waitpid(ld64(pid), st, 0) < 0) die2("waitpid failed", file);
+    if (c_int(waitpid(ld64(pid), st, 0)) < 0) die2("waitpid failed", file);   // M45: pid_t is an int
     i64 s = ld32(st);
     if ((s & 127) != 0) return 128 + (s & 127);
     return (s >> 8) & 255;

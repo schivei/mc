@@ -41,6 +41,13 @@
 // All non-variadic. A DWORD parameter travels in the low half of its register,
 // which is what AAPCS64 and Win64 both do with a 32-bit argument anyway, so an
 // i64 is the right shape for every one of them.
+// M45: a BOOL is a 32-bit `int` and a DWORD a 32-bit `unsigned`, so bits 63..32
+// of every result below are unspecified -- and the `& BOOL_MASK` masks are what
+// this file has always done about it. They STAY, and the declarations stay
+// `i64`: the Windows chain bootstraps from a published release that does not
+// narrow (D9), and this file is in the seed set, where a narrow declaration
+// would move the codegen away from the frozen seed's
+// (docs/specs/M45.md § Implementation notes 4).
 extern uptr GetStdHandle(i64 nStdHandle);
 extern i64 WriteFile(uptr hFile, uptr buf, i64 n, uptr written, uptr overlapped);
 extern i64 ReadFile(uptr hFile, uptr buf, i64 n, uptr got, uptr overlapped);
