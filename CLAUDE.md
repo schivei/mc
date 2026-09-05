@@ -1774,14 +1774,17 @@ agents (`.claude/agents/`): `stage0-dev` (C23), `mc-dev` (`.mc` code), `reviewer
   `pkg_check_immutable` no longer skips without `--yes` on a URL registry and distinguishes a 404
   (`curl -f` 22 / `wget` 8 = new) from any other failure (`cannot read the published index`).
   LOW: the missing-file failure now unblesses first ("collect the error", `dep_hash_soft`);
-  size caps 64 MiB archive / 1 MiB index (`larger than the cap`). `check-pkg` 63 -> **78/78**
+  size caps 64 MiB archive / 1 MiB index (`larger than the cap`). Copilot's review of #27 added
+  the characters Windows reserves in a name to `dep_rel_ok` (`:` `<` `>` `"` `|` `?` `*` -- `C:/x`
+  is absolute to a Windows extractor; one rule for the three hosts). `check-pkg` 63 -> **80/80**
   (four escaping shapes each with a canary asserted untouched, the cross-directory vendor case,
   the wrong-hash unbless, three crafted archives, the `check` refusals, a 68 MB archive, the line
   shape). Cost: `deps.mc` +106 code, `fetch.mc` +197, `pkg.mc` +46. `make check` RC 0 (`check-obj`
   32/32, empty `--dump-asm` diff, `check-lex` 143/143 (3 skipped), `check-docs` 197 symbols),
-  four Linux cells RC 0, `check-inert` identical. Goldens rewritten once: `mc2.sha256`
-  `4cd11bf19c21d28fd112b498bf0ac51b7394dbfa958707429c3892a71b576855`, Linux `1205bf75…f4e47` /
-  `f84a7b8d…1dcdf`, Windows `073e0576…de07f` / `18f3362a…3c919`.
+  four Linux cells RC 0, `check-inert` identical. Goldens rewritten (final, after the Copilot
+  fix): `mc2.sha256` `f4dbb784e204f4238c5a3374cf6132ca76dd6d2a71ef78f963749e3a4d7af885`, Linux
+  `f9ab763d…64c2da` / `d44f70a7…ac9239`, Windows `e114ae73…aec033` / `565ea57f…157867` -- all
+  five in the scripts' `hash  file` format.
 - Next: M18 or M24 (`docs/plan.md`); M40 (the word-size sweep AVR/PIC need) is
   named in `docs/plan.md`; M13 stays in the backlog (`docs/specs/M13.md`:
 - M24 step A ✔ (`docs/specs/M24.md` § M1-M6, M8 and decision D5): **Tier 4 -- the inert half.
