@@ -99,11 +99,22 @@ jobs:
       # ready to execute, so the linux legs below only have to run it.
       # docs/plan.md § Rule for every new target: an executable format is not
       # supported until a job RUNS its output on real hardware.
-      - name: Cross-compile the suite as linux/arm64 executables (--exe)
+      #
+      # Twice per architecture, once per libc: a dynamic executable names its
+      # loader BY PATH, so a musl-linked binary does not run on a glibc system
+      # and the other way round. The runners below are Ubuntu, i.e. glibc, and
+      # they run the glibc set NATIVELY and the musl set inside `alpine:3`.
+      - name: Cross-compile the suite as linux/arm64 executables (--exe, musl)
         run: scripts/test-linux.sh --exe --build-only build/linux-exes build/mc1
 
-      - name: Cross-compile the suite as linux/x86_64 executables (--exe)
+      - name: Cross-compile the suite as linux/arm64 executables (--exe, glibc)
+        run: scripts/test-linux.sh --exe --libc glibc --build-only build/linux-exes-glibc build/mc1
+
+      - name: Cross-compile the suite as linux/x86_64 executables (--exe, musl)
         run: scripts/test-linux.sh --arch x86_64 --exe --build-only build/linux-exes-x86_64 build/mc1
+
+      - name: Cross-compile the suite as linux/x86_64 executables (--exe, glibc)
+        run: scripts/test-linux.sh --arch x86_64 --exe --libc glibc --build-only build/linux-exes-x86_64-glibc build/mc1
 
       # M24 step 1: the float suite goes into the SAME artifact, in the same
       # shape, so the `--run-only` half of test-linux.sh links and runs it with
@@ -355,7 +366,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-arm64-exes
-          path: build/linux-exes
+          path: |
+            build/linux-exes
+            build/linux-exes-glibc
           if-no-files-found: error
           retention-days: 7
 
@@ -371,7 +384,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64-exes
-          path: build/linux-exes-x86_64
+          path: |
+            build/linux-exes-x86_64
+            build/linux-exes-x86_64-glibc
           if-no-files-found: error
           retention-days: 7
 
@@ -449,9 +464,19 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: linux-arm64-exes
-          path: build/linux-exes
+          path: build
 
-      - name: Run the --exe suite natively (no linker)
+      # this runner is glibc, so the glibc set runs with nothing between it and
+      # the kernel: no linker, no container, no sysroot.
+      - name: Run the --exe suite natively (glibc, no linker)
+        run: |
+          chmod +x build/linux-exes-glibc/* 2>/dev/null || true
+          scripts/test-linux.sh --exe --libc glibc --run-only build/linux-exes-glibc
+
+      # and the musl set in alpine, which is where its PT_INTERP points. The
+      # script chooses Docker by itself here: the requested libc is not this
+      # host's, so `native` goes back to 0.
+      - name: Run the --exe suite in alpine (musl, no linker)
         run: |
           chmod +x build/linux-exes/* 2>/dev/null || true
           scripts/test-linux.sh --exe --run-only build/linux-exes
@@ -507,9 +532,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: linux-x86_64-exes
-          path: build/linux-exes-x86_64
+          path: build
 
-      - name: Run the --exe suite natively (no linker)
+      - name: Run the --exe suite natively (glibc, no linker)
+        run: |
+          chmod +x build/linux-exes-x86_64-glibc/* 2>/dev/null || true
+          scripts/test-linux.sh --arch x86_64 --exe --libc glibc --run-only build/linux-exes-x86_64-glibc
+
+      - name: Run the --exe suite in alpine (musl, no linker)
         run: |
           chmod +x build/linux-exes-x86_64/* 2>/dev/null || true
           scripts/test-linux.sh --arch x86_64 --exe --run-only build/linux-exes-x86_64

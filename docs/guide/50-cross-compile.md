@@ -159,7 +159,8 @@ args = ["-o", "{out}",
 ```
 
 That is what `examples/api`-style projects use to bring a library in statically, and what a binary
-that has to run where no `ld-musl-*.so.1` exists needs.
+that has to run on a machine with no dynamic libc at all needs. Running on a **glibc** system is
+not that case: it is the two names in `[target].interp` and `[target].libc`, and no files.
 
 A Linux link needs musl's `crt1.o`, `crti.o`, `crtn.o` and `libc.a`.
 `scripts/sysroot-linux.sh [--arch aarch64|x86_64]` fills `build/sysroot/linux-<arch>` by running

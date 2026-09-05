@@ -1,0 +1,33 @@
+# mc.linux-aarch64-gnu.toml — cross-building `mc` itself for a linux/aarch64 HOST
+# that runs GLIBC (M42 § acceptance 9, docs/guide/90-linux-host.md).
+#
+#   build/mc1 build src --config src/mc.linux-aarch64-gnu.toml
+#   -> build/mc-linux-arm64-gnu   a DYNAMIC ELF64 executable, no linker
+#
+# It is src/mc.linux-aarch64.toml with two keys added and nothing else changed.
+# A dynamic executable names its loader and its library BY PATH, and those two
+# names are the only per-libc facts in the file: musl is the writer's default,
+# and these are glibc's (docs/reference/toml.md, the [target] section).
+#
+# The OBJECT this compiler writes does not depend on either of them, which is
+# what makes the glibc chain's golden the same value as the musl chain's:
+# tests/golden/mc2-linux-arm64.sha256, one file for both.
+#
+# Every path below is relative to THIS FILE's directory (src/).
+
+[project]
+name  = "mc-linux-arm64-gnu"
+entry = "mc_linux.mc"
+out   = "../build/mc-linux-arm64-gnu"
+kind  = "exe"
+
+[target]
+os     = "linux"
+arch   = "aarch64"
+interp = "/lib/ld-linux-aarch64.so.1"
+libc   = "libc.so.6"
+
+# same reason as the musl config: the compiler compiling itself is the biggest
+# source here, and at 0.25 several tables double mid-build.
+[limits]
+tolerance = 1.0

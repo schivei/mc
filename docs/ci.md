@@ -120,8 +120,12 @@ Nine artifacts come out:
   download needs `chmod +x mc-exe` (and, off a browser download, `xattr -d com.apple.quarantine`).
 - `linux-arm64-exes` and `linux-x86_64-exes` (M42) — the same corpus built with
   `scripts/test-linux.sh --exe --build-only`: **executables**, not objects, written by `mc` with
-  no linker, no crt object and no sysroot. The two Linux jobs below download them and only have to
-  run them. That is what makes the ELF executable a supported format under
+  no linker, no crt object and no sysroot. Each artifact holds the corpus **twice**, once per
+  libc (`linux-exes` for musl, `linux-exes-glibc` for glibc): a dynamic executable names its
+  loader by an absolute path, so a musl-linked binary does not start on a glibc system and the
+  other way round. The two Linux jobs below download them and only have to run them — the glibc
+  set natively, since the runners are Ubuntu, and the musl set inside `alpine:3`. That is what
+  makes the ELF executable a supported format under
   [plan.md § Rule for every new target](plan.md): the output is executed on real hardware of that
   architecture.
 - `linux-arm64-objects`, `linux-x86_64-objects`, `windows-arm64-objects` and
@@ -202,9 +206,17 @@ modes that link.
 Downloads `linux-arm64-objects` and `musl-sysroot-aarch64`, installs `lld` from apt, and runs
 `scripts/test-linux.sh --run-only`. `ubuntu-24.04-arm` runners are free for public repositories.
 
-It then downloads `linux-arm64-exes` and runs `scripts/test-linux.sh --exe --run-only` (M42):
-the same corpus, executed with nothing linked here — no `ld.lld` and no sysroot are touched by
-that step.
+It then downloads `linux-arm64-exes` and runs the same corpus **twice**, with nothing linked here
+— no `ld.lld` and no sysroot are touched by either step (M42):
+
+```sh
+scripts/test-linux.sh --exe --libc glibc --run-only build/linux-exes-glibc   # native
+scripts/test-linux.sh --exe             --run-only build/linux-exes          # in alpine:3
+```
+
+The runner is Ubuntu, i.e. glibc, so the glibc set runs with nothing between it and the kernel and
+the musl set runs in the container its `PT_INTERP` points at. The script makes that choice by
+itself: the requested libc is not the host's, so it falls back to Docker.
 
 **Since M25 the sysroot is fetched by `mc` itself.** It is still the same four files
 (`crt1.o crti.o crtn.o libc.a`), but they come from `mc sysroot fetch linux-aarch64 --yes`, run in
@@ -220,7 +232,9 @@ moved pin invalidates the cache, and travels to this job as an artifact.
 The same job, one architecture over: it downloads `linux-x86_64-objects` and
 `musl-sysroot-x86_64` (the amd64 musl sysroot, fetched the same way in `check`) and runs
 `scripts/test-linux.sh --arch x86_64 --run-only`. It runs the binaries **natively** — the runner
-is x86-64 — so nothing is emulated and nothing is skipped for being slow.
+is x86-64 — so nothing is emulated and nothing is skipped for being slow. It then downloads
+`linux-x86_64-exes` and runs both libc sets the way `linux-arm64` does: glibc natively, musl in
+`alpine:3`.
 
 This job is what `docs/plan.md` § "Rule for every new target" asks for: an architecture is not
 supported until something links and runs its suite on real hardware of that kind, and that job is

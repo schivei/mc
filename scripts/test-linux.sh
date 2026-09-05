@@ -3,13 +3,24 @@
 # (M16 for linux/aarch64, M17 step B for linux/x86_64; docs/build.md § Linux
 # targets).
 #
-#   test-linux.sh [--arch A] [--exe] [MC]                     compile, link, run
-#   test-linux.sh [--arch A] [--exe] --build-only OUTDIR [MC] compile only
-#   test-linux.sh [--arch A] [--exe] --run-only OUTDIR        link OUTDIR, run it
+#   test-linux.sh [--arch A] [--exe] [--libc L] [MC]              compile, link, run
+#   test-linux.sh [--arch A] [--exe] [--libc L] --build-only D [MC] compile only
+#   test-linux.sh [--arch A] [--exe] [--libc L] --run-only D        link D, run it
 #
 # --arch is aarch64 (the default) or x86_64. It picks the object backend through
 # `[target].arch` in the generated mc.toml, the sysroot directory, the Docker
 # platform and which `// skip-` header applies.
+#
+# --libc is musl (the default) or glibc, and it only means something with --exe:
+# a dynamically linked executable names its loader and its library BY PATH, and
+# those two names are the only per-libc facts in the file ([target].interp and
+# [target].libc, docs/reference/toml.md). musl runs in `alpine:3`, glibc in
+# `ubuntu:latest` -- the newest Ubuntu, which is the baseline this repository
+# measures glibc against. A binary built for one does not run on the other: the
+# loader named in PT_INTERP simply is not there, and the kernel answers ENOENT
+# ("no such file or directory", about the interpreter, not about the program).
+# That is also why this flag exists at all: on a Linux HOST the suite runs
+# natively, and a glibc runner cannot execute a musl-linked binary.
 #
 # --exe is M42: the same corpus and the same Docker oracle with THE LINKER TAKEN
 # OUT OF THE PATH. Each mc.toml is six lines -- [project] and [target] -- with
@@ -73,10 +84,17 @@ mode="full"
 split=""
 arch="aarch64"
 exe=0
+libc="musl"
 mc=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --exe) exe=1; shift ;;
+        --libc)
+            [ -n "$2" ] && [ "${2#-}" = "$2" ] \
+                || { echo "FAIL: --libc needs a value (musl | glibc)" >&2; exit 1; }
+            libc="$2"; shift 2
+            ;;
+        --libc=*) libc="${1#--libc=}"; shift ;;
         --arch)
             [ -n "$2" ] && [ "${2#-}" = "$2" ] \
                 || { echo "FAIL: --arch needs a value (aarch64 | x86_64)" >&2; exit 1; }
@@ -98,10 +116,39 @@ case "$arch" in
     *) echo "FAIL: unknown --arch $arch (aarch64 | x86_64)" >&2; exit 1 ;;
 esac
 mc="${mc:-build/mc1}"
-img="alpine:3"
+
+# the loader path and the DT_NEEDED soname of each libc, and the container that
+# has it. musl is the writer's own default, so its two keys are left unwritten
+# and the default is exercised as well.
+case "$libc" in
+    musl)
+        img="alpine:3"
+        interp=""
+        soname=""
+        ;;
+    glibc)
+        img="ubuntu:latest"
+        soname="libc.so.6"
+        case "$arch" in
+            aarch64) interp="/lib/ld-linux-aarch64.so.1" ;;
+            x86_64)  interp="/lib64/ld-linux-x86-64.so.2" ;;
+        esac
+        ;;
+    *) echo "FAIL: unknown --libc $libc (musl | glibc)" >&2; exit 1 ;;
+esac
+if [ "$exe" = "0" ] && [ "$libc" != "musl" ]; then
+    # the object+link road links against the musl sysroot scripts/sysroot-linux.sh
+    # fetches; there is no glibc sysroot in this repository and no reason for one
+    echo "FAIL: --libc $libc needs --exe (the linked road is musl only)" >&2
+    exit 1
+fi
+
 sysroot="${MC_SYSROOT:-build/sysroot/linux-$arch}"
 outdir="build/tests-linux-$arch"
-[ "$exe" = "1" ] && outdir="build/tests-linux-$arch-exe"
+if [ "$exe" = "1" ]; then
+    outdir="build/tests-linux-$arch-exe"
+    [ "$libc" = "musl" ] || outdir="$outdir-$libc"
+fi
 
 if [ "$mode" != "run" ] && [ ! -x "$mc" ]; then
     echo "FAIL: compiler '$mc' not found or not executable"
@@ -109,12 +156,25 @@ if [ "$mode" != "run" ] && [ ! -x "$mc" ]; then
 fi
 
 # a host of the target architecture runs the binaries itself; anything else
-# goes through Docker
+# goes through Docker. M42: the architecture is no longer the whole question --
+# a dynamically linked executable also needs the loader named in its PT_INTERP
+# to exist here, so a glibc host cannot run a musl-linked binary and the other
+# way round. The host's libc is read from the loader that is on the disk (musl
+# installs /lib/ld-musl-<arch>.so.1), never from the distribution's name.
+host_libc="glibc"
+if [ "$(uname -s)" = "Linux" ]; then
+    for l in /lib/ld-musl-*.so.1; do
+        [ -e "$l" ] && host_libc="musl"
+    done
+fi
 native=0
 if [ "$(uname -s)" = "Linux" ]; then
     case "$arch/$(uname -m)" in
         aarch64/aarch64|aarch64/arm64|x86_64/x86_64|x86_64/amd64) native=1 ;;
     esac
+    if [ "$exe" = "1" ] && [ "$libc" != "$host_libc" ]; then
+        native=0                         # this host has no such loader
+    fi
 fi
 
 # --exe needs nothing but a way to RUN the binaries: no ld.lld and no sysroot,
@@ -305,6 +365,10 @@ gen_toml_exe() {
         echo '[target]'
         echo 'os   = "linux"'
         echo "arch = \"$arch\""
+        # musl is the writer's own default, so --libc musl writes NEITHER key
+        # and the default is what gets exercised
+        [ -n "$interp" ] && echo "interp = \"$interp\""
+        [ -n "$soname" ] && echo "libc   = \"$soname\""
     } > "$tmp/mc.toml"
 }
 
@@ -627,12 +691,21 @@ fi
 
 sysroot_restore
 rm -rf "$tmp"
+# which libc, and where it ran -- a green line has to say what it proved
+tag=""
+if [ "$exe" = "1" ]; then
+    tag=" ($libc"
+    if [ "$mode" = "build" ]; then tag="$tag)"
+    elif [ "$native" = "1" ]; then tag="$tag, native)"
+    else tag="$tag, $img)"
+    fi
+fi
 if [ "$mode" = "build" ]; then
     what="objects"
     [ "$exe" = "1" ] && what="executables (and the --exe assertions)"
-    echo "$((total - fails))/$total $what cross-compiled for linux/$arch in $split"
+    echo "$((total - fails))/$total $what cross-compiled for linux/$arch$tag in $split"
 else
-    echo "$((total - fails))/$total tests passed on linux/$arch"
+    echo "$((total - fails))/$total tests passed on linux/$arch$tag"
 fi
 # --exe writes no object, so there is no .note.GNU-stack to report on: the
 # executable's PT_GNU_STACK is written by src/backend_elf_exe.mc directly.

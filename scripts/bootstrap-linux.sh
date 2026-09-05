@@ -30,10 +30,47 @@
 # MC_SYSROOT to a directory that already has crt1.o/crti.o/crtn.o/libc.a --
 # `/usr/lib` on Alpine with musl-dev -- and nothing is downloaded for it either.
 #
+# M42 adds a second road for that step, and it is the milestone's own:
+#
+#   --exe            each stage's executable is written by the PREVIOUS compiler
+#                    (`elf-exe` / `elf-exe-x86_64`), so there is no ld.lld and no
+#                    sysroot in the chain at all
+#   --libc musl|glibc  which loader that executable asks for; glibc implies --exe,
+#                    because the sysroot road has musl files and nothing else
+#
+# The default is unchanged on purpose: the SEED may be a published release older
+# than M42, which has no `--exe` on Linux to offer.
+#
+# The `--exe` road goes through `mc build` and a generated four-line config
+# rather than through `mc --exe`, because the two per-libc names are TOML keys
+# ([target].interp and [target].libc) and the single-file CLI has no flag for
+# them. The OBJECT each stage writes is the same either way -- an ELF object
+# records no interpreter -- so the fixed point and the golden are the same
+# values on both roads, which is what makes them comparable.
+#
 # No "set -e": every step checks its own exit code and says what failed.
 
 repo="${MC_SEED_REPO:-schivei/mc}"
-seed="$1"
+use_exe=0
+libc="musl"
+seed=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --exe) use_exe=1; shift ;;
+        --libc)
+            [ -n "$2" ] && [ "${2#-}" = "$2" ] \
+                || { echo "FAIL: --libc needs a value (musl | glibc)" >&2; exit 1; }
+            libc="$2"; shift 2
+            ;;
+        --libc=*) libc="${1#--libc=}"; shift ;;
+        *) seed="$1"; shift ;;
+    esac
+done
+case "$libc" in
+    musl)  interp=""; soname="" ;;
+    glibc) use_exe=1; soname="libc.so.6" ;;
+    *) echo "FAIL: unknown --libc $libc (musl | glibc)" >&2; exit 1 ;;
+esac
 
 case "$(uname -s)" in
     Linux) : ;;
@@ -42,8 +79,10 @@ case "$(uname -s)" in
 esac
 
 case "$(uname -m)" in
-    aarch64|arm64) target="arm64";  entry="src/mc_linux.mc";        larch="aarch64" ;;
-    x86_64|amd64)  target="x86_64"; entry="src/mc_linux_x86_64.mc"; larch="x86_64" ;;
+    aarch64|arm64) target="arm64";  entry="src/mc_linux.mc";        larch="aarch64"
+                   [ "$libc" = "glibc" ] && interp="/lib/ld-linux-aarch64.so.1" ;;
+    x86_64|amd64)  target="x86_64"; entry="src/mc_linux_x86_64.mc"; larch="x86_64"
+                   [ "$libc" = "glibc" ] && interp="/lib64/ld-linux-x86-64.so.2" ;;
     *) echo "bootstrap-linux: unsupported machine $(uname -m) (aarch64 | x86_64)" >&2
        exit 1 ;;
 esac
@@ -111,6 +150,14 @@ fetch_seed() {
     return 0
 }
 
+if [ -z "$seed" ] && [ "$libc" != "musl" ] && [ -x "build/mc-linux-$target-$libc" ]; then
+    seed="build/mc-linux-$target-$libc"
+    echo "seed: $seed (cross-built, $libc)"
+fi
+if [ -z "$seed" ] && [ "$libc" = "glibc" ] && [ -x "build/mc-linux-$target-gnu" ]; then
+    seed="build/mc-linux-$target-gnu"
+    echo "seed: $seed (cross-built, glibc)"
+fi
 if [ -z "$seed" ] && [ -x "build/mc-linux-$target" ]; then
     seed="build/mc-linux-$target"
     echo "seed: $seed (cross-built)"
@@ -154,20 +201,60 @@ step() {
 
 size_of() { wc -c < "$1" | tr -d ' '; }
 
+# M42: "linking" without a linker -- the previous compiler writes the executable
+# itself. $1 is that compiler, $2 the output. Everything is absolute, so the
+# config's own directory does not enter into it.
+bsroot=$(pwd)
+link_exe() {
+    cfg="$bsroot/build/bootstrap-exe.toml"
+    {
+        echo '[project]'
+        echo "entry = \"$bsroot/$entry\""
+        echo "out   = \"$bsroot/$2\""
+        echo ''
+        echo '[target]'
+        echo 'os   = "linux"'
+        echo "arch = \"$larch\""
+        [ -n "$interp" ] && echo "interp = \"$interp\""
+        [ -n "$soname" ] && echo "libc   = \"$soname\""
+        echo ''
+        echo '[limits]'
+        echo 'tolerance = 1.0'
+    } > "$cfg"
+    rm -f "$2"
+    "$1" build "$bsroot/build" --config "$cfg" > /dev/null || return 1
+    [ -x "$2" ] || { echo "FAIL: $1 wrote no executable at $2" >&2; return 1; }
+    return 0
+}
+
+# one name for both roads, so the three stages below read the same either way
+link_stage() {                           # compiler, output
+    if [ "$use_exe" = "1" ]; then
+        link_exe "$1" "$2"
+    else
+        scripts/link-linux.sh --arch "$larch" "$2" "$2.o"
+    fi
+}
+
 echo "=== M37 -- fixed point on linux/$target: seed -> mc1l -> mc2l -> mc3l ==="
 echo "  entry: $entry"
+if [ "$use_exe" = "1" ]; then
+    echo "  link:  mc --exe ($libc), no ld.lld and no sysroot (M42)"
+else
+    echo "  link:  scripts/link-linux.sh (ld.lld + the musl sysroot)"
+fi
 
 echo "-- stage 1: $seed $entry -> build/mc1l.o --"
 rm -f build/mc1l.o build/mc1l
 step "seed compiles $entry"  "$seed" "$entry" -o build/mc1l.o
 echo "  size build/mc1l.o: $(size_of build/mc1l.o) bytes"
-step "link build/mc1l"       scripts/link-linux.sh --arch "$larch" build/mc1l build/mc1l.o
+step "link build/mc1l"       link_stage "$seed" build/mc1l
 
 echo "-- stage 2: build/mc1l $entry -> build/mc2l.o --"
 rm -f build/mc2l.o build/mc2l
 step "mc1l compiles $entry"  build/mc1l "$entry" -o build/mc2l.o
 echo "  size build/mc2l.o: $(size_of build/mc2l.o) bytes"
-step "link build/mc2l"       scripts/link-linux.sh --arch "$larch" build/mc2l build/mc2l.o
+step "link build/mc2l"       link_stage build/mc1l build/mc2l
 
 echo "-- stage 3: build/mc2l $entry -> build/mc3l.o --"
 rm -f build/mc3l.o
@@ -218,10 +305,21 @@ fi
 echo "  ok: identical"
 
 echo ""
-echo "=== scripts/test-linux.sh --arch $larch build/mc2l ==="
-if ! scripts/test-linux.sh --arch "$larch" build/mc2l; then
-    echo "FAIL: scripts/test-linux.sh with the bootstrapped compiler" >&2
-    fails=1
+if [ "$use_exe" = "1" ]; then
+    # the whole suite through the compiler that just came out, with no linker
+    # anywhere in it -- which is also the only road on a glibc host, where the
+    # musl sysroot the linked road wants does not exist
+    echo "=== scripts/test-linux.sh --arch $larch --exe --libc $libc build/mc2l ==="
+    if ! scripts/test-linux.sh --arch "$larch" --exe --libc "$libc" build/mc2l; then
+        echo "FAIL: scripts/test-linux.sh --exe with the bootstrapped compiler" >&2
+        fails=1
+    fi
+else
+    echo "=== scripts/test-linux.sh --arch $larch build/mc2l ==="
+    if ! scripts/test-linux.sh --arch "$larch" build/mc2l; then
+        echo "FAIL: scripts/test-linux.sh with the bootstrapped compiler" >&2
+        fails=1
+    fi
 fi
 
 [ "$fails" -eq 0 ]

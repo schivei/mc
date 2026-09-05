@@ -694,9 +694,14 @@ Every undefined symbol is an import, in symbol-table creation order. Each gets
   `jmp qword ptr [rip + slot] ; int3 ; int3` (8 bytes).
 
 **`JUMP_SLOT` is the only dynamic relocation kind in the file.** A reference to an import resolves,
-in place, to its **PLT stub address** — a call, and equally `&write`, which is precisely the
-canonical address a linker gives an imported function in a non-PIE executable. There is no
-`GLOB_DAT` and no `COPY`: mc has no imported *data*, only imported functions.
+in place, to its **PLT stub address** — a call, and equally `&write` in an expression, which is
+precisely the canonical address a linker gives an imported function in a non-PIE executable. There
+is no `GLOB_DAT` and no `COPY`: mc has no imported *data*, only imported functions.
+
+(An import's address in *static* data is not reachable from the language: a global initializer has
+to be a constant the compiler can fold, so `uptr p[] = { &write };` is
+`initializer must be constant` and never reaches a writer. The `R_UNSIGNED` path is implemented
+regardless, for a module that emits its own data.)
 
 `DT_NEEDED` names come from the same two places Mach-O's `LC_LOAD_DYLIB` comes from — `#dylib`
 (M12) and `[libs]`/`[externs]` (M14) — with the default library first, the way libSystem is always

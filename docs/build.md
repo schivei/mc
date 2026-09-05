@@ -709,7 +709,24 @@ hello
 
 The binary asks for musl's loader (`/lib/ld-musl-<arch>.so.1`) and `libc.so`; `[target].interp`
 and `[target].libc` name glibc's instead
-([reference/toml.md](reference/toml.md#target-interp-and-target-libc-the-two-per-libc-names)).
+([reference/toml.md](reference/toml.md#target-interp-and-target-libc-the-two-per-libc-names)):
+
+```toml
+[target]
+os     = "linux"
+arch   = "aarch64"
+interp = "/lib/ld-linux-aarch64.so.1"    # /lib64/ld-linux-x86-64.so.2 on x86_64
+libc   = "libc.so.6"
+```
+
+**Which one you pick decides where the binary runs.** `PT_INTERP` is an absolute path, so a
+musl-linked binary on a glibc system does not start at all — the kernel cannot find the
+interpreter and reports `no such file or directory` about a program that is plainly there — and a
+glibc-linked binary on Alpine fails the same way. Both are exercised on both architectures:
+`make test-linux-exe` and `make test-linux-x86_64-exe` run the whole corpus twice, musl in
+`alpine:3` and glibc in `ubuntu:latest` (`scripts/test-linux.sh --exe [--libc glibc]`), and the
+CI legs run the glibc set natively on the Ubuntu runners. The **object** does not depend on the
+choice: an ELF `ET_REL` records no interpreter.
 A program with no undefined symbol at all — anything on `<sys_linux>` — comes out static, with no
 `PT_INTERP` and no `PT_DYNAMIC`, and that is decided by counting imports rather than by a key.
 The layout, field by field, is
@@ -768,8 +785,9 @@ Windows, whose PE executable writer is a separate milestone.
 **Not for a dynamic executable.** A dynamic binary needs *names* (the interpreter path, the
 `DT_NEEDED` soname, the symbol names), and a name is not a file to download. The four files below
 exist to serve the **static external link**, which is the `[linker]` road above:
-`examples/api`-style projects that link a real library statically, and anything that must run
-where no `ld-musl-*.so.1` exists.
+`examples/api`-style projects that link a real library statically, and anything that must run on a
+machine with no dynamic libc at all. Running on a glibc system is **not** one of those cases: it
+is `[target].interp` plus `[target].libc`, two names and no files.
 
 `scripts/sysroot-linux.sh [--arch aarch64|x86_64]` fills `build/sysroot/linux-<arch>` by running
 `apk add musl-dev` inside a throwaway Alpine container of the matching platform (`linux/arm64` or
@@ -1725,9 +1743,10 @@ three.
   of `macho-exe`, so `ld.lld` (or any linker named in the config) does the layout.
 - **The taught compiler is always built for the host, never for `[target]`.** It is a tool that
   has to run here, not part of the artifact. Which backend that is comes from the target registry,
-  looked up with the *host's* pair: on macOS `macho-exe`, one step. On a host with no
-  direct-executable backend — Linux — it is the host's object backend plus `[linker]`, the same
-  section the entry uses, and a project that teaches the compiler there without one gets
+  looked up with the *host's* pair: on macOS `macho-exe` and, since M42, `elf-exe` /
+  `elf-exe-x86_64` on Linux — one step in both cases. On a host with no direct-executable
+  backend — Windows — it is the host's object backend plus `[linker]`, the same section the entry
+  uses, and a project that teaches the compiler there without one gets
   `a taught compiler on this host needs [linker]: there is no direct executable`.
 - ~~**`mc` itself does not cross-compile yet**~~ — done in M37. `_NSGetEnviron` was the single
   blocker (libSystem's way of reaching `environ`, with no musl equivalent), and it now lives in
