@@ -3,7 +3,8 @@
 // `main()` that says which PARTS this compiler is made of.
 //
 // usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules|--dump-machine]
-//         [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] input.mc [-o output]
+//         [--backend=NAME|--exe] [--machine=NAME] [--include=DIR]
+//         [--libc=gnu|musl] [--interp=PATH] [--link=dynamic|static] input.mc [-o output]
 //        mc build [DIR]   ·   mc limits [DIR|FILE.mc]   ·   mc sysroot ...
 // The --dump-* modes write to stdout and do not generate the object.
 //
@@ -126,7 +127,7 @@ void dump_machine() {
 // compiler without <mc/core_build> has none and prints just the two -- which is
 // the honest answer, since `mc build` is not in it.
 void usage() {
-    out_str(2, "usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules|--dump-machine] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] source.mc [-o out]\n");
+    out_str(2, "usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules|--dump-machine] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] [--libc=gnu|musl] [--interp=PATH] [--link=dynamic|static] source.mc [-o out]\n");
     out_str(2, "       mc --host\n");
     subcommand_usage();
 }
@@ -146,6 +147,7 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
     uptr mname = 0;                             // --machine=, for the dump modes
     i64 mode = M_COMPILE;
     i64 want_exe = 0;                           // --exe: the HOST's exe backend
+    uptr linkflag = 0;                          // the last of --libc/--interp/--link
 
     // M17: the machines were registered before this call. `machine()` also
     // makes each one current, so the host's is named again here -- when it
@@ -196,9 +198,32 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
             // carry two platform layers in different directories and pick one
             // without `mc build` (examples/conc/lib/macos, lib/linux).
             uptr ip = opt_val(a, "--include=");
+            // post-M42 patch: the two axes of a Linux dynamic executable, said
+            // on the command line exactly as [target] says them in mc.toml --
+            // one vocabulary, and no probe of the machine: `mc --exe prog.mc`
+            // with no flag writes the same bytes on every host, which is what
+            // docs/determinism.md asks for. They are written straight into the
+            // globals src/objmodel.mc holds for the writer; the last one wins,
+            // like every other flag here.
+            uptr lc = opt_val(a, "--libc=");
+            uptr it = opt_val(a, "--interp=");
+            uptr lk = opt_val(a, "--link=");
             if (mn)      mname = mn;
             else if (bn) { bname = bn; want_exe = 0; }
             else if (ip) { }                    // applied after lex_init, below
+            else if (lc) {
+                if (!str_eq(lc, "gnu") && !str_eq(lc, "musl"))
+                    die2("--libc must be gnu or musl", lc);
+                dyn_libc = lc;
+                linkflag = "--libc";
+            }
+            else if (it) { dyn_interp = it; linkflag = "--interp"; }
+            else if (lk) {
+                if (str_eq(lk, "static"))        dyn_static = 1;
+                else if (str_eq(lk, "dynamic"))  dyn_static = 0;
+                else die2("--link must be dynamic or static", lk);
+                linkflag = "--link";
+            }
             else         die2("unknown option", a);
         }
         else if (in == 0)          in = a;
@@ -206,6 +231,15 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
         i = i + 1;
     }
     if (in == 0) { usage(); return 1; }
+
+    // post-M42 patch: the three flags above describe a LINUX dynamic image and
+    // nothing else. The single-file CLI writes for the host unless --backend=
+    // named a writer, so the flag is accepted when the host is Linux or when a
+    // backend was named explicitly (the cross road, where the caller chose the
+    // format), and refused otherwise -- a macOS `--exe` that took `--libc=gnu`
+    // and ignored it would be worse than one that says so.
+    if (linkflag && bname == 0 && !str_eq(host_os(), "linux"))
+        die(tm_cat(linkflag, " applies to a linux target"));
 
     // M23/M41: the pre-scan sizes every table before the first one exists. It
     // lives in <mc/core_build> and reaches here through on_plan(); with that

@@ -107,18 +107,55 @@
 #define S_ATTR_SOME_INSTRUCTIONS 0x400
 #define TEXT_FLAGS (S_REGULAR | S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS)
 
-// M42: the two names a DYNAMICALLY linked executable needs and no object ever
-// does -- the path of the program interpreter, and the library that symbol
-// ordinal 1 comes from. They are here, in the format-neutral half, for the same
-// reason the R_X86_* kinds are: the driver writes them (from [target].interp
-// and [target].libc in mc.toml) and a writer reads them, and the two live in
-// different parts -- <mc/core_build> may be assembled without <mc/core_writers>
-// and must still compile (scripts/check-parts.sh). 0 means "the writer's own
-// default for this target"; src/backend_elf_exe.mc answers musl.
-// Mach-O's counterparts are constants (`/usr/lib/dyld`,
-// `/usr/lib/libSystem.B.dylib`) and src/backend_exe.mc ignores both.
-uptr dyn_interp = 0;
-uptr dyn_libc = 0;
+// M42 (+ the post-M42 patch): WHAT A DYNAMICALLY LINKED EXECUTABLE IS LINKED
+// AGAINST, and no object ever is. They are here, in the format-neutral half,
+// for the same reason the R_X86_* kinds are: something writes them (the driver
+// from [target] in mc.toml, src/cli.mc from --libc=/--interp=/--link=) and a
+// writer reads them, and the two live in different parts -- <mc/core_build> may
+// be assembled without <mc/core_writers> and must still compile
+// (scripts/check-parts.sh). Mach-O's counterparts are constants
+// (`/usr/lib/dyld`, `/usr/lib/libSystem.B.dylib`) and src/backend_exe.mc
+// ignores all four.
+//
+// The Linux family has two axes and this is the whole vocabulary for them
+// (docs/build.md § Linux targets):
+//
+//   libc   `gnu` or `musl` -- a FAMILY, not a soname. It picks the DT_NEEDED
+//          name AND the default interpreter path, because the two always go
+//          together and naming them separately is how a config gets one of them
+//          wrong. 0 is musl, the libc this repository's Linux half is tested
+//          against.
+//   link   dynamic (0) or static (1). Static is an ASSERTION: the writer
+//          refuses a program that imports a libc symbol, because mc has no
+//          archive linker -- that road is [linker] + ld.lld (docs/build.md).
+//
+// `interp` stays an explicit path override for the loader, for a system whose
+// loader is neither of the two standard paths.
+uptr dyn_interp = 0;                  // explicit PT_INTERP path, or 0
+uptr dyn_libc = 0;                    // "gnu", "musl", or 0 = musl
+i64  dyn_static = 0;                  // 1 = a static link was asked for
+// how a writer reports a bad value: `void f(uptr key, uptr msg)`. The driver
+// installs &toml_err_key, which points at the key's own file:line:col; the
+// single-file CLI leaves it 0 and the message comes out as a plain `mc: ...`.
+// A writer must not know what TOML is, and a `mc.toml` diagnostic must not lose
+// its position: this is the one line that satisfies both.
+uptr dyn_err_fn = 0;
+
+void dyn_die(uptr key, uptr msg) {
+    if (dyn_err_fn) callp(dyn_err_fn, key, msg);
+    die(msg);
+}
+
+// the libc family, as a bit. Both roads validate the value where they read it
+// (positioned in mc.toml, at the flag on the command line), so this only fires
+// for a module that writes dyn_libc itself.
+i64 dyn_libc_gnu() {
+    if (dyn_libc == 0) return 0;
+    if (str_eq(dyn_libc, "musl")) return 0;
+    if (str_eq(dyn_libc, "gnu")) return 1;
+    dyn_die("target.libc", "libc must be gnu or musl");
+    return 0;
+}
 
 uptr sections;
 i64  nsections = 0;
