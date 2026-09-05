@@ -141,6 +141,20 @@ check-parts: build/mc1
 check-shim: $(MC)
 	sh scripts/check-shim.sh $(MC)
 
+# M43 step B: the suite and the isolation cases through `mc sandbox`
+# (docs/specs/M43.md § 8). On a Linux host it runs natively with the compiler
+# this host bootstrapped; on macOS the script cross-builds a Linux `mc` and
+# hands the run to a Linux kernel (Lima, else docker --privileged), and prints
+# one SKIPPED line with the reason when there is neither. The box's own guard,
+# `mc sandbox check`, is what skips it on a kernel that cannot build one.
+ifeq ($(HOST),Linux)
+test-sandbox: $(MC)
+	sh scripts/test-sandbox.sh $(MC)
+else
+test-sandbox: build/mc1
+	sh scripts/test-sandbox.sh
+endif
+
 # M11: the whole suite via the direct executable (--exe), no ld. Only the
 # .mc compiler has this backend, so the target depends on $(MC) -- which is
 # build/mc1 on macOS and, since M42, the bootstrapped build/mc2l on a Linux
@@ -463,6 +477,15 @@ mc-linux: build/mc1
 mc-linux-x86_64: build/mc1
 	build/mc1 build src --config src/mc.linux-x86_64.toml
 
+# M43: the same two, for a GLIBC Linux host. `mc sandbox` has to be a binary the
+# host can execute before it can box anything, and Lima, the VPS and the Ubuntu
+# runners are all glibc (docs/reference/sandbox.md § Hosts).
+mc-linux-gnu: build/mc1
+	build/mc1 build src --config src/mc.linux-aarch64-gnu.toml
+
+mc-linux-x86_64-gnu: build/mc1
+	build/mc1 build src --config src/mc.linux-x86_64-gnu.toml
+
 # M37: the same cross-build stopped one step earlier -- `kind = "obj"`, so no
 # [linker], no sysroot, no Docker and no ld.lld. This is what CI runs on the
 # macOS runner (docs/ci.md § M37); the object is linked on the Linux runner,
@@ -504,6 +527,7 @@ check-skipped:
 	@echo "check-examples/check-lang/check-conc/check-desktop: SKIPPED (macOS dylibs and --exe)"
 	@echo "check-docs/site/check-site: SKIPPED (their samples are built with --exe)"
 	@echo "check-shim: SKIPPED (M43 acceptance 1 runs a Linux binary; the shim's words are asserted by check-parts and check-surface)"
+	@echo "test-sandbox: SKIPPED (the sandbox is a Linux feature; scripts/test-sandbox.sh delegates from macOS, not from Windows)"
 else
 check-skipped:
 	@echo "budget/stage0: the C seed is macOS-first -- it emits Mach-O only (docs/bootstrap.md)"
@@ -521,14 +545,14 @@ check-skipped:
 endif
 
 ifeq ($(HOST),Linux)
-check: budget bootstrap-linux check-lex check-ast check-asm check-obj check-bundle check-mc test-exe check-toml check-sysroots check-limits check-shim check-skipped
+check: budget bootstrap-linux check-lex check-ast check-asm check-obj check-bundle check-mc test-exe check-toml check-sysroots check-limits check-shim test-sandbox check-skipped
 else ifneq (,$(WINHOST))
 # M38: the Windows subset. Everything not here needs `mc` plus something this
 # host does not have -- the C seed, the Mach-O direct-executable backend, GTK4,
 # Docker or python3 -- and `check-skipped` prints the reason for each one.
 check: budget bootstrap-windows check-lex check-ast check-asm check-obj check-bundle check-mc check-toml check-sysroots check-limits check-skipped
 else
-check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-parts check-toml check-build check-sysroots check-stubs check-limits check-minimal test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-desktop check-float check-wide check-kernel check-avr check-docs site check-site test-linux-exe test-linux-x86_64-exe
+check: budget test check-lex check-ast check-bundle check-asm check-obj bootstrap check-surface test-exe check-mc check-standalone check-parts check-toml check-build check-sysroots check-stubs check-limits check-minimal test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-desktop check-float check-wide check-kernel check-avr check-docs site check-site test-linux-exe test-linux-x86_64-exe test-sandbox
 endif
 
 budget:
@@ -538,7 +562,7 @@ clean:
 	rm -rf build
 
 .PHONY: bootstrap-linux mc-linux mc-linux-x86_64 mc-linux-obj mc-linux-x86_64-obj
-.PHONY: check-linux-host check-skipped check-shim
+.PHONY: check-linux-host check-skipped check-shim test-sandbox mc-linux-gnu mc-linux-x86_64-gnu
 .PHONY: bootstrap-windows mc-windows mc-windows-x86_64 mc-windows-obj mc-windows-x86_64-obj
 .PHONY: all stage0 stage0-san test check-lex check-ast check-asm check-obj mc1 bootstrap check-surface test-exe bundle check-bundle check-mc check-standalone check-parts check-toml check-build check-sysroots check-stubs check-limits sysroot-linux sysroot-linux-x86_64 sysroot-windows sysroot-windows-x86_64 test-linux test-linux-x86_64 test-windows test-windows-x86_64 check-examples check-lang check-conc check-docs site check-site check budget clean check-desktop check-minimal mcrt-windows mcrt-windows-x86_64 check-float check-wide check-kernel check-avr test-linux-exe test-linux-x86_64-exe
 
