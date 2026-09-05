@@ -1,0 +1,14 @@
+# tests/pkg/major -- two majors of one name in one build: mathx 1.0.0 here and
+# mathx 2.0.0 through heavy. Refused, not solved (M44 D6).
+[project]
+name  = "major"
+entry = "main.mc"
+out   = "build/major.o"
+kind  = "obj"
+
+[deps]
+heavy = "1.0.0"
+mathx = "1.0.0"
+
+[limits]
+tolerance = 1.0

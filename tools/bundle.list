@@ -23,10 +23,12 @@ mc/core_build	src/core_build.mc
 mc/core_bundle	src/core_bundle.mc
 mc/core_machines	src/core_machines.mc
 mc/core_min	src/core_min.mc
+mc/core_pkg	src/core_pkg.mc
 mc/core_sandbox	src/core_sandbox.mc
 mc/core_writers	src/core_writers.mc
 mc/deps	src/deps.mc
 mc/driver	src/driver.mc
+mc/fetch	src/fetch.mc
 mc/gen_resolve	src/gen_resolve.mc
 mc/gen_walk	src/gen_walk.mc
 mc/hooks	src/hooks.mc
@@ -45,6 +47,7 @@ mc/macho	src/macho.mc
 mc/main	src/main.mc
 mc/objmodel	src/objmodel.mc
 mc/parse	src/parse.mc
+mc/pkg	src/pkg.mc
 mc/sandbox	src/sandbox.mc
 mc/sandbox_box	src/sandbox_box.mc
 mc/sandbox_profiles	src/sandbox_profiles.mc

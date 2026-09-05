@@ -4,7 +4,7 @@
 #
 # Four proofs, in the order docs/specs/M41.md § Acceptance lists them:
 #
-#   1. THE PARTS ARE THE CORE. An object built from `<mc/host>` + the six parts
+#   1. THE PARTS ARE THE CORE. An object built from `<mc/host>` + the seven parts
 #      spelled out + `<mc/main>` + `<user_default>` is byte-identical to one
 #      built from `<mc/host>` + `<mc/core>` + `<user_default>`. This is the
 #      anti-drift proof: it fails the moment src/core.mc and the part files
@@ -64,6 +64,7 @@ cat > "$tmp/parts.mc" <<'EOF'
 #include <mc/core_writers>
 #include <mc/core_build>
 #include <mc/core_bundle>
+#include <mc/core_pkg>
 #include <mc/core_sandbox>
 #include <mc/main>
 #include <user_default>
@@ -74,13 +75,13 @@ cat > "$tmp/whole.mc" <<'EOF'
 #include <user_default>
 EOF
 if ! msg=$("$mc" "$tmp/parts.mc" -o "$tmp/parts.o" 2>&1); then
-    fail "compiling the six parts spelled out: $msg"
+    fail "compiling the parts spelled out: $msg"
 elif ! msg=$("$mc" "$tmp/whole.mc" -o "$tmp/whole.o" 2>&1); then
     fail "compiling <mc/core>: $msg"
 elif ! cmp -s "$tmp/parts.o" "$tmp/whole.o"; then
     fail "the parts and <mc/core> produce different objects (src/core.mc has drifted)"
 else
-    echo "ok   the six parts + <mc/main> == <mc/core>, byte for byte ($(wc -c < "$tmp/parts.o" | tr -d ' ') bytes)"
+    echo "ok   the parts + <mc/main> == <mc/core>, byte for byte ($(wc -c < "$tmp/parts.o" | tr -d ' ') bytes)"
 fi
 
 # ------------------------------------------------- 1b. each part on its own
@@ -89,12 +90,13 @@ fi
 # another part's file, a helper that drifted into the driver -- and it is how
 # three of them were found and fixed when M41 landed (tm_cat, tm_num_str,
 # MODE_755, R_X86_PC32/R_X86_PLT32).
-for p in core_machines core_writers core_build core_bundle core_sandbox; do
+for p in core_machines core_writers core_build core_bundle core_pkg core_sandbox; do
     case "$p" in
         core_machines) init=mc_machines_init ;;
         core_writers)  init=mc_writers_init ;;
         core_build)    init=mc_build_init ;;
         core_bundle)   init=mc_bundle_init ;;
+        core_pkg)      init=mc_pkg_init ;;
         core_sandbox)  init=mc_sandbox_init ;;
     esac
     { echo '#include <mc/host>'

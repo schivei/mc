@@ -1,0 +1,18 @@
+# tests/pkg/sync -- the project `mc pkg sync` resolves from a registry.
+#
+# MVS, not "latest": this file asks for mathx 1.0.0 and plot 1.0.0, plot's index
+# row asks for mathx 1.1.0, and the registry also carries mathx 1.2.1 (yanked)
+# and 2.0.0. What must come out of the lock is mathx 1.1.0 -- the lowest version
+# that satisfies every minimum.
+[project]
+name  = "sync"
+entry = "main.mc"
+out   = "build/sync"
+kind  = "exe"
+
+[deps]
+plot  = "1.0.0"
+mathx = "1.0.0"
+
+[limits]
+tolerance = 1.0

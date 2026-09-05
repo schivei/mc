@@ -12,6 +12,7 @@
 //   mc_bundle_init()     `#include <name>`                     <mc/core_bundle>
 //   mc_build_init()      `mc build|limits|sysroot`, and the pre-scan
 //                                                              <mc/core_build>
+//   mc_pkg_init()        `mc pkg`, `mc update`                  <mc/core_pkg>
 //   mc_sandbox_init()    `mc sandbox`                          <mc/core_sandbox>
 //   mc_main(argc, argv, envp)  everything else                 <mc/core_min>
 //
@@ -34,6 +35,7 @@ i64 main(i64 argc, uptr argv, uptr envp) {
     mc_writers_init();
     mc_bundle_init();
     mc_build_init();
+    mc_pkg_init();
     mc_sandbox_init();
     return mc_main(argc, argv, envp);
 }

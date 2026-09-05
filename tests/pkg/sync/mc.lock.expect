@@ -1,0 +1,15 @@
+# written by `mc pkg sync` -- do not edit (docs/reference/packages.md)
+
+[[package]]
+name    = "mathx"
+version = "1.1.0"
+lib     = "mathx.mc"
+sha256  = "1b8bcfa5e4f84af1492205747ce7c880067b1a2ace4133d06bdb86e97fef3cf2"
+deps    = []
+
+[[package]]
+name    = "plot"
+version = "1.0.0"
+lib     = "plot.mc"
+sha256  = "f5e0f0c64e854ba2b3b2ed4edfe3cadf3996c99fbabc29d8fc5fc4188f28c43b"
+deps    = ["mathx"]

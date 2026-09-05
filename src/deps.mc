@@ -241,27 +241,9 @@ i64 dp_has_file(i64 pk, uptr name) {
 // is also the vendor-copy list and the build-time boundary), and the bytes are
 // taken exactly as they are on disk, LF or CRLF, so a checkout that translates
 // line endings changes the hash and says so (.gitattributes `-text`).
-uptr dep_hex(uptr d) {
-    u8 b[BUF_SIZE];
-    buf_init(b);
-    i64 i = 0;
-    while (i < 32) {
-        i64 v = ld8(d + i);
-        buf_u8(b, ld8("0123456789abcdef" + ((v >> 4) & 15)));
-        buf_u8(b, ld8("0123456789abcdef" + (v & 15)));
-        i = i + 1;
-    }
-    buf_u8(b, 0);
-    return buf_p(b);
-}
-
-uptr dep_file_hash(uptr path) {
-    i64 len = 0;
-    uptr src = read_file(path, &len);
-    u8 d[32];
-    sha256(src, len, d);
-    return dep_hex(d);
-}
+// The hex printer and the per-file digest are src/sha256.mc's since M44 step 3
+// (hex64, sha256_file): three files print a digest and one of them is a
+// fetcher, so the spelling lives beside the function that produces the bytes.
 
 // `dir` carries its trailing '/', so path_join treats it as a directory
 uptr dep_in(uptr dir, uptr rel) { return path_join(dir, rel); }
@@ -269,7 +251,7 @@ uptr dep_in(uptr dir, uptr rel) { return path_join(dir, rel); }
 void dep_line(uptr b, uptr dir, uptr rel) {
     uptr p = dep_in(dir, rel);
     if (!lex_readable(p)) dep_die("a file the package lists is missing", p, 0);
-    buf_put(b, dep_file_hash(p), 64);
+    buf_put(b, sha256_file(p), 64);
     buf_put(b, "  ", 2);
     buf_put(b, rel, cstrlen(rel));
     buf_u8(b, '\n');
@@ -279,14 +261,24 @@ void dep_line(uptr b, uptr dir, uptr rel) {
 // into the file table and returns the tree hash. Also the one place that reads
 // a package manifest at all, so a package that lists nothing hashes its mc.toml
 // and no more -- which is a legitimate (and useless) package, not an error.
-uptr dep_scan(i64 pk) {
-    uptr dir = dp_dir(pk);
+// Hashes a package tree: <dir>/mc.toml first, then each entry of
+// [package].files IN MANIFEST ORDER, through dep_line above. The manifest is
+// read inside a push/pop, and the file names are recorded in the file table
+// under `pk` -- which is the package's index for a locked tree and -1 for a
+// directory nobody locked (`mc pkg hash DIR`, and every tree `mc pkg sync`
+// unpacks). Only the entries THIS call added are hashed, so the same table
+// serves both and a second call cannot pick up the first one's names.
+//
+// It is the ONE definition of D5's rule: src/pkg.mc's `hash`, `sync`, `vendor`
+// and `check` all come through here, and scripts/pkg-hash.sh is the second
+// implementation `make check-pkg` compares it against on every run.
+uptr dep_hash_tree(uptr dir, i64 pk) {
     uptr mt = dep_in(dir, "mc.toml");
-    if (!lex_readable(mt))
-        dep_die(tm_cat(tm_cat(dp_name(pk), " "), dp_ver(pk)),
-                "no mc.toml in the package tree", "mc pkg sync --yes");
+    if (!lex_readable(mt)) return 0;
     uptr frame = toml_push();
     toml_parse(mt);
+    uptr s = dp_state();
+    i64 start = ld64(s + DP_NFILE);
     i64 n = toml_count("package.files");
     i64 i = 0;
     while (i < n) {
@@ -298,17 +290,26 @@ uptr dep_scan(i64 pk) {
     u8 b[BUF_SIZE];
     buf_init(b);
     dep_line(b, dir, "mc.toml");
-    uptr s = dp_state();
     i64 nf = ld64(s + DP_NFILE);
-    i = 0;
+    i = start;
     while (i < nf) {
-        uptr e = ld64(s + DP_FILE) + i * FL_SIZE;
-        if (ld64(e + FL_PKG) == pk) dep_line(b, dir, ld64(e + FL_NAME));
+        dep_line(b, dir, ld64(ld64(s + DP_FILE) + i * FL_SIZE + FL_NAME));
         i = i + 1;
     }
     u8 d[32];
     sha256(buf_p(b), buf_len(b), d);
-    return dep_hex(d);
+    return hex64(d);
+}
+
+// The locked package's tree, hashed and recorded. A package that lists nothing
+// hashes its mc.toml and no more -- which is a legitimate (and useless)
+// package, not an error.
+uptr dep_scan(i64 pk) {
+    uptr h = dep_hash_tree(dp_dir(pk), pk);
+    if (h == 0)
+        dep_die(tm_cat(tm_cat(dp_name(pk), " "), dp_ver(pk)),
+                "no mc.toml in the package tree", "mc pkg sync --yes");
+    return h;
 }
 
 // ---- per-file attribution ----
@@ -332,7 +333,7 @@ uptr dep_manifest_bad(i64 pk) {
         uptr want = toml_get(tm_cat(key, "sha256"));
         if (rel != 0 && want != 0) {
             uptr p = dep_in(dp_dir(pk), rel);
-            if (!lex_readable(p) || !str_eq(dep_file_hash(p), want)) {
+            if (!lex_readable(p) || !str_eq(sha256_file(p), want)) {
                 bad = rel;
                 i = n;
             }

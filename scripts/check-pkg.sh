@@ -1,10 +1,21 @@
 #!/bin/sh
-# check-pkg.sh [MC] — the acceptance criteria of M44 step 2 that are reachable
-# without a fetcher: the resolution model, the lock, the tree hash, the closure
-# rule and the [package].files boundary. Nothing here touches the network, and
-# a `curl`/`wget` shim that FAILS if it is invoked sits on PATH for the whole
-# run -- `mc build` must be proved never to download, not just documented
+# check-pkg.sh [MC] — the acceptance criteria of M44, steps 2 and 3: the
+# resolution model, the lock, the tree hash, the closure rule and the
+# [package].files boundary (step 2), and then the registry, MVS, the lock
+# WRITER, the archive fetch, vendoring, `mc pkg add|list|verify|hash|check` and
+# `mc update` (step 3).
+#
+# NOTHING HERE TOUCHES THE NETWORK. The fixture registry is a DIRECTORY this
+# script builds -- index files whose `url` is a local tarball it made with `tar`
+# out of tests/pkg/src -- which is exactly the private-registry shape M44 § 5
+# prices at zero lines, and it is why a `curl`/`wget` shim that FAILS if it is
+# invoked sits on PATH for the whole run: `mc build` and `mc pkg` against a
+# local registry must be PROVED never to download, not just documented
 # (M44 § Acceptance, architect's addition (a)).
+#
+# The `tar` shim is on PATH for every `mc build` and off it for `mc pkg`, which
+# has to unpack an archive; `pkg()` below is the one place that difference
+# lives.
 #
 # The fixtures are tests/pkg/:
 #
@@ -34,12 +45,18 @@ mc=$(cd "$(dirname "$mc")" && pwd)/$(basename "$mc")
 tmp="${TMPDIR:-/tmp}/check-pkg.$$"
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) tmp=$(cygpath -m "$tmp") ;; esac
 rm -rf "$tmp"
-mkdir -p "$tmp/libs" "$tmp/libs2" "$tmp/empty" "$tmp/bin" "$tmp/out"
+mkdir -p "$tmp/libs" "$tmp/libs2" "$tmp/empty" "$tmp/bin" "$tmp/bin2" "$tmp/out" \
+         "$tmp/archives" "$tmp/stage" "$tmp/registry/index" "$tmp/c1" "$tmp/c2" "$tmp/chk"
 cleanup() {
     rm -rf "$tmp"
     rm -rf "$here/tests/pkg/app/build" "$here/tests/pkg/app/deps" \
            "$here/tests/pkg/app-float/build" "$here/tests/pkg/app-bad/build" \
-           "$here/tests/pkg/app-extra/build" "$here/tests/pkg/std/build"
+           "$here/tests/pkg/app-extra/build" "$here/tests/pkg/std/build" \
+           "$here/tests/pkg/sync/build" "$here/tests/pkg/sync/deps" \
+           "$here/tests/pkg/sync/mc.lock" "$here/tests/pkg/major/build" \
+           "$here/tests/pkg/major/mc.lock" "$here/tests/pkg/add/build" \
+           "$here/tests/pkg/add/mc.lock" "$here/tests/pkg/add/deps"
+    git -C "$here" checkout -- tests/pkg/add/add.toml 2> /dev/null
 }
 trap cleanup EXIT INT TERM
 
@@ -52,6 +69,7 @@ fail() { total=$((total + 1)); echo "FAIL $1: $2"; fails=$((fails + 1)); }
 # Every downloader mc knows about (src/host_*.mc host_downloader/_alt), plus the
 # archive tool, refusing loudly. Anything that reaches for the network in this
 # script fails the run instead of silently succeeding on a developer's machine.
+realpath_env="$PATH"                  # the PATH with a working tar on it
 for t in curl wget tar; do
     cat > "$tmp/bin/$t" <<EOF
 #!/bin/sh
@@ -59,9 +77,17 @@ echo "check-pkg: $t was invoked -- mc build must never download" >&2
 exit 97
 EOF
     chmod +x "$tmp/bin/$t"
+    # bin2 is what `mc pkg` runs under: the two downloaders still refuse, so a
+    # fetch that reached the network would fail the run, but `tar` is real --
+    # unpacking an archive is what a package fetch DOES.
+    [ "$t" = tar ] || cp "$tmp/bin/$t" "$tmp/bin2/$t"
 done
 PATH="$tmp/bin:$PATH"
 export PATH
+
+# `mc pkg ...` with the real tar and the refusing downloaders
+pkg() { PATH="$tmp/bin2:$realpath_env" "$mc" pkg "$@" > "$tmp/o" 2>&1; rc=$?; }
+upd() { PATH="$tmp/bin2:$realpath_env" "$mc" update "$@" > "$tmp/o" 2>&1; rc=$?; }
 
 # ---- <libs>, populated by hand: this is what `mc pkg sync` will write ----
 install_pkg() {                       # install_pkg SRCDIR NAME VERSION LIBSDIR
@@ -350,6 +376,347 @@ if sh scripts/check-standalone.sh build/mc-exe build/mc2.o > "$tmp/o" 2>&1; then
     ok "check-standalone is green with curl/wget/tar refusing to run"
 else
     fail "check-standalone under the shim" "$(tail -3 "$tmp/o")"
+fi
+
+# =========================== step 3: the registry ============================
+# The fixture registry is a DIRECTORY, built here from tests/pkg/src with the
+# real tar:
+#
+#   $tmp/archives/<name>-<version>.tar.gz   top directory <name>-<version>, so
+#                                           strip = 1, GitHub's own shape
+#   $tmp/registry/index/<name>.toml         url = that file, sha256 = the TREE
+#                                           hash scripts/pkg-hash.sh computes
+#
+# gzip timestamps make the archives non-reproducible, and nothing hashes them:
+# the hash is over CONTENT (M44 D5), which is exactly why a regenerated tarball
+# cannot move it. Generating the index here instead of checking it in keeps ONE
+# source of truth for the fixture hashes -- the trees -- while still comparing
+# two implementations of the rule, since the index is written by the shell one
+# and read by the compiler's.
+mkarchive() {                         # mkarchive SRCDIR NAME VERSION
+    rm -rf "$tmp/stage/$2-$3"
+    cp -R "$1" "$tmp/stage/$2-$3"
+    ( cd "$tmp/stage" && PATH="$realpath_env" tar -czf "$tmp/archives/$2-$3.tar.gz" "$2-$3" )
+}
+index_open() {                        # index_open NAME
+    { echo "# index/$1.toml -- written by scripts/check-pkg.sh, M44 § 5's layout"
+      echo '[package]'
+      echo "name        = \"$1\""
+      echo "repo        = \"https://example.invalid/mc-$1\""
+      echo "description = \"a fixture package\""
+    } > "$tmp/registry/index/$1.toml"
+}
+index_row() {                         # index_row NAME VERSION SRCDIR DEPS YANKED
+    { echo
+      echo '[[versions]]'
+      echo "version = \"$2\""
+      echo "url     = \"$tmp/archives/$1-$2.tar.gz\""
+      echo "strip   = 1"
+      echo "sha256  = \"$(sh scripts/pkg-hash.sh "$3")\""
+      echo "deps    = [$4]"
+      [ -z "$5" ] || echo "yanked  = true"
+    } >> "$tmp/registry/index/$1.toml"
+    mkarchive "$3" "$1" "$2"
+}
+
+index_open mathx
+index_row mathx 1.0.0 tests/pkg/src/mathx-1.0.0 ""
+index_row mathx 1.1.0 tests/pkg/src/mathx-1.1.0 ""
+index_row mathx 2.0.0 tests/pkg/src/mathx-2.0.0 ""
+index_row mathx 2.0.1 tests/pkg/src/mathx-2.0.1 "" yanked
+index_open plot
+index_row plot 1.0.0 tests/pkg/src/plot-1.0.0 '"mathx 1.1.0"'
+index_open heavy
+index_row heavy 1.0.0 tests/pkg/src/heavy-1.0.0 '"mathx 2.0.0"'
+index_open geo
+index_row geo 1.0.0 tests/pkg/src/geo-1.0.0 '"mathx 1.0.0"'
+index_row geo 1.2.0 tests/pkg/src/geo-1.2.0 '"mathx 1.0.0"'
+reg="$tmp/registry"
+
+# ---- 17. `mc pkg hash` is the same rule as the shell and as the lock ----
+for pair in "geo tests/pkg/src/geo-1.2.0" "mathx tests/pkg/src/mathx-1.0.0" \
+            "plot tests/pkg/src/plot-1.0.0"; do
+    set -- $pair
+    got=$("$mc" pkg hash "$2")
+    want=$(sh scripts/pkg-hash.sh "$2")
+    if [ "$got" = "$want" ]; then ok "mc pkg hash $1: $got"
+    else fail "mc pkg hash $1" "mc says $got, pkg-hash.sh says $want"
+    fi
+done
+
+# ---- 18. the plan is printed and nothing is fetched (acceptance 3) ----
+pkg sync tests/pkg/sync --registry "$reg" --libs-dir "$tmp/c1"
+if [ "$rc" != 0 ]; then
+    fail "sync plan" "exit $rc: $(cat "$tmp/o")"
+elif ! grep -q "nothing was downloaded: re-run with --yes" "$tmp/o"; then
+    fail "sync plan" "no 'nothing was downloaded' line: $(cat "$tmp/o")"
+elif [ "$(grep -c '^fetch  ' "$tmp/o")" != 2 ]; then
+    fail "sync plan" "expected 2 fetch rows, got: $(grep -c '^fetch  ' "$tmp/o")"
+elif [ -n "$(ls -A "$tmp/c1" 2> /dev/null)" ]; then
+    fail "sync plan" "$tmp/c1 is not empty"
+elif [ -f tests/pkg/sync/mc.lock ]; then
+    fail "sync plan" "a lock was written without --yes"
+else
+    ok "the plan names 2 archives with their hashes and nothing was fetched"
+fi
+
+# ---- 18b. an https registry with no snapshot: the plan is the index files ----
+# No network is reached: without --yes the fetch is a PLAN, and the two shims on
+# PATH would fail the run if a downloader were spawned. This is the only place
+# the URL road is exercised offline, and it is what a first `mc pkg sync`
+# against minicompiler.dev prints.
+pkg sync tests/pkg/sync --registry https://example.invalid/registry --libs-dir "$tmp/c0"
+if [ "$rc" != 0 ]; then
+    fail "an https registry, no --yes" "exit $rc: $(cat "$tmp/o")"
+elif ! grep -q "^fetch  index " "$tmp/o"; then
+    fail "an https registry, no --yes" "no index row in the plan: $(cat "$tmp/o")"
+elif ! grep -q "nothing was downloaded" "$tmp/o"; then
+    fail "an https registry, no --yes" "$(cat "$tmp/o")"
+else
+    ok "an https registry with no snapshot: the plan is its index files, nothing spawned"
+fi
+
+# ---- 19. MVS, not "latest" (acceptance 4) ----
+pkg sync tests/pkg/sync --registry "$reg" --libs-dir "$tmp/c1" --yes
+[ -z "$MC_FREEZE" ] || cp tests/pkg/sync/mc.lock tests/pkg/sync/mc.lock.expect
+if [ "$rc" != 0 ]; then
+    fail "sync --yes" "exit $rc: $(cat "$tmp/o")"
+elif ! cmp -s tests/pkg/sync/mc.lock tests/pkg/sync/mc.lock.expect; then
+    fail "the lock" "differs from mc.lock.expect: $(diff tests/pkg/sync/mc.lock.expect tests/pkg/sync/mc.lock | head -6)"
+else
+    ok "sync --yes: mc.lock is mc.lock.expect, mathx at 1.1.0 (MVS, not 1.0.0 and not 2.0.0)"
+fi
+if [ -f "$tmp/c1/mathx/v1.1.0.toml" ] && [ -f "$tmp/c1/plot/v1.0.0.toml" ] \
+   && grep -q '^\[\[file\]\]' "$tmp/c1/plot/v1.0.0.toml"; then
+    ok "two manifests exist, written last, with [[file]] rows"
+else
+    fail "the cache manifests" "$(ls -R "$tmp/c1" | head -10)"
+fi
+if [ -f "$tmp/c1/mathx/v2.0.0.toml" ] || [ -f "$tmp/c1/mathx/v1.0.0.toml" ]; then
+    fail "MVS" "a version nothing selected was fetched"
+else
+    ok "no unselected version was fetched (1.0.0, 2.0.0 and the yanked 2.0.1 stayed put)"
+fi
+cp tests/pkg/sync/mc.lock "$tmp/out/lock1"
+pkg sync tests/pkg/sync --registry "$reg" --libs-dir "$tmp/c1" --yes
+if [ "$rc" != 0 ]; then
+    fail "second sync" "exit $rc: $(cat "$tmp/o")"
+elif grep -q '^fetch  ' "$tmp/o"; then
+    fail "second sync" "it fetched again"
+elif ! cmp -s "$tmp/out/lock1" tests/pkg/sync/mc.lock; then
+    fail "second sync" "the lock is not byte-identical"
+else
+    ok "a second sync downloads nothing and rewrites the same lock, byte for byte"
+fi
+
+# ---- 20. the fetched chain builds and runs (acceptance 5) ----
+build tests/pkg/sync "" "$tmp/c1"
+if want_exit "the synced project builds" 0; then
+    out=$(tests/pkg/sync/build/sync 2>/dev/null); arc=$?
+    if [ "$arc" = 42 ] && [ "$out" = "plot 110" ]; then
+        ok "<plot> through the lock's lib entry: exit 42, 'plot 110' (mathx 1.1.0)"
+    else
+        fail "the synced project runs" "exit $arc, stdout '$out'"
+    fi
+fi
+
+# ---- 21. two independent fetches give the same object (acceptance 6) ----
+build tests/pkg/sync tests/pkg/sync/obj.toml "$tmp/c1"
+want_exit "sync object (cache 1)" 0 && cp tests/pkg/sync/build/sync.o "$tmp/out/s1.o"
+rm -f tests/pkg/sync/mc.lock
+pkg sync tests/pkg/sync --registry "$reg" --libs-dir "$tmp/c2" --yes
+want_lock=$?
+if ! cmp -s "$tmp/out/lock1" tests/pkg/sync/mc.lock; then
+    fail "the second cache" "its lock differs from the first's"
+else
+    ok "a second fetch into another cache writes the same lock"
+fi
+build tests/pkg/sync tests/pkg/sync/obj.toml "$tmp/c2"
+if want_exit "sync object (cache 2)" 0; then
+    cmp -s "$tmp/out/s1.o" tests/pkg/sync/build/sync.o \
+        && ok "two fetches, two caches, byte-identical objects" \
+        || fail "two fetches" "the objects differ"
+fi
+
+# ---- 22. vendoring is the offline road (acceptance 9) ----
+pkg vendor tests/pkg/sync --libs-dir "$tmp/c1"
+if [ "$rc" != 0 ]; then
+    fail "vendor" "exit $rc: $(cat "$tmp/o")"
+elif [ ! -f tests/pkg/sync/deps/plot/plot.mc ] || [ ! -f tests/pkg/sync/deps/mathx/mc.toml ]; then
+    fail "vendor" "deps/ is not populated: $(ls -R tests/pkg/sync/deps 2>&1 | head -5)"
+else
+    ok "vendor: deps/plot and deps/mathx hold mc.toml plus [package].files"
+fi
+build tests/pkg/sync tests/pkg/sync/obj.toml "$tmp/empty"
+if want_exit "vendored build with an EMPTY libs dir" 0; then
+    cmp -s "$tmp/out/s1.o" tests/pkg/sync/build/sync.o \
+        && ok "the vendored tree gives the same object as the cache road, byte for byte" \
+        || fail "vendored object" "differs from the cache road's"
+fi
+PATH="$tmp/bin2:$realpath_env" "$mc" pkg list tests/pkg/sync --libs-dir "$tmp/empty" > "$tmp/o" 2>&1
+[ -z "$MC_FREEZE" ] || cp "$tmp/o" tests/golden/pkg-list.txt
+if [ $? != 0 ]; then
+    fail "pkg list" "$(cat "$tmp/o")"
+elif ! cmp -s "$tmp/o" tests/golden/pkg-list.txt; then
+    fail "pkg list" "differs from tests/golden/pkg-list.txt: $(diff tests/golden/pkg-list.txt "$tmp/o" | head -5)"
+else
+    ok "mc pkg list: every row 'vendored', and it matches tests/golden/pkg-list.txt"
+fi
+PATH="$tmp/bin2:$realpath_env" "$mc" pkg verify tests/pkg/sync --libs-dir "$tmp/empty" > "$tmp/o" 2>&1
+grep -q "verified 2 packages against mc.lock" "$tmp/o" \
+    && ok "mc pkg verify: verified 2 packages against mc.lock" \
+    || fail "pkg verify" "$(cat "$tmp/o")"
+rm -rf tests/pkg/sync/deps
+
+# ---- 23. majors are refused, not solved (acceptance 12) ----
+pkg sync tests/pkg/major --registry "$reg" --libs-dir "$tmp/c1" --yes
+if [ "$rc" != 1 ]; then
+    fail "majors" "exit $rc, expected 1: $(cat "$tmp/o")"
+elif ! grep -q "mathx: 1.0.0 and 2.0.0: different majors: no solver" "$tmp/o"; then
+    fail "majors" "$(cat "$tmp/o")"
+elif [ -f tests/pkg/major/mc.lock ]; then
+    fail "majors" "a lock was written anyway"
+else
+    ok "majors: $(cat "$tmp/o")"
+fi
+
+# ---- 24. a failed fetch leaves no claim behind (acceptance 13) ----
+cp -R "$reg" "$tmp/badreg"
+sed 's|/archives/plot-1.0.0.tar.gz|/archives/plot-9.9.9.tar.gz|' "$reg/index/plot.toml" > "$tmp/badreg/index/plot.toml"
+pkg sync tests/pkg/sync --registry "$tmp/badreg" --libs-dir "$tmp/c3" --yes
+if [ "$rc" != 2 ]; then
+    fail "a missing archive" "exit $rc, expected 2: $(cat "$tmp/o")"
+elif ! grep -q "^mc: cannot open: " "$tmp/o"; then
+    fail "a missing archive" "$(cat "$tmp/o")"
+elif [ -f "$tmp/c3/plot/v1.0.0.toml" ]; then
+    fail "a missing archive" "a manifest was written for a package that never arrived"
+else
+    ok "a failed fetch: $(head -1 "$tmp/o"), no manifest"
+fi
+cp -R "$reg" "$tmp/badsha"
+sed 's/^sha256  = "./sha256  = "0/' "$reg/index/mathx.toml" | sed 's/^\(sha256  = "0.\{64\}\).*"$/\1"/' > "$tmp/badsha/index/mathx.toml"
+pkg sync tests/pkg/sync --registry "$tmp/badsha" --libs-dir "$tmp/c4" --yes
+if [ "$rc" != 2 ]; then
+    fail "a wrong hash" "exit $rc, expected 2: $(cat "$tmp/o")"
+elif ! grep -q "checksum mismatch for mathx 1.1.0" "$tmp/o"; then
+    fail "a wrong hash" "$(cat "$tmp/o")"
+elif [ -f "$tmp/c4/mathx/v1.1.0.toml" ] || [ -f "$tmp/c4/mathx/v1.1.0/mathx.mc" ]; then
+    fail "a wrong hash" "the refused tree was left behind"
+else
+    ok "a wrong hash: checksum mismatch, the listed files unlinked, no manifest"
+fi
+build tests/pkg/sync tests/pkg/sync/obj.toml "$tmp/c4"
+want_exit "a build over the debris" 2 \
+    && want_msg "a build over the debris" "is not fetched"
+rm -f tests/pkg/sync/mc.lock
+
+# ---- 25. `mc pkg add` edits exactly one line (acceptance 14) ----
+cp tests/pkg/add/add.toml "$tmp/out/add.toml.orig"
+pkg add mathx@1.0.0 tests/pkg/add --config tests/pkg/add/add.toml \
+        --registry "$reg" --libs-dir "$tmp/c1" --yes
+[ -z "$MC_FREEZE" ] || cp tests/pkg/add/add.toml tests/pkg/add/add.toml.expect
+if [ "$rc" != 0 ]; then
+    fail "pkg add" "exit $rc: $(cat "$tmp/o")"
+elif ! cmp -s tests/pkg/add/add.toml tests/pkg/add/add.toml.expect; then
+    fail "pkg add" "$(diff tests/pkg/add/add.toml.expect tests/pkg/add/add.toml | head -8)"
+else
+    d=$(diff "$tmp/out/add.toml.orig" tests/pkg/add/add.toml | grep -c '^>')
+    ok "mc pkg add mathx@1.0.0: add.toml.expect byte for byte ($d lines added, every other byte through)"
+fi
+pkg add mathx tests/pkg/add --config tests/pkg/add/add.toml \
+        --registry "$reg" --libs-dir "$tmp/c1" --yes
+if [ "$rc" != 0 ]; then
+    fail "pkg add, no version" "exit $rc: $(cat "$tmp/o")"
+elif ! grep -q 'mathx = "2.0.0"' tests/pkg/add/add.toml; then
+    fail "pkg add, no version" "$(grep mathx tests/pkg/add/add.toml)"
+else
+    ok "mc pkg add mathx: the newest NON-YANKED row, 2.0.0, never the yanked 2.0.1"
+fi
+cp "$tmp/out/add.toml.orig" tests/pkg/add/add.toml
+rm -f tests/pkg/add/mc.lock
+
+# ---- 26. `mc update` raises a minimum, inside its own major ----
+pkg sync tests/pkg/sync --registry "$reg" --libs-dir "$tmp/c1" --yes
+cp tests/pkg/sync/mc.toml "$tmp/out/sync.toml.orig"
+upd mathx tests/pkg/sync --registry "$reg" --libs-dir "$tmp/c1" --yes
+if [ "$rc" != 0 ]; then
+    fail "mc update" "exit $rc: $(cat "$tmp/o")"
+elif ! grep -q 'mathx = "1.1.0"' tests/pkg/sync/mc.toml; then
+    fail "mc update" "$(grep mathx tests/pkg/sync/mc.toml)"
+else
+    ok "mc update mathx: 1.0.0 -> 1.1.0, the newest of ITS major (2.0.0 is not an update)"
+fi
+cp "$tmp/out/sync.toml.orig" tests/pkg/sync/mc.toml
+rm -f tests/pkg/sync/mc.lock
+
+# ---- 27. `mc pkg check` is the registry gate (acceptance 15) ----
+pkg check "$reg/index/geo.toml" --registry "$reg" --libs-dir "$tmp/chk" --yes
+if [ "$rc" = 0 ] && grep -q "^ok     geo 1.2.0" "$tmp/o"; then
+    ok "mc pkg check geo.toml --yes: both rows re-derived from their archives"
+else
+    fail "pkg check" "exit $rc: $(cat "$tmp/o")"
+fi
+pkg check "$reg/index/geo.toml" --registry "$reg" --libs-dir "$tmp/chk"
+if [ "$rc" = 0 ] && grep -q "^would check geo 1.2.0" "$tmp/o" \
+   && grep -q "nothing was downloaded" "$tmp/o"; then
+    ok "mc pkg check without --yes: what it would check, and nothing downloaded"
+else
+    fail "pkg check, no --yes" "exit $rc: $(cat "$tmp/o")"
+fi
+sed 's/^name        = "geo"/name        = "mc"/' "$reg/index/geo.toml" > "$tmp/out/mc.toml.bad"
+pkg check "$tmp/out/mc.toml.bad" --libs-dir "$tmp/chk" --yes
+if [ "$rc" = 1 ] && grep -q "reserved package name: package.name" "$tmp/o"; then
+    ok "mc pkg check refuses name = \"mc\": $(tail -1 "$tmp/o")"
+else
+    fail "pkg check, reserved name" "exit $rc: $(cat "$tmp/o")"
+fi
+sed 's/^\(sha256  = "\)./\10/' "$reg/index/plot.toml" | sed 's/^\(sha256  = "0.\{63\}\).*"$/\1"/' > "$tmp/out/plot-badsha.toml"
+pkg check "$tmp/out/plot-badsha.toml" --libs-dir "$tmp/chk2" --yes
+if [ "$rc" = 2 ] && grep -q "checksum mismatch for plot 1.0.0" "$tmp/o"; then
+    ok "mc pkg check refuses a row whose hash is not the archive's: exit 2"
+else
+    fail "pkg check, wrong hash" "exit $rc: $(cat "$tmp/o")"
+fi
+sed 's|/archives/plot-1.0.0.tar.gz|/archives/plot-1.0.0.tar.gz?v=2|' "$reg/index/plot.toml" > "$tmp/out/plot-edited.toml"
+pkg check "$tmp/out/plot-edited.toml" --registry "$reg" --libs-dir "$tmp/chk"
+if [ "$rc" = 1 ] && grep -q "a published row was edited" "$tmp/o"; then
+    ok "mc pkg check refuses an edit to a published row: $(tail -1 "$tmp/o")"
+else
+    fail "pkg check, edited row" "exit $rc: $(cat "$tmp/o")"
+fi
+
+# ---- 28. the part that is not there: a compiler without <mc/core_pkg> ----
+# It builds the vendored project of step 22 -- reading a lock and a deps/ tree
+# is <mc/core_build>'s (D12) -- and it advertises neither `pkg` nor `update`.
+nopkg="$tmp/bin/nopkg"
+if "$mc" --exe tests/pkg/nopkg.mc -o "$nopkg" > "$tmp/o" 2>&1; then
+    ok "the pkg-less probe compiler builds"
+    if "$nopkg" 2>&1 | grep -qE 'mc (pkg|update)'; then
+        fail "the pkg-less compiler" "it still prints a pkg or update usage line"
+    else
+        ok "no <mc/core_pkg>: no 'mc pkg' and no 'mc update' usage line"
+    fi
+    msg=$("$nopkg" pkg 2>&1); prc=$?
+    if [ "$prc" = 1 ] && [ "$msg" = "mc: cannot open: pkg" ]; then
+        ok "no <mc/core_pkg>: 'mc pkg' is an ordinary file name, exit 1"
+    else
+        fail "the pkg-less compiler" "'pkg' said [$msg], exit $prc"
+    fi
+    mkdir -p tests/pkg/sync/deps
+    cp -R tests/pkg/src/plot-1.0.0  tests/pkg/sync/deps/plot
+    cp -R tests/pkg/src/mathx-1.1.0 tests/pkg/sync/deps/mathx
+    cp "$tmp/out/lock1" tests/pkg/sync/mc.lock
+    cc="$nopkg"
+    build tests/pkg/sync tests/pkg/sync/obj.toml "$tmp/empty"
+    if want_exit "the pkg-less compiler builds the vendored project" 0; then
+        cmp -s "$tmp/out/s1.o" tests/pkg/sync/build/sync.o \
+            && ok "a compiler with no fetcher builds the vendored project, same object" \
+            || fail "the pkg-less compiler" "its object differs"
+    fi
+    cc="$mc"
+    rm -rf tests/pkg/sync/deps tests/pkg/sync/mc.lock
+else
+    fail "the pkg-less probe compiler" "$(cat "$tmp/o")"
 fi
 
 cd "$here" || exit 1

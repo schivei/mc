@@ -208,7 +208,7 @@ uptr drv_subst(uptr s, uptr pat, uptr rep) {
 // M25: the same thing, but -1 instead of a diagnostic when the program is not
 // on PATH at all. `mc sysroot fetch` tries curl and then wget, and "not
 // installed" is a case it handles rather than a failure -- see
-// sysroot_download (src/sysroot.mc).
+// fetch_get (src/fetch.mc).
 //
 // -1 means EXACTLY that, and nothing else. posix_spawnp returns the error
 // number rather than setting errno, so ENOENT is the one value that says "no

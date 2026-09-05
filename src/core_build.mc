@@ -3,6 +3,7 @@
 //   toml.mc     the TOML subset mc.toml is written in (M14)
 //   deps.mc     [deps], mc.lock and `#include <pack/file.mc>` (M44)
 //   driver.mc   `mc build`: reads mc.toml and drives the whole build (M14)
+//   fetch.mc    getting a file and unpacking an archive (M44)
 //   sysroots.mc the pinned list of downloadable sysroots (M25)
 //   sysroot.mc  where a cross link finds its files, and `mc sysroot` (M25)
 //   stubs.mc    .tbd and .def stubs written from the program (M25)
@@ -23,6 +24,7 @@
 #include "toml.mc"
 #include "deps.mc"
 #include "driver.mc"
+#include "fetch.mc"
 #include "sysroots.mc"
 #include "sysroot.mc"
 #include "stubs.mc"
