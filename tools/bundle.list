@@ -56,6 +56,7 @@ mc/sysno_linux_x86_64	src/sysno_linux_x86_64.mc
 mc/sysroot	src/sysroot.mc
 mc/sysroots	src/sysroots.mc
 mc/toml	src/toml.mc
+mc/version	src/version.mc
 mc_badmach	lib/mc_badmach.mc
 mc_f16	lib/mc_f16.mc
 mc_float	lib/mc_float.mc

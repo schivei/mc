@@ -63,6 +63,69 @@ scripts/next-version.sh --test         # 40 assertions, no framework, no network
 Three lines of arithmetic with no test is how a release ends up as `0.1.10` when `0.2.0` was
 meant, so the assertions are part of the script and `--test` runs them anywhere.
 
+### The baked version, and why it is not a second source of truth (M44)
+
+The binary has to be able to answer `mc --version`, and — from M44's later steps — to name the
+directory its own package is installed into, `~/.mc/libs/mc/v<version>/`. So `src/version.mc`
+carries one line:
+
+```c
+uptr mc_version() { return "0.0.0-dev"; }
+```
+
+`0.0.0-dev` is a **sentinel, not a version**. In the working tree it is always that constant, it
+never changes, and it is what every locally built compiler reports; the objection that killed the
+`VERSION` file — two sources of truth for what release this is — does not apply to a constant
+that names no release. For ordering it compares as `0.0.0`, so every release is newer than a dev
+build.
+
+One script turns a tag into a version:
+
+```sh
+scripts/set-version.sh 0.14.1     # rewrites the literal, then runs `make bundle`
+scripts/set-version.sh 0.0.0-dev  # and back
+```
+
+It validates the `X.Y.Z` half with `scripts/next-version.sh`, so there is still exactly one
+definition of what a version number is; a `-suffix` is allowed for the sentinel and for a
+hand-pushed pre-release tag, which is the only kind the automation will not make. **It never
+commits.** `release.yml`'s `build` job calls it between `make mc1` and every binary it produces —
+that order, because its second act is `make bundle` and that needs a working compiler:
+
+```yaml
+- name: Build the seed compiler
+  run: make mc1
+- name: Bake the release version into the tree
+  run: scripts/set-version.sh "$VERSION"
+- name: Build the compiler
+  run: |
+      build/mc1 --exe src/mc.mc -o dist/mc
+      test "$(dist/mc --version)" = "mc $VERSION"
+```
+
+`make bundle` is not optional there. `src/version.mc` is bundled as `mc/version` and
+`<mc/core_min>` includes it, so a compiler a release binary builds out of its own blob —
+`mc --exe` over `<mc/host>` + `<mc/core>` + a module — reports the version of the binary that
+built it. Without the regeneration it would report `0.0.0-dev` and, from M44's install step,
+look in the wrong libraries directory.
+
+**Two guards keep the sentinel in the repository.** `scripts/check-bundle.sh` asserts the exact
+line above and fails `make check` with a message naming `set-version.sh` when it does not hold,
+so a release build can never be committed by accident; and `ci.yml` runs `make check` on the
+untouched tree, as it always has. The consequence for the release proofs is that the **goldens do
+not move per release**: every one of them is the hash of an object compiled from the checked-in
+tree, which says `0.0.0-dev` on the tag as it does on `main` (see
+[../tests/golden/README.md](../tests/golden/README.md) and [bootstrap.md](bootstrap.md)).
+
+Rejected, and why:
+
+* **the commit hash as the dev version** — it would move `src/bundle_data.mc`, `build/mc2.o` and
+  all five goldens on every commit;
+* **the version outside the bundle** (a plain `#define` in `src/cli.mc`) — a taught compiler
+  would then report, and install, the wrong one;
+* **a `VERSION` file** — the reason it was deleted stands: for a RELEASE the tag is still the
+  only truth, and `release-assets.sh` still takes the version as its first argument.
+
 ---
 
 ## `ci.yml`

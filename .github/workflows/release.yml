@@ -70,14 +70,34 @@ jobs:
       # The seed compiles once (clang), mc1 compiles itself into the signed,
       # ld-free executable. The output's basename is the identifier of the
       # ad-hoc signature (M11), so it is built directly as `mc`.
-      - name: Build the compiler
+      #
+      # M44 (D20): the version is baked between the two halves. `make mc1` first,
+      # because scripts/set-version.sh's second act is `make bundle` and that
+      # needs a working compiler; then the rewrite, so that every binary built
+      # from here on -- this `--exe`, the four cross-compiled objects below --
+      # carries the tag both in mc_version() and inside its blob. The rewrite is
+      # never committed: the checked-out tag's tree says `0.0.0-dev` and
+      # scripts/check-bundle.sh fails `make check` on a tree where it does not
+      # (docs/ci.md § Versioning).
+      - name: Build the seed compiler
         run: |
           set -eu
           make mc1
+
+      - name: Bake the release version into the tree
+        run: |
+          set -eu
+          scripts/set-version.sh "$VERSION"
+          grep '^uptr mc_version' src/version.mc
+
+      - name: Build the compiler
+        run: |
+          set -eu
           mkdir -p dist
           rm -f dist/mc
           build/mc1 --exe src/mc.mc -o dist/mc
           ls -l dist/mc
+          test "$(dist/mc --version)" = "mc $VERSION"
 
       - name: Verify the signature
         run: |

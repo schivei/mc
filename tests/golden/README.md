@@ -42,3 +42,24 @@ a given input on every host it runs on, and the fixed point on the runner
 (`cmp build/mc2w.obj build/mc3w.obj`) plus this hash is what says so. A divergence between the
 value recorded here and the value the runner computes is a real failure and not a recording
 mistake: it would mean the Windows-hosted compiler is not the compiler that was cross-compiled.
+
+## The goldens do not move per release (M44)
+
+Since M44 the binary carries a version string (`src/version.mc`, `mc --version`), and a release
+runner rewrites it with `scripts/set-version.sh` before it builds anything. That rewrite changes
+`src/mc.mc`'s bytes — the literal itself and, because `make bundle` runs with it, the blob — so
+one might expect a golden per release. It does not happen, and it must not: **every golden here is
+the hash of an object compiled from the CHECKED-IN tree**, and the checked-in tree always says
+`0.0.0-dev`. A tag's tree says it too; only the release runner's working copy is ever different,
+and it is never committed (`scripts/check-bundle.sh` fails `make check` on a tree where the
+sentinel has been rewritten).
+
+The release proofs still hold with a versioned seed and a dev tree, because that is the shape they
+were written for: `scripts/bootstrap-linux.sh` takes the shipped binary as the SEED, compiles the
+checked-out tag into `mc1l` and that into `mc2l.o` — a dev object, compared against the dev golden
+recorded here — and the script already allows the seed to differ from `mc1l` (`docs/bootstrap.md`
+§ The Linux chain). What must agree is `mc1l --dump-asm` against `mc2l --dump-asm`, and both of
+those are dev.
+
+So these five files move only when `src/*.mc`, `lib/*.mc` or the codegen change **on purpose**, as
+they always have.

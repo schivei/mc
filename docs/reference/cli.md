@@ -8,6 +8,7 @@ prints exactly this and exits 1:
 ```
 usage: mc [--dump-tokens|--dump-ast|--dump-asm|--dump-syms|--dump-rules|--dump-machine] [--backend=NAME|--exe] [--machine=NAME] [--include=DIR] source.mc [-o out]
        mc --host
+       mc --version
 usage: mc build [DIR] [--config FILE] [--compiler-only] [--limits|--fix-limits] [--sysroot-dir DIR]
        mc limits [DIR|FILE.mc]
        mc sysroot list|path <target>|fetch <target> [--yes] [--sysroot-dir DIR]
@@ -37,6 +38,7 @@ Arguments are read left to right. The first non-flag argument is the source; a s
 | `--backend=NAME` | pick a registered backend. Built in: `macho`, `macho-exe`, `elf-obj`, `elf-obj-x86_64`, `elf-exe`, `elf-exe-x86_64`, `coff-obj-arm64`, `coff-obj-x86_64`. The default is the HOST's object backend — the object slot of the host's `target()` registration, `macho` on macOS and `elf-obj`/`elf-obj-x86_64` on Linux (M37) — resolved after `user_init()` like `--exe`'s (post-M41 review), so a module that re-registers the host pair is honoured here too. A host registered with 0 in that slot has no object step at all, and the default is refused with `<os>/<arch> has no object backend: use --exe`. A taught compiler adds its own with `backend("name", &f)`. An unknown name lists what exists and exits 1. |
 | `--include=DIR` | add one `#include "…"` search root, exactly like a `[include].paths` entry does for `mc build`. Repeatable; roots are tried in the order given, after the includer's own directory. It is what lets one source tree carry two platform layers in different directories and pick one without a `mc.toml` (`examples/conc/lib/macos`, `lib/linux`). |
 | `--host` | print what this binary is and exit 0 — three lines, no source needed. |
+| `--version` | print `mc <version>` and exit 0 — one line, no source needed. |
 | `--machine=NAME` | pick the machine the `--dump-*` modes lower with: `arm64` (the host's, default), `x86_64` (System V) or `x86_64-win` (Win64 — the same instruction set, the Windows calling convention). A compile does **not** need it — an object backend names its own machine, because the file records the architecture — so this flag exists for looking at what a machine selects (`--dump-asm --machine=x86_64-win`). An unknown name is `mc: unknown machine: NAME`. |
 
 ```
@@ -50,6 +52,23 @@ sys sys
 picks the default backend (`macho` on macOS, `elf-obj` / `elf-obj-x86_64` on Linux); `sys` is the
 bundled system layer a program on this host includes for its I/O (`<sys>` or `<sys_linux>`). The
 same binary built for a Linux host answers `linux`, its architecture, and `sys_linux` — see [../guide/90-linux-host.md](../guide/90-linux-host.md).
+
+```
+$ mc --version
+mc 0.0.0-dev
+```
+
+The version is a **constant compiled into the binary** — `mc_version()` in `src/version.mc`,
+which `<mc/core_min>` includes and the bundle carries as `mc/version` (M44). Anything built from
+the working tree says `0.0.0-dev`, the sentinel; a released binary says the tag it was built
+from, minus the `v`, because `scripts/set-version.sh` rewrites that one literal in the release
+job and never commits the result. The program name is on the line so that the output can be
+pasted into a bug report as it stands.
+
+Because the string is in the bundle and not only in the binary, a **taught compiler reports the
+version of the binary that built it**: `mc --exe` over `<mc/host>` + `<mc/core>` + a module gives
+a compiler whose own `--version` is the same line. See [../ci.md](../ci.md) § Versioning and
+[bundle.md](bundle.md).
 
 Backends are documented in [objects.md](objects.md) and in [../guide/40-backends.md](../guide/40-backends.md).
 

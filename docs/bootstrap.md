@@ -292,6 +292,25 @@ unchanged; `[target].link = "static"` (`--link=static`) is how a program that im
 every intermediate `.o` are build artifacts, never committed. The only fixed-point artifact that
 is versioned is the hash: `tests/golden/mc2.sha256` (see `tests/golden/README.md`).
 
+### The version, the seed and the goldens (M44)
+
+Since M44 a binary answers `mc --version`, and the string comes from a constant in
+`src/version.mc` that a release runner rewrites with `scripts/set-version.sh` before it builds
+anything (`docs/ci.md` § Versioning). Three things follow for the chain, and none of them changes
+a step of it:
+
+* **The checked-in tree always says `0.0.0-dev`**, on `main` and on a tag alike, so every golden
+  is recorded for the dev tree and does not move per release. `scripts/check-bundle.sh` fails
+  `make check` on a tree where the sentinel has been rewritten, which is what keeps that true.
+* **A versioned seed compiling a dev tree is the normal case, not an anomaly.** The chain is
+  seed -> `mc1l` -> `mc2l.o` -> `mc3l.o`, and the criterion has never been that the seed agrees
+  with `mc1l`; it is `cmp mc2l.o mc3l.o` plus the `--dump-asm` agreement between `mc1l` and
+  `mc2l`, both of which are compiled from the checked-out tree.
+* **The seed of a bootstrap is the full binary, and stays so.** `scripts/bootstrap-linux.sh` and
+  `scripts/bootstrap-windows.sh` download `mc-<VER>-<target>.tar.gz` — the compiler with its
+  bundle — because the release gate runs the whole suite with the seed and must not depend on
+  anything outside the checkout.
+
 ## Divergence diagnosis
 
 If `cmp build/mc2.o build/mc3.o` fails (or the SHA-256 diverges from the golden without an

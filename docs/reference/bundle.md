@@ -105,9 +105,22 @@ and supplying that function *is* a taught compiler ([hooks.md](hooks.md)).
 | `<mc/sysno_linux_aarch64>` | `src/sysno_linux_aarch64.mc` — `sys6` and the AArch64 numbers |
 | `<mc/sysno_linux_x86_64>` | `src/sysno_linux_x86_64.mc` — `sys6` and the x86-64 numbers |
 | `<mc/bundle>` | `src/bundle.mc` |
+| `<mc/version>` | `src/version.mc` — `mc_version()`, the one string this binary reports (M44) |
 | `<mc/cli>` | `src/cli.mc` — `mc_main()` (M41) |
 | `<mc/main>` | `src/main.mc` |
 | `<mc/bundle_data>` | `src/bundle_data.mc` — see below |
+
+#### `<mc/version>`, and why the version is in the bundle (M44)
+
+`src/version.mc` is one function, `mc_version()`, returning a string literal: `0.0.0-dev` in the
+repository and the tag in a released binary, rewritten by `scripts/set-version.sh` in the release
+job and never committed. It is bundled for the same reason `<mc/host>` is resolved per binary:
+**a taught compiler must report the version of the binary that built it**. `mc --exe` over
+`<mc/host>` + `<mc/core>` + a module produces a compiler out of the blob, so if the blob's copy
+said `0.0.0-dev` a release binary would build compilers that lie about their version — and, from
+M44's install step, look in the wrong `~/.mc/libs/mc/v<version>/`. That is why
+`scripts/set-version.sh`'s second act is `make bundle`, and why `scripts/check-bundle.sh` guards
+the sentinel. See [../ci.md](../ci.md) § Versioning.
 
 #### `<mc/host>`, the one name that is not an entry
 
@@ -200,7 +213,7 @@ this table cannot drift from the code.
 
 | name | file | members, in order | what it gives you |
 |---|---|---|---|
-| `<mc/core_min>` | `src/core_min.mc` | `arena` `lz` `objmodel` `lex` `ast` `parse` `gen_resolve` `gen_walk` `hooks` `cli` | the compiler that has no target: lexer, parser, resolver, walker, every registry, and `mc_main()` |
+| `<mc/core_min>` | `src/core_min.mc` | `arena` `lz` `objmodel` `lex` `ast` `parse` `gen_resolve` `gen_walk` `hooks` `version` `cli` | the compiler that has no target: lexer, parser, resolver, walker, every registry, `mc_version()`, and `mc_main()` |
 | `<mc/core_machines>` | `src/core_machines.mc` | `machine_arm64` `machine_x86_64` | `mc_machines_init()` — the two host machines |
 | `<mc/core_writers>` | `src/core_writers.mc` | `sha256` `macho` `backend_exe` `backend_elf` `backend_elf_exe` `backend_coff` | `mc_writers_init()` — the eight `backend()` and five `target()` registrations |
 | `<mc/core_build>` | `src/core_build.mc` | `sha256` `toml` `driver` `sysroots` `sysroot` `stubs` `limits` | `mc_build_init()` — `mc build`, `mc limits`, `mc sysroot`, and the pre-scan |
