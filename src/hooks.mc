@@ -767,6 +767,29 @@ i64 target_find(uptr os, uptr arch) {
     return -1;
 }
 
+// post-M42 review: 1 when `name` is the EXECUTABLE backend of some registered
+// target, 0 otherwise. There is no flag on a backend() registration saying what
+// kind of file it writes, and there must not be one: what makes a writer an
+// executable writer is that a target names it in its exe slot, which is the
+// same table `--exe` and `mc build` resolve through. So the question is asked
+// of the target registry, never of the name (`elf-exe` is a string this
+// compiler has no business recognising).
+//
+// It lives here, with the target registry it reads, rather than beside
+// backend_find: the backend registry above knows names and function pointers
+// and nothing about roles. src/cli.mc uses it to refuse `--libc`/`--interp`/
+// `--link` on a run that writes an object, where they would be read by nobody.
+i64 backend_is_exe(uptr name) {
+    i64 i = 0;
+    loop {
+        if (i >= ntargets) break;
+        uptr e = tgt_exe_at(i);
+        if (e && str_eq(e, name)) return 1;
+        i = i + 1;
+    }
+    return 0;
+}
+
 i64 target_os_known(uptr os) {
     i64 i = 0;
     loop {

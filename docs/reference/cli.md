@@ -79,9 +79,23 @@ $ llvm-readelf -l -d hello | grep -E 'interpreter|NEEDED'
 
 The compiler **never probes the host** for its libc — one source, one answer on every machine
 ([../determinism.md](../determinism.md)) — so the default is the constant `musl` and `--libc=gnu`
-is how a glibc host says so. All three describe a Linux dynamic image: with no `--backend=` naming
-a writer and a host that is not Linux, they are refused (`mc: --libc applies to a linux target`)
-rather than read and ignored. The last one on the command line wins, like every other flag here.
+is how a glibc host says so. The last one on the command line wins, like every other flag here.
+
+All three describe a Linux dynamic **executable**, and only the executable writer reads them:
+`PT_INTERP` and `DT_NEEDED` are program-header fields, and an object file has neither. So they are
+refused, never read and ignored, on a run that would not write one (post-M42 review):
+
+| the command line | the refusal |
+|---|---|
+| `mc prog.mc -o prog.o --libc=gnu`, `mc --backend=elf-obj --libc=gnu …` — an object | `mc: --libc applies to an executable: use --exe` |
+| `mc --dump-asm --libc=gnu …` — any of the six dumps, with or without `--exe` | `mc: --libc applies to an executable: a --dump-* mode writes none` |
+| `mc --exe --libc=gnu …` on a host that is not Linux | `mc: --libc applies to a linux target` |
+
+What makes a writer an executable writer is that some `target()` registration names it in its
+**exe slot** — the same table `--exe` resolves through — so a target a module registered from
+`user_init()` answers for its own writer, and no backend name is special-cased. The three
+questions are asked after `user_init()` and before every dump, which is why an unreadable entry
+file reports `cannot open` first ([diagnostics.md](diagnostics.md) § 10).
 
 ### Modes: the six dumps
 

@@ -94,6 +94,12 @@ $ mc --backend=elf-obj hello.mc -o hello.o
 $ llvm-readobj --file-headers hello.o | head -5
 ```
 
+`--libc`, `--link` and `--interp` do **not** come along on that road: an object has no
+`PT_INTERP` and no `DT_NEEDED`, so nothing would read them, and since the post-M42 review they are
+refused there (`mc: --libc applies to an executable: use --exe`) instead of accepted and ignored.
+They belong to a run that writes an executable — `--exe`, or a `--backend=` some `target()` names
+in its exe slot ([../reference/cli.md](../reference/cli.md)).
+
 ## Linux x86-64
 
 One line changes:

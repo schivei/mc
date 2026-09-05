@@ -232,15 +232,6 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
     }
     if (in == 0) { usage(); return 1; }
 
-    // post-M42 patch: the three flags above describe a LINUX dynamic image and
-    // nothing else. The single-file CLI writes for the host unless --backend=
-    // named a writer, so the flag is accepted when the host is Linux or when a
-    // backend was named explicitly (the cross road, where the caller chose the
-    // format), and refused otherwise -- a macOS `--exe` that took `--libc=gnu`
-    // and ignored it would be worse than one that says so.
-    if (linkflag && bname == 0 && !str_eq(host_os(), "linux"))
-        die(tm_cat(linkflag, " applies to a linux target"));
-
     // M23/M41: the pre-scan sizes every table before the first one exists. It
     // lives in <mc/core_build> and reaches here through on_plan(); with that
     // part absent nothing is pre-sized and the tables grow from the seeds in
@@ -262,6 +253,39 @@ i64 mc_main(i64 argc, uptr argv, uptr envp) {
     // the entire core. Before any token is read, because the lexer is
     // incremental: the user's `#token`/`#rule` still apply to the whole source.
     user_init();
+
+    // post-M42 review: --libc, --interp and --link describe A LINUX DYNAMIC
+    // EXECUTABLE, and nothing else reads them -- src/backend_elf_exe.mc is the
+    // only file in the tree that names dyn_libc/dyn_interp/dyn_static. So every
+    // other road silently ignored them: on a Linux host `mc x.mc -o x.o
+    // --libc=gnu` wrote exactly the object it writes without the flag (elf-obj
+    // has no PT_INTERP and no DT_NEEDED to put it in), and so did
+    // `--backend=elf-obj --libc=gnu` on any host. Three questions, in the order
+    // a user can act on them:
+    //
+    //   1. is anything written at all? a --dump-* mode returns before a backend
+    //      is ever reached, so the flag can affect nothing there either;
+    //   2. is what is written an EXECUTABLE? that is `--exe`, or a --backend=
+    //      the TARGET REGISTRY names in an exe slot (backend_is_exe,
+    //      src/hooks.mc) -- asked of the registry, never of the name, so a
+    //      target a module registered answers for its own writer;
+    //   3. is that executable a Linux one? the host decides when no backend was
+    //      named; with one named the caller chose the format and this is the
+    //      cross road (`--backend=elf-exe --libc=gnu` from macOS).
+    //
+    // Here and not where the flags were read, for the reason M39.5 wrote for
+    // `mc build`'s [target]: after user_init() a backend a module registered
+    // counts. The price is that the entry is opened and lexed first, so
+    // `cannot open` now comes before the refusal (docs/reference/diagnostics.md).
+    if (linkflag) {
+        if (mode != M_COMPILE)
+            die(tm_cat(linkflag, " applies to an executable: a --dump-* mode writes none"));
+        if (!want_exe && (bname == 0 || !backend_is_exe(bname)))
+            die(tm_cat(linkflag, " applies to an executable: use --exe"));
+        if (bname == 0 && !str_eq(host_os(), "linux"))
+            die(tm_cat(linkflag, " applies to a linux target"));
+    }
+
     // after user_init, so a module can register the machine the flag names
     if (mname) machine_use(mname);
     // M24: after user_init and after --machine=, because both are what a

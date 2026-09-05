@@ -199,16 +199,17 @@ reach a backend.
 Registers an `(os, arch)` pair `mc build` accepts, with the backend it writes objects with and the
 one it writes direct executables with. **A 0 in either slot is a registration too**, and says that
 role does not exist for this target: `exe = 0` says there is no direct executable and the build
-always goes through `[linker]` — which is what `os = "linux"` and `os = "windows"` do — and
-`obj = 0` says there is no separable object step, which is what a bare board registers when the
+always goes through `[linker]` — which is what `os = "windows"` does, and what `os = "linux"` did
+until M42 gave ELF one — and `obj = 0` says there is no separable object step, which is what a
+bare board registers when the
 image it writes *is* the artefact. Asking the driver for the role that is 0 is a diagnostic at the
 `[target]` value's own position ([diagnostics.md](diagnostics.md) § 10), never a null handed to
 `backend_find()`. **Five** are registered before `user_init()` runs (`src/core_writers.mc`, `mc_writers_init`):
 
 ```c
 target("macos", "aarch64", "macho", "macho-exe");
-target("linux", "aarch64", "elf-obj", 0);
-target("linux", "x86_64", "elf-obj-x86_64", 0);
+target("linux", "aarch64", "elf-obj", "elf-exe");
+target("linux", "x86_64", "elf-obj-x86_64", "elf-exe-x86_64");
 target("windows", "aarch64", "coff-obj-arm64", 0);
 target("windows", "x86_64", "coff-obj-x86_64", 0);
 ```
@@ -232,6 +233,21 @@ either slot is refused there too, in the wording a command line can act on:
 ([cli.md](cli.md), [diagnostics.md](diagnostics.md) § 9). `tests/proj/objswap.mc`,
 `tests/proj/noobjhost.mc` and `tests/proj/noexe.mc` are the three cases, in
 `scripts/check-build.sh`.
+
+### `i64 backend_is_exe(uptr name)`
+
+1 when `name` is the **executable** backend of some registered target, 0 otherwise — a linear walk
+of the same table, skipping the 0 slots. There is no flag on a `backend()` registration saying what
+kind of file a writer produces, and there must not be one: what makes a writer an executable writer
+is that a `target()` names it in its exe slot. So a module that registers
+`target("none", "riscv64", "rv-image", "rv-image")` makes `rv-image` an executable writer by
+saying so, and no backend name is ever special-cased.
+
+The caller is `src/cli.mc` (post-M42 review): `--libc`, `--interp` and `--link` describe a Linux
+dynamic executable and are read by nobody else, so a command line that writes an object —
+`mc x.mc -o x.o`, or a `--backend=` this answers 0 for — is refused with
+`--libc applies to an executable: use --exe` instead of accepting a flag it would ignore
+([cli.md](cli.md), [diagnostics.md](diagnostics.md) § 9).
 
 `src/driver.mc` reads nothing but this table: `target_find(os, arch)` gives the row,
 `tgt_obj_at(i)` / `tgt_exe_at(i)` the two backends, `target_os_known(os)` whether the operating

@@ -769,8 +769,15 @@ mc: static link with a libc needs [linker]: see docs/build.md -- static linking 
 
 The compiler **never probes the host** for its libc: one source gives one answer on every machine
 ([determinism.md](determinism.md)), so the default is the constant `musl` and the flag is how a
-glibc host says so. The three flags apply to a Linux target; on another host, with no `--backend=`
-naming a writer, they are refused with `--libc applies to a linux target` rather than ignored.
+glibc host says so.
+
+The three flags apply to a Linux **executable**, and nothing else reads them — an object file has
+no `PT_INTERP` and no `DT_NEEDED`. So each half of that sentence is a refusal rather than a flag
+read and thrown away (post-M42 review): a run that writes an object (`mc x.mc -o x.o`, or a
+`--backend=` no `target()` names in an exe slot) is `--libc applies to an executable: use --exe`, a
+`--dump-*` mode is `--libc applies to an executable: a --dump-* mode writes none`, and `--exe` on a
+host that is not Linux is `--libc applies to a linux target`. The cross road is
+`mc --backend=elf-exe --libc=gnu prog.mc -o prog`, which works from any host.
 
 The layout, field by field, is
 [reference/objects.md § 8b](reference/objects.md#8b-the-elf-executable-elf-exe-and-elf-exe-x86_64).

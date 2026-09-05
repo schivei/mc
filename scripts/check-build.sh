@@ -545,23 +545,72 @@ cli_refuse "cli --link=static with an import" --link=static \
 cli_refuse "cli --libc=uclibc" --libc=uclibc "mc: --libc must be gnu or musl: uclibc"
 cli_refuse "cli --link=half" --link=half "mc: --link must be dynamic or static: half"
 
-# and the flag on a host that is not Linux, with no --backend= to say otherwise:
-# the single-file CLI writes for the HOST there, and a --libc it would then
-# ignore is worse than a --libc it refuses. On a Linux host the flag is exactly
-# what it is for, so the case only exists off Linux.
-if [ "$("$mc" --host | sed -n 's|^os ||p')" != "linux" ]; then
+# the same, with no --backend= in front: the flags then have to answer for
+# themselves. post-M42 review: this is the road that used to accept them and do
+# nothing -- `--backend=elf-obj --libc=gnu` wrote the object it writes without
+# the flag, on any host, and so did `mc x.mc -o x.o --libc=gnu` on a Linux host,
+# because elf-obj has no PT_INTERP and no DT_NEEDED to put a libc name in.
+raw_refuse() {                           # name, flags, expected last line
     total=$((total + 1))
-    "$mc" --exe --libc=gnu "$dir/lin-libc.mc" -o "$tmp/refused" > "$tmp/o" 2>&1
+    "$mc" $2 "$dir/lin-libc.mc" -o "$tmp/refused" > "$tmp/o" 2>&1
     rc=$?
     got=$(tail -1 "$tmp/o")
     if [ "$rc" != "1" ]; then
-        fail "cli --libc on a non-linux host" "exit $rc, expected 1"
-    elif [ "$got" != "mc: --libc applies to a linux target" ]; then
-        fail "cli --libc on a non-linux host" "got '$got'"
+        fail "$1" "exit $rc, expected 1"
+    elif [ "$got" != "$3" ]; then
+        fail "$1" "got '$got', expected '$3'"
     else
-        ok "cli --libc on a non-linux host"
+        ok "$1"
         echo "  $got"
     fi
+}
+
+raw_refuse "cli --libc on the object road (--backend=elf-obj)" \
+    "--backend=elf-obj --libc=gnu" \
+    "mc: --libc applies to an executable: use --exe"
+raw_refuse "cli --interp on the object road (--backend=elf-obj)" \
+    "--backend=elf-obj --interp=/opt/ld.so" \
+    "mc: --interp applies to an executable: use --exe"
+raw_refuse "cli --link on the object road (--backend=elf-obj)" \
+    "--backend=elf-obj --link=static" \
+    "mc: --link applies to an executable: use --exe"
+# the default road: no --backend and no --exe is an OBJECT for the host, whatever
+# the host is -- so this case is the same on macOS, on Linux and on Windows.
+raw_refuse "cli --libc with neither --exe nor --backend=" --libc=gnu \
+    "mc: --libc applies to an executable: use --exe"
+# a --dump-* mode returns before any backend is reached, so the flag can affect
+# nothing there either -- including with --exe, which the dump overrides.
+raw_refuse "cli --libc in a dump mode" "--dump-asm --libc=gnu" \
+    "mc: --libc applies to an executable: a --dump-* mode writes none"
+raw_refuse "cli --libc in a dump mode, even with --exe" "--dump-asm --exe --libc=gnu" \
+    "mc: --libc applies to an executable: a --dump-* mode writes none"
+
+# and the flag on a host that is not Linux, with no --backend= to say otherwise:
+# the single-file CLI writes for the HOST there, and a --libc it would then
+# ignore is worse than a --libc it refuses. On a Linux host the flag is exactly
+# what it is for, so the case only exists off Linux -- and its opposite, the
+# positive road `--exe --libc=gnu`, only exists ON Linux.
+if [ "$("$mc" --host | sed -n 's|^os ||p')" != "linux" ]; then
+    raw_refuse "cli --libc on a non-linux host" "--exe --libc=gnu" \
+        "mc: --libc applies to a linux target"
+else
+    cli_case2() {                        # name, flags, output, pattern
+        total=$((total + 1))
+        rm -f "$tmp/$3"
+        if ! "$mc" $2 "$dir/lin-libc.mc" -o "$tmp/$3" > "$tmp/o" 2>&1; then
+            fail "$1" "$(cat "$tmp/o")"
+        elif [ -z "$readelf" ]; then
+            ok "$1 (built; no llvm-readelf here, headers not read)"
+        elif ! "$readelf" -l -d "$tmp/$3" 2>&1 | grep -qF "$4"; then
+            fail "$1" "no '$4' in the image"
+        else
+            ok "$1 -> $4"
+        fi
+    }
+    cli_case2 "cli --exe --libc=gnu on a linux host" "--exe --libc=gnu" \
+        cli-exe-gnu "Shared library: [libc.so.6]"
+    cli_case2 "cli --exe --libc=musl on a linux host" "--exe --libc=musl" \
+        cli-exe-musl "Shared library: [libc.so]"
 fi
 
 # ---- diagnostics ----

@@ -246,9 +246,9 @@ different systems to be hosted on. `--arch` and `--libc` narrow it.
 repository's glibc baseline. The seed is `build/mc-linux-<target>-gnu`, and **nothing is installed
 in the container**: no `make`, no `lld`, no `musl-dev`.
 
-1. `scripts/bootstrap-linux.sh --libc glibc <seed>` — the same four stages, with every executable
-   written by the previous compiler through `mc build` instead of by a linker, then the whole
-   suite through `scripts/test-linux.sh --exe --libc glibc`, natively;
+1. `scripts/bootstrap-linux.sh --libc gnu <seed>` — the same four stages, with every executable
+   written by the previous compiler through `--exe --libc=gnu` instead of by a linker, then the
+   whole suite through `scripts/test-linux.sh --exe --libc gnu`, natively;
 2. the same cross proof.
 
 The golden is the same file in both cells: an ELF object records no interpreter, so the musl chain
@@ -266,9 +266,11 @@ check-bundle check-mc test-exe check-toml check-sysroots check-limits check-skip
 ```
 
 `test-exe` joined the list at M42: `--exe` on a Linux host writes a dynamic ELF64 executable, so
-the whole suite goes through it natively, with no linker. On a **glibc** host the script reaches
-the same backend through `mc build` with the two per-libc keys, and prints which road it took —
-`mc --exe`'s default interpreter is musl's and cannot be told otherwise from a command line.
+the whole suite goes through it natively, with no linker. On a **glibc** host the script adds
+`--libc=gnu`, which is the same thing `[target].libc` says in an `mc.toml`: since the post-M42
+patch `--exe` can name its libc family, so there is no `mc build` detour left in
+`scripts/test-exe.sh` or `scripts/build-exe.sh`. The probe of the loader on the disk is the
+script's; the compiler never probes.
 
 `bootstrap-linux` ends by running the whole `tests/*.mc` suite with the compiler it just
 bootstrapped (`scripts/test-linux.sh`, native mode — no Docker, no emulation), which is why `test`
